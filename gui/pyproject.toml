@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "linac_gen_gui"
+version = "0.1.0"
+description = "Desktop GUI for Linac_Gen particle tracking"
+requires-python = ">=3.10"
+dependencies = [
+    "linac_gen>=0.1.0",
+    "PyQt6>=6.5",
+    "pyqtgraph>=0.13",
+]
+
+[tool.setuptools.packages.find]
+include = ["linac_gen_gui*"]

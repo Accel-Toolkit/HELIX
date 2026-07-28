@@ -1,0 +1,210 @@
+/* HELIX manual — visual polish on top of Material for MkDocs.
+ *
+ * Goals:
+ *   - more "engineering" feel: tighter table styling, mono-font headers
+ *     in API ref blocks, slightly larger code blocks.
+ *   - better contrast on TL;DR / API-reference / Tutorial section
+ *     dividers so the multi-track structure pops.
+ *   - friendlier admonitions for warnings and tips.
+ */
+
+/* ─── Tables: tighter, with subtle row striping and a clear header ─── */
+
+.md-typeset table:not([class]) {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  font-size: 0.78rem;
+}
+
+.md-typeset table:not([class]) th {
+  background: var(--md-primary-fg-color--light);
+  color: var(--md-primary-bg-color);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.md-typeset table:not([class]) tr:nth-child(even) td {
+  background: var(--md-default-fg-color--lightest);
+}
+
+[data-md-color-scheme="slate"] .md-typeset table:not([class]) tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+/* ─── Multi-track section dividers (TL;DR / Tutorial / API reference) ── */
+
+.md-typeset h2 + p,
+.md-typeset h3 + p {
+  margin-top: 0.4em;
+}
+
+.md-typeset h2#tl-dr-tracewin-users::before,
+.md-typeset h2#tldr::before,
+.md-typeset h2#tl-dr::before {
+  content: "🚀 ";
+}
+
+.md-typeset h2#tutorial::before,
+.md-typeset h2#tutorial-newcomers::before {
+  content: "📖 ";
+}
+
+.md-typeset h2#api-reference::before,
+.md-typeset h2#api-reference-developers::before {
+  content: "🔧 ";
+}
+
+/* ─── Admonitions: slightly more breathing room, friendlier titles ─── */
+
+.md-typeset .admonition {
+  margin: 1.2em 0;
+  border-radius: 6px;
+  border-left-width: 4px;
+}
+
+.md-typeset .admonition-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* ─── Code blocks: a hair larger, consistent font ─── */
+
+.md-typeset pre > code {
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
+.md-typeset code {
+  font-size: 0.82em;
+  padding: 0.05em 0.35em;
+  border-radius: 4px;
+}
+
+/* ─── Make math display blocks look slightly more textbook-like ─── */
+
+.md-typeset mjx-container[display="true"] {
+  margin: 1.4em auto !important;
+  font-size: 1.05em !important;
+}
+
+/* ─── Header: subtler, with a hairline under it ─── */
+
+.md-header {
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.05);
+}
+
+[data-md-color-scheme="slate"] .md-header {
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* ─── Footer: tighter, branded ─── */
+
+.md-footer-meta {
+  font-size: 0.72rem;
+}
+
+/* ─── Right-side ToC: more breathing room around active item ─── */
+
+.md-nav__link--active {
+  font-weight: 600;
+}
+
+/* ─── Inline keyboard / file path: a different color from regular code ─── */
+
+.md-typeset kbd {
+  background: var(--md-default-fg-color--lightest);
+  border: 1px solid var(--md-default-fg-color--lighter);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 0.1em 0.4em;
+  font-family: var(--md-code-font);
+  font-size: 0.78rem;
+}
+
+/* ─── Image captions (anything wrapped in *italics* right after an
+        image gets caption styling) ────────────────────────────────── */
+
+.md-typeset img + em,
+.md-typeset img + p > em:first-child:last-child {
+  display: block;
+  text-align: center;
+  font-size: 0.84rem;
+  color: var(--md-default-fg-color--light);
+  margin-top: 0.4em;
+}
+
+/* ─── Print: hide the navigation ─── */
+
+@media print {
+  .md-header,
+  .md-sidebar,
+  .md-footer,
+  .md-nav,
+  .md-tabs {
+    display: none !important;
+  }
+  .md-content { max-width: 100% !important; padding: 0 !important; }
+}
+
+/* ─── Wider page layout for parameter tables ─────────────────────────
+ *
+ * Material's default ``.md-grid`` max-width is 61rem (~976px).  After
+ * subtracting the left navigation sidebar (~12.5rem) and the right
+ * table-of-contents sidebar (~12.5rem), the actual content area is
+ * ~36rem (~580px) -- not enough room for a 7-column parameter table
+ * (Pos / Field / Type / Units / Default / Required / Description).
+ * The Description column ends up clipped behind the right TOC.
+ *
+ * Widen the whole content grid so wide tables get a usable area.
+ * 88rem (~1408px) is still readable on a 1440-wide laptop screen
+ * (centred with margin) and gives ~63rem for the actual content.
+ */
+.md-grid {
+  max-width: 88rem;
+}
+
+/* ─── Wide parameter tables (7+ columns) ─────────────────────────────
+ *
+ * Even after widening the grid, force the table to fill the available
+ * content width and let every cell wrap onto multiple lines.
+ * Description gets a min-width hint so it stays readable instead of
+ * being squeezed to a single character per line on narrower windows.
+ */
+.md-typeset__table {
+  display: block;
+  overflow-x: auto;
+}
+
+.md-typeset table:not([class]) {
+  display: table;
+  width: 100%;
+  table-layout: auto;
+}
+
+.md-typeset table:not([class]) td,
+.md-typeset table:not([class]) th {
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  vertical-align: top;
+  padding: 0.45em 0.7em;
+}
+
+/* Compact columns (Pos / Type / Units / Default / Required) shouldn't
+ * be wider than their headers; give Description the room. */
+.md-typeset table:not([class]) td:nth-child(1),
+.md-typeset table:not([class]) th:nth-child(1) {
+  white-space: nowrap;       /* "Pos" cells stay 1 line */
+}
+
+.md-typeset table:not([class]) td:last-child,
+.md-typeset table:not([class]) th:last-child {
+  min-width: 22em;           /* Description gets the lion's share */
+}
+
+/* Code spans inside cells shouldn't introduce un-breakable runs that
+ * push the column past its allotted width. */
+.md-typeset table:not([class]) code {
+  word-break: break-word;
+  white-space: normal;
+}

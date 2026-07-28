@@ -1,0 +1,54 @@
+; ===============================================================
+;  Combined realistic tolerance budget
+;  Stacks every error type in a single .dat:
+;    * 0.2 mm σ quad alignment (dx, dy)
+;    * 0.5 % gradient jitter
+;    * 1 % cavity voltage / 1° phase
+;    * 0.5 mm σ dipole alignment + 0.5 % field error
+;    * 0.1 mm input-beam centroid jitter + 1 mA current
+;
+;  This is the closest thing to a PIP-II-style tolerance budget run
+;  HELIX can do today.  Compare the resulting transmission band
+;  against the loose-quad-alignment-only example to see how the
+;  individual contributions add.
+; ===============================================================
+TITLE Combined realistic tolerance budget
+FREQ 325
+PARTRAN_STEP 100 50
+;
+; ---- error directives (applied in stream order) ----
+ERROR_GAUSSIAN_CUT_OFF 3
+;
+; All quads: 0.2 mm align, 0.5 % gradient
+ERROR_QUAD_NCPL_STAT 6 2 0.2 0.2 0 0 0 0.5 0 0 0 0
+;
+; All cavities: 1 % voltage, 1° phase, 0.3 mm align
+ERROR_CAV_NCPL_STAT 2 2 0.3 0.3 0 0 1.0 1.0 0
+;
+; Dipole: 0.5 mm align + 0.5 % field
+ERROR_BEND_NCPL_STAT 1 2 0.5 0.5 0 0 0 0.5 0
+;
+; Input beam: 0.1 mm centroid x/y, 1 mA current
+ERROR_BEAM_STAT 2 0.1 0.1 0 0 0 0 0 0 0 0 0 0 1.0
+;
+; --- Lattice ---
+DRIFT 100 20
+QUAD 100 8 20 0 0 0 0 0 0
+DRIFT 200 20
+GAP 1.0e6 -30 20 0
+DRIFT 200 20
+QUAD 100 -8 20 0 0 0 0 0 0
+DRIFT 200 20
+QUAD 100 8 20 0 0 0 0 0 0
+DRIFT 200 20
+GAP 1.5e6 -25 20 0
+DRIFT 200 20
+QUAD 100 -8 20 0 0 0 0 0 0
+DRIFT 200 20
+BEND 30 1500 0 20 0
+DRIFT 200 20
+QUAD 100 8 20 0 0 0 0 0 0
+DRIFT 200 20
+QUAD 100 -8 20 0 0 0 0 0 0
+DRIFT 300 20
+END

@@ -1,0 +1,37 @@
+; ----------------------------------------------------------------------
+; Twiss matching demo — solve an inverse Twiss problem.
+;
+; Variables  (ADJUST_BEAM_TWISS):  input α_x, β_x, α_y, β_y
+; Constraint (SET_TWISS at end):   exit α_x=0, β_x=1.5, α_y=0, β_y=1.5
+;
+; The matcher varies the *input* beam Twiss until the *exit* Twiss
+; lands at the target; longitudinal Twiss is left untouched.
+;
+; Run:
+;   python -m linac_gen.matching examples/twiss_matching_demo.dat --report
+;   examples/twiss_matching_demo.py        (Python script with plots)
+; ----------------------------------------------------------------------
+TITLE Twiss matching demo - input Twiss to target exit Twiss
+FREQ 352.21
+PARTRAN_STEP 100 50
+
+; --- Variables: α_x, β_x, α_y, β_y of the input beam ----------------
+; ADJUST_BEAM_TWISS  diag_n  fα_x fβ_x fα_y fβ_y fα_z fβ_z
+;   flag = 1  → adjust this axis
+;   flag = 0  → leave fixed
+ADJUST_BEAM_TWISS  1  1 1 1 1 0 0
+
+; --- Transport line (stretched FODO so the inverse map is non-trivial) ---
+DRIFT  200  30
+QUAD    80   8  20
+DRIFT  400  30
+QUAD    80  -8  20
+DRIFT  200  30
+
+; --- Constraint: exit Twiss target ---------------------------------
+; SET_TWISS  family  α_x  β_x  α_y  β_y  α_z  β_z  kα_x kβ_x kα_y kβ_y kα_z kβ_z
+;   k = 1 → include this Twiss component in the residual vector
+;   k = 0 → ignore (used to silence z here)
+SET_TWISS  END  0  1.5  0  1.5  0  0   1 1 1 1 0 0
+
+END

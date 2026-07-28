@@ -1,0 +1,42 @@
+{
+  "__kind__": "linac_gen_project",
+  "__version__": 1,
+  "lattice_path": "chicane.dat",
+  "beam": {
+    "species": "H-",
+    "energy": 800.0,
+    "frequency": 162.5,
+    "current": 5.0,
+    "duty_cycle": 100.0,
+    "n_particles": 5000,
+    "distribution": "gaussian",
+    "cutoff": 4.0,
+    "emit_nx": 0.2,
+    "alpha_x": 0.0,
+    "beta_x": 5.0,
+    "emit_ny": 0.2,
+    "alpha_y": 0.0,
+    "beta_y": 5.0,
+    "emit_z": 0.02,
+    "alpha_z": 0.0,
+    "beta_z": 8.0,
+    "source": "generate",
+    "continuous": false,
+    "dc_energy_spread_keV": 0.0
+  },
+  "convergence": {
+    "step1_per_m": 100.0,
+    "step2_per_m": 50.0,
+    "grid_nx": 48,
+    "grid_extent_sigma": 5.0,
+    "backend": "auto",
+    "green_kind": "igf",
+    "kernel": "cic",
+    "grid_mode": "fixed",
+    "dc_kernel": "uniform",
+    "integrator_kind": "kd",
+    "interp_kind": "linear",
+    "env_solver": "matrix",
+    "csr_enabled": true
+  }
+}

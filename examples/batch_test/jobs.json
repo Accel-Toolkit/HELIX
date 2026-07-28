@@ -1,0 +1,10 @@
+{
+  "jobs": [
+    {"name": "env_nominal",   "input": "fodo.lgproj", "mode": "envelope"},
+    {"name": "mp_nominal",    "input": "fodo.lgproj", "mode": "mp"},
+    {"name": "mp_low_current","input": "fodo.lgproj", "mode": "mp",
+     "beam": {"current": 1.0}},
+    {"name": "mp_detuned_q1", "input": "fodo.lgproj", "mode": "mp",
+     "set": {"QUAD_001.gradient": 27.5}}
+  ]
+}

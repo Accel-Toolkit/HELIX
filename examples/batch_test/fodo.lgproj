@@ -1,0 +1,37 @@
+{
+  "__kind__": "linac_gen_project",
+  "__version__": 1,
+  "lattice_path": "fodo.dat",
+  "beam": {
+    "species": "H-",
+    "energy": 2.1226695,
+    "frequency": 162.5,
+    "current": 5.0,
+    "duty_cycle": 100.0,
+    "n_particles": 5000,
+    "distribution": "gaussian",
+    "cutoff": 4.0,
+    "emit_nx": 0.21,
+    "alpha_x": 1.4713,
+    "beta_x": 0.3753,
+    "emit_ny": 0.21,
+    "alpha_y": -1.9377,
+    "beta_y": 0.5458,
+    "emit_z": 0.06231832,
+    "alpha_z": 0.0,
+    "beta_z": 819.05492,
+    "source": "generate",
+    "continuous": false
+  },
+  "convergence": {
+    "step1_per_m": 100.0,
+    "step2_per_m": 50.0,
+    "grid_nx": 32,
+    "grid_extent_sigma": 7.0,
+    "backend": "auto",
+    "sc_backend": "numpy",
+    "integrator_kind": "kd",
+    "interp_kind": "linear",
+    "fieldmap_sampling": "kernel"
+  }
+}

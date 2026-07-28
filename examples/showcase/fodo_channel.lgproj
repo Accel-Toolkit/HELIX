@@ -1,0 +1,24 @@
+{
+  "__kind__": "linac_gen_project",
+  "__version__": 1,
+  "lattice_path": "fodo_channel.dat",
+  "beam": {
+    "species": "proton",
+    "energy": 5.0,
+    "frequency": 352.2,
+    "current": 20.0,
+    "duty_cycle": 100.0,
+    "n_particles": 50000,
+    "distribution": "gaussian",
+    "cutoff": 4.0,
+    "emit_nx": 0.3,
+    "alpha_x": 0.0,
+    "beta_x": 0.9,
+    "emit_ny": 0.3,
+    "alpha_y": 0.0,
+    "beta_y": 0.35,
+    "emit_z": 0.25,
+    "alpha_z": 0.0,
+    "beta_z": 600.0
+  }
+}

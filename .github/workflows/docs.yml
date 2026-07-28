@@ -1,0 +1,83 @@
+name: Manual
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "docs/**"
+      - "linac_gen/**"
+      - "examples/**"
+      - "pyproject.toml"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "linac_gen/**"
+      - "examples/**"
+      - "pyproject.toml"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "manual"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build manual
+    runs-on: ubuntu-latest
+    env:
+      LINAC_GEN_DISABLE_CPP: "1"   # skip C++ extension on CI for speed; pure-Python kernels still work
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install HELIX + docs extras
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[docs]"
+
+      - name: Regenerate figures
+        run: python docs/manual/_build/regen_plots.py
+
+      - name: Strict mkdocs build
+        run: mkdocs build --strict --config-file docs/mkdocs.yml
+
+      - name: Verify code snippets
+        # v1: snippets are not all guaranteed to run end-to-end (some lack
+        # imports, some depend on local example .dat files).  Mature this
+        # incrementally; for now, surface failures without blocking CI.
+        continue-on-error: true
+        run: python docs/manual/_build/verify_snippets.py
+
+      - name: Upload site artifact
+        uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        with:
+          path: site/
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    # Pages needs the repo to be public (or a paid plan) — until then the
+    # deploy 404s; don't paint the whole workflow red over it.
+    continue-on-error: true
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4

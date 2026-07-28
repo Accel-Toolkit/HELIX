@@ -1,0 +1,28 @@
+{
+  "__comment__": "Example HELIX batch job file. Each job is one headless run; results land in batch_summary.csv. 'input' paths resolve relative to this file (or the current directory). See examples/batch_mode/09_batch/run.sh.",
+  "jobs": [
+    {
+      "name": "baseline",
+      "input": "../chicane.lgproj",
+      "mode": "envelope"
+    },
+    {
+      "name": "low_current",
+      "input": "../chicane.lgproj",
+      "mode": "envelope",
+      "beam": {"current": 1.0}
+    },
+    {
+      "name": "softer_quad",
+      "input": "../chicane.lgproj",
+      "mode": "envelope",
+      "set": {"@2.gradient": 4.0}
+    },
+    {
+      "name": "multiparticle",
+      "input": "../chicane.lgproj",
+      "mode": "mp",
+      "beam": {"n_particles": 4000}
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+; MIN_TRANSMISSION soft-loss constraint demo lattice (HELIX)
+;
+; Same 6-knob layout as examples/ml_bayesopt/bo_demo.dat, but with a
+; deliberately tight 4 mm-radius aperture downstream of solenoid 2 and a
+; MIN_TRANSMISSION card.  The classic failure mode of pure emittance
+; minimisation is that the matcher can LOWER the emittance by letting the
+; aperture scrape off the beam halo -- a lower epsilon bought with lost
+; beam.  MIN_TRANSMISSION adds a one-sided penalty that fires only when
+; transmission drops below the threshold, so the matcher is forbidden
+; from gaming epsilon that way.  It is a MULTI-PARTICLE-only constraint
+; (envelope mode tracks no particle losses), so match with
+; cost_solver="mp".
+;
+; Beam seed (set via the run script / matcher CLI):
+;   proton, 2.5 MeV, 5 mA, 162.5 MHz
+;   emit_nx = emit_ny = 0.30 mm.mrad, emit_z = 0.40 deg.MeV
+;   alpha_x = -1.2, beta_x = 0.32 m   (mismatched -> baseline clips beam
+;   alpha_y = +2.0, beta_y = 0.05 m    at the tight aperture)
+;
+TITLE MIN_TRANSMISSION demo
+FREQ 162.5
+
+DRIFT 100 20.0
+
+ADJUST SOL 2 1 0.15 0.45 0.02 0       ; sol1.field   [T]
+SOLENOID 150 0.30 20.0
+
+DRIFT 80 20.0
+
+ADJUST GAP 1 2 0.04 0.12 0.005 0           ; buncher voltage [MV]
+ADJUST GAP 2 3 -45.0 0.0 2.0 0             ; buncher phase   [deg]
+GAP 80000 -25.0 20.0 0
+
+DRIFT 80 20.0
+
+ADJUST SOL 2 4 0.15 0.45 0.02 0       ; sol2.field   [T]
+SOLENOID 150 0.30 20.0
+
+; --- tight aperture: a moderate beam transmits ~96% at the seed, so the
+;     match must focus it through to satisfy the MIN_TRANSMISSION floor.
+DRIFT 80 6.0
+
+ADJUST GAP 1 5 1.0 2.0 0.05 0              ; accel voltage [MV]
+ADJUST GAP 2 6 -45.0 0.0 2.0 0             ; accel phase   [deg]
+GAP 1500000 -25.0 20.0 0
+
+DRIFT 100 20.0
+
+MIN_EMIT_GROWTH X 1.0
+MIN_EMIT_GROWTH Y 1.0
+MIN_TRANSMISSION 99.0 50.0          ; transmission >= 99% (MP only)
+SET_KE_OUT_MIN 3.5 10.0
+
+END

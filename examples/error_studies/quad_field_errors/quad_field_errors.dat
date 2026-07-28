@@ -1,0 +1,39 @@
+; ===============================================================
+;  Quad field-error tolerance study
+;  Same FODO as quad_alignment_tolerance, but the random draws are
+;  on the *gradient* and on the parsed-but-historically-ignored
+;  g3 (sextupole) and g4 (octupole) multipole content.
+;
+;  The Quadrupole element now actually applies g3/g4 (since
+;  2026-05-08), so this directive directly probes the optical
+;  sensitivity to power-supply jitter and end-field nonlinearities.
+; ===============================================================
+TITLE Quad field-error tolerance
+FREQ 325
+PARTRAN_STEP 100 50
+;
+; --- Field-error directive: applies to the next 8 QUADs ---
+;     N  r  dx dy φx φy φz   dG  dG3  dG4 dG5 dG6
+;                        gradient: σ = 1 %
+;                                       g3:   σ = 5 %
+;                                            g4:   σ = 2 %
+ERROR_QUAD_NCPL_STAT 8 2 0  0  0  0  0   1   5   2   0   0
+;
+DRIFT 100 20
+QUAD 100 8 20 0 0.05 0.01 0 0 0    ; quad with non-zero g3, g4 design value
+DRIFT 250 20
+QUAD 100 -8 20 0 0.05 0.01 0 0 0
+DRIFT 250 20
+QUAD 100 8 20 0 0.05 0.01 0 0 0
+DRIFT 250 20
+QUAD 100 -8 20 0 0.05 0.01 0 0 0
+DRIFT 250 20
+QUAD 100 8 20 0 0.05 0.01 0 0 0
+DRIFT 250 20
+QUAD 100 -8 20 0 0.05 0.01 0 0 0
+DRIFT 250 20
+QUAD 100 8 20 0 0.05 0.01 0 0 0
+DRIFT 250 20
+QUAD 100 -8 20 0 0.05 0.01 0 0 0
+DRIFT 200 20
+END

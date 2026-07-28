@@ -1,0 +1,108 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C / CMake build artifacts
+*.so
+*.dylib
+*.dll
+*.o
+*.obj
+build/
+_skbuild/
+linac_gen/csrc/build/
+
+# Packaging
+*.egg-info/
+*.egg
+dist/
+wheels/
+*.whl
+
+# Test / tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local env
+.env
+.venv/
+venv/
+
+# GUI run reports (auto-generated after every simulation)
+run_reports/
+
+# MkDocs build output (HELIX user manual)
+/site/
+# Auto-generated plot figures (regenerable via regen_plots.py); GUI
+# screenshots under figures/gui/ are NOT regenerable in CI and ARE tracked.
+docs/manual/_build/figures/*.png
+!docs/manual/_build/figures/gui/
+
+# Matcher output artifacts (regenerable by re-running the match)
+*.matched.dat
+
+
+# Example analysis outputs (regenerable by re-running the example scripts)
+examples/**/*.png
+examples/**/*.h5
+
+# Multi-objective example generated front
+examples/**/pareto.csv
+
+# Third-party field-map data (ANL / CEA origin) — must NOT be shipped
+/Fields/
+
+# TraceWin reference data / outputs (external, not part of the codebase)
+/Tracewin_code/
+/TraceWIn_Tools/
+
+# Local run outputs / scratch artifacts
+/runs/
+/demo_results/
+/compare_plots/
+linac_gen/surrogates/weights/
+/profile.pstats
+/err.log
+
+# Root-level diagnostic / comparison / plotting scratch scripts
+/diag_*.py
+/diagnose_*.py
+/compare_*.py
+/plot_*.py
+/run_*.py
+/scan_*.py
+/mp_*.py
+/mp_sc_diagnostics.py
+
+# Root-level scratch plots / data
+/*.png
+/*.csv
+CLAUDE.md
+docs/halo_pic/baselines/*.npz
+linac_gen/csrc/build_mac/
+
+# third-party field-map & TraceWin data (ANL/CEA) — never committed
+Fields/
+Tracewin_code/
+TraceWIn_Tools/

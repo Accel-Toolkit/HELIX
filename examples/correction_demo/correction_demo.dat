@@ -1,0 +1,73 @@
+; correction_demo.dat — TraceWin-parity orbit-correction demo
+;
+; 6 FODO cells of (QF, QD) at 5 MeV proton.  Four steerer + BPM pairs
+; placed every other cell, each preceded by an ADJUST_STEERER card.
+; Initial steerer kicks are zero; with a perfectly-aligned lattice the
+; orbit is straight and the corrector finds zero kicks.  Plant
+; misalignments on the quadrupoles (via the Python demo script) and the
+; corrector recovers a flat orbit using only the four BPMs.
+;
+; Length: ~3.5 m.  Quadrupole gradient 8 T/m is well-matched to a 50 mm
+; quad and 5 MeV proton (βρ ≈ 0.32 T·m).
+;
+TITLE Orbit correction demo (TraceWin parity, 6-cell FODO)
+FREQ 352.21
+;
+; ── Cell 1 ────────────────────────────────────────────────────────────
+DRIFT 100 30
+QUAD 100 8 20
+DRIFT 50 30
+ADJUST_STEERER 1 0.02 1e-4
+THIN_STEERING 0.0 0.0 30 0
+DRIFT 50 30
+DIAG_POSITION
+DRIFT 100 30
+QUAD 100 -8 20
+DRIFT 100 30
+;
+; ── Cell 2 (no steerer/BPM) ───────────────────────────────────────────
+QUAD 100 8 20
+DRIFT 250 30
+QUAD 100 -8 20
+DRIFT 100 30
+;
+; ── Cell 3 ────────────────────────────────────────────────────────────
+QUAD 100 8 20
+DRIFT 50 30
+ADJUST_STEERER 2 0.02 1e-4
+THIN_STEERING 0.0 0.0 30 0
+DRIFT 50 30
+DIAG_POSITION
+DRIFT 100 30
+QUAD 100 -8 20
+DRIFT 100 30
+;
+; ── Cell 4 (no steerer/BPM) ───────────────────────────────────────────
+QUAD 100 8 20
+DRIFT 250 30
+QUAD 100 -8 20
+DRIFT 100 30
+;
+; ── Cell 5 ────────────────────────────────────────────────────────────
+QUAD 100 8 20
+DRIFT 50 30
+ADJUST_STEERER 3 0.02 1e-4
+THIN_STEERING 0.0 0.0 30 0
+DRIFT 50 30
+DIAG_POSITION
+DRIFT 100 30
+QUAD 100 -8 20
+DRIFT 100 30
+;
+; ── Cell 6 ────────────────────────────────────────────────────────────
+QUAD 100 8 20
+DRIFT 50 30
+ADJUST_STEERER 4 0.02 1e-4
+THIN_STEERING 0.0 0.0 30 0
+DRIFT 50 30
+DIAG_POSITION
+DRIFT 100 30
+QUAD 100 -8 20
+DRIFT 100 30
+;
+END

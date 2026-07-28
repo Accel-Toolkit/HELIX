@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use HELIX in your research, please cite it as below."
+title: "HELIX - Hybrid Envelope-multiparticle LInac eXplorer"
+abstract: >-
+  An open-source Python toolkit for end-to-end simulation of
+  charged-particle linear accelerators: a TraceWin-compatible lattice
+  language, an envelope (Sigma-matrix) solver, a multi-particle tracker
+  with a 3-D particle-in-cell space-charge solver, a matching engine, a
+  GUI workbench, and a scriptable batch CLI.
+type: software
+authors:
+  - family-names: Pathak
+    given-names: Abhishek
+    affiliation: "Fermi National Accelerator Laboratory"
+version: "0.1.0"
+date-released: 2026-05-21
+repository-code: "https://github.com/Abhishek-Pathak-90/HELIX"
+url: "https://github.com/Abhishek-Pathak-90/HELIX"
+keywords:
+  - accelerator physics
+  - beam dynamics
+  - space charge
+  - particle-in-cell
+  - linear accelerator
+  - PIP-II

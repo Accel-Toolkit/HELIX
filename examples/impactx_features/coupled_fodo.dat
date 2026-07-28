@@ -1,0 +1,43 @@
+; ===============================================================
+;  Coupled FODO  —  demo lattice for the IMPACT-X feature trio
+;
+;  Drives x-y coupling via a 25°-tilted skew quadrupole (TraceWin
+;  QUAD field 4 = skew_angle), so the projected ε_x and ε_y oscillate
+;  while the eigenemittances ε₁ / ε₂ stay constant under the linear
+;  symplectic transport.  Combine with a thermal-halo beam from the
+;  matching .lgproj to also exercise the bi-Gaussian distribution.
+;
+;  Designed for protons, 10 MeV, 325 MHz.
+; ===============================================================
+TITLE Coupled FODO (skew-quad coupling demo)
+FREQ 325
+PARTRAN_STEP 100 50
+;
+; ----- Period 1 (normal-quad pair) -----------------------------
+DRIFT 100 20
+QUAD 100 15 20 0 0 0 0 0 0
+DRIFT 200 20
+QUAD 100 -15 20 0 0 0 0 0 0
+DRIFT 200 20
+;
+; ----- Skew quad (25°) — drives x-y coupling ------------------
+QUAD 80 -8 20 25 0 0 0 0 0
+DRIFT 200 20
+;
+; ----- Period 2 (normal-quad pair, weaker) --------------------
+QUAD 100 12 20 0 0 0 0 0 0
+DRIFT 200 20
+QUAD 100 -12 20 0 0 0 0 0 0
+DRIFT 200 20
+;
+; ----- Second skew quad (counter-rotated, partial restore) ----
+QUAD 80 8 20 -25 0 0 0 0 0
+DRIFT 200 20
+;
+; ----- Period 3 ----------------------------------------------
+QUAD 100 15 20 0 0 0 0 0 0
+DRIFT 200 20
+QUAD 100 -15 20 0 0 0 0 0 0
+DRIFT 200 20
+;
+END

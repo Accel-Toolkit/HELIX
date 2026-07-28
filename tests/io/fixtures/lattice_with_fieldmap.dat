@@ -1,0 +1,14 @@
+; Lattice with field map, diagnostics, and various element types
+TITLE Lattice With FieldMap
+FREQ 352.21
+DRIFT 50.0 15.0 3
+FIELD_MAP 100 10.0 -30.0 20.0 1.0 1.0 0.0 0 test_1d.edz
+DRIFT 50.0 15.0 3
+QUAD 80.0 3.5 18.0 5
+DIAG_PHASE 1
+MARKER
+SPACE_CHARGE_COMP 0.5
+THIN_STEERING 0.001 0.0
+BEND 10.0 1000.0 0.0 20.0 0
+APERTURE 18.0 0 1
+END

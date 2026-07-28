@@ -1,0 +1,7 @@
+# Auto-generated plot figures (regenerable via regen_plots.py).
+figures/*.png
+__pycache__/
+
+# GUI screenshots are NOT regenerable in CI (need a display + the GUI
+# event loop) — track them as source-of-truth for the manual.
+!figures/gui/

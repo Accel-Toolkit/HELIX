@@ -1,0 +1,36 @@
+; ===============================================================
+;  Quad alignment-tolerance study
+;  4-cell FODO with σ_dx = σ_dy = 0.20 mm random offsets on every
+;  quadrupole (Gaussian, 3σ truncated).  Apply 100+ seeds and watch
+;  the centroid and σ_x ensemble fan out.
+;
+;  TraceWin ERROR_QUAD_NCPL_STAT applies to the next N=8 quads of
+;  the same family — covers all 8 below.
+; ===============================================================
+TITLE Quad alignment tolerance
+FREQ 325
+PARTRAN_STEP 100 50
+;
+; --- Misalignment directive: applies to the next 8 QUADs ---
+;     N  r  dx   dy   φx φy φz  dG dG3 dG4 dG5 dG6
+ERROR_QUAD_NCPL_STAT 8 2 0.2 0.2 0 0 0 0 0 0 0 0
+;
+; --- 4-period FODO ---
+DRIFT 100 20
+QUAD 100 8 20 0 0 0 0 0 0
+DRIFT 250 20
+QUAD 100 -8 20 0 0 0 0 0 0
+DRIFT 250 20
+QUAD 100 8 20 0 0 0 0 0 0
+DRIFT 250 20
+QUAD 100 -8 20 0 0 0 0 0 0
+DRIFT 250 20
+QUAD 100 8 20 0 0 0 0 0 0
+DRIFT 250 20
+QUAD 100 -8 20 0 0 0 0 0 0
+DRIFT 250 20
+QUAD 100 8 20 0 0 0 0 0 0
+DRIFT 250 20
+QUAD 100 -8 20 0 0 0 0 0 0
+DRIFT 200 20
+END

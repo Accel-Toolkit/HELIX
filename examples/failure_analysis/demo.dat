@@ -1,0 +1,38 @@
+; Element-failure-analysis demo lattice (HELIX)
+;
+; A compact PIP-II-like superconducting section: four RF cavities focused
+; by three solenoids.  Enough cavities that a single cavity failure can be
+; compensated by its neighbours (the MYRRHA/LightWin local-compensation
+; scheme), and a mix of element types (cavity + solenoid) so the failure
+; sweep ranks both.
+;
+; Beam seed (set via the run script / the Failures tab beam config):
+;   proton, 2.5 MeV, ~0 mA (envelope; raise for MP loss studies), 162.5 MHz
+;
+; No ADJUST/SET cards are needed — the failure study injects failures, and
+; the compensation step injects its own ADJUST/SET cards on the chosen
+; compensation zone.
+;
+TITLE Failure-analysis demo
+FREQ 162.5
+
+DRIFT 50 20.0
+SOLENOID 100 0.30 20.0
+DRIFT 40 20.0
+GAP 800000 -25.0 20.0 0          ; cavity 1 (0.80 MV)
+
+DRIFT 40 20.0
+SOLENOID 100 0.30 20.0
+DRIFT 40 20.0
+GAP 1000000 -22.0 20.0 0         ; cavity 2 (1.00 MV)
+
+DRIFT 40 20.0
+SOLENOID 100 0.32 20.0
+DRIFT 40 20.0
+GAP 1000000 -20.0 20.0 0         ; cavity 3 (1.00 MV)
+
+DRIFT 40 20.0
+GAP 1200000 -20.0 20.0 0         ; cavity 4 (1.20 MV)
+DRIFT 50 20.0
+
+END

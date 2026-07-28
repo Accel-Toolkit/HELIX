@@ -1,0 +1,101 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel", "pybind11>=2.11"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "linac_gen"
+version = "0.1.0"
+description = "Particle tracking code with PIC space charge for proton/ion linacs"
+readme = "README.md"
+# Dict form (not bare SPDX string) so older setuptools still parses it.
+license = {text = "GPL-3.0-or-later"}
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "h5py>=3.8",
+    "cma>=3.3",
+    "torch>=2.0",
+]
+
+[project.optional-dependencies]
+gui = ["PyQt6>=6.4", "matplotlib>=3.6"]
+# CuPy is NVIDIA CUDA only -- Linux/Windows wheels exist, no macOS support.
+# The marker lets `pip install .[gpu]` succeed (as a no-op) on macOS.
+# Apple Silicon users get GPU acceleration via the MPS backend that
+# ships with the torch dependency (declared in the main project deps).
+gpu = ["cupy-cuda12x>=13.0; platform_system != 'Darwin'"]
+# The AI assistant is stdlib-only by design (urllib HTTP client, local
+# or cloud LLM backends) — the empty extra is a documentation marker:
+# `pip install linac_gen[assist]` succeeds and adds nothing, and the
+# feature is entirely optional (no API key/network -> app unaffected).
+assist = []
+# The MCP server surface lets Claude Code / Claude Desktop drive HELIX
+# with the user's OWN Claude subscription (HELIX is a tool provider,
+# makes no network call, needs no API key).  Only this surface needs
+# the `mcp` protocol package.
+assist-mcp = ["mcp>=1.0"]
+# Keyless in-app Claude backend: reason via the Claude Agent SDK, which
+# reuses the user's existing Claude Code login (no API key).  Optional —
+# with it absent or the `claude` CLI not logged in, the panel shows setup
+# guidance and the key-based / local-model backends are unaffected.
+assist-sdk = ["claude-agent-sdk>=0.2.100"]
+# Offline push-to-talk voice for the assistant panel: faster-whisper
+# (local STT) + sounddevice (mic); TTS uses macOS `say` out of the box,
+# or install `piper-tts` for a higher-quality offline voice.  Never
+# required — the assistant is text-only without it.
+assist-voice = ["faster-whisper>=1.0", "sounddevice>=0.4"]
+# Natural neural voice for the assistant (fully local ONNX).  Drop
+# kokoro*.onnx + voices*.bin into ~/.helix/assistant_models/; without
+# them (or this extra) the speaker falls back to macOS `say`.
+assist-voice-kokoro = ["kokoro-onnx>=0.4"]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.3",
+    "mypy>=1.5",
+    "black>=23.0",
+]
+docs = [
+    "mkdocs>=1.5",
+    "mkdocs-material>=9.5",
+    "pymdown-extensions>=10",
+    "matplotlib>=3.6",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "gui"]
+markers = [
+    "physics: standard physics benchmarks (drift expansion, focus quad, SC growth); opt-in via 'pytest -m physics'.",
+    "slow: long integration tests (PIP-II BTL alignment ensemble, etc.); opt-in via 'pytest -m slow'.",
+]
+
+[tool.setuptools.packages.find]
+include = ["linac_gen*"]
+exclude = ["linac_gen_gui*", "tests*"]
+
+[tool.setuptools.package-data]
+linac_gen = ["csrc/*.cpp", "csrc/*.h", "csrc/CMakeLists.txt"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+check_untyped_defs = true
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]

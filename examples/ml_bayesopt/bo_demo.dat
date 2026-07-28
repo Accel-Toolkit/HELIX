@@ -1,0 +1,53 @@
+; Minimal emittance-minimisation test lattice (HELIX)
+;
+; Layout (≈0.9 m total):
+;
+;   drift → solenoid 1 → drift → buncher → drift → solenoid 2 → drift
+;        → accelerating cavity → drift
+;
+; Beam seed (set via the matcher CLI):
+;   proton, 2.5 MeV, 5 mA, 162.5 MHz
+;   emit_nx = emit_ny = 0.30 mm·mrad, emit_z = 0.40 deg·MeV
+;   alpha_x = -1.2, beta_x = 0.32 m   (deliberately mismatched so a
+;   alpha_y = +2.0, beta_y = 0.05 m    baseline forward pass shows
+;                                      ≈+50 % growth in emit_n)
+;
+; Six tunable knobs, four constraints (3 one-sided emittance-growth
+; residuals + 1 output-energy floor).  The baseline values of the
+; cavity phases (-25 deg) and the solenoid B (0.30 T) are deliberately
+; off-optimum so the matcher must walk through a coupling-resonance
+; pocket to reduce growth.
+;
+TITLE Minimal emit-min test
+FREQ 162.5
+
+DRIFT 100 20.0
+
+ADJUST SOL 2 1 0.15 0.45 0.02 0       ; sol1.field   [T]
+SOLENOID 150 0.30 20.0
+
+DRIFT 80 20.0
+
+ADJUST GAP 1 2 0.04 0.12 0.005 0           ; buncher voltage [MV]
+ADJUST GAP 2 3 -45.0 0.0 2.0 0             ; buncher phase   [deg]
+GAP 80000 -25.0 20.0 0
+
+DRIFT 80 20.0
+
+ADJUST SOL 2 4 0.15 0.45 0.02 0       ; sol2.field   [T]
+SOLENOID 150 0.30 20.0
+
+DRIFT 80 20.0
+
+ADJUST GAP 1 5 1.0 2.0 0.05 0              ; accel voltage [MV]
+ADJUST GAP 2 6 -45.0 0.0 2.0 0             ; accel phase   [deg]
+GAP 1500000 -25.0 20.0 0
+
+DRIFT 100 20.0
+
+MIN_EMIT_GROWTH X 1.0
+MIN_EMIT_GROWTH Y 1.0
+MIN_EMIT_GROWTH Z 1.0
+SET_KE_OUT_MIN 3.5 10.0
+
+END

@@ -1,0 +1,206 @@
+site_name: HELIX User Manual
+site_description: Comprehensive reference for the HELIX particle-accelerator simulation toolkit
+site_url: https://example.invalid/helix-manual/
+repo_url: https://github.com/Abhishek-Pathak-90/HELIX
+repo_name: Abhishek-Pathak-90/HELIX
+edit_uri: ""
+docs_dir: manual
+site_dir: ../site
+use_directory_urls: false   # produces flat .html files so links work via file:// URLs
+
+theme:
+  name: material
+  palette:
+    # Light mode (default)
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    # Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.indexes
+    - navigation.top
+    - navigation.tracking
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.tooltips
+  icon:
+    repo: fontawesome/brands/github
+    edit: material/pencil
+    view: material/eye
+  font:
+    text: Inter
+    code: JetBrains Mono
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      base_path:
+        - manual
+        - ../examples
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+plugins:
+  - search
+  - offline   # inlines the search index so search works under file:// URLs
+
+extra_javascript:
+  - assets/js/palette_toggle.js
+  - https://polyfill.io/v3/polyfill.min.js?features=es6
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+
+extra_css:
+  - assets/css/custom.css
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - 01_getting_started/01_introduction.md
+      - 01_getting_started/02_installation.md
+      - 01_getting_started/03_quick_start.md
+  - Concepts:
+      - 02_concepts/01_coordinates.md
+      - 02_concepts/02_data_model.md
+      - 02_concepts/03_tracking_modes.md
+  - Elements:
+      - Overview: 03_elements/00_overview.md
+      - Drift: 03_elements/01_drift.md
+      - Quadrupole: 03_elements/02_quadrupole.md
+      - Solenoid: 03_elements/03_solenoid.md
+      - Dipole: 03_elements/04_dipole.md
+      - Edge: 03_elements/05_edge.md
+      - RFGap: 03_elements/06_rfgap.md
+      - FieldMap: 03_elements/07_fieldmap.md
+      - FieldMap3D: 03_elements/08_fieldmap3d.md
+      - RfqCell: 03_elements/09_rfqcell.md
+      - VaneRFQ: 03_elements/10_vanerfq.md
+      - NCells: 03_elements/18_ncells.md
+      - SuperposedFieldMap: 03_elements/19_superposedfieldmap.md
+      - Multipole: 03_elements/11_multipole.md
+      - Aperture: 03_elements/12_aperture.md
+      - Marker: 03_elements/13_marker.md
+      - Steerer: 03_elements/14_steerer.md
+      - Foil: 03_elements/15_foil.md
+      - ThinLens: 03_elements/16_thinlens.md
+      - SpaceChargeComp: 03_elements/17_spacechargecomp.md
+  - Beam:
+      - Distributions: 04_beam/01_distributions.md
+      - Twiss & emittance: 04_beam/02_twiss.md
+      - BeamConfig reference: 04_beam/03_beam_config.md
+      - .dst loading: 04_beam/04_dst_io.md
+  - Space charge:
+      - Models: 05_space_charge/01_models.md
+      - PIC solver: 05_space_charge/02_pic_solver.md
+      - Kernels & Green's function: 05_space_charge/03_kernels.md
+      - DC mode: 05_space_charge/04_dc_mode.md
+      - Convergence guide: 05_space_charge/05_convergence.md
+      - Differentiable PIC: 05_space_charge/06_differentiable.md
+  - Running:
+      - Python API: 06_running/01_python_api.md
+      - TraceWin .dat: 06_running/02_tracewin_dat.md
+      - HELIX extensions: 06_running/03_lg_extensions.md
+      - Reading results: 06_running/04_results.md
+      - From the GUI: 06_running/05_gui.md
+      - Batch CLI overview: 06_running/06_batch_cli.md
+      - 'CLI: run': 06_running/07_cli_run.md
+      - 'CLI: scan': 06_running/08_cli_scan.md
+      - 'CLI: batch': 06_running/09_cli_batch.md
+      - 'CLI: twiss': 06_running/10_cli_twiss.md
+      - 'CLI: backtrack': 06_running/11_cli_backtrack.md
+  - Matching:
+      - Overview: 07_matching/01_overview.md
+      - SET / ADJUST cards: 07_matching/02_set_adjust.md
+      - Python API: 07_matching/03_python_api.md
+      - CLI: 07_matching/04_cli.md
+      - Recipes: 07_matching/05_recipes.md
+      - Gradient algorithm: 07_matching/06_gradient_algorithm.md
+      - Robust emittance minimisation: 07_matching/07_emittance_min.md
+      - Multi-objective design: 07_matching/08_multiobjective.md
+  - Errors & tolerances:
+      - Overview: 08_errors/01_overview.md
+      - ERROR_* directives: 08_errors/02_error_directives.md
+      - Element errors: 08_errors/03_element_errors.md
+      - Beam errors: 08_errors/04_beam_errors.md
+      - Running studies: 08_errors/05_running_studies.md
+      - Interpreting results: 08_errors/06_interpreting.md
+      - Orbit correction: 08_errors/07_correction.md
+  - Diagnostics:
+      - Recorder fields: 09_diagnostics/01_recorder.md
+      - Emittances: 09_diagnostics/02_emittances.md
+      - Halo: 09_diagnostics/03_halo.md
+      - Aperture profile: 09_diagnostics/04_aperture.md
+      - H⁻ stripping: 09_diagnostics/05_stripping.md
+      - Phase advance: 09_diagnostics/06_phase_advance.md
+      - Hofmann chart & tune footprint: 09_diagnostics/07_hofmann_footprint.md
+  - GUI:
+      - Overview: 10_gui/01_overview.md
+      - Lattice tab: 10_gui/02_lattice_tab.md
+      - Beam tab: 10_gui/03_beam_tab.md
+      - Numerics tab: 10_gui/04_convergence_tab.md
+      - Matching tab: 10_gui/05_matching_tab.md
+      - Surrogates tab: 10_gui/06b_surrogates_tab.md
+      - Error Study tab: 10_gui/06_errors_tab.md
+      - Failure Study tab: 10_gui/06c_failures_tab.md
+      - Results tab: 10_gui/07_results_tab.md
+      - Workflows: 10_gui/08_workflows.md
+  - Worked examples:
+      - Basic FODO: 11_examples/01_basic_fodo.md
+      - Envelope demo: 11_examples/02_envelope_demo.md
+      - DC LEBT: 11_examples/03_lebt_dc.md
+      - Matching walkthrough: 11_examples/07_matching_walkthrough.md
+      - Tolerance study: 11_examples/08_tolerance_study.md
+      - Eigenemittance: 11_examples/09_eigenemittance.md
+  - Validation:
+      - TraceWin parity: 12_validation/01_tracewin_parity.md
+      - Known limitations: 12_validation/03_known_limitations.md
+      - Convergence checklist: 12_validation/04_convergence_guide.md
+  - ML Surrogates:
+      - Overview: 13_surrogates/01_overview.md
+      - GUI walkthrough: 13_surrogates/02_gui.md
+      - CLI: 13_surrogates/03_cli.md
+      - Python API: 13_surrogates/04_python_api.md
+      - Training guide: 13_surrogates/05_training_guide.md
+  - AI Assistant (optional):
+      - Overview: 14_assistant/01_assistant.md
+  - Appendices:
+      - A. Physics references: appendices/A_physics_references.md
+      - B. Keyword cheatsheet: appendices/B_keyword_cheatsheet.md
+      - C. Glossary: appendices/C_glossary.md
+      - D. Troubleshooting: appendices/D_troubleshooting.md
+      - E. Migrating from TraceWin: appendices/E_migrating_from_tw.md
+      - F. Contributing: appendices/F_contributing.md

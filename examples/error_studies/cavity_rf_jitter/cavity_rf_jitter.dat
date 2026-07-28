@@ -1,0 +1,33 @@
+; ===============================================================
+;  Cavity RF-jitter tolerance study
+;  Three RF gaps with random voltage + phase + frequency errors —
+;  a stand-in for LLRF stability budget studies.
+;
+;  Beam enters at 10 MeV (proton).  Each gap delivers a small
+;  energy boost; the per-seed errors create acceleration jitter
+;  and longitudinal mismatch.
+; ===============================================================
+TITLE Cavity RF jitter
+FREQ 325
+PARTRAN_STEP 100 50
+;
+; --- Cavity error directive: applies to the next 3 GAPs ---
+;     N  r  dx dy φx φy   E    φ   dz
+;                       voltage 1 %, phase 1°, no align/dz
+ERROR_CAV_NCPL_STAT 3 2 0  0  0  0   1.0  1.0  0
+;
+; --- Transport line with cavities ---
+DRIFT 100 20
+QUAD 80 4 20 0 0 0 0 0 0
+DRIFT 100 20
+GAP 1.0e6 -30 20 0      ; e0tl=1MV, phi_s=-30°
+DRIFT 100 20
+QUAD 80 -4 20 0 0 0 0 0 0
+DRIFT 100 20
+GAP 1.5e6 -25 20 0
+DRIFT 100 20
+QUAD 80 4 20 0 0 0 0 0 0
+DRIFT 100 20
+GAP 2.0e6 -20 20 0
+DRIFT 200 20
+END

@@ -1,0 +1,33 @@
+; ===============================================================
+;  Beam-input jitter study
+;  No element errors — every seed gets the same lattice.  But the
+;  *input beam* gets random centroid offsets, fractional emittance
+;  variation, and beam-current jitter from ``ERROR_BEAM_STAT``.
+;
+;  Use case: source-stability tolerance budgeting.
+; ===============================================================
+TITLE Beam-input jitter
+FREQ 325
+PARTRAN_STEP 100 50
+;
+; --- Beam-error directive ---
+;     r  dx  dy  dphi dxp dyp de  dEx dEy dEz mx my mz dIb
+;        0.1 mm centroid jitter on x and y
+;             0.5° phase jitter
+;                  no divergence / energy centroid jitter
+;                              5 % rel. emittance variation (x, y)
+;                                              no Twiss mismatch
+;                                                       1 mA current jitter
+ERROR_BEAM_STAT 2 0.1 0.1 0.5 0 0 0 5 5 0 0 0 0 1.0
+;
+; --- Plain transport channel ---
+DRIFT 100 20
+QUAD 100 6 20 0 0 0 0 0 0
+DRIFT 200 20
+QUAD 100 -6 20 0 0 0 0 0 0
+DRIFT 200 20
+QUAD 100 6 20 0 0 0 0 0 0
+DRIFT 200 20
+QUAD 100 -6 20 0 0 0 0 0 0
+DRIFT 200 20
+END
