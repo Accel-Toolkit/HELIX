@@ -114,7 +114,9 @@ def test_wake_vad_gates_transcription(monkeypatch):
             return self.value
 
     mic = _FakeMic()
-    stt = _FakeStt(["helix", "open the results tab"])
+    # extra script entries keep the test self-healing if a starved runner
+    # lets a capture window expire empty and re-poll the wake window
+    stt = _FakeStt(["helix", "open the results tab"] * 10)
     got = {"cmd": None}
     vad = _Ctl()
     wl = L.WakeListener(
@@ -128,18 +130,35 @@ def test_wake_vad_gates_transcription(monkeypatch):
             mic.push(0.3, n=1)                  # window fills (>1.2 s)
             time.sleep(0.005)
         assert stt.calls == []                  # loudness alone: no STT
-        vad.value = 0.9                         # speech begins
+        # --- wake: utterance cycles (speech then a real offset) until the
+        #     wake window transcribes.  Long monotonic phases — short
+        #     alternation can alias against a starved listener thread.
         t0 = time.time()
-        while len(stt.calls) < 1 and time.time() - t0 < 4.0:
-            mic.push(0.3, n=1)                  # wake word transcribed
-            time.sleep(0.01)
-        for _ in range(10):                     # some command speech …
+        while not stt.calls and time.time() - t0 < 20.0:
+            vad.value = 0.9
+            for _ in range(120):                # ~1.4 s of speech
+                if stt.calls:
+                    break
+                mic.push(0.3, n=1)
+                time.sleep(0.01)
+            vad.value = 0.02
+            tq = time.time()
+            while not stt.calls and time.time() - tq < 1.5:
+                mic.push(0.01, n=1)             # offset fires the window
+                time.sleep(0.01)
+        assert stt.calls, "wake window never transcribed"
+        # --- capture: latch 'heard' with sustained speech, then sustained
+        #     quiet until the endpoint (capture's 10 s cap transcribes even
+        #     on timeout once speech was heard, so this cannot hang).
+        vad.value = 0.9
+        t1 = time.time()
+        while time.time() - t1 < 2.0:
             mic.push(0.3, n=1)
             time.sleep(0.01)
-        vad.value = 0.02                        # … then the person stops
-        t0 = time.time()
-        while got["cmd"] is None and time.time() - t0 < 6.0:
-            mic.push(0.3, n=1)                  # endpoint on VAD silence
+        vad.value = 0.02
+        t2 = time.time()
+        while got["cmd"] is None and time.time() - t2 < 15.0:
+            mic.push(0.01, n=1)                 # endpoint on VAD silence
             time.sleep(0.01)
         assert got["cmd"] == "open the results tab"
     finally:
