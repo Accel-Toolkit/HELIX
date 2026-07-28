@@ -102,7 +102,10 @@ def test_hdf5_provenance_referenced_inputs(recorder, tmp_path, deck):
     with h5py.File(out, "r") as f:
         prov = f["provenance"].attrs
         assert prov["fp_dtype"] == "float64"
-        assert prov["omp_schedule"] == "static"
+        # C++ kernels report the OpenMP schedule; pure-Python CI
+        # builds (LINAC_GEN_DISABLE_CPP=1) honestly report n/a
+        assert (prov["omp_schedule"] == "static"
+                or str(prov["omp_schedule"]).startswith("n/a"))
         assert prov["integration_steps_per_metre"] == 100.0
         assert prov["sc_steps_per_metre"] == 50.0
         assert "THIN_STEERING" in prov["parse_downgrades"]
