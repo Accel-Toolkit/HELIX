@@ -17,6 +17,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+from scipy.integrate import trapezoid
 import pytest
 
 from linac_gen.analysis.period_detect import detect_periods
@@ -129,8 +130,8 @@ def _mu_from_ode(sol) -> tuple:
     """(μ_x, μ_y) [deg] = ∫ ε ds / σ² over the matched cell."""
     s = np.linspace(sol.t[0], sol.t[-1], 4001)
     y = sol.sol(s)
-    mu_x = np.trapz(_EPS / y[0] ** 2, s)
-    mu_y = np.trapz(_EPS / y[2] ** 2, s)
+    mu_x = trapezoid(_EPS / y[0] ** 2, s)
+    mu_y = trapezoid(_EPS / y[2] ** 2, s)
     return math.degrees(mu_x), math.degrees(mu_y)
 
 

@@ -22,7 +22,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-gui = ["PyQt6>=6.4", "matplotlib>=3.6"]
+# pyqtgraph draws the live plot surfaces (beam/results/convergence tabs);
+# the GUI does not start without it.
+gui = ["PyQt6>=6.4", "matplotlib>=3.6", "pyqtgraph>=0.13", "pymoo>=0.6"]
+# NSGA-II multiobjective matching (CLI `linac_gen mo` and the GUI
+# dialog).  qnehvi additionally needs botorch (heavy; install manually).
+moo = ["pymoo>=0.6"]
 # CuPy is NVIDIA CUDA only -- Linux/Windows wheels exist, no macOS support.
 # The marker lets `pip install .[gpu]` succeed (as a no-op) on macOS.
 # Apple Silicon users get GPU acceleration via the MPS backend that

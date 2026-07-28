@@ -127,6 +127,10 @@ def test_space_key_drives_ptt(qapp, tmp_path):
     calls = []
     panel._mic_pressed = lambda: calls.append("press")
     panel._mic_released = lambda: calls.append("release")
+    # This test pins the space-bar ROUTING; audio never runs (the mic
+    # slots are stubbed above).  Without the voice extras installed the
+    # button is correctly disabled and the guard would mask the routing.
+    panel._mic_btn.setEnabled(True)
     panel._send_btn.setFocus()             # input line NOT focused
     down = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Space,
                      Qt.KeyboardModifier.NoModifier)

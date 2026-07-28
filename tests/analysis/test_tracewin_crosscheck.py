@@ -25,6 +25,7 @@ from tests.dataguard import needs, require  # noqa: E402
 from pathlib import Path
 
 import numpy as np
+from scipy.integrate import trapezoid
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
@@ -97,7 +98,7 @@ def test_integrator_matches_plain_trapz():
     s, bx = data[:, 0], data[:, 1]
     m = bx > 0
     split = _integrate_inverse_beta_split(s, bx, m)
-    plain = np.trapz(1.0 / bx[m], s[m])
+    plain = trapezoid(1.0 / bx[m], s[m])
     assert split == pytest.approx(plain, rel=1e-12)
 
 

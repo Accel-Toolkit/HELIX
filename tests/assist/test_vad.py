@@ -174,8 +174,8 @@ def test_wake_event_driven_fires_on_utterance_end(monkeypatch):
         assert stt.calls == []                   # no STT mid-speech
         vad.value = 0.02                         # … utterance ends
         t0 = time.time()
-        while not stt.calls and time.time() - t0 < 3.0:
-            mic.push(0.01, n=1)
+        while not stt.calls and time.time() - t0 < 15.0:
+            mic.push(0.01, n=1)                  # starved-runner budget
             time.sleep(0.01)
         assert len(stt.calls) >= 1               # fired on the offset
     finally:

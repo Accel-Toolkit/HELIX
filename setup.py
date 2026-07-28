@@ -12,9 +12,12 @@ deposit/interp.  ``collapse(3)`` requires OpenMP 3.0+.
 
 - **Linux / gcc / clang:** ``-fopenmp``.  Picked statically below.
 - **macOS / Apple clang:** ``-fopenmp`` is not recognised natively; use
-  ``-Xpreprocessor -fopenmp`` plus an absolute-path link to libomp.dylib.
-  Probed at PyTorch's bundled copy first (so the kernel shares one OMP
-  image with torch), then the conda env, then Homebrew.  Picked statically.
+  ``-Xpreprocessor -fopenmp`` for compilation, and link NO libomp at all —
+  the extension's OpenMP symbols resolve at load time (``-undefined
+  dynamic_lookup``, the standard macOS extension link mode) against the
+  libomp that torch, a hard dependency, has already loaded.  Exactly one
+  OpenMP runtime ever exists in the process.  Only ``omp.h`` is probed
+  (env include dir, then Homebrew); without it the kernel builds serial.
 - **Windows / MSVC:** ``/openmp:llvm`` (Visual Studio 2019 v16.10+) for the
   full OpenMP 3.0+ runtime that supports ``collapse(3)``.  The classic
   ``/openmp`` is OpenMP 2.0 and silently ignores ``collapse(3)`` — building
@@ -37,62 +40,21 @@ from pybind11.setup_helpers import Pybind11Extension, build_ext
 from setuptools import setup
 
 
-def _macos_libomp_paths():
-    """Return (include_dir, lib_dir) for libomp, or (None, None).
+def _macos_omp_header_dir():
+    """Return the directory holding ``omp.h``, or None.
 
-    Priority order:
-    1. **PyTorch's bundled libomp** (``site-packages/torch/lib/libomp.dylib``).
-       If torch is installed in this Python, it will load *its own* libomp
-       into the process for MPS / MKL operations.  Loading a *second*
-       libomp from anywhere else into the same process segfaults on the
-       first parallel region.  So when torch is present we link against
-       its libomp to share a single image.
-    2. The conda env's main libomp at ``sys.prefix/lib/libomp.dylib``
-       (matches scipy / sklearn when torch is absent).
-    3. Homebrew libomp at ``/opt/homebrew`` or ``/usr/local`` (system Python).
-    Headers (``omp.h``) are taken from whichever location supplies them; we
-    prefer ``sys.prefix/include`` since torch does not ship the header.
+    Only the *header* is probed — the runtime library is deliberately NOT
+    linked on macOS (see the Darwin branch of :func:`_openmp_flags`).
     """
-    # Header probe: prefer the env's include dir, then Homebrew.
     inc_candidates = [
         os.path.join(sys.prefix, "include"),
         "/opt/homebrew/opt/libomp/include",
         "/usr/local/opt/libomp/include",
     ]
-    include_dir = next(
+    return next(
         (d for d in inc_candidates if os.path.isfile(os.path.join(d, "omp.h"))),
         None,
     )
-    if include_dir is None:
-        return None, None
-    # Library probe — pin to torch's libomp first to share its OMP image.
-    torch_lib = os.path.join(
-        sys.prefix, "lib", "python3."
-    )
-    # Find torch/lib via the import path rather than guessing site-packages.
-    lib_candidates = []
-    try:
-        import importlib.util
-        spec = importlib.util.find_spec("torch")
-        if spec is not None and spec.origin is not None:
-            torch_lib_dir = os.path.join(os.path.dirname(spec.origin), "lib")
-            if os.path.isfile(os.path.join(torch_lib_dir, "libomp.dylib")):
-                lib_candidates.append(torch_lib_dir)
-    except Exception:
-        pass
-    lib_candidates.extend([
-        os.path.join(sys.prefix, "lib"),
-        "/opt/homebrew/opt/libomp/lib",
-        "/usr/local/opt/libomp/lib",
-    ])
-    lib_dir = next(
-        (d for d in lib_candidates
-         if os.path.isfile(os.path.join(d, "libomp.dylib"))),
-        None,
-    )
-    if lib_dir is None:
-        return None, None
-    return include_dir, lib_dir
 
 
 def _openmp_flags():
@@ -109,27 +71,29 @@ def _openmp_flags():
     whether the compiler is MSVC.
     """
     if sys.platform == "darwin":
-        inc, lib = _macos_libomp_paths()
+        inc = _macos_omp_header_dir()
         if inc is None:
             print(
-                "setup.py: WARNING — libomp not found; building without "
-                "OpenMP.  Install with `brew install libomp` for parallel "
-                "PIC kernels.",
+                "setup.py: WARNING — omp.h not found; building the PIC "
+                "kernels single-threaded.  `brew install libomp` (headers "
+                "only are used) enables the parallel build.",
                 file=sys.stderr,
             )
             return ["-O3", "-march=native"], [], []
-        # Link against the *exact* libomp.dylib at ``lib`` by absolute path.
-        # We bypass ``-lomp`` and rpath search entirely so the LC_LOAD_DYLIB
-        # entry points unambiguously at the chosen file — necessary because
-        # multiple libomp copies coexist on conda+torch hosts and rpath search
-        # order is fragile (conda's own ``-rpath $CONDA_PREFIX/lib`` injects
-        # itself ahead of any we add).  Subsequent ``install_name_tool -change``
-        # in the build then resolves the LC_LOAD entry to the absolute path.
-        libfile = os.path.join(lib, "libomp.dylib")
+        # Compile WITH OpenMP pragmas but link NO libomp.  macOS extension
+        # modules are linked ``-undefined dynamic_lookup`` (that is how they
+        # find Python's own symbols), so the kernel's ``omp_*``/``__kmpc_*``
+        # references bind at load time to the libomp image torch has already
+        # loaded into the process.  Linking a private copy is what aborted
+        # fresh installs (OMP Error #15, two runtimes in one process): under
+        # pip's PEP 517 build isolation torch is invisible at build time, so
+        # the old torch-first library probe silently fell through to
+        # Homebrew's libomp.  The single-runtime invariant is enforced by
+        # importing torch before the kernel module — see the guarded imports
+        # in linac_gen/pic/pic_solver.py and linac_gen/io/hdf5_output.py.
         return (
             ["-O3", "-march=native", "-Xpreprocessor", "-fopenmp", f"-I{inc}"],
-            ["-Xpreprocessor", "-fopenmp", libfile,
-             f"-Wl,-rpath,{lib}"],
+            [],
             [inc],
         )
     if platform.system() == "Linux":

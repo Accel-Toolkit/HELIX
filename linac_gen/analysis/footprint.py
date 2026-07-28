@@ -42,6 +42,26 @@ from linac_gen.analysis.period_detect import PeriodicStructure
 __all__ = ["tune_footprint", "FrozenGaussianKicker"]
 
 
+def _core_std(v: np.ndarray, n_sigma: float = 5.0) -> float:
+    """Std of the matched core: excludes members beyond ``n_sigma`` of the
+    current rms before measuring.
+
+    The Gaussian-equivalent frozen field is a model of the MATCHED beam;
+    a chaotic tail member that runs away (possible when the scenario sits
+    on a resonance) has left that distribution and must not inflate the
+    taped field strength — unclipped, a handful of runaways couple the
+    frozen field to the aperture (they survive a wide pipe, get clipped
+    by a tight one) and the field stops being ladder/aperture-independent.
+    For a clean Gaussian sample the mask keeps every particle, and the
+    result is bit-identical to ``np.std``.
+    """
+    s = float(np.std(v))
+    if s == 0.0 or not np.isfinite(s):
+        return 0.0
+    core = v[np.abs(v - np.mean(v)) <= n_sigma * s]
+    return float(np.std(core)) if core.size >= 2 else s
+
+
 class FrozenGaussianKicker:
     """``pic_solver``-compatible kicker: 2-D Gaussian-equivalent SC.
 
@@ -150,8 +170,8 @@ class FrozenGaussianKicker:
             if alive_idx.size < 2:
                 self.tape.append((0.0, 0.0, 0.0))
                 return
-            sx_m = float(np.std(xs)) * 1e-3
-            sy_m = float(np.std(ys)) * 1e-3
+            sx_m = _core_std(xs) * 1e-3
+            sy_m = _core_std(ys) * 1e-3
             lam = self._line_density(beam, alive, beta, v_m_s)
             self.tape.append((sx_m, sy_m, lam))
         else:

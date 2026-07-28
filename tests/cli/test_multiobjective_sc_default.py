@@ -69,6 +69,7 @@ def test_deprecated_flag_accepted_and_noop(deck, monkeypatch, capsys):
 
 
 def test_no_space_charge_optout_is_warning_free(deck, tmp_path):
+    pytest.importorskip("pymoo", reason="end-to-end nsga2 needs the [moo] extra")
     """END-TO-END regression (review CONFIRMED-BUG): the explicit
     opt-out must not fire NoSpaceChargeWarning on mp evaluations — the
     matcher threads the "off" sentinel through to every Simulation it
