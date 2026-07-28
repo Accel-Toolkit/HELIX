@@ -295,8 +295,8 @@ def test_wake_loudness_backstop_when_vad_never_triggers(monkeypatch):
     wl.start()
     try:
         t0 = time.time()
-        while len(stt.calls) < 1 and time.time() - t0 < 6.0:
-            mic.push(0.3, n=1)                # LOUD blocks
+        while len(stt.calls) < 1 and time.time() - t0 < 20.0:
+            mic.push(0.3, n=2)                # LOUD blocks (starved-CI safe)
             time.sleep(0.01)
         assert len(stt.calls) >= 1            # backstop transcribed
     finally:

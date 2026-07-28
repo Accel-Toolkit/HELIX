@@ -235,7 +235,7 @@ def test_bundled_transport_example_parses():
     ("examples/pipii/mebt+hwr/mebt+hwr.dat", 483),
 ])
 @needs("examples/pipii/mebt/mebt.dat")
-@needs("examples/pipii/mebt/mebt.dat", "examples/pipii/mebt+hwr/mebt+hwr.dat")
+@needs("examples/pipii/mebt/mebt.dat", "examples/pipii/mebt+hwr/mebt+hwr.dat", "Fields")
 def test_tracewin_parser_untouched(rel, expect):
     """Adding the MAD-X parser must not change TraceWin .dat parsing."""
     from linac_gen.io.tracewin_parser import parse_tracewin
