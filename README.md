@@ -15,8 +15,8 @@
 <img src="https://img.shields.io/badge/tests-3%2C600%2B%20passing-2ea44f?style=for-the-badge&logo=pytest&logoColor=white" alt="Tests"/>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-8b5cf6?style=for-the-badge&logo=gnu&logoColor=white" alt="License"/></a>
 <img src="https://img.shields.io/badge/docs-MkDocs%20Material-526CFE?style=for-the-badge&logo=materialformkdocs&logoColor=white" alt="Docs"/>
-<img src="https://img.shields.io/github/last-commit/Abhishek-Pathak-90/HELIX?style=for-the-badge&color=8b5cf6" alt="Last commit"/>
-<img src="https://img.shields.io/github/stars/Abhishek-Pathak-90/HELIX?style=for-the-badge&color=f59e0b" alt="Stars"/>
+<img src="https://img.shields.io/github/last-commit/Accel-Toolkit/HELIX?style=for-the-badge&color=8b5cf6" alt="Last commit"/>
+<img src="https://img.shields.io/github/stars/Accel-Toolkit/HELIX?style=for-the-badge&color=f59e0b" alt="Stars"/>
 <img src="https://img.shields.io/badge/status-active-06b6d4?style=for-the-badge" alt="Status"/>
 </p>
 
@@ -100,7 +100,7 @@ flowchart LR
 ### Install
 
 ```bash
-git clone https://github.com/Abhishek-Pathak-90/HELIX.git
+git clone https://github.com/Accel-Toolkit/HELIX.git
 cd HELIX
 pip install -e .               # core — C++ PIC kernels build automatically via pybind11
 pip install -e ".[gui,dev]"    # + GUI workbench and developer tooling
@@ -247,12 +247,12 @@ when it's available and leaves the choice to you otherwise.
 ## 📚 Documentation
 
 <div align="center">
-<a href="https://abhishek-pathak-90.github.io/HELIX/"><img src="https://img.shields.io/badge/📖_Read_the_Manual-online-2563eb?style=for-the-badge" alt="Manual"/></a>
+<a href="https://accel-toolkit.github.io/HELIX/"><img src="https://img.shields.io/badge/📖_Read_the_Manual-online-2563eb?style=for-the-badge" alt="Manual"/></a>
 </div>
 
 A comprehensive **95-page manual** — every element, every configuration knob,
 worked examples, and validated benchmarks — is hosted at
-[abhishek-pathak-90.github.io/HELIX](https://abhishek-pathak-90.github.io/HELIX/)
+[accel-toolkit.github.io/HELIX](https://accel-toolkit.github.io/HELIX/)
 (auto-deployed on every release) and lives in
 [`docs/manual/`](docs/manual/index.md). Build it locally with:
 

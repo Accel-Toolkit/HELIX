@@ -21,7 +21,7 @@ honesty outrank convenience.
 ## Development setup
 
 ```bash
-git clone https://github.com/Abhishek-Pathak-90/HELIX.git
+git clone https://github.com/Accel-Toolkit/HELIX.git
 cd HELIX
 pip install -e ".[gui,dev]"
 pytest -q

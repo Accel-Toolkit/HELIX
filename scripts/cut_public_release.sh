@@ -20,7 +20,7 @@ set -euo pipefail
 VERSION=${1:?usage: cut_public_release.sh vX.Y \"summary\" [--push]}
 SUMMARY=${2:?usage: cut_public_release.sh vX.Y \"summary\" [--push]}
 PUSH=${3:-}
-PUBLIC_URL="https://github.com/Abhishek-Pathak-90/HELIX.git"
+PUBLIC_URL="https://github.com/Accel-Toolkit/HELIX.git"
 DEV_ROOT=$(git rev-parse --show-toplevel)
 STAGE="$DEV_ROOT/../HELIX_public"
 

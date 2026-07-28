@@ -14,8 +14,8 @@ authors:
     affiliation: "Fermi National Accelerator Laboratory"
 version: "0.1.0"
 date-released: 2026-05-21
-repository-code: "https://github.com/Abhishek-Pathak-90/HELIX"
-url: "https://github.com/Abhishek-Pathak-90/HELIX"
+repository-code: "https://github.com/Accel-Toolkit/HELIX"
+url: "https://github.com/Accel-Toolkit/HELIX"
 keywords:
   - accelerator physics
   - beam dynamics

@@ -128,18 +128,31 @@ def test_followup_times_out_silently():
 
 
 def test_followup_captures_speech_to_endpoint():
+    """Wait-until, never fixed sleeps: shared CI runners (first seen on
+    the macOS leg) can stall the listener thread past any fixed timing
+    window.  We speak in full utterance cycles — a burst of speech then
+    a stretch of quiet — reopening the window if it times out unheard,
+    until the endpoint fires or a generous deadline expires."""
     src = _FakeSource()
     fl, out = _followup(src, _FakeStt(["set the quad to five"]))
     assert fl.open_window()
-    time.sleep(0.3)                        # past the 0.25 s bleed guard
-    src.push(0.2, n=4)                     # speech
-    time.sleep(0.05)
-    src.push(0.001, n=2)                   # quiet → endpoint
-    for _ in range(200):
-        if out["text"] is not None:
+    t_end = time.time() + 15.0
+    while out["text"] is None and time.time() < t_end:
+        if not fl.active and out["text"] is None:
+            fl.open_window()               # window expired unheard
+        for _ in range(30):                # ~0.4 s of speech
+            src.push(0.2, n=1)
+            time.sleep(0.012)
+        for _ in range(30):                # ~0.4 s of quiet → endpoint
+            if out["text"] is not None:
+                break
+            src.push(0.001, n=1)
+            time.sleep(0.012)
+    assert out["text"] == "set the quad to five"
+    for _ in range(200):                   # listener winds down
+        if not fl.active:
             break
         time.sleep(0.01)
-    assert out["text"] == "set the quad to five"
     assert not fl.active
 
 
