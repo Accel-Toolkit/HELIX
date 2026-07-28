@@ -373,7 +373,12 @@ class InterphaseWindow(QMainWindow):
         global _SHUTTING_DOWN
         _SHUTTING_DOWN = False
         self.setWindowTitle("HELIX — Hybrid Envelope-multiparticle LInac eXplorer")
-        self.setWindowIcon(icon("atom", 32, theme.ACCENT))
+        try:                       # the HELIX logo as the app icon
+            from PyQt6.QtGui import QIcon
+            from linac_gen_gui.interphase.splash import LOGO_PATH
+            self.setWindowIcon(QIcon(str(LOGO_PATH)))
+        except Exception:                    # noqa: BLE001
+            self.setWindowIcon(icon("atom", 32, theme.ACCENT))
         # Keep the floor BELOW small laptop profiles (a Retina Mac scaled
         # to 'larger text' offers as little as 1168x755 logical): the old
         # 1200x780 minimum exceeded the usable screen, defeated Qt's own

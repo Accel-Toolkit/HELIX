@@ -10,6 +10,8 @@ use_directory_urls: false   # produces flat .html files so links work via file:/
 
 theme:
   name: material
+  logo: assets/helix-logo.png
+  favicon: assets/helix-favicon.png
   palette:
     # Light mode (default)
     - media: "(prefers-color-scheme: light)"

@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/screenshots/helix-logo.png" width="170" alt="HELIX logo"/>
+
 <img src="https://capsule-render.vercel.app/api?type=waving&color=0:7c3aed,50:2563eb,100:06b6d4&height=220&section=header&text=HELIX&fontSize=92&fontColor=ffffff&fontAlignY=40&desc=Hybrid%20Envelope-multiparticle%20LInac%20eXplorer&descSize=20&descAlignY=64&animation=fadeIn" width="100%" alt="HELIX"/>
 
 <p>
@@ -245,13 +247,14 @@ when it's available and leaves the choice to you otherwise.
 ## 📚 Documentation
 
 <div align="center">
-<a href="docs/manual/index.md"><img src="https://img.shields.io/badge/📖_Read_the_Manual-in_the_repo-2563eb?style=for-the-badge" alt="Manual"/></a>
+<a href="https://abhishek-pathak-90.github.io/HELIX/"><img src="https://img.shields.io/badge/📖_Read_the_Manual-online-2563eb?style=for-the-badge" alt="Manual"/></a>
 </div>
 
 A comprehensive **95-page manual** — every element, every configuration knob,
-worked examples, and validated benchmarks — lives in
-[`docs/manual/`](docs/manual/index.md); a hosted site deploys to GitHub
-Pages automatically once the repository is public. Build it locally with:
+worked examples, and validated benchmarks — is hosted at
+[abhishek-pathak-90.github.io/HELIX](https://abhishek-pathak-90.github.io/HELIX/)
+(auto-deployed on every release) and lives in
+[`docs/manual/`](docs/manual/index.md). Build it locally with:
 
 ```bash
 pip install -e ".[docs]"
