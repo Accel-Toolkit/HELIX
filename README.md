@@ -1,8 +1,6 @@
 <div align="center">
 
-<img src="docs/screenshots/helix-logo.png" width="170" alt="HELIX logo"/>
-
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:7c3aed,50:2563eb,100:06b6d4&height=220&section=header&text=HELIX&fontSize=92&fontColor=ffffff&fontAlignY=40&desc=Hybrid%20Envelope-multiparticle%20LInac%20eXplorer&descSize=20&descAlignY=64&animation=fadeIn" width="100%" alt="HELIX"/>
+<img src="docs/screenshots/masthead.svg" width="100%" alt="HELIX — Hybrid Envelope-multiparticle LInac eXplorer"/>
 
 <p>
 <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"/></a>
@@ -14,6 +12,7 @@
 <p>
 <img src="https://img.shields.io/badge/tests-3%2C600%2B%20passing-2ea44f?style=for-the-badge&logo=pytest&logoColor=white" alt="Tests"/>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-8b5cf6?style=for-the-badge&logo=gnu&logoColor=white" alt="License"/></a>
+<a href="https://github.com/Accel-Toolkit/HELIX/releases"><img src="https://img.shields.io/github/v/release/Accel-Toolkit/HELIX?style=for-the-badge&color=06b6d4&label=release" alt="Release"/></a>
 <img src="https://img.shields.io/badge/docs-MkDocs%20Material-526CFE?style=for-the-badge&logo=materialformkdocs&logoColor=white" alt="Docs"/>
 <img src="https://img.shields.io/github/last-commit/Accel-Toolkit/HELIX?style=for-the-badge&color=8b5cf6" alt="Last commit"/>
 <img src="https://img.shields.io/github/stars/Accel-Toolkit/HELIX?style=for-the-badge&color=f59e0b" alt="Stars"/>
@@ -34,7 +33,7 @@
 
 </div>
 
----
+<img src="docs/screenshots/divider.svg" width="100%" role="presentation"/>
 
 ## ✨ What is HELIX?
 
@@ -47,7 +46,7 @@
 
 It is developed at **Fermi National Accelerator Laboratory** for the **PIP-II** superconducting linac.
 
----
+<img src="docs/screenshots/divider.svg" width="100%" role="presentation"/>
 
 ## 🖥️ The Workbench
 
@@ -74,7 +73,7 @@ A complete PyQt6 workbench — design the lattice, configure the beam, run, and 
 </tr>
 </table>
 
----
+<img src="docs/screenshots/divider.svg" width="100%" role="presentation"/>
 
 ## 🧭 Architecture
 
@@ -93,7 +92,7 @@ flowchart LR
     R --> O["💾 HDF5 / openPMD"]
 ```
 
----
+<img src="docs/screenshots/divider.svg" width="100%" role="presentation"/>
 
 ## ⚡ Quick start
 
@@ -145,7 +144,7 @@ run_gui.bat           # Windows
 (Equivalent to `PYTHONPATH=gui python -m linac_gen_gui.interphase` —
 the GUI package lives in the repository, not on PyPI.)
 
----
+<img src="docs/screenshots/divider.svg" width="100%" role="presentation"/>
 
 ## 🎯 Features
 
@@ -165,7 +164,7 @@ the GUI package lives in the repository, not on PyPI.)
 | 🧠 **Surrogates** | Train and serve neural-network surrogate models of lattice sections |
 | ⏪ **Backtracking** | Exact reverse tracking (`untrack`) — reconstruct the input beam from the output |
 
----
+<img src="docs/screenshots/divider.svg" width="100%" role="presentation"/>
 
 ## 🤖 Built-in AI copilot
 
@@ -202,9 +201,15 @@ records every call for replay.
   (ollama / vLLM).  HELIX also runs as an **MCP server** so Claude Code /
   Desktop can drive it directly.
 
----
+<img src="docs/screenshots/divider.svg" width="100%" role="presentation"/>
 
 ## 🔬 The three solver modes
+
+<div align="center">
+<img src="docs/screenshots/phasespace.gif" width="46%" alt="Bunch tumbling in x-x' phase space, tracked by the HELIX multiparticle tracker"/>
+
+<sub>🌀 <b>Real output, not an illustration</b> — the showcase bunch tumbling in x–x′ phase space, station by station, from the multiparticle tracker</sub>
+</div>
 
 | Mode | What it does | Use it for |
 |---|---|---|
@@ -212,7 +217,7 @@ records every call for replay.
 | **Multi-particle** | Macroparticle tracking with a 3-D PIC space-charge solver | High-fidelity studies, halo, transmission |
 | **Matrix** | Pure linear transfer-matrix transport | Periodic Twiss, transfer-line input matching |
 
----
+<img src="docs/screenshots/divider.svg" width="100%" role="presentation"/>
 
 ## 🚀 Space charge & GPU acceleration
 
@@ -234,7 +239,7 @@ Hockney Poisson solve — RTX 2000 Ada Laptop GPU vs a 16-thread `scipy.fft` CPU
 The crossover near 96³ is host↔device transfer cost, not the FFT — `auto` picks the GPU
 when it's available and leaves the choice to you otherwise.
 
----
+<img src="docs/screenshots/divider.svg" width="100%" role="presentation"/>
 
 ## 📂 Input & output formats
 
@@ -242,7 +247,7 @@ when it's available and leaves the choice to you otherwise.
 - **MAD-X** and **MAD8 flat-file** (`.lat`) lattice import
 - **HDF5** (native) · **openPMD-beamphysics** · TraceWin **partran** output
 
----
+<img src="docs/screenshots/divider.svg" width="100%" role="presentation"/>
 
 ## 📚 Documentation
 
@@ -261,7 +266,7 @@ pip install -e ".[docs]"
 mkdocs serve --config-file docs/manual/mkdocs.yml
 ```
 
----
+<img src="docs/screenshots/divider.svg" width="100%" role="presentation"/>
 
 ## 🗂️ Project layout
 
@@ -288,7 +293,7 @@ examples/            runnable scripts + sample lattices
 
 </details>
 
----
+<img src="docs/screenshots/divider.svg" width="100%" role="presentation"/>
 
 ## 🧪 Testing
 
@@ -298,14 +303,14 @@ pytest -q
 
 The suite covers lattice parsing, tracking, space charge, matching, the CLI, and the GUI.
 
----
+<img src="docs/screenshots/divider.svg" width="100%" role="presentation"/>
 
 ## 📖 Citing HELIX
 
 If HELIX supports your work, please cite it — GitHub's **"Cite this repository"** button
 reads [`CITATION.cff`](CITATION.cff).
 
----
+<img src="docs/screenshots/divider.svg" width="100%" role="presentation"/>
 
 ## 🙏 Acknowledgments
 

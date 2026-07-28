@@ -208,3 +208,46 @@
   word-break: break-word;
   white-space: normal;
 }
+
+/* ── HELIX identity theme (2026-07-28 showcase upgrade) ───────────── */
+:root {
+  --md-primary-fg-color: #0b1020;
+  --md-primary-fg-color--light: #131b36;
+  --md-primary-fg-color--dark: #070b16;
+}
+.md-header {
+  background: linear-gradient(90deg, #0b1020 0%, #10254a 55%, #1b1040 100%);
+}
+.md-tabs {
+  background: linear-gradient(90deg, #0d1326 0%, #122048 55%, #170f38 100%);
+}
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: #0d1117;
+  --md-accent-fg-color: #22d3ee;
+  --md-typeset-a-color: #38bdf8;
+}
+/* gentle page fade-in (honors reduced-motion) */
+@media (prefers-reduced-motion: no-preference) {
+  .md-content__inner { animation: helix-fade 0.35s ease-out; }
+  @keyframes helix-fade {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: none; }
+  }
+}
+/* landing hero + card grid */
+.helix-hero { text-align: center; margin: 0.5rem 0 1.5rem; }
+.helix-hero img { width: 132px; border-radius: 22px;
+  box-shadow: 0 8px 40px rgba(34, 211, 238, 0.25); }
+.helix-hero h1 { font-size: 2.2rem; margin: 0.6rem 0 0.2rem;
+  background: linear-gradient(90deg, #67e8f9, #3b82f6, #8b5cf6);
+  -webkit-background-clip: text; background-clip: text; color: transparent; }
+.helix-grid { display: grid; gap: 0.7rem;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+.helix-grid a { display: block; padding: 0.9rem 1rem; border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.25); text-decoration: none;
+  transition: transform 0.15s ease, border-color 0.15s ease,
+              box-shadow 0.15s ease; }
+.helix-grid a:hover { transform: translateY(-3px);
+  border-color: #22d3ee; box-shadow: 0 6px 24px rgba(34, 211, 238, 0.18); }
+.helix-grid b { display: block; margin-bottom: 0.15rem; }
+.helix-grid small { opacity: 0.75; }

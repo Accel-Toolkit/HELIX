@@ -109,6 +109,9 @@ def main() -> None:
     _pump(app, 0.3)
     make_demo_gif()
     make_envelope_svg(res)
+    make_masthead_svg()
+    make_divider_svg()
+    make_phasespace_gif()
     for f in ("gui-lattice.png", "gui-beam.png", "gui-results.png",
               "gui-assistant.png"):
         p = os.path.join(OUT, f)
@@ -187,6 +190,151 @@ def make_envelope_svg(res) -> None:
     out = os.path.join(OUT, "envelope-hero.svg")
     with open(out, "w") as fh:
         fh.write(svg)
+    print(out, os.path.getsize(out) // 1024, "KB")
+
+
+
+
+def make_masthead_svg() -> None:
+    """Custom animated brand masthead — logo (embedded), wordmark, and a
+    beamline motif with macro-particles racing through a FODO channel.
+    SMIL only (renders on GitHub); self-contained dark tile."""
+    import base64
+    import io
+
+    from PIL import Image
+    logo = Image.open(
+        "gui/linac_gen_gui/interphase/assets/helix_logo.png").resize(
+        (180, 180), Image.LANCZOS)
+    buf = io.BytesIO()
+    logo.save(buf, format="PNG", optimize=True)
+    b64 = base64.b64encode(buf.getvalue()).decode()
+
+    W, H = 1200, 260
+    beam_y = 208
+    # FODO symbols along the beam axis: F quads cyan, D quads violet
+    quads = ""
+    for i, x in enumerate(range(320, 1150, 90)):
+        col = "#06b6d4" if i % 2 == 0 else "#7c3aed"
+        h = 34 if i % 2 == 0 else 26
+        quads += (f'<rect x="{x}" y="{beam_y - h / 2:.0f}" width="10" '
+                  f'height="{h}" rx="2" fill="{col}" opacity="0.85"/>')
+    beam_path = f"M300,{beam_y} L1180,{beam_y}"
+    particles = "".join(
+        f'<circle r="{r}" fill="{c}" opacity="0.95">'
+        f'<animateMotion dur="{d}s" begin="{b}s" repeatCount="indefinite" '
+        f'path="{beam_path}"/></circle>'
+        for r, c, d, b in ((4.0, "#67e8f9", 3.0, 0.0),
+                           (3.0, "#93c5fd", 3.0, 0.55),
+                           (2.5, "#c4b5fd", 3.0, 1.1),
+                           (3.5, "#22d3ee", 3.0, 1.7),
+                           (2.5, "#818cf8", 3.0, 2.3)))
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 {W} {H}" width="100%" role="img" aria-label="HELIX — Hybrid Envelope-multiparticle LInac eXplorer">
+  <defs>
+    <linearGradient id="mbg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1020"/><stop offset="1" stop-color="#131b36"/>
+    </linearGradient>
+    <linearGradient id="mword" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#67e8f9"/><stop offset="0.5" stop-color="#3b82f6"/><stop offset="1" stop-color="#8b5cf6"/>
+      <animate attributeName="x1" values="0;-0.4;0" dur="7s" repeatCount="indefinite"/>
+      <animate attributeName="x2" values="1;1.4;1" dur="7s" repeatCount="indefinite"/>
+    </linearGradient>
+  </defs>
+  <rect width="{W}" height="{H}" rx="16" fill="url(#mbg)"/>
+  <image x="42" y="40" width="180" height="180" xlink:href="data:image/png;base64,{b64}"/>
+  <text x="262" y="118" font-family="Helvetica, Arial, sans-serif" font-size="86" font-weight="bold" fill="url(#mword)">HELIX</text>
+  <text x="266" y="156" font-family="Menlo, monospace" font-size="19" fill="#94a3b8">Hybrid Envelope-multiparticle LInac eXplorer</text>
+  <line x1="300" y1="{beam_y}" x2="1180" y2="{beam_y}" stroke="#1e3a5f" stroke-width="2"/>
+  {quads}
+  {particles}
+  <text x="1178" y="{beam_y + 34}" text-anchor="end" font-family="Menlo, monospace" font-size="12" fill="#475569">envelope · multiparticle 3-D PIC · matching · AI copilot</text>
+</svg>'''
+    out = os.path.join(OUT, "masthead.svg")
+    with open(out, "w") as fh:
+        fh.write(svg)
+    print(out, os.path.getsize(out) // 1024, "KB")
+
+
+def make_divider_svg() -> None:
+    """Thin section divider with a traveling glow pulse."""
+    svg = '''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 14" width="100%" role="presentation">
+  <line x1="20" y1="7" x2="1180" y2="7" stroke="#1e293b" stroke-width="1.5"/>
+  <circle r="3.5" fill="#38bdf8" opacity="0.9">
+    <animateMotion dur="5s" repeatCount="indefinite" path="M20,7 L1180,7"/>
+  </circle>
+  <circle r="7" fill="#38bdf8" opacity="0.25">
+    <animateMotion dur="5s" repeatCount="indefinite" path="M20,7 L1180,7"/>
+  </circle>
+</svg>'''
+    out = os.path.join(OUT, "divider.svg")
+    with open(out, "w") as fh:
+        fh.write(svg)
+    print(out, os.path.getsize(out) // 1024, "KB")
+
+
+
+
+def make_phasespace_gif() -> None:
+    """Real physics as eye-candy: the showcase bunch tumbling in x-x'
+    phase space, tracked by the actual MP tracker station by station."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import io as _io
+
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from PIL import Image
+
+    from linac_gen.core.config import BeamConfig
+    from linac_gen.core.lattice import Lattice
+    from linac_gen.distributions.factory import create_beam
+    from linac_gen.io.tracewin_parser import parse_tracewin
+    from linac_gen.tracking.tracker import Tracker
+
+    lat_full, _ = parse_tracewin("examples/showcase/fodo_channel.dat")
+    cfg = BeamConfig(species="proton", energy=5.0, frequency=352.2,
+                     current=0.0, duty_cycle=100.0, n_particles=2500,
+                     distribution="gaussian", cutoff=4.0,
+                     emit_nx=0.30, alpha_x=1.2, beta_x=0.6,
+                     emit_ny=0.30, alpha_y=0.0, beta_y=0.35,
+                     emit_z=0.25, alpha_z=0.0, beta_z=600.0)
+    n_frames = 28
+    cuts = np.linspace(4, 96, n_frames).astype(int)   # first ~10 m
+    frames = []
+    for k, n_el in enumerate(cuts):
+        beam = create_beam(cfg, seed=11)
+        sub = Lattice()
+        s_mm = 0.0
+        for e in lat_full.elements[:n_el]:
+            sub.add(e)
+            s_mm += float(getattr(e, "length", 0.0) or 0.0)
+        Tracker(sub, beam).run()
+        pts = beam.particles[beam.alive_mask]
+        fig, ax = plt.subplots(figsize=(5, 5), dpi=100)
+        fig.patch.set_facecolor("#0b1020")
+        ax.set_facecolor("#0b1020")
+        r = np.hypot(pts[:, 0] / 4.0, pts[:, 1] / 12.0)
+        ax.scatter(pts[:, 0], pts[:, 1], s=2.2, c=r, cmap="cool",
+                   alpha=0.75, linewidths=0)
+        ax.set_xlim(-9, 9); ax.set_ylim(-28, 28)
+        ax.set_xlabel("x [mm]", color="#94a3b8", fontsize=11)
+        ax.set_ylabel("x' [mrad]", color="#94a3b8", fontsize=11)
+        for sp in ax.spines.values():
+            sp.set_color("#1e293b")
+        ax.tick_params(colors="#475569", labelsize=9)
+        ax.set_title(f"x-x' phase space   ·   s = {s_mm / 1000.0:5.2f} m",
+                     color="#7dd3fc", fontsize=12, family="monospace")
+        ax.text(0.02, 0.02, "HELIX multiparticle tracker",
+                transform=ax.transAxes, color="#334155", fontsize=8)
+        buf = _io.BytesIO()
+        fig.savefig(buf, format="png", facecolor=fig.get_facecolor())
+        plt.close(fig)
+        buf.seek(0)
+        frames.append(Image.open(buf).convert(
+            "P", palette=Image.Palette.ADAPTIVE, colors=128))
+    out = os.path.join(OUT, "phasespace.gif")
+    frames[0].save(out, save_all=True, append_images=frames[1:],
+                   duration=110, loop=0, optimize=True)
     print(out, os.path.getsize(out) // 1024, "KB")
 
 

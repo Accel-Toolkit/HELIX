@@ -114,6 +114,13 @@ git commit -q -m "HELIX ${VERSION} — ${SUMMARY}"
 git log --oneline -3
 if [ "$PUSH" = "--push" ]; then
     git push origin main
+    # a real GitHub Release (tag + notes) for the Releases sidebar
+    gh release create "${VERSION}" --repo Accel-Toolkit/HELIX \
+        --title "HELIX ${VERSION} — ${SUMMARY}" \
+        --notes "${SUMMARY}
+
+📖 Manual: https://accel-toolkit.github.io/HELIX/" \
+        || echo "(release object failed — tag manually later)"
     echo "PUBLISHED ${VERSION}"
 else
     echo

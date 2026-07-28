@@ -1,5 +1,22 @@
 # HELIX User Manual
 
+<div class="helix-hero" markdown>
+<img src="assets/helix-logo.png" alt="HELIX"/>
+<h1>HELIX</h1>
+<p><em>Hybrid Envelope-multiparticle LInac eXplorer</em></p>
+</div>
+
+<div class="helix-grid" markdown>
+<a href="01_getting_started/03_quick_start/"><b>⚡ Quick start</b><small>load a deck, run, plot — 10 minutes</small></a>
+<a href="03_elements/01_overview/"><b>🧩 Elements</b><small>every card the lattice language knows</small></a>
+<a href="05_space_charge/01_overview/"><b>🌀 Space charge</b><small>3-D PIC, kernels, convergence</small></a>
+<a href="07_matching/01_overview/"><b>🎛️ Matching</b><small>seven optimisers, matched Twiss</small></a>
+<a href="10_gui/01_overview/"><b>🖥️ GUI workbench</b><small>tabs, plots, error studies</small></a>
+<a href="14_assistant/01_assistant/"><b>🤖 AI copilot</b><small>voice, tools, guided tour</small></a>
+<a href="12_validation/01_tracewin_parity/"><b>✅ Validation</b><small>benchmarks against TraceWin</small></a>
+<a href="08_errors/01_overview/"><b>🎲 Error studies</b><small>Monte-Carlo, correction</small></a>
+</div>
+
 **HELIX** is an open-source Python toolkit for end-to-end simulation
 of charged-particle linear accelerators.  It combines a TraceWin-compatible
 lattice language, a fast envelope solver, a multi-particle tracker with a
