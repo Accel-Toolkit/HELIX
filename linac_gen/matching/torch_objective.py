@@ -370,8 +370,14 @@ def build_torch_residual_sc(lattice, beam_cfg, ref, variables, constraints,
     )
     bunch = torch.as_tensor(_sample_bunch(sigma_in, bunch_size, seed),
                             dtype=F64)
-    macro_charge = ((float(beam_cfg.current) * 1e-3)
-                    / (float(ref.frequency) * 1e6) / bunch_size)
+    # ENTRANCE snapshot: ref.frequency here (pre-tracking) IS the
+    # bunch repetition frequency — exactly what Beam.bunch_frequency
+    # freezes at creation.  Never read ref.frequency after tracking
+    # starts: FREQ cards advance the RF clock, the bunch rate is fixed.
+    from linac_gen.pic.macrocharge import macro_charge_coulombs
+    bunch_frequency_mhz = float(ref.frequency)
+    macro_charge = macro_charge_coulombs(
+        float(beam_cfg.current), bunch_frequency_mhz, bunch_size)
     var_target_ids = [id(v.target) for v in variables]
 
     def residual(x: torch.Tensor) -> torch.Tensor:

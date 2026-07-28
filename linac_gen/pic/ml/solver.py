@@ -164,10 +164,8 @@ class HaloPicSolver(PicSolver):
         self._setup_grid(coords_rest)
 
         n_alive = beam.n_alive
-        n_total = beam.n_particles
-        current_A = beam.current * 1e-3
-        freq_Hz = beam.bunch_frequency * 1e6
-        macro_charge = (current_A / freq_Hz) / n_total
+        from linac_gen.pic.macrocharge import macro_charge_for
+        macro_charge = macro_charge_for(beam)   # shared convention
         charges = np.full(n_alive, macro_charge)
 
         deposit_fn, interpolate_fn = _select_kernel(

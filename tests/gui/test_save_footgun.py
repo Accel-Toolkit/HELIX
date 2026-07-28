@@ -120,3 +120,33 @@ def test_save_as_success_clears_flag_and_repoints(qapp, monkeypatch,
     app_mod.InterphaseWindow._save_lattice_as(win)
     assert st.lattice_fitted is False
     assert st.lattice_path == new
+
+
+def test_save_surfaces_writer_warnings(qapp, tmp_path, monkeypatch):
+    """Regression: writer warnings (deck-not-relocatable, ERROR_* cards
+    dropped) went to stderr only — the GUI said 'Saved' with no hint.
+    The status message must carry the warning count."""
+    import warnings as W
+
+    from linac_gen_gui.interphase.app import InterphaseWindow
+
+    win = InterphaseWindow()
+    try:
+        from linac_gen.core.lattice import Lattice
+        from linac_gen.elements.drift import Drift
+        lat = Lattice()
+        lat.add(Drift("D1", length=100.0))
+        win.state.set_lattice(lat, "")
+
+        def _warning_writer(lattice, path):
+            W.warn("ERROR_* cards are not serialised — study dropped")
+            open(path, "w").write("DRIFT 100 20 0\nEND\n")
+        import linac_gen.io.tracewin_writer as tw
+        monkeypatch.setattr(tw, "write_tracewin", _warning_writer)
+
+        got = []
+        win.state.status_message.connect(got.append)
+        assert win._write_lattice(str(tmp_path / "out.dat"))
+        assert got and "save warning(s)" in got[-1]
+    finally:
+        win.close()

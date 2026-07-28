@@ -502,11 +502,8 @@ class PicSolver:
         # is the kernel calibration offset (separate concern, see
         # project_lg_pic_kernel_calibration_offset.md).
         n_alive = beam.n_alive
-        n_total = beam.n_particles
-        current_A = beam.current * 1e-3       # mA -> A (peak)
-        freq_Hz = beam.bunch_frequency * 1e6  # MHz -> Hz (bunch freq, constant)
-        charge_per_bunch = current_A / freq_Hz
-        macro_charge = charge_per_bunch / n_total
+        from linac_gen.pic.macrocharge import macro_charge_for
+        macro_charge = macro_charge_for(beam)   # shared convention
         charges = np.full(n_alive, macro_charge)
 
         # 5. Charge deposition (CIC or TSC, selected by config)

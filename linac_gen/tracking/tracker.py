@@ -343,7 +343,13 @@ class Tracker:
         # (quads, solenoids, RF cavities).  Passive elements like Aperture
         # reuse the attribute names ``dx`` / ``dy`` for their own geometry
         # (half-widths / radii) — we must NOT treat those as beam shifts.
-        if isinstance(element, PassiveElement):
+        # Multipole handles its OWN dx/dy/tilt inside apply_kick (the
+        # manual's contract: kick evaluated at (x−dx, y−dy) in the tilted
+        # frame) — wrapping it here DOUBLE-applied both offset and tilt
+        # (a 1 mm offset kicked like 2 mm; a 45° skew tracked as 90°).
+        # The envelope solver has always excluded it for this reason.
+        from linac_gen.elements.multipole import Multipole
+        if isinstance(element, (PassiveElement, Multipole)):
             dx = dy = 0.0
             tilt_deg = 0.0
         else:

@@ -1080,13 +1080,26 @@ class InterphaseWindow(QMainWindow):
 
     def _write_lattice(self, path: str) -> bool:
         try:
+            import warnings as _warnings
+
             from linac_gen.io.tracewin_writer import write_tracewin
-            write_tracewin(self.state.lattice, path)
+            # Surface writer warnings — they are load-bearing: "deck not
+            # relocatable (absolute field-map paths)" and "ERROR_* study
+            # cards dropped from the .dat" must never vanish to stderr
+            # while the GUI shows a clean "Saved".
+            with _warnings.catch_warnings(record=True) as caught:
+                _warnings.simplefilter("always")
+                write_tracewin(self.state.lattice, path)
             # Clear the dirty flag — the on-disk file now matches state.
             bus = getattr(self.state, "bus", None)
             if bus is not None:
                 bus.mark_clean()
-            self.state.status_message.emit(f"Saved → {os.path.basename(path)}")
+            msg = f"Saved → {os.path.basename(path)}"
+            if caught:
+                msg += (f"  ·  {len(caught)} save warning(s) — see console")
+                for w in caught:
+                    print(f"[lattice save] {w.message}")
+            self.state.status_message.emit(msg)
             return True
         except Exception as exc:
             QMessageBox.critical(self, "Save failed", str(exc))

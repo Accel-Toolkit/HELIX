@@ -57,9 +57,8 @@ class TorchPicSolver:
         particles = torch.as_tensor(beam.particles[alive_idx],
                                     dtype=torch.float64)
         ref = beam.ref
-        macro_charge = ((beam.current * 1e-3)
-                        / (beam.bunch_frequency * 1e6)
-                        / beam.n_particles)
+        from linac_gen.pic.macrocharge import macro_charge_for
+        macro_charge = macro_charge_for(beam)   # shared convention
         kicked = torch_pic_sc_kick(
             particles, self.config,
             ds_mm=float(ds),

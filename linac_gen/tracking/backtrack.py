@@ -405,7 +405,11 @@ class _Backtracker:
         # rotate +θ) and post-transform (rotate −θ, translate +dx) are
         # mutual inverses, so the backward wrap is IDENTICAL — same pre,
         # inverse body, same post.
-        if isinstance(element, PassiveElement):
+        from linac_gen.elements.multipole import Multipole
+        if isinstance(element, (PassiveElement, Multipole)):
+            # Multipole self-handles dx/dy/tilt inside its kick — the
+            # forward tracker no longer wraps it, so neither do we
+            # (symmetry keeps the exact-closure contract).
             dx = dy = tilt_deg = 0.0
         else:
             dx = getattr(element, "dx", 0.0)
