@@ -88,8 +88,9 @@ deferred; for design-stage work a ~3 % residual is acceptable.
 
 ## Cross-references
 
+* PIP-II validation — the full 256m run.
 * [Known limitations](03_known_limitations.md) — deferred features.
 * [Convergence guide](04_convergence_guide.md).
 
 ← [Eigenemittance](../11_examples/09_eigenemittance.md) ·
-
+Continue to PIP-II validation →

@@ -156,4 +156,5 @@ suggests bad initial guess or ill-conditioned Jacobian.
 * [Matching → Recipes](../07_matching/05_recipes.md)
 * [GUI → Matching tab](../10_gui/05_matching_tab.md)
 
+← Full PIP-II ·
 [Continue to Tolerance study →](08_tolerance_study.md)

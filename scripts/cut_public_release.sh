@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# Cut a public release of HELIX from this development checkout.
+#
+#   scripts/cut_public_release.sh v1.1 "one-line summary"          # dry run
+#   scripts/cut_public_release.sh v1.1 "one-line summary" --push   # publish
+#
+# What it does, every time, identically:
+#   1. exports the CURRENT COMMITTED tree (git archive — untracked files
+#      can never leak) into ../HELIX_public
+#   2. applies the standing exclusion list: PIP-II lattice content of any
+#      kind, third-party field maps, dev-only notes/scripts
+#   3. heals the manual (removes the PIP-II chapters from nav, unlinks
+#      references) and hard-fails if `mkdocs build --strict` breaks
+#   4. runs a remnant sweep and HARD-FAILS on any non-allowlisted match
+#   5. grafts ONE new commit "HELIX <version> — <summary>" onto the public
+#      repo's existing history (clean release ladder), and pushes only
+#      with --push
+set -euo pipefail
+
+VERSION=${1:?usage: cut_public_release.sh vX.Y \"summary\" [--push]}
+SUMMARY=${2:?usage: cut_public_release.sh vX.Y \"summary\" [--push]}
+PUSH=${3:-}
+PUBLIC_URL="https://github.com/Abhishek-Pathak-90/HELIX.git"
+DEV_ROOT=$(git rev-parse --show-toplevel)
+STAGE="$DEV_ROOT/../HELIX_public"
+
+echo "── 1/5 export committed tree ──────────────────────────────────"
+rm -rf "$STAGE"
+mkdir -p "$STAGE"
+git -C "$DEV_ROOT" archive HEAD | tar -x -C "$STAGE"
+
+echo "── 2/5 exclusions ─────────────────────────────────────────────"
+cd "$STAGE"
+rm -rf examples/pipii examples/MEBT_To_Foil examples/pipii_tunable \
+       examples/pip2_misalignment_study examples/pipii_hwr_ssr1_match \
+       examples/piplattice examples/emittance_min examples/lebt_pxie \
+       examples/lebt_plus_rfq
+rm -f  examples/mebt_plus_hwr*.dat examples/mebt_pipii.dat \
+       examples/mebt_line.dat examples/mebt_pipii_demo.py \
+       examples/test.lgproj mebt_pipii.dat \
+       REVIEW.md LICENSING_PLAN.md mebt_hwr_plots.py \
+       diag_lebt_3cases.py compare_mebt_hwr.py \
+       diag_fnalscl_diag_matching.py
+rm -f  tests/errors/test_pip2_study_defs.py \
+       tests/errors/test_btl_alignment_tolerance.py
+rm -f  docs/manual/11_examples/04_lebt_rfq.md \
+       docs/manual/11_examples/05_pipii_mebt.md \
+       docs/manual/11_examples/06_pipii_full.md \
+       docs/manual/12_validation/02_pipii_validation.md
+
+echo "── 3/5 heal the manual ────────────────────────────────────────"
+python3 - <<'PY'
+import os
+import re
+
+s = open("docs/mkdocs.yml").read()
+for line in ("      - LEBT + RFQ: 11_examples/04_lebt_rfq.md\n",
+             "      - PIP-II MEBT: 11_examples/05_pipii_mebt.md\n",
+             "      - Full PIP-II: 11_examples/06_pipii_full.md\n",
+             "      - PIP-II validation: 12_validation/02_pipii_validation.md\n"):
+    s = s.replace(line, "")
+open("docs/mkdocs.yml", "w").write(s)
+
+targets = ("05_pipii_mebt.md", "04_lebt_rfq.md",
+           "02_pipii_validation.md", "06_pipii_full.md")
+for root, _, files in os.walk("docs/manual"):
+    for f in files:
+        if not f.endswith(".md"):
+            continue
+        p = os.path.join(root, f)
+        t = open(p).read()
+        orig = t
+        for tgt in targets:
+            t = re.sub(r"\[([^\]]+)\]\((?:\.\./)*"
+                       r"(?:11_examples/|12_validation/)?"
+                       + re.escape(tgt) + r"\)", r"\1", t)
+        # drop navigation stubs that pointed at removed pages
+        t = re.sub(r"^\* \[PIP-II validation\][^\n]*\n", "", t, flags=re.M)
+        t = re.sub(r"← \[Full PIP-II\][^\n]*\n?", "", t)
+        t = re.sub(r"\[Continue to PIP-II[^\]]*\][^\n]*", "", t)
+        if t != orig:
+            open(p, "w").write(t)
+print("manual healed")
+PY
+PYTHONPATH="$STAGE:$STAGE/gui" python3 docs/manual/_build/regen_plots.py > /dev/null
+( cd docs && mkdocs build --strict > /dev/null )
+echo "mkdocs --strict OK"
+# build artifacts verified — drop them (CI regenerates; the sweep and
+# the commit must only ever see distributable content)
+rm -rf docs/site site
+find docs/manual/_build/figures -maxdepth 1 -name "*.png" -delete 2>/dev/null || true
+
+echo "── 4/5 remnant sweep ─────────────────────────────────────────"
+BAD=$(find . -path ./.git -prune -o -type f -print \
+      | grep -iE "pipii|pip2|fnalscl|mebt|SOL.-PXIE|Tracewin_code|TraceWIn_Tools" \
+      | grep -vE "test_review|test_live_match_preview|test_engine_preview_hook" \
+      || true)
+if [ -n "$BAD" ]; then
+    echo "REMNANTS FOUND — refusing to release:"; echo "$BAD"; exit 1
+fi
+echo "sweep clean"
+
+echo "── 5/5 graft the release commit ──────────────────────────────"
+git clone --quiet "$PUBLIC_URL" "$STAGE/.pub"
+mv "$STAGE/.pub/.git" "$STAGE/.git"
+rm -rf "$STAGE/.pub"
+git config user.name  "Abhishek Pathak"
+git config user.email "59810426+Abhishek-Pathak-90@users.noreply.github.com"
+git add -A
+if git diff --cached --quiet; then
+    echo "nothing changed since the last release — aborting"; exit 0
+fi
+git commit -q -m "HELIX ${VERSION} — ${SUMMARY}"
+git log --oneline -3
+if [ "$PUSH" = "--push" ]; then
+    git push origin main
+    echo "PUBLISHED ${VERSION}"
+else
+    echo
+    echo "DRY RUN complete — inspect $STAGE, then publish with:"
+    echo "  scripts/cut_public_release.sh ${VERSION} \"${SUMMARY}\" --push"
+fi

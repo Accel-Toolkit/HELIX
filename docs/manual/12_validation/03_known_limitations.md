@@ -208,6 +208,7 @@ behavior:
 ## Calibration biases (not bugs, known offsets)
 
 * **PIC kernel** — ~3 % σ overshoot vs TraceWin partran on PIP-II.
+  See PIP-II validation.
 * **Longitudinal σ_z** — ~22 % overshoot in HELIX vs TW.  Cause not
   localised.
 

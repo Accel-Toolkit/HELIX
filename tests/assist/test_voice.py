@@ -164,7 +164,10 @@ def test_speaker_queues_sentences_and_barges_in():
     threading.Thread(target=sp._player, daemon=True).start()
 
     sp.say("First point. Second point! Third?")
-    time.sleep(0.3)
+    t0 = time.time()
+    while (len(spoken) < 3 or not events or events[-1] is not False) \
+            and time.time() - t0 < 10:          # wait-until, not sleep
+        time.sleep(0.02)
     assert spoken == ["First point.", "Second point!", "Third?"]
     assert events[0] is True and events[-1] is False     # speaking toggled
     sp.say("Never spoken. Because muted.")

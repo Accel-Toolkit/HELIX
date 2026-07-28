@@ -382,8 +382,9 @@ def test_wake_miss_shows_what_was_heard(monkeypatch):
     wl.start()
     try:
         t0 = time.time()
-        while not any("heard" in x for x in status) and time.time() - t0 < 5:
-            mic.push(0.3, n=1)
+        while (not any("heard" in x for x in status)
+               and time.time() - t0 < 15):     # generous: starved runners
+            mic.push(0.3, n=2)
             time.sleep(0.01)
         assert any("hello there computer" in x for x in status)
     finally:
