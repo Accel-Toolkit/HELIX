@@ -10,6 +10,11 @@ jobs:
   core:
     name: Core suite (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # macOS runners bill 10x on PRIVATE repos — the macOS leg enables
+    # itself automatically once the repository is public (Actions are
+    # then free).  Linux guards every push either way; macOS coverage
+    # meanwhile comes from the maintainer's local full-suite runs.
+    if: matrix.os == 'ubuntu-latest' || github.event.repository.private == false
     strategy:
       fail-fast: false
       matrix:
