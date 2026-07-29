@@ -14,6 +14,7 @@ authors:
     affiliation: "Fermi National Accelerator Laboratory"
 version: "v1.0.11"
 date-released: 2026-07-28
+license: GPL-3.0-or-later
 repository-code: "https://github.com/Accel-Toolkit/HELIX"
 url: "https://github.com/Accel-Toolkit/HELIX"
 keywords:
