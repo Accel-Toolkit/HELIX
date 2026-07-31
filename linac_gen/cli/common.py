@@ -424,12 +424,21 @@ def write_final_dst(beam, out_path) -> str:
     values inflated the geometric emittance 7.5x)."""
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    from linac_gen.io.tracewin_dst import write_dst
+    from linac_gen.io.tracewin_dst import (write_dst,
+                                           warn_if_nonstandard_dst_header)
     parts = getattr(beam, "alive_particles", None)
     if parts is None:
         parts = beam.particles
+    warn_if_nonstandard_dst_header(beam)
     write_dst(str(out), parts,
               current_mA=float(beam.current),
+              # KNOWN MISMATCH, deliberately left as-is — see the
+              # DEFERRED FIX block in io/tracewin_dst.py.  write_dst
+              # documents this parameter as the BUNCH frequency and
+              # TraceWin writes the bunch rate here, but changing it
+              # alone would break the clock: write_dst does no frequency
+              # conversion, so the phase column must be rescaled in the
+              # same change.  Blocked on one TraceWin round-trip.
               frequency_MHz=float(beam.ref.frequency),
               mass_MeV=float(beam.ref.species.mass),
               w_kin_ref=float(beam.ref.w_kin))

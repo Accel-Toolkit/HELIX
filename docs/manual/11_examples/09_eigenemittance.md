@@ -106,4 +106,4 @@ file `linac_gen/diagnostics/eigenemittance.py:1`.
 * [Distributions → thermal](../04_beam/01_distributions.md#thermal-bi-gaussian-halo)
 
 ← [Tolerance study](08_tolerance_study.md) ·
-[Continue to Validation → TraceWin parity →](../12_validation/01_tracewin_parity.md)
+[Continue to Synthetic RFQ →](10_rfq_demo.md)

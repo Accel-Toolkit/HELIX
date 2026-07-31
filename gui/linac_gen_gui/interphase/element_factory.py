@@ -59,8 +59,11 @@ _FACTORIES: dict[str, Callable] = {
     "SpaceChargeComp": lambda: SpaceChargeComp(name="SCC", factor=0.0),
     "ThinLens":    lambda: ThinLens(name="LENS", fx=1000.0, fy=1000.0,
                                     aperture=10.0),
+    # A10 = 0.298 is the two-term value self-consistent with
+    # (r0 = 3.5 mm, m = 1.5, L = 10 mm) — an inconsistent toy triplet
+    # trips RfqCell's modulation cross-check warning on every Add.
     "RfqCell":     lambda: RfqCell(name="RFQ", voltage_V=70_000.0, r0_mm=3.5,
-                                   A10=0.05, modulation=1.5, length_mm=10.0,
+                                   A10=0.298, modulation=1.5, length_mm=10.0,
                                    phi_s_deg=-30.0, cell_type=2),
     "FieldMap":    lambda: _placeholder_field_map(FieldMap),
     "FieldMap3D":  lambda: _placeholder_field_map(FieldMap3D),

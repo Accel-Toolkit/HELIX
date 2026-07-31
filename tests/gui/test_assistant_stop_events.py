@@ -62,7 +62,7 @@ def test_esc_stops_instead_of_closing(qapp, tmp_path):
     qapp.processEvents()
     assert panel.isVisible()               # QDialog default would close
     assert "stopped." in panel._transcript.toPlainText()
-    panel.close()
+    panel.shutdown()
 
 
 def test_stop_between_turns_keeps_session_usable(qapp, tmp_path):
@@ -78,7 +78,7 @@ def test_stop_between_turns_keeps_session_usable(qapp, tmp_path):
     _pump_worker(qapp, panel)
     text = panel._transcript.toPlainText()
     assert "first" in text and "second" in text
-    panel.close()
+    panel.shutdown()
 
 
 def test_event_line_renders_without_a_worker(qapp, tmp_path):
@@ -88,7 +88,7 @@ def test_event_line_renders_without_a_worker(qapp, tmp_path):
     qapp.processEvents()
     assert "‣ [event] watch: transmission fell" in \
         panel._transcript.toPlainText()
-    panel.close()
+    panel.shutdown()
 
 
 def test_narrate_checkbox_gives_the_model_a_turn(qapp, tmp_path):
@@ -106,17 +106,22 @@ def test_narrate_checkbox_gives_the_model_a_turn(qapp, tmp_path):
     notes = [m for m in provider.requests[0]["transcript"]
              if isinstance(m, SystemNote)]
     assert any("job finished" in n.text for n in notes)
-    panel.close()
+    panel.shutdown()
 
 
 def test_progress_event_updates_label(qapp, tmp_path):
     from linac_gen.assist.testing import turn_text
     panel, _ = _mock_panel(qapp, tmp_path, [turn_text("x")])
+    # quiesce the auto-started listening stack first — its async
+    # "starting hands-free…" status would race the label under test
+    qapp.processEvents()                     # deferred auto-enable fires
+    panel._wake_btn.setChecked(False)        # …and is cancelled (gen bump)
+    qapp.processEvents()
     panel._session._emit(type="progress", tool="run_mp",
                          text="run_mp: s = 12.3 m")
     qapp.processEvents()
     assert panel._prog.text() == "run_mp: s = 12.3 m"
-    panel.close()
+    panel.shutdown()
 
 
 def test_confirm_timeout_auto_denies_and_hides_strip(qapp, tmp_path):
@@ -138,7 +143,7 @@ def test_confirm_timeout_auto_denies_and_hides_strip(qapp, tmp_path):
     _pump_worker(qapp, panel, timeout_s=10.0)
     assert not panel._confirm_label.isVisible()
     assert "auto-denied" in panel._transcript.toPlainText()
-    panel.close()
+    panel.shutdown()
 
 
 def test_stale_button_click_cannot_resolve_next_request(qapp, tmp_path):
@@ -156,7 +161,7 @@ def test_stale_button_click_cannot_resolve_next_request(qapp, tmp_path):
     assert not ap._event.is_set()
     ap.resolve(Decision.APPROVE, gen=3)    # current click
     assert ap._event.is_set()
-    panel.close()
+    panel.shutdown()
 
 
 def test_results_changed_feeds_run_watch(qapp, tmp_path):
@@ -177,13 +182,21 @@ def test_results_changed_feeds_run_watch(qapp, tmp_path):
             emit_x=np.full(n, 0.25), emit_y=np.full(n, 0.25),
             emit_z=np.full(n, 0.30), ref_w_kin=np.full(n, 3.0))
 
+    # inspection now runs OFF the GUI thread — pump each step in
     panel._state.set_results(_res(100.0))    # reference run
-    qapp.processEvents()
+    t0 = time.time()
+    while time.time() - t0 < 1.0:            # let the reference store
+        qapp.processEvents()
+        time.sleep(0.01)
     panel._state.set_results(_res(90.0))     # the bad run
-    qapp.processEvents()
+    t0 = time.time()
+    while ("transmission fell" not in panel._transcript.toPlainText()
+           and time.time() - t0 < 8):
+        qapp.processEvents()
+        time.sleep(0.01)
     text = panel._transcript.toPlainText()
     assert "‣ [event] run watch: transmission fell" in text
-    panel.close()
+    panel.shutdown()
 
 
 def test_watch_checkbox_off_means_silent(qapp, tmp_path):
@@ -204,4 +217,4 @@ def test_watch_checkbox_off_means_silent(qapp, tmp_path):
     panel._state.set_results(res)
     qapp.processEvents()
     assert "[event]" not in panel._transcript.toPlainText()
-    panel.close()
+    panel.shutdown()

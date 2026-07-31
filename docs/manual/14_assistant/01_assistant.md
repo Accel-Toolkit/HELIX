@@ -57,11 +57,18 @@ and exits — it never breaks.
 
 The assistant's entire capability is a fixed registry of tools, each a
 thin wrapper over an existing HELIX API.  **There is no shell, no
-`eval`, no arbitrary file access.**  Tools are tiered:
+`eval`, and it can never write files.**  It *can* read local files —
+read-only and windowed (`read_file`, defaulting to the loaded lattice
+`.dat`) — so the raw element cards you see in the deck are exactly what
+it sees.  It also understands them the way you do: `describe_lattice`
+counts hardware by decoded field **channels** (an RF-channel FIELD_MAP
+is a cavity even when parked at `ke=0`; a static-B map is a solenoid),
+and `list_lattice_elements` shows each element's kind, decoded field
+type, geom code and key parameters.  Tools are tiered:
 
 | Tier | Examples | Confirmation |
 |---|---|---|
-| **read** | status, lattice info, query a result value, beam-parameter table, provenance, matched input Twiss | auto |
+| **read** | status, lattice info + hardware rollup, element table, raw-file window, query a result value, beam-parameter table, provenance, matched input Twiss | auto |
 | **compute** | run envelope / multiparticle / match, parameter scan, compare to TraceWin | confirmed (session auto-approve optional) |
 | **mutate** | load a lattice, set a beam field or element parameter, write results | **always confirmed** |
 
@@ -163,9 +170,14 @@ latency readout** in the status row shows time-to-first-token (or the
 instant-command round trip) and speech-to-text time, so
 responsiveness is a number, not a feeling.
 
-The panel is a designed chat, not a log window: **rendered markdown** replies in role-styled cards (your turns accent-barred, tool traces and events as muted metadata), **syntax-highlighted code blocks**, and **inline thumbnails of every figure the assistant looks at** (click to open the saved capture).  Around it: an **animated state orb** (idle · thinking · responding
-· listening · awaiting-confirm · error) that pulses and changes colour
-with what the assistant is doing, a live-streaming transcript, an input
+The panel is a designed chat, not a log window: **rendered markdown** replies in role-styled cards (your turns accent-barred, tool traces and events as muted metadata), **syntax-highlighted code blocks**, and **inline thumbnails of every figure the assistant looks at** (click to open the saved capture).  Around it: a large **3-D state orb**
+(idle · thinking · responding · listening · awaiting-confirm · error) —
+a glossy sphere that pulses and changes colour with what the assistant
+is doing, and whose equalizer ring **dances live with your voice the
+moment you speak** in any listening state, so you always know it hears
+you.  Below it: a live-streaming transcript (the **Text** checkbox
+hides it for a voice-only view — the orb, voice controls and approval
+strip stay, and the conversation keeps recording underneath), an input
 box, a **■ Stop** button, an approve/deny strip that shows the echoed
 call, a live progress readout for long runs, and a settings affordance
 for the provider/model/key (stored in the app's settings, never in the
@@ -243,10 +255,19 @@ Units are spoken as words (millimeters, M-e-V, pi millimeter
 milliradian), and exact digits always stay on screen.
 
 **Stopping a reply.**  The **■ Stop** button — or **Esc** — interrupts
-the current turn: streaming halts, speech is cut, and on the keyless
-Claude backend the server-side generation itself is interrupted.  The
-session stays usable; just ask again.  (Esc used to close the panel;
-it now stops instead — close with the window button or Ctrl+W.)
+the current turn: streaming halts, speech is cut, a pending
+confirmation is denied, and on the keyless Claude backend the
+server-side generation itself is interrupted.  The session stays
+usable; just ask again.  (Esc used to close the panel; it now stops
+instead.)  A message sent while a turn is still running is **queued,
+not dropped** — it shows as `▷ … queued` and runs the moment the turn
+ends.
+
+**Closing the window.**  The window's close button **hides** the panel
+— the assistant keeps running in the background (hands-free listening
+included), and saying "HELIX" or reopening it from the toolbar brings
+the same conversation back.  The assistant only shuts down with the
+application.
 
 **Run watching (proactive).**  With **Watch runs** ticked (the
 default), *every* finished run — assistant-initiated **or one you
@@ -396,8 +417,10 @@ animates the orb's listening bars while you hold push-to-talk.
 
 Two deliberate design choices:
 
-* **Push-to-talk**, not a wake word — the mic is live only while you
-  hold the button (reliable, no false triggers, no continuous capture).
+* **Push-to-talk always works alongside the wake word** — hands-free
+  listening (👂, on by default) is fully local and can be switched off;
+  with it off the mic is live only while you hold the button (no
+  continuous capture).
 * **Precision stays on screen.**  The assistant *speaks* a summary with
   numbers coarsened ("σx at exit about 0.6 millimetres") while the exact
   digits and the echoed tool call remain in the text panel.  Spoken

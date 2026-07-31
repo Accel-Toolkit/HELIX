@@ -121,6 +121,22 @@ class ClaudeSdkBackend:
         except Exception as exc:                            # noqa: BLE001
             self._start_error = f"{type(exc).__name__}: {exc}"
             self._ready.set()
+        finally:
+            # join the default executor's NON-DAEMON workers and close
+            # the loop — otherwise they outlive us invisibly and the
+            # interpreter's atexit join hangs the whole app at quit
+            lp = self._loop
+            if lp is not None and not lp.is_closed():
+                for fin in (lp.shutdown_asyncgens,
+                            lp.shutdown_default_executor):
+                    try:
+                        lp.run_until_complete(fin())
+                    except Exception:                       # noqa: BLE001
+                        pass
+                try:
+                    lp.close()
+                except Exception:                           # noqa: BLE001
+                    pass
 
     async def _serve(self) -> None:
         from claude_agent_sdk import ClaudeSDKClient, create_sdk_mcp_server
@@ -187,7 +203,28 @@ class ClaudeSdkBackend:
             fut = asyncio.run_coroutine_threadsafe(
                 self._turn(user_text), self._loop)
             try:
-                return fut.result()
+                # HEARTBEAT wait, never a bare fut.result(): an
+                # unbounded wait on a dead loop thread (panel torn down,
+                # CLI wedged) blocked the worker FOREVER — and with it
+                # every later message (the "assistant hanged" bug).
+                while True:
+                    try:
+                        return fut.result(timeout=1.0)
+                    except concurrent.futures.TimeoutError:
+                        abort = getattr(self.session, "_abort", None)
+                        if abort is not None and abort.is_set():
+                            self.interrupt()   # stop server-side generation
+                            fut.cancel()
+                            try:
+                                return fut.result(timeout=5.0)
+                            except Exception:               # noqa: BLE001
+                                return ""
+                        if (self._thread is not None
+                                and not self._thread.is_alive()):
+                            msg = ("[claude-sdk] backend loop died "
+                                   "mid-turn — send again to restart")
+                            self.session._emit(type="error", message=msg)
+                            return msg
             except (asyncio.CancelledError,
                     concurrent.futures.CancelledError):
                 return ""                 # turn cancelled (panel closing)

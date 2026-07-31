@@ -70,10 +70,13 @@ def _highlight_code(code: str, lang: str,
                                        nowrap=True))
     except Exception:                                       # noqa: BLE001
         body = _html.escape(code)
+    # white-space:pre-wrap wraps long code lines WITHOUT mutating the
+    # text (a hard-wrap variant put real newlines into copy-pasted code
+    # — split string literals; adversarial review, measured)
     return (f'<pre style="background:{theme.BG_INSET}; '
             f'color:{theme.TEXT_1}; font-family:{theme.FONT_MONO}; '
             f'font-size:{max(body_px - 3, 10)}px; padding:10px; '
-            f'margin:8px 0;">' + body + "</pre>")
+            f'margin:8px 0; white-space:pre-wrap;">' + body + "</pre>")
 
 
 def md_to_html(text: str, body_px: int = DEFAULT_BODY_PX) -> str:
@@ -147,8 +150,13 @@ class _Card(QFrame):
     def __init__(self, style: str, parent=None, animate: bool = True):
         super().__init__(parent)
         self.setStyleSheet(style)
+        # vertical Preferred, NEVER Minimum: Minimum has no ShrinkFlag,
+        # so the scroll range is computed from rich-text sizeHints that
+        # overestimate height (~+77 px per card, measured) — the surplus
+        # accumulated in the trailing stretch and the pinned viewport
+        # ended up showing pure blank space ("the text box goes empty")
         self.setSizePolicy(QSizePolicy.Policy.Expanding,
-                           QSizePolicy.Policy.Minimum)
+                           QSizePolicy.Policy.Preferred)
         self._lay = QVBoxLayout(self)
         self._lay.setContentsMargins(14, 10, 14, 10)
         self._lay.setSpacing(4)
@@ -157,12 +165,19 @@ class _Card(QFrame):
             self.setGraphicsEffect(eff)
             anim = QPropertyAnimation(eff, b"opacity", self)
             anim.setDuration(220)
-            anim.setStartValue(0.0)
+            # floor 0.4, not 0.0: while the GUI thread is busy laying
+            # out a long transcript the animation gets no slice — a
+            # 0-opacity card is a full-height INVISIBLE block (the
+            # second confirmed "transcript looks empty" mechanism)
+            anim.setStartValue(0.4)
             anim.setEndValue(1.0)
             anim.setEasingCurve(QEasingCurve.Type.OutCubic)
             anim.finished.connect(self._drop_effect)
             self._anim = anim
             anim.start()
+            # backup: if the animation timer is starved, force full
+            # opacity soon regardless (bound method — timer rule)
+            QTimer.singleShot(600, self._drop_effect)
 
     def _drop_effect(self):
         self.setGraphicsEffect(None)         # normal painting afterwards
@@ -228,6 +243,11 @@ class ChatView(QScrollArea):
             "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical"
             " { height:0; }")
         self._host = QWidget(self)
+        # NOTE: do NOT set the host's vertical policy to Ignored — with
+        # no height-for-width item in the layout (an image-only feed)
+        # the host then collapses to the viewport and the content is
+        # clipped with no scrollbar (adversarial review, measured).
+        # The _Card Preferred policy alone removes the phantom height.
         self._host.setStyleSheet(f"background:{theme.BG_0};")
         self._col = QVBoxLayout(self._host)
         self._col.setContentsMargins(12, 12, 12, 12)
@@ -243,6 +263,24 @@ class ChatView(QScrollArea):
         self._stream_lab: QLabel | None = None
         self._stream_raw = ""
         self._thinking: _ThinkingCard | None = None
+        # delta coalescing: tokens arrive one queued signal each, and
+        # re-rendering the WHOLE segment per token is O(n²) — repaint at
+        # most every 33 ms instead (imperceptible, storm-proof)
+        self._stream_dirty = False
+        self._stream_timer = QTimer(self)
+        self._stream_timer.setInterval(33)
+        self._stream_timer.timeout.connect(self._flush_stream)
+        # CONTENT-AWARE follow-the-bottom.  Two proven rules:
+        # 1. never pin to bar.maximum() — the range can carry phantom
+        #    height; pin to the real content bottom instead;
+        # 2. unpin ONLY on user gestures (wheel / scrollbar drag /
+        #    steps), never by inferring from valueChanged — programmatic
+        #    scrolls fire it too and the logic fights itself.
+        self._pinned = True
+        bar = self.verticalScrollBar()
+        bar.rangeChanged.connect(self._on_range_changed)
+        bar.sliderMoved.connect(self._on_user_scroll)
+        bar.actionTriggered.connect(self._on_user_scroll)
 
     # -- sizing ----------------------------------------------------------
     @property
@@ -260,15 +298,20 @@ class ChatView(QScrollArea):
 
     def _rebuild(self) -> None:
         history = list(self._history)
-        img_n = 0
+        stream_raw = self._stream_raw        # NEVER destroy an in-flight
+        img_n = 0                            # reply (A+/A- mid-stream
+        #                                      used to silently eat it)
         while self._col.count() > 1:         # keep the trailing stretch
             item = self._col.takeAt(0)
             w = item.widget()
             if w is not None:
                 if isinstance(w, _ThinkingCard):
                     w.stop()
-                w.deleteLater()
+                w.hide()                     # no zombie frame until the
+                w.deleteLater()              # deferred delete lands
         self._thinking = None
+        self._stream_timer.stop()
+        self._stream_dirty = False
         self._stream_card = None
         self._stream_lab = None
         self._stream_raw = ""
@@ -276,22 +319,92 @@ class ChatView(QScrollArea):
         self._history = []
         self._img_n = img_n
         for entry in history:
-            if entry[0] == "msg":
-                self._history.append(entry)
-                self._render_message(entry[1], entry[2], entry[3],
-                                     animate=False)
-            elif entry[0] == "img":
-                self._history.append(entry)
-                self._render_image(entry[1], entry[2], animate=False)
+            try:
+                if entry[0] == "msg":
+                    self._render_message(entry[1], entry[2], entry[3],
+                                         animate=False)
+                elif entry[0] == "img":
+                    self._render_image(entry[1], entry[2], animate=False)
+                self._history.append(entry)  # AFTER success — a bad
+                #                              entry must not re-raise
+                #                              on every future rebuild
+            except Exception:                               # noqa: BLE001
+                continue                     # one bad entry must never
+                #                              blank the rest of the feed
+        if stream_raw:                       # recreate the live card
+            self.stream_delta(stream_raw)
 
     # -- internals -------------------------------------------------------
-    def _add_widget(self, w: QWidget) -> None:
-        self._col.insertWidget(self._col.count() - 1, w)
-        QTimer.singleShot(0, self._scroll_bottom)
+    def _add_widget(self, w: QWidget, at_index: int | None = None) -> None:
+        self._col.insertWidget(self._col.count() - 1
+                               if at_index is None else at_index, w)
+        # follow only while pinned — a reader who scrolled up must not
+        # be yanked down by every new card
+        QTimer.singleShot(0, self._maybe_scroll_bottom)
+
+    def _maybe_scroll_bottom(self) -> None:
+        try:
+            if self._pinned:
+                self._scroll_bottom()
+        except RuntimeError:
+            pass
+
+    def _content_bottom(self) -> int:
+        """Bottom edge of the REAL content (max over visible layout
+        widgets) — the truth the pin targets; ``bar.maximum()`` lies
+        whenever size-hints overestimate (measured +77 px per turn)."""
+        b = 0
+        for i in range(self._col.count()):
+            w = self._col.itemAt(i).widget()
+            if w is not None and not w.isHidden():
+                b = max(b, w.y() + w.height())
+        return b + self._col.contentsMargins().bottom()
 
     def _scroll_bottom(self) -> None:
-        bar = self.verticalScrollBar()
-        bar.setValue(bar.maximum())
+        """Explicit jump to the newest content — always re-pins."""
+        try:
+            self._pinned = True
+            bar = self.verticalScrollBar()
+            target = self._content_bottom() - self.viewport().height()
+            bar.setValue(max(0, min(bar.maximum(), target)))
+        except RuntimeError:
+            pass
+
+    def _on_range_changed(self, _lo: int, _hi: int) -> None:
+        try:
+            if self._pinned:
+                self._scroll_bottom()
+        except RuntimeError:
+            pass
+
+    def _on_user_scroll(self, *_a) -> None:
+        # gesture in flight: evaluate the pin AFTER the value settles
+        QTimer.singleShot(0, self._eval_pin)
+
+    def _eval_pin(self, tol: int | None = None) -> None:
+        try:
+            bar = self.verticalScrollBar()
+            target = self._content_bottom() - self.viewport().height()
+            if tol is None:
+                tol = max(4, bar.singleStep() // 2)   # BELOW one arrow
+            self._pinned = bar.value() >= target - tol   # step (20 px)
+        except RuntimeError:
+            pass
+
+    def wheelEvent(self, ev):                                # noqa: N802
+        down = False
+        try:
+            down = ev.angleDelta().y() < 0
+        except Exception:                                   # noqa: BLE001
+            pass
+        super().wheelEvent(ev)
+        if down:
+            # scrolling TOWARD the bottom re-pins generously: during a
+            # stream the bottom runs away and the tight band needed ~13
+            # wheel notches to re-catch (adversarial review, measured)
+            self._eval_pin(tol=max(60, self.viewport().height() // 3))
+        else:
+            self._eval_pin()
 
     def _card_style(self, role: str) -> str:
         if role == "assistant":
@@ -324,7 +437,7 @@ class ChatView(QScrollArea):
         self._render_message(role, text, stamp, animate=True)
 
     def _render_message(self, role: str, text: str, stamp: str,
-                        animate: bool) -> None:
+                        animate: bool, at_index: int | None = None) -> None:
         px = self._body_px
         if role == "assistant":
             html_body = md_to_html(text, px)
@@ -337,7 +450,7 @@ class ChatView(QScrollArea):
                 "</td></tr></table>"
                 f'<div style="color:{theme.TEXT_0}; '
                 f'font-size:{px}px;">' + html_body + "</div>")
-            self._add_widget(card)
+            self._add_widget(card, at_index)
             self._plain.append(_html_to_plain(html_body))
         elif role == "user":
             card = _Card(self._card_style(role), self._host,
@@ -420,44 +533,83 @@ class ChatView(QScrollArea):
         if t is not None:
             try:
                 t.stop()
-                self._col.removeWidget(t)
-                t.deleteLater()
+                t.hide()                     # removeWidget leaves the
+                self._col.removeWidget(t)    # widget VISIBLE until the
+                t.deleteLater()              # deferred delete otherwise
             except Exception:                               # noqa: BLE001
                 pass
 
     # -- streaming -------------------------------------------------------
     def stream_delta(self, text: str) -> None:
         self.hide_thinking()
-        if self._stream_card is None:
+        first = self._stream_card is None
+        if first:
             self._stream_card = _Card(self._card_style("assistant"),
                                       self._host, animate=False)
             self._stream_lab = self._stream_card.add_rich("")
             self._stream_raw = ""
+            # chronology anchors: a tool/event line arriving MID-stream
+            # is inserted after this card; the final markdown card and
+            # its history/plain entries must land back HERE, not at the
+            # end (the swap used to reorder the transcript permanently)
+            self._stream_hist_pos = len(self._history)
+            self._stream_plain_pos = len(self._plain)
             self._add_widget(self._stream_card)
+            self._stream_timer.start()
         self._stream_raw += text
-        self._stream_lab.setText(
-            f'<div style="color:{theme.TEXT_0}; '
-            f'font-size:{self._body_px}px; line-height:1.5;">'
-            + _html.escape(self._stream_raw).replace("\n", "<br>")
-            + f'<span style="color:{theme.ACCENT};">▌</span></div>')
-        QTimer.singleShot(0, self._scroll_bottom)
+        self._stream_dirty = True
+        if first:
+            self._flush_stream()         # first token shows instantly
+
+    def _flush_stream(self) -> None:
+        if not self._stream_dirty or self._stream_lab is None:
+            return
+        self._stream_dirty = False
+        try:
+            self._stream_lab.setText(
+                f'<div style="color:{theme.TEXT_0}; '
+                f'font-size:{self._body_px}px; line-height:1.5;">'
+                + _html.escape(self._stream_raw).replace("\n", "<br>")
+                + f'<span style="color:{theme.ACCENT};">▌</span></div>')
+        except RuntimeError:             # label died mid-render
+            return
+        # no scroll here: rangeChanged pins the view to the bottom the
+        # moment the layout pass actually grows the range (any scroll
+        # issued NOW runs too early and lands one step short — the
+        # "text goes up beyond the chat window" report)
 
     def end_stream(self) -> str:
+        self._stream_timer.stop()
+        self._stream_dirty = False
         raw = self._stream_raw
         card, self._stream_card = self._stream_card, None
         self._stream_lab = None
         self._stream_raw = ""
         if card is None or not raw.strip():
             if card is not None:
+                card.hide()
                 self._col.removeWidget(card)
                 card.deleteLater()
             return raw
-        # replace the live card with a full markdown card (history too)
-        self._col.removeWidget(card)
+        # replace the live card with a full markdown card AT THE SAME
+        # POSITION (visual + history + plain) — appending at the end
+        # reordered the transcript whenever a tool/event line had
+        # landed mid-stream (adversarial review, measured)
+        pos = self._col.indexOf(card)
+        card.hide()                          # no ghost frame during the
+        self._col.removeWidget(card)         # shrink→grow swap
         card.deleteLater()
         stamp = _time.strftime("%H:%M")
-        self._history.append(("msg", "assistant", raw, stamp))
-        self._render_message("assistant", raw, stamp, animate=False)
+        self._render_message("assistant", raw, stamp, animate=False,
+                             at_index=pos if pos >= 0 else None)
+        entry = ("msg", "assistant", raw, stamp)
+        hp = min(getattr(self, "_stream_hist_pos", len(self._history)),
+                 len(self._history))
+        self._history.insert(hp, entry)
+        pp = min(getattr(self, "_stream_plain_pos", len(self._plain)),
+                 max(0, len(self._plain) - 1))
+        moved = self._plain.pop()            # _render_message appended it
+        self._plain.insert(pp, moved)
         return raw
 
     # -- legacy compatibility -------------------------------------------

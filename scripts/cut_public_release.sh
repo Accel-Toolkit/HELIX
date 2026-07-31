@@ -34,7 +34,7 @@ cd "$STAGE"
 rm -rf examples/pipii examples/MEBT_To_Foil examples/pipii_tunable \
        examples/pip2_misalignment_study examples/pipii_hwr_ssr1_match \
        examples/piplattice examples/emittance_min examples/lebt_pxie \
-       examples/lebt_plus_rfq
+       examples/lebt_plus_rfq examples/hebt_diag
 rm -f  examples/mebt_plus_hwr*.dat examples/mebt_pipii.dat \
        examples/mebt_line.dat examples/mebt_pipii_demo.py \
        examples/test.lgproj mebt_pipii.dat \
@@ -92,7 +92,7 @@ find docs/manual/_build/figures -maxdepth 1 -name "*.png" -delete 2>/dev/null ||
 
 echo "── 4/5 remnant sweep ─────────────────────────────────────────"
 BAD=$(find . -path ./.git -prune -o -type f -print \
-      | grep -iE "pipii|pip2|fnalscl|mebt|SOL.-PXIE|Tracewin_code|TraceWIn_Tools" \
+      | grep -iE "pipii|pip2|fnalscl|mebt|hebt|SOL.-PXIE|Tracewin_code|TraceWIn_Tools" \
       | grep -vE "test_review|test_live_match_preview|test_engine_preview_hook" \
       || true)
 if [ -n "$BAD" ]; then

@@ -89,10 +89,12 @@ def rfq_lattice() -> Lattice:
     lat = Lattice()
     lat.add(Drift(name="LEAD", length=50.0, aperture=10.0))
     # A small RFQ-cell chain so the writer has something to chew on.
+    # A10 below the 0.02 consistency-check gate keeps the fixture
+    # silent (the triplet here is a writer exercise, not physics).
     for i in range(3):
         lat.add(RfqCell(
             name=f"RFQ_{i}",
-            voltage_V=70_000.0, r0_mm=3.5, A10=0.05,
+            voltage_V=70_000.0, r0_mm=3.5, A10=0.01,
             modulation=1.5 + 0.1 * i, length_mm=10.0,
             phi_s_deg=-30.0, cell_type=2,
         ))

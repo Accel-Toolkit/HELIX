@@ -28,7 +28,7 @@ def test_chips_exist_and_send_through_real_path(qapp, tmp_path):
         if w is not None and not w.isRunning():
             w.wait(2000)
             break
-    panel.close()
+    panel.shutdown()
 
 
 def test_warmup_line_present_at_open(qapp, tmp_path):
@@ -37,7 +37,7 @@ def test_warmup_line_present_at_open(qapp, tmp_path):
     panel, _ = _mock_panel(qapp, tmp_path, [turn_text("x")])
     t = panel._transcript.toPlainText()
     assert "queued, not lost" in t
-    panel.close()
+    panel.shutdown()
 
 
 def test_welcome_card_shown_once(qapp, tmp_path):
@@ -46,10 +46,10 @@ def test_welcome_card_shown_once(qapp, tmp_path):
     panel, _ = _mock_panel(qapp, tmp_path, [turn_text("x")])
     first = panel._transcript.toPlainText()
     welcomed = "guided tour" in first and "[hello]" in first
-    panel.close()
+    panel.shutdown()
     panel2, _ = _mock_panel(qapp, tmp_path, [turn_text("x")])
     second = panel2._transcript.toPlainText()
-    panel2.close()
+    panel2.shutdown()
     if welcomed:                       # isolated settings: shown once
         assert "[hello]" not in second
     else:                              # settings pre-marked: never shown
@@ -62,7 +62,7 @@ def test_tts_backend_tooltip(qapp, tmp_path):
     panel, _ = _mock_panel(qapp, tmp_path, [turn_text("x")])
     panel._set_tts_tooltip("kokoro")
     assert "TTS: kokoro" in panel._mic_btn.toolTip()
-    panel.close()
+    panel.shutdown()
 
 
 def test_mic_failure_prints_permission_hint(qapp, tmp_path, monkeypatch):
@@ -78,7 +78,15 @@ def test_mic_failure_prints_permission_hint(qapp, tmp_path, monkeypatch):
     monkeypatch.setattr(
         "linac_gen.assist.voice.PushToTalkRecorder", _Boom)
     panel._mic_pressed()
+    # recorder start now runs OFF the GUI thread — the failure arrives
+    # via the queued gui_call bridge
+    import time as _time
+    t0 = _time.time()
+    while ("Privacy & Security" not in panel._transcript.toPlainText()
+           and _time.time() - t0 < 8):
+        qapp.processEvents()
+        _time.sleep(0.01)
     t = panel._transcript.toPlainText()
     assert "microphone unavailable" in t
     assert "Privacy & Security" in t
-    panel.close()
+    panel.shutdown()

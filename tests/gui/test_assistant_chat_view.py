@@ -99,7 +99,7 @@ def test_capture_event_flows_to_inline_image(qapp, tmp_path):
     qapp.processEvents()
     assert panel._transcript._img_n == 1
     assert "(look_at_plot)" in panel._transcript.toPlainText()
-    panel.close()
+    panel.shutdown()
 
 
 def test_text_size_rerenders_live(qapp):
@@ -129,4 +129,4 @@ def test_font_buttons_persist(qapp, tmp_path):
     assert int(panel._settings().value("assist/chat_px")) == px0 + 2
     panel._on_font_smaller()
     assert panel._transcript.body_px == px0
-    panel.close()
+    panel.shutdown()

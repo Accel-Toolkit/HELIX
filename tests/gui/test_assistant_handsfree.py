@@ -49,7 +49,7 @@ def test_voice_confirm_denies_pending_request(qapp, tmp_path):
     assert ap._event.is_set()
     assert ap._decision is Decision.DENY
     assert "denied" in panel._transcript.toPlainText()
-    panel.close()
+    panel.shutdown()
 
 
 def test_voice_confirm_approves_pending_request(qapp, tmp_path):
@@ -63,7 +63,7 @@ def test_voice_confirm_approves_pending_request(qapp, tmp_path):
     panel._on_voice_text("yes, go ahead")
     assert ap._event.is_set()
     assert ap._decision is Decision.APPROVE
-    panel.close()
+    panel.shutdown()
 
 
 def test_voice_text_without_pending_autosends_as_voice_turn(qapp, tmp_path):
@@ -80,7 +80,7 @@ def test_voice_text_without_pending_autosends_as_voice_turn(qapp, tmp_path):
     qapp.processEvents()
     assert "▶ what is the beam size" in panel._transcript.toPlainText()
     assert panel._last_turn_was_voice      # earns a follow-up window
-    panel.close()
+    panel.shutdown()
 
 
 def test_typed_send_is_not_a_voice_turn(qapp, tmp_path):
@@ -97,7 +97,7 @@ def test_typed_send_is_not_a_voice_turn(qapp, tmp_path):
             w.wait(2000)
             break
         time.sleep(0.01)
-    panel.close()
+    panel.shutdown()
 
 
 def test_ptt_uses_capture_tap_while_wake_stream_owns_mic(qapp, tmp_path):
@@ -116,7 +116,7 @@ def test_ptt_uses_capture_tap_while_wake_stream_owns_mic(qapp, tmp_path):
     assert panel._wake_btn.isEnabled()
     assert grabbed["audio"].shape == (3 * 160,)
     panel._mic_stream = None
-    panel.close()
+    panel.shutdown()
 
 
 def test_space_key_drives_ptt(qapp, tmp_path):
@@ -142,7 +142,7 @@ def test_space_key_drives_ptt(qapp, tmp_path):
     panel.keyReleaseEvent(up)
     assert calls == ["press", "release"]
     panel._recorder = None
-    panel.close()
+    panel.shutdown()
 
 
 def test_space_in_input_line_types_normally(qapp, tmp_path):
@@ -160,7 +160,7 @@ def test_space_in_input_line_types_normally(qapp, tmp_path):
                      Qt.KeyboardModifier.NoModifier)
     panel.keyPressEvent(down)
     assert calls == []                     # typing a space, not PTT
-    panel.close()
+    panel.shutdown()
 
 
 def test_confirm_echo_opens_followup_with_mic_armed(qapp, tmp_path):
@@ -192,7 +192,7 @@ def test_confirm_echo_opens_followup_with_mic_armed(qapp, tmp_path):
     assert panel._last_turn_was_voice
     panel._mic_stream = None
     panel._followup = None
-    panel.close()
+    panel.shutdown()
 
 
 def test_wake_button_disabled_without_stt(qapp, tmp_path, monkeypatch):
@@ -202,7 +202,7 @@ def test_wake_button_disabled_without_stt(qapp, tmp_path, monkeypatch):
     panel, _ = _mock_panel(qapp, tmp_path, [turn_text("x")])
     panel._init_voice()
     assert not panel._wake_btn.isEnabled()
-    panel.close()
+    panel.shutdown()
 
 
 def test_stt_prewarms_at_panel_open(qapp, tmp_path, monkeypatch):
@@ -230,7 +230,7 @@ def test_stt_prewarms_at_panel_open(qapp, tmp_path, monkeypatch):
     panel._init_voice()
     assert built                              # STT created at open
     assert panel._wake_stt is built[0]
-    panel.close()
+    panel.shutdown()
 
 
 # ---- dead-stream resilience (user report: "● rec but nothing heard") --
@@ -264,7 +264,7 @@ def test_ptt_falls_back_to_recorder_when_wake_stream_dead(
     assert made.get("started")                # recorder path, not the tap
     assert panel._capture_tap is None
     panel._mic_released()
-    panel.close()
+    panel.shutdown()
 
 
 def test_mic_died_recovery_cycles_wake_toggle(qapp, tmp_path):
@@ -274,6 +274,12 @@ def test_mic_died_recovery_cycles_wake_toggle(qapp, tmp_path):
     calls = []
     panel._wake_btn.setChecked = calls.append      # record the cycle
     panel._on_mic_died()
+    assert calls == [False]                        # listening off NOW
+    # ...the reopen is DEBOUNCED ~1.5 s (device churn must settle)
+    t0 = time.time()
+    while len(calls) < 2 and time.time() - t0 < 5:
+        qapp.processEvents()
+        time.sleep(0.02)
     assert calls == [False, True]
     assert "microphone stream lost" in panel._transcript.toPlainText()
     # no stream (already shut down) → recovery is a no-op
@@ -281,7 +287,7 @@ def test_mic_died_recovery_cycles_wake_toggle(qapp, tmp_path):
     panel._mic_stream = None
     panel._on_mic_died()
     assert calls == []
-    panel.close()
+    panel.shutdown()
 
 
 def test_voice_failure_resets_state_to_idle(qapp, tmp_path):
@@ -294,4 +300,81 @@ def test_voice_failure_resets_state_to_idle(qapp, tmp_path):
     panel._on_voice_failed("transcription failed: boom")
     assert states == ["idle"]
     assert "boom" in panel._transcript.toPlainText()
-    panel.close()
+    panel.shutdown()
+
+
+def test_wake_autostarts_on_launch_and_persists_choice(qapp, tmp_path,
+                                                       monkeypatch):
+    """MIRAGE parity (2026-07-28): hands-free must start WITH the panel
+    — sessions used to begin silently deaf (gray orb) until the toggle
+    was clicked, and every relaunch reset it."""
+    from linac_gen.assist.testing import turn_text
+
+    monkeypatch.setenv("HELIX_ASSIST_NO_PREWARM", "0")   # opt IN
+    panel, _ = _mock_panel(qapp, tmp_path, [turn_text("x")])
+    try:
+        # default ON: the deferred auto-check fires on the next loop turn
+        assert str(panel._settings().value("assist/wake_on", "1")) == "1"
+        qapp.processEvents()
+        assert panel._wake_btn.isChecked()
+
+        # user turns it OFF -> persisted
+        panel._wake_btn.setChecked(False)
+        assert str(panel._settings().value("assist/wake_on")) == "0"
+
+        # user turns it back ON -> persisted
+        panel._wake_btn.setChecked(True)
+        assert str(panel._settings().value("assist/wake_on")) == "1"
+    finally:
+        panel._settings().setValue("assist/wake_on", "1")
+        panel.shutdown()
+
+
+def test_orb_alive_when_handsfree_starts_gray_when_off(qapp, tmp_path, monkeypatch):
+    """MIRAGE parity (2026-07-28): the orb must leave its gray
+    'starting' state the moment hands-free listening is up, and go
+    gray ('off') only when the user disables listening."""
+    from linac_gen.assist.testing import turn_text
+
+    monkeypatch.setenv("HELIX_ASSIST_NO_PREWARM", "0")   # opt IN to
+    panel, _ = _mock_panel(qapp, tmp_path, [turn_text("x")])   # auto-listen
+    try:
+        states = []
+        panel.state_changed.connect(states.append)
+        # the listening stack now builds OFF the GUI thread — pump
+        # until its completion lands (real CoreAudio open)
+        t0 = time.time()
+        while "idle" not in states and time.time() - t0 < 10:
+            qapp.processEvents()
+            time.sleep(0.02)
+        assert panel._wake_btn.isChecked()
+        assert "idle" in states                 # orb alive + hearing
+        states.clear()
+        panel._wake_btn.setChecked(False)
+        assert "off" in states                  # gray only when disabled
+    finally:
+        panel._settings().setValue("assist/wake_on", "1")
+        panel.shutdown()
+
+
+def test_orb_idle_breathes_with_room_level(qapp):
+    """Ambient mic level must animate the IDLE orb (it only moved
+    during active capture before — the orb sat static/gray while
+    hands-free was in fact hearing the room)."""
+    from linac_gen_gui.interphase.dialogs.assistant_orb import AssistantOrb
+
+    orb = AssistantOrb()
+    orb._timer.stop()                           # tick manually
+    orb.set_state("idle")
+    for _ in range(30):
+        orb._tick()
+    quiet = orb._pulse
+    orb.set_level(0.12)                         # someone speaks nearby
+    for _ in range(30):
+        orb._tick()
+    loud = orb._pulse
+    assert loud > quiet + 0.2                   # visibly bigger glow
+    orb.set_state("off")
+    for _ in range(60):
+        orb._tick()
+    assert orb._pulse < 0.2                     # gray-state: near-static

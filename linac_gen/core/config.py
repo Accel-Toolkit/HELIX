@@ -74,6 +74,38 @@ class BeamConfig:
     # cavity / RFGap), after which the run proceeds as bunched.
     continuous: bool = False
     dc_energy_spread_keV: float = 0.0
+    # ---- Periodic phase coordinates (bunch train) --------------------
+    # OPT-IN.  An RFQ turns a DC beam into a bunch TRAIN — one bunch per
+    # RF period — and HELIX seeds exactly one period, so particles that
+    # slip across a bucket boundary are stored 360° away and the beam
+    # becomes a finite multi-bucket clump.  With this flag the tracker
+    # folds Δφ into ONE BUNCH SPACING after every element and before
+    # every space-charge kick (the Toutatis convention), so the train
+    # never forms: the RF forces are unchanged (they depend only on
+    # cos/sin φ), but σ_φ / ε_z / z-Twiss become single-bunch values
+    # with no post-processing, and the space-charge solver sees one
+    # bunch instead of a clump whose non-periodic field generates a
+    # spurious energy chirp.
+    #
+    # Only applies once the beam is genuinely a train — DC-injected and
+    # then bunched by a TIME-VARYING RF element (see
+    # ``Beam.bunch_train``; a static electrostatic column does not
+    # count) — and only when the local RF frequency is an integer
+    # multiple of the bunch repetition rate.  That rate is
+    # ``Beam.bunch_train_frequency``, captured from the buncher's own
+    # clock at the transition, NOT this config's ``frequency``: a beam
+    # configured at 162.5 MHz and bunched by a 325 MHz gap must fold at
+    # 360°, and using the config value gave 720° and left every
+    # satellite in place with no warning.
+    #
+    # Refused where it would be wrong: backtracking a folded beam (the
+    # fold is not invertible) and ``csr_enabled`` (the CSR wake is built
+    # from the ensemble's absolute longitudinal extent and is not
+    # periodic in the bunch spacing).  A non-harmonic frequency warns
+    # and skips if nothing has been folded yet, and RAISES if folds are
+    # already in flight — they get rescaled by every downstream RF
+    # element and stop being whole RF periods.
+    periodic_phase: bool = False
     # ---- Bi-Gaussian (thermal halo) parameters -----------------------
     # Used only when distribution == "thermal".  ``halo_fraction`` is the
     # mixture weight of the wide-Gaussian halo (0..1); ``halo_ratio`` is

@@ -185,6 +185,29 @@ class BeamTab(QWidget):
         self._dc_dw.setToolTip("1σ energy spread for the continuous beam.")
         self._dc_dw.setEnabled(False)   # unchecked by default → grey out
         self._continuous.toggled.connect(self._on_continuous_toggled)
+        self._periodic_phase = QCheckBox("Periodic phase (bunch train)")
+        self._periodic_phase.setToolTip(
+            "An RFQ makes one bunch per RF period, but the simulation "
+            "seeds only ONE period.  Space charge then pushes particles "
+            "across a bucket boundary, and with Δφ stored unwrapped they "
+            "form satellite clumps that inflate every reported σ_φ and "
+            "ε_z.\n\n"
+            "When checked, Δφ is folded into one bunch spacing during "
+            "tracking (the Toutatis convention), so a particle that "
+            "leaves the bucket re-enters the neighbouring one.  Applies "
+            "only to a beam that was injected DC and then bunched by a "
+            "time-varying RF element — a beam born bunched, or one that "
+            "only passed a static electrostatic column, is never "
+            "touched.\n\n"
+            "With space charge off this changes nothing but the "
+            "reported longitudinal numbers.  With it on the solver sees "
+            "a compact bunch instead of a multi-bucket clump, so "
+            "transmission and emittance shift slightly — that is the "
+            "point of the option.\n\n"
+            "Cannot be combined with CSR, and backtracking refuses a "
+            "run made with this on: the fold is not invertible."
+        )
+        self._periodic_phase.setEnabled(False)   # follows the DC toggle
         for lab, w in [("Species", self._species), ("W_kin", self._energy),
                        ("f_rf", self._freq), ("I (peak)", self._current),
                        ("Duty", self._duty), ("N particles", self._npart),
@@ -192,7 +215,8 @@ class BeamTab(QWidget):
                        ("Halo fraction", self._halo_frac),
                        ("Halo σ ratio", self._halo_ratio),
                        ("", self._continuous),
-                       ("DC ΔW (1σ)", self._dc_dw)]:
+                       ("DC ΔW (1σ)", self._dc_dw),
+                       ("", self._periodic_phase)]:
             f.addRow(lab, w)
         return g
 
@@ -206,6 +230,13 @@ class BeamTab(QWidget):
         for w in (self._emit_z, self._alpha_z, self._beta_z):
             w.setEnabled(not on)
         self._dc_dw.setEnabled(on)
+        # The fold only ever engages on a DC-injected beam that has since
+        # been bunched, so the control is meaningless without DC.  Grey
+        # it out but KEEP the tick: clearing it here silently destroyed
+        # the user's setting on an accidental untick-and-retick of
+        # Continuous beam.  ``_build_cfg`` ANDs with the DC state, so a
+        # greyed-out tick can never reach the project.
+        self._periodic_phase.setEnabled(on)
 
     def _col_twiss(self) -> QGroupBox:
         g = QGroupBox("Twiss — X / Y / Z")
@@ -296,6 +327,15 @@ class BeamTab(QWidget):
                   self._disp_x, self._disp_xp, self._disp_y, self._disp_yp,
                   self._mx, self._my, self._mz):
             s.setValue(0.0)
+        # Beam-mode toggles.  These were historically left alone, which
+        # is survivable for a display flag but not for one that changes
+        # tracked coordinates: "Reset defaults" then wrote a still-ticked
+        # Periodic phase straight into the project.
+        self._continuous.setChecked(False)
+        self._dc_dw.setValue(0.0)
+        self._periodic_phase.setChecked(False)
+        self._halo_frac.setValue(0.05)
+        self._halo_ratio.setValue(5.0)
         self._source = "generate"
         self._distribution_file = None
         if hasattr(self, "_file_chip"):
@@ -363,6 +403,9 @@ class BeamTab(QWidget):
         self._continuous.setChecked(bool(getattr(cfg, "continuous", False)))
         self._dc_dw.setValue(float(getattr(cfg, "dc_energy_spread_keV", 0.0)))
         self._on_continuous_toggled(self._continuous.isChecked())
+        # AFTER the toggle handler, which sets this box's enabled state.
+        self._periodic_phase.setChecked(
+            bool(getattr(cfg, "periodic_phase", False)))
         # Bi-Gaussian (thermal) halo fields — tolerate older configs that
         # don't carry them; they default to (0.05, 5.0) which only matter
         # when distribution == "thermal".
@@ -502,6 +545,11 @@ class BeamTab(QWidget):
             mismatch_x=self._mx.value(), mismatch_y=self._my.value(), mismatch_z=self._mz.value(),
             continuous=bool(self._continuous.isChecked()),
             dc_energy_spread_keV=float(self._dc_dw.value()),
+            # ANDed with DC: the tracker only folds a DC-injected beam,
+            # so a tick left over from an earlier DC session must not be
+            # written into a bunched project.
+            periodic_phase=bool(self._periodic_phase.isChecked()
+                                and self._continuous.isChecked()),
             halo_fraction=float(self._halo_frac.value()),
             halo_ratio=float(self._halo_ratio.value()),
             source=self._source,

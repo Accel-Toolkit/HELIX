@@ -147,7 +147,7 @@ def _install_excepthook() -> None:
     """
     import traceback
 
-    hook_state: dict = {"dialog": None}
+    hook_state: dict = {"dialog": None, "keepalive": set()}
 
     def _hook(etype, value, tb) -> None:
         # stderr first — must survive even if the Qt side below fails.
@@ -175,8 +175,28 @@ def _install_excepthook() -> None:
                 "".join(traceback.format_exception(etype, value, tb)))
             box.setStandardButtons(QMessageBox.StandardButton.Ok)
             hook_state["dialog"] = box
-            box.finished.connect(
-                lambda _r: hook_state.update(dialog=None))
+            # LIFETIME (native SIGSEGV, crash report 2026-07-28): Qt
+            # emits ``finished`` from INSIDE QMessageBox::closeEvent
+            # (macOS red close button).  If that handler drops the LAST
+            # Python reference, the C++ dialog is destroyed while its
+            # own close-handling frames are still on the stack —
+            # use-after-free in QDialogButtonBox::standardButton.  So on
+            # finished: re-arm the gate immediately (a follow-up error
+            # must be able to pop a fresh dialog with no event-loop spin
+            # in between), PARK a keep-alive reference, and hand
+            # destruction to Qt's deferred deletion; the parked
+            # reference is released only after ``destroyed``, when the
+            # C++ side is already gone.
+            def _release(_r, b=box, state=hook_state):
+                state["keepalive"].add(b)
+                state["dialog"] = None
+                b.deleteLater()
+
+            def _gone(*_a, b=box, state=hook_state):
+                state["keepalive"].discard(b)
+
+            box.finished.connect(_release)
+            box.destroyed.connect(_gone)
             # show(), never exec(): re-entering the event loop from an
             # arbitrary interrupted stack (mid-paint, mid-signal) is how
             # crash dialogs cause second crashes.
@@ -546,6 +566,12 @@ class InterphaseWindow(QMainWindow):
         # captured as the session beam.
         self.state.beam_config_changed.connect(self._save_session_beam)
         QTimer.singleShot(0, self._restore_last_session)
+        # MIRAGE parity (2026-07-28): hands-free listening starts with
+        # the APP, not with the first click — the assistant panel is
+        # built hidden at startup so the wake stack (mic + VAD +
+        # Whisper) is live immediately and the orb reacts to the room.
+        # Saying the wake word pops the panel into view.
+        QTimer.singleShot(0, self._warm_assistant)
         # Catch macOS Cmd+Q / system-menu Quit which doesn't fire the
         # window's closeEvent.  Has to run after QApplication exists,
         # which it does by the time __init__ runs (the launcher always
@@ -756,13 +782,13 @@ class InterphaseWindow(QMainWindow):
                 except Exception:
                     pass
         # Dialog-owned workers the tab sweep doesn't see.
-        # Assistant panel: close it FIRST (its closeEvent cancels the SDK
-        # turn + shuts down its job pool); then sweep its agent worker so a
-        # long compute can't leave a running QThread at interpreter exit.
+        # Assistant panel: shut it down FIRST (cancels the SDK turn +
+        # closes its backend loop); ✕ only HIDES the panel now, so this
+        # is the one place the assistant actually dies.
         asst = getattr(self, "_assistant_panel", None)
         if asst is not None:
             try:
-                asst.close()
+                asst.shutdown()
             except Exception:
                 pass
             aw = getattr(asst, "_worker", None)
@@ -784,41 +810,65 @@ class InterphaseWindow(QMainWindow):
         workers = [w for w in workers
                    if w is not None and hasattr(w, "isRunning")
                    and w.isRunning()]
-        if not workers:
-            return
-
-        # Sever every GUI-facing connection before pumping: a worker
-        # finishing during the wait would otherwise invoke its normal
-        # completion handler — modal result dialogs and Save-PNG pickers
-        # opening mid-quit stall the teardown.
-        for w in workers:
-            try:
-                w.disconnect()
-            except (TypeError, RuntimeError):
-                pass
-
-        app = QApplication.instance()
-        timer = QElapsedTimer()
-        timer.start()
-        while workers and timer.elapsed() < 5000:
-            if app is not None:
-                app.processEvents(
-                    QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
-            for w in list(workers):
-                try:
-                    if not w.isRunning() or w.wait(25):
-                        workers.remove(w)
-                except Exception:
-                    workers.remove(w)
-
         if workers:
-            _PARKED_WORKERS.extend(workers)
+            # Sever every GUI-facing connection before pumping: a worker
+            # finishing during the wait would otherwise invoke its normal
+            # completion handler — modal result dialogs and Save-PNG
+            # pickers opening mid-quit stall the teardown.
+            for w in workers:
+                try:
+                    w.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+
+            app = QApplication.instance()
+            timer = QElapsedTimer()
+            timer.start()
+            while workers and timer.elapsed() < 5000:
+                if app is not None:
+                    app.processEvents(
+                        QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+                for w in list(workers):
+                    try:
+                        if not w.isRunning() or w.wait(25):
+                            workers.remove(w)
+                    except Exception:
+                        workers.remove(w)
+
+            if workers:
+                _PARKED_WORKERS.extend(workers)
+                try:
+                    _settings().sync()
+                except Exception:
+                    pass
+                print(f"[shutdown] {len(workers)} worker thread(s) still "
+                      "running after 5 s — forcing process exit.",
+                      file=sys.stderr)
+                os._exit(0)
+
+        # THE quit net: plain (non-QThread) NON-DAEMON threads — SDK
+        # executor workers, tool pools — are invisible to the sweep
+        # above, but the interpreter's atexit join waits on them and the
+        # app "hangs at quit" with the window already gone.  If any are
+        # still alive after the assistant/tab shutdowns, exit the hard
+        # way (same rationale as the QThread branch: settings synced,
+        # never a hang).  NEVER under pytest: window-close tests run in
+        # the SAME process as the whole suite — an os._exit here would
+        # kill pytest silently mid-run.
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return
+        import threading as _th
+        stragglers = [t for t in _th.enumerate()
+                      if t is not _th.main_thread()
+                      and not t.daemon and t.is_alive()]
+        if stragglers:
             try:
                 _settings().sync()
             except Exception:
                 pass
-            print(f"[shutdown] {len(workers)} worker thread(s) still "
-                  "running after 5 s — forcing process exit.",
+            names = ", ".join(t.name for t in stragglers[:6])
+            print(f"[shutdown] {len(stragglers)} non-daemon thread(s) "
+                  f"alive at quit ({names}) — forcing process exit.",
                   file=sys.stderr)
             os._exit(0)
 
@@ -2036,8 +2086,10 @@ class InterphaseWindow(QMainWindow):
         out = getattr(self, "_backtrack_write_dst", None)
         if out and worker is not None:
             try:
-                from linac_gen.io.tracewin_dst import write_dst
+                from linac_gen.io.tracewin_dst import (
+                    write_dst, warn_if_nonstandard_dst_header)
                 b = worker.beam
+                warn_if_nonstandard_dst_header(b)
                 write_dst(out, b.particles[b.alive_mask],
                           current_mA=b.current,
                           frequency_MHz=b.ref.frequency,
@@ -2199,13 +2251,31 @@ class InterphaseWindow(QMainWindow):
                 f"The optional AI assistant could not load:\n{exc}")
             return
         existing = getattr(self, "_assistant_panel", None)
-        if existing is not None and existing.isVisible():
+        if existing is not None \
+                and not getattr(existing, "_closing", False):
+            existing.show()                 # incl. the hidden warm panel
             existing.raise_()
             existing.activateWindow()
             return
         self._assistant_panel = AssistantPanel(self, self.state)
         self._assistant_panel.show()
         self._assistant_panel.raise_()
+
+    def _warm_assistant(self) -> None:
+        """Build the assistant panel HIDDEN so hands-free wake listening
+        runs from app launch (MIRAGE parity).  Best-effort: any failure
+        leaves the lazy click-to-open path untouched."""
+        import os as _os
+        if _os.environ.get("HELIX_ASSIST_NO_PREWARM") == "1":
+            return                           # tests / opt-out
+        if getattr(self, "_assistant_panel", None) is not None:
+            return
+        try:
+            from linac_gen_gui.interphase.dialogs.assistant_panel import (
+                AssistantPanel)
+            self._assistant_panel = AssistantPanel(self, self.state)
+        except Exception:                    # noqa: BLE001
+            pass
 
     def _open_console(self) -> None:
         try:
@@ -2510,6 +2580,19 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(argv)
     app.setApplicationName("HELIX")
     app.setOrganizationName("Helix")
+    # SINGLE-INSTANCE guard: two GUIs share one microphone and answer
+    # in stereo (it happened — ledger-proven).  QLockFile handles stale
+    # locks from crashed instances via its PID check.
+    from PyQt6.QtCore import QDir, QLockFile
+    import getpass
+    _lock = QLockFile(QDir.tempPath()
+                      + f"/helix_interphase_{getpass.getuser()}.lock")
+    if not _lock.tryLock(100):
+        print("HELIX GUI is already running — not starting a second "
+              "instance (two instances would share the microphone).",
+              file=sys.stderr)
+        return 0
+    app._helix_instance_lock = _lock             # keep it alive
     app.setStyleSheet(theme.dark_qss())
     _install_excepthook()
 

@@ -31,7 +31,7 @@ def test_instant_command_skips_the_model(qapp, tmp_path):
     assert "model should not run" not in t       # no LLM turn happened
     assert panel._worker is None
     assert "instant" in panel._perf.text()       # HUD measured it
-    panel.close()
+    panel.shutdown()
 
 
 def test_nuanced_text_goes_to_the_model(qapp, tmp_path):
@@ -43,7 +43,7 @@ def test_nuanced_text_goes_to_the_model(qapp, tmp_path):
     panel._send()
     assert _wait(qapp, lambda: "nuance handled by model"
                  in panel._transcript.toPlainText())
-    panel.close()
+    panel.shutdown()
 
 
 def test_checkbox_off_routes_everything_to_model(qapp, tmp_path):
@@ -56,7 +56,7 @@ def test_checkbox_off_routes_everything_to_model(qapp, tmp_path):
     assert _wait(qapp, lambda: "model ran"
                  in panel._transcript.toPlainText())
     assert "instant: get_status" not in panel._transcript.toPlainText()
-    panel.close()
+    panel.shutdown()
 
 
 def test_first_token_latency_measured(qapp, tmp_path):
@@ -69,7 +69,7 @@ def test_first_token_latency_measured(qapp, tmp_path):
     # MockProvider may not stream deltas; the HUD hook must at least
     # never crash and the label stays a QLabel contract
     assert panel._perf.text() is not None
-    panel.close()
+    panel.shutdown()
 
 
 def test_tour_reopens_mic_after_each_station(qapp, tmp_path):
@@ -97,4 +97,4 @@ def test_tour_reopens_mic_after_each_station(qapp, tmp_path):
     get_state(panel._session.context).active = False
     panel._open_followup_if_voice()
     assert opened == []
-    panel.close()
+    panel.shutdown()

@@ -65,6 +65,7 @@ class BeamConfig:
     # DC (continuous, pre-RFQ) mode
     continuous: bool = False
     dc_energy_spread_keV: float = 0.0
+    periodic_phase: bool = False
 
     # Thermal halo (only used when distribution="thermal")
     halo_fraction: float = 0.05
@@ -154,9 +155,32 @@ This matches TraceWin's behaviour with input `.dst` files.
 |---|---|---|
 | `continuous` | `False` | True = continuous (DC) beam, no longitudinal bunching |
 | `dc_energy_spread_keV` | `0.0` | for continuous beams: σ_W in keV |
+| `periodic_phase` | `False` | fold Δφ into one bunch spacing while tracking |
 
 For pre-RFQ LEBT runs always set `continuous=True` — see
 [DC mode](../05_space_charge/04_dc_mode.md).
+
+`periodic_phase` matters once that DC beam is bunched by an RFQ or
+buncher.  The result is one period of a *bunch train*, and particles
+that space charge pushes across a bucket boundary would otherwise be
+stored a full bunch spacing away, inflating every reported σ_φ / ε_z.
+With the flag on, `Tracker._fold_phase` folds Δφ into one bunch
+spacing (period 360·f_local/f_bunch — **720° after a 162.5 → 325 MHz
+jump**) after every element and before every space-charge kick, so the
+train never forms.
+
+It applies only to a beam that was injected DC and has since been
+bunched by a **time-varying RF** element; a beam born bunched, or one
+that only passed a static electrostatic column, is never touched.  The
+period comes from the buncher's own clock
+(`Beam.bunch_train_frequency`), not from `frequency` above — a beam
+configured at 162.5 MHz and bunched by a 325 MHz gap folds at 360°.
+
+Refusals: backtracking a folded run, `csr_enabled`, and an imported
+`MATRIX` whose column 4 couples Δφ all raise.  A non-harmonic
+frequency warns and skips if nothing has been folded yet, and raises
+if folds are already in flight.  See
+[RFQ cell → bunch train](../03_elements/09_rfqcell.md).
 
 ### Thermal halo
 

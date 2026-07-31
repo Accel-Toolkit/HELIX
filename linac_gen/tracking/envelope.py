@@ -390,13 +390,13 @@ def _fitted_matrix_slice_at(element, ref, ds_mm: float,
     :class:`OutOfScopeError` the call falls back to the wrapped RK4
     path so the surrogate can NEVER silently use bad outputs.
 
-    Multi-cell elements (e.g. :class:`VaneRFQ`) accept ``_z_from_mm`` so the
-    bundle matrix is computed at the correct element-local z; without it
-    every bundle restarts at z=0 and applies the first cell's kick over and
-    over (σ blows up by 10⁵³).  Other elements (FieldMap1D / FieldMap3D /
-    RfqCell) don't take the kwarg yet — fall back to the unkeyed call,
-    which is correct for them since the field they integrate is z-aware
-    via β/γ/ref.s rather than via this argument.
+    Multi-cell elements (:class:`VaneRFQ`, :class:`RfqCell`) accept
+    ``_z_from_mm`` so the bundle matrix is computed at the correct
+    element-local z; without it every bundle restarts at z=0 and applies
+    the first cell's kick over and over (σ blows up by 10⁵³).  Elements
+    that don't take the kwarg (FieldMap1D / FieldMap3D) fall back to the
+    unkeyed call, which is correct for them since the field they
+    integrate is z-aware via β/γ/ref.s rather than via this argument.
     """
     # M3 hook: route through a registered surrogate if available.
     # Import lazily to avoid a circular import at module load.

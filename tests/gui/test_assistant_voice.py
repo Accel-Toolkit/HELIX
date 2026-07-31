@@ -41,7 +41,7 @@ def test_mic_press_release_transcribes_and_fills_input(
         assert panel._input.text() == "run the envelope"
         assert panel._mic_btn.text() == "🎤 Hold"
     finally:
-        panel.close()
+        panel.shutdown()
 
 
 def test_speak_replies_summarises_not_verbatim(qapp, monkeypatch):
@@ -65,7 +65,7 @@ def test_speak_replies_summarises_not_verbatim(qapp, monkeypatch):
         assert "0.6234" not in spoken["said"]
         assert "about 0.62" in spoken["said"]
     finally:
-        panel.close()
+        panel.shutdown()
 
 
 def test_voice_absent_disables_controls(qapp, monkeypatch):
@@ -80,7 +80,7 @@ def test_voice_absent_disables_controls(qapp, monkeypatch):
         assert not panel._mic_btn.isEnabled()
         assert not panel._speak.isEnabled()
     finally:
-        panel.close()
+        panel.shutdown()
 
 
 class _ImmediateTranscribe:
@@ -145,7 +145,7 @@ def test_speak_as_it_goes_sentences_and_no_double_speak(
         panel._on_turn_done()                      # must NOT re-speak
         assert len(said) == n
     finally:
-        panel.close()
+        panel.shutdown()
 
 
 def test_streamed_code_fences_are_never_spoken(qapp, monkeypatch, tmp_path):
@@ -181,7 +181,7 @@ def test_streamed_code_fences_are_never_spoken(qapp, monkeypatch, tmp_path):
         assert "abc" not in spoken
         assert "That is all." in spoken              # prose still spoken
     finally:
-        panel.close()
+        panel.shutdown()
 
 
 def test_release_never_joins_recorder_on_gui_thread(qapp, monkeypatch):
@@ -223,7 +223,7 @@ def test_release_never_joins_recorder_on_gui_thread(qapp, monkeypatch):
                 break
         assert stopped_on["thread"] is not threading.main_thread()
     finally:
-        panel.close()
+        panel.shutdown()
 
 
 def test_quick_click_reports_too_short_not_nothing_heard(qapp, monkeypatch):
@@ -259,4 +259,4 @@ def test_quick_click_reports_too_short_not_nothing_heard(qapp, monkeypatch):
         assert "too short" in panel._transcript.toPlainText()
         assert "nothing heard" not in panel._transcript.toPlainText()
     finally:
-        panel.close()
+        panel.shutdown()

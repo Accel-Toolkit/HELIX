@@ -47,6 +47,7 @@ needed.
 from __future__ import annotations
 
 import struct
+import warnings
 from pathlib import Path
 from typing import Tuple
 
@@ -206,6 +207,95 @@ def _twiss_from_particles(particles: np.ndarray,
     out["emit_nx"] = out["emit_x"] * bg
     out["emit_ny"] = out["emit_y"] * bg
     return out
+
+
+class DstHeaderWarning(UserWarning):
+    """The ``.dst`` header cannot represent this beam faithfully.
+
+    The format carries ONE frequency, and HELIX writes the LOCAL RF
+    clock into it because that is the clock its Δφ degrees are measured
+    in.  Real TraceWin files write the BUNCH REPETITION RATE instead —
+    measured 2026-07-31 across six genuine PIP-II files, every one
+    carries 162.5 MHz whether the particles sit at 30 keV, 166 MeV
+    (a 325 MHz section) or 752 MeV (650 MHz).  Downstream of a
+    frequency jump the two values differ and a HELIX-written file is
+    therefore non-standard.
+    """
+
+
+def warn_if_nonstandard_dst_header(beam) -> bool:
+    """Warn when this beam's ``.dst`` header will not match TraceWin's.
+
+    Returns True when a warning was issued.  Only fires downstream of a
+    frequency jump, where ``bunch_frequency`` (pinned at beam creation)
+    and ``ref.frequency`` (the live RF clock) have diverged.
+
+    NOT fixed by simply writing ``bunch_frequency``: the phase column
+    would then be local-clock degrees under a bunch-rate label, which
+    is a worse failure than the present one because it looks
+    standard-compliant.  Whether TraceWin converts its phases on export
+    is unresolved and needs one round-trip through real TraceWin to
+    settle; until then HELIX stays self-consistent and says so loudly.
+
+    ------------------------------------------------------------------
+    DEFERRED FIX (parked 2026-07-31 by decision — do not half-do it)
+    ------------------------------------------------------------------
+    This is NOT merely a caller passing the wrong variable, even though
+    it looks like one: ``write_dst``'s own docstring documents its
+    ``frequency_MHz`` parameter as the BUNCH FREQUENCY, and
+    ``cli/common.py::write_final_dst`` hands it ``beam.ref.frequency``
+    with no comment.  ``git blame`` shows the line was last touched by
+    an unrelated alive-particles fix, so the mismatch was never a
+    decision.  Fixing the argument ALONE would break the clock, because
+    ``write_dst`` does no frequency conversion and therefore assumes the
+    caller's Δφ is already in bunch-clock degrees.
+
+    The fix is BOTH halves together:
+        frequency_MHz = beam.bunch_frequency
+        dphi_written  = dphi_local * (f_bunch / f_local)
+
+    BLOCKED ON an external anchor.  A round-trip test proves nothing
+    here — scale on write, unscale on read, and HELIX agrees with itself
+    whether or not the convention is right (the same trap as the ×βγ
+    writer bug that round-tripped perfectly while being ~15× wrong).
+    Settle it with one real TraceWin run: a known bunch through a
+    162.5 → 325 MHz jump, exported past the jump, its σ_φ compared
+    against the σ_z TraceWin reports at that plane.  The σ_z test on the
+    files we already hold cannot separate the hypotheses — 1.9 mm and
+    0.9 mm at the SSR2 exit are both physically plausible.
+
+    ALSO DEFERRED: ``BeamConfig.bunch_frequency_MHz`` (default 0 =
+    "same as the clock").  A loaded ``.dst`` is authoritative for the
+    RF clock, correctly, but it cannot be authoritative for the bunch
+    REPETITION RATE — the format carries no such field.  Today there is
+    no way, GUI or config, to state it: ``factory.py`` overrides
+    ``BeamConfig.frequency`` from the header and ``Beam.__init__``
+    derives ``bunch_frequency`` from that, so a Beam-tab value is
+    silently ignored.  Needed before any segmented workflow (exporting
+    mid-linac and restarting), which is exactly when the bunch rate can
+    no longer be inferred.
+
+    EXPOSURE TODAY: none.  The failure needs a frequency jump AND a
+    ``.dst`` round-trip.  ``examples/MEBT_To_Foil`` has the jump
+    (162.5 → 325 → 650, so the error would be ×4) but no project in the
+    repo imports a ``.dst`` written after a jump — 34 of 35 are
+    ``source=generate``, and the one importer reads a TraceWin file at
+    z = 0 on a line with zero FREQ cards.
+    """
+    f_local = float(getattr(getattr(beam, "ref", None), "frequency", 0.0) or 0.0)
+    f_bunch = float(getattr(beam, "bunch_frequency", 0.0) or 0.0)
+    if f_local <= 0.0 or f_bunch <= 0.0 or abs(f_local - f_bunch) <= 1e-9:
+        return False
+    warnings.warn(
+        f"writing a .dst downstream of a frequency jump: the header will "
+        f"carry the LOCAL RF clock {f_local:g} MHz, which is what this "
+        f"file's phase column is measured in, but real TraceWin files "
+        f"carry the BUNCH REPETITION RATE ({f_bunch:g} MHz here) at every "
+        f"location.  This file round-trips correctly through HELIX and is "
+        f"NOT interchangeable with TraceWin; on re-import the macrocharge "
+        f"Q = I/f would use {f_local:g} MHz instead of {f_bunch:g} MHz.",
+        DstHeaderWarning, stacklevel=3)
+    return True
 
 
 def write_dst(path: str, particles: np.ndarray,

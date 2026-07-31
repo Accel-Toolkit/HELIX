@@ -21,8 +21,10 @@ from __future__ import annotations
 import contextlib
 import re
 import shutil
+import tempfile
 import subprocess
 import threading
+import time
 
 # ---------------------------------------------------------------------------
 # PortAudio lifecycle serialization
@@ -87,6 +89,7 @@ def voice_status() -> str:
 # speech → text (faster-whisper)
 # ---------------------------------------------------------------------------
 _MODEL_CACHE: dict = {}
+_MODEL_CACHE_LOCK = threading.Lock()
 
 
 class WhisperSTT:
@@ -113,12 +116,18 @@ class WhisperSTT:
 
     def _model(self):
         key = (self.model_size, self.device, self.compute_type)
-        if key not in _MODEL_CACHE:
-            from faster_whisper import WhisperModel
-            _MODEL_CACHE[key] = WhisperModel(
-                self.model_size, device=self.device,
-                compute_type=self.compute_type)
-        return _MODEL_CACHE[key]
+        # locked: prewarm + wake + follow-up can race first use — two
+        # concurrent WhisperModel loads double memory and one is wasted
+        with _MODEL_CACHE_LOCK:
+            if key not in _MODEL_CACHE:
+                from faster_whisper import WhisperModel
+                _MODEL_CACHE[key] = WhisperModel(
+                    self.model_size, device=self.device,
+                    compute_type=self.compute_type)
+            return _MODEL_CACHE[key]
+
+    _INFER_LOCK = threading.Lock()   # spec-STT + final transcribe share
+    #                                  ONE WhisperModel — serialize inference
 
     def transcribe(self, audio, samplerate: int = 16000) -> str:
         """``audio``: float32 mono numpy array at ``samplerate`` Hz."""
@@ -126,9 +135,10 @@ class WhisperSTT:
         a = np.asarray(audio, dtype=np.float32).reshape(-1)
         if a.size < int(0.3 * samplerate):      # too short to be speech
             return ""
-        segments, _info = self._model().transcribe(a, language="en",
-                                                   beam_size=1)
-        return " ".join(s.text.strip() for s in segments).strip()
+        with WhisperSTT._INFER_LOCK:
+            segments, _info = self._model().transcribe(a, language="en",
+                                                       beam_size=1)
+            return " ".join(s.text.strip() for s in segments).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +236,129 @@ def speakable_numbers(text: str) -> str:
     return _DEC_POINT.sub(r"\1 point ", t)
 
 
+# --- numbers spoken as WORDS -------------------------------------------
+# kokoro's grapheme-to-phoneme step is unreliable on multi-digit
+# numerals (verified live: "297.6" was voiced "ninety seven" — the
+# hundreds digit AND the fraction dropped).  Digits must never reach
+# the engine: integers become English words, fractional digits are
+# spelled one by one ("297.65" → "two hundred ninety seven point six
+# five").
+
+_ONES = ["zero", "one", "two", "three", "four", "five", "six", "seven",
+         "eight", "nine", "ten", "eleven", "twelve", "thirteen",
+         "fourteen", "fifteen", "sixteen", "seventeen", "eighteen",
+         "nineteen"]
+_TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty",
+         "seventy", "eighty", "ninety"]
+_SCALES = [(10 ** 12, "trillion"), (10 ** 9, "billion"),
+           (10 ** 6, "million"), (10 ** 3, "thousand"), (100, "hundred")]
+
+
+def _int_words(n: int) -> str:
+    """0 ≤ n < 10**15 → English words (no 'and', TTS-friendly)."""
+    if n < 20:
+        return _ONES[n]
+    if n < 100:
+        t, r = divmod(n, 10)
+        return _TENS[t] + (f" {_ONES[r]}" if r else "")
+    for scale, name in _SCALES:
+        if n >= scale:
+            head, rest = divmod(n, scale)
+            out = f"{_int_words(head)} {name}"
+            return f"{out} {_int_words(rest)}" if rest else out
+    return _ONES[0]                                     # unreachable
+
+
+_DEC_TRIM = re.compile(r"(\d+)\.(\d{3,})")
+
+
+def _trim_spoken_decimal(m: re.Match) -> str:
+    """MIRAGE parity: the VOICE says at most 2 fraction digits
+    ("800.638" -> "800.63"); tiny values keep digits through the first
+    non-zero so 0.0021 never collapses to "zero point zero zero"."""
+    frac = m.group(2)
+    keep = 2
+    if set(frac[:2]) == {"0"}:
+        nz = next((i for i, d in enumerate(frac) if d != "0"), len(frac) - 1)
+        keep = min(nz + 2, len(frac))
+    return f"{m.group(1)}.{frac[:keep]}"
+
+
+_NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)*")
+
+
+def _number_words(m: re.Match) -> str:
+    tok = m.group(0)
+    parts = tok.replace(",", "").split(".")
+    try:
+        head = int(parts[0])
+    except ValueError:                                  # noqa: PERF203
+        return tok
+    if head >= 10 ** 15:                # astronomical: spell digit-wise
+        spoken = " ".join(_ONES[int(d)] for d in parts[0])
+    else:
+        spoken = _int_words(head)
+    for frac in parts[1:]:              # each .xxx group digit by digit
+        spoken += " point " + " ".join(_ONES[int(d)] for d in frac)
+    return spoken
+
+
+# --- symbols spoken as WORDS -------------------------------------------
+# The phonemizer silently DROPS glyphs it has no phonemes for — σ_x was
+# voiced as just "x".  Every Greek letter physicists write must reach
+# the engine as its name.
+_GREEK = {
+    "α": "alpha", "β": "beta", "γ": "gamma", "Γ": "gamma",
+    "δ": "delta", "Δ": "delta", "∆": "delta", "ε": "epsilon",
+    "ζ": "zeta", "η": "eta", "θ": "theta", "Θ": "theta",
+    "λ": "lambda", "Λ": "lambda", "μ": "mu", "µ": "mu", "ν": "nu",
+    "π": "pi", "ρ": "rho", "σ": "sigma", "Σ": "sigma", "τ": "tau",
+    "φ": "phi", "Φ": "phi", "χ": "chi", "ψ": "psi", "Ψ": "psi",
+    "ω": "omega", "Ω": "omega", "±": " plus or minus ", "≈": " about ",
+    "→": " to ", "≥": " at least ", "≤": " at most ",
+}
+# subscript tokens a physicist reads letter-by-letter (or as "prime")
+_SUBSCRIPT = re.compile(r"\b(xx|yy|zz|xy|yx|nx|ny|xp|yp)\b")
+_SUB_WORDS = {"xx": "x x", "yy": "y y", "zz": "z z", "xy": "x y",
+              "yx": "y x", "nx": "n x", "ny": "n y",
+              "xp": "x prime", "yp": "y prime"}
+_ASCII_MINUS = re.compile(r"(?<![\w.])-(?=\d)")
+
+
+def speechify(text: str) -> str:
+    """THE speech normalizer — everything ``say()`` voices goes through
+    here, in an order where each stage still sees what it needs:
+
+    1. markdown syntax out (never say "asterisk");
+    2. scientific notation → words (BEFORE the identifier-dash rule,
+       which used to eat the exponent's minus: 2.1e-3 → "2.1e 3");
+    3. units (they must see raw digits);
+    4. Greek letters / comparison symbols → their names;
+    5. underscores → spaces, subscripts letter-by-letter
+       (sigma_x → "sigma x", σ_xx → "sigma x x");
+    6. every numeral → English words (kokoro misreads digits);
+    7. a leading ASCII minus → "minus".
+    """
+    t = strip_markdown_for_speech(str(text).strip())
+    t = _SCI_NOTE.sub(
+        lambda m: (f"{m.group(1)} times ten to the "
+                   f"{'minus ' if m.group(2) == '-' else ''}{m.group(3)}"),
+        t)
+    t = normalize_units_for_speech(t)
+    for glyph, word in _GREEK.items():
+        if glyph in t:
+            t = t.replace(glyph, f" {word} ")
+    t = t.replace("_", " ")
+    t = t.replace(" - ", ", ")          # MIRAGE parity: dash = pause
+    t = _SUBSCRIPT.sub(lambda m: _SUB_WORDS[m.group(1)], t)
+    t = _DEC_TRIM.sub(_trim_spoken_decimal, t)
+    t = _UNI_MINUS.sub("minus ", t)
+    t = _ASCII_MINUS.sub("minus ", t)
+    t = _NUMBER.sub(_number_words, t)
+    t = re.sub(r"\s+([,.;:!?])", r"\1", t)
+    return re.sub(r"[ \t]+", " ", t).strip()
+
+
 # Markdown must never be SPOKEN (ported from the MIRAGE assistant's
 # clean_for_speech — "asterisk asterisk two point one four" was its
 # bug too).  Word-boundary guards keep identifiers like emit_x intact.
@@ -265,9 +398,11 @@ _UNIT_WORDS = [
     ("pi.mm.mrad", "pi millimeter milliradian"),
     ("π.mm.mrad", "pi millimeter milliradian"),
     ("pi mm mrad", "pi millimeter milliradian"),
-    ("deg.MeV", "degree M e V"),
-    ("deg·MeV", "degree M e V"),
-    ("MeV", "M e V"), ("keV", "k e V"), ("GeV", "G e V"),
+    ("deg.MeV", "degree mega-electron-volts"),
+    ("deg·MeV", "degree mega-electron-volts"),
+    ("MeV", "mega-electron-volts"), ("keV", "kilo-electron-volts"),
+    ("GeV", "giga-electron-volts"),
+    ("kV", "kilovolts"), ("MV", "megavolts"),
     ("mrad", "milliradians"), ("mA", "milliamps"), ("uA", "microamps"),
     ("µA", "microamps"),
     ("MHz", "megahertz"), ("kHz", "kilohertz"),
@@ -305,6 +440,36 @@ def _kokoro_files():
     return (models[-1], voices[-1]) if models and voices else (None, None)
 
 
+def _edge_fade(samples, sr: int, fade_s: float = 0.005):
+    """5 ms linear fade at both ends — kills the boundary click every
+    raw clip start/stop produces (MIRAGE parity)."""
+    import numpy as np
+    n = min(int(fade_s * sr), samples.size // 2)
+    if n > 0:
+        ramp = np.linspace(0.0, 1.0, n, dtype=np.float32)
+        samples[:n] *= ramp
+        samples[-n:] *= ramp[::-1]
+    return samples
+
+
+def _write_wav(samples, sr: int, path: str) -> None:
+    """float32 [-1,1] mono → 16-bit PCM wav via stdlib (no soundfile dep)."""
+    import wave
+
+    import numpy as np
+    pcm = (np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2")
+    with wave.open(path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(int(sr))
+        wf.writeframes(pcm.tobytes())
+
+
+def _afplay_available() -> bool:
+    import sys as _sys
+    return _sys.platform == "darwin" and bool(shutil.which("afplay"))
+
+
 class _KokoroBackend:
     """Natural neural voice via kokoro-onnx (fully local).
 
@@ -340,14 +505,75 @@ class _KokoroBackend:
         self._out.start()
         return self._out
 
-    def speak(self, text: str) -> None:
+    def prepare(self, text: str):
+        """Synthesis only, no audio out — runs on the player's prefetch
+        thread while the PREVIOUS sentence is still playing, so the
+        next sentence starts with zero synthesis gap (the single
+        biggest 'MIRAGE feels smoother' factor)."""
         import numpy as np
-        self._cancel.clear()
         samples, sr = self._k.create(text, voice="af_sarah", speed=1.05)
+        return (_edge_fade(np.asarray(samples, dtype="float32")
+                           .reshape(-1).copy(), int(sr)), int(sr))
+
+    def speak(self, text: str) -> None:
+        self._cancel.clear()
+        prepared = self.prepare(text)
         if self._cancel.is_set():        # cut arrived during synthesis
             return
-        data = np.ascontiguousarray(
-            np.asarray(samples, dtype="float32").reshape(-1, 1))
+        self.play(prepared)
+
+    def play(self, prepared) -> None:
+        import numpy as np
+        flat, sr = prepared
+        # lifecycle start for this sentence: re-arm after any earlier cut
+        # (stale queued audio is already dropped by Speaker's generation
+        # check before play() is ever called)
+        self._cancel.clear()
+        # macOS: hand playback to afplay — a separate OS process the
+        # Python side cannot starve.  In-process sounddevice writes
+        # underrun (crackle) whenever ONNX synthesis / Whisper / the GUI
+        # saturate the cores and the GIL; MIRAGE hit exactly this and
+        # the afplay hand-off is her proven cure.
+        if _afplay_available():
+            self._active.set()
+            try:
+                self._n = getattr(self, "_n", 0) + 1
+                path = _os.path.join(tempfile.gettempdir(),
+                                     f"helix_tts_{self._n % 4}.wav")
+                _write_wav(flat, int(sr), path)
+                if self._cancel.is_set():
+                    return
+                self._proc = proc = subprocess.Popen(["afplay", path])
+                # Watchdog wait: a wedged afplay must never hold the
+                # player (and with it the mic-pause gate) forever — cap
+                # at clip length + 2 s, then terminate → kill.  The
+                # 0.25 s poll also closes the cut()-vs-Popen race: a
+                # cancel that misses _proc is honoured within a beat.
+                deadline = (time.monotonic()
+                            + len(flat) / max(int(sr), 1) + 2.0)
+                while True:
+                    try:
+                        proc.wait(timeout=0.25)
+                        break
+                    except subprocess.TimeoutExpired:
+                        if (self._cancel.is_set()
+                                or time.monotonic() > deadline):
+                            proc.terminate()
+                            try:
+                                proc.wait(timeout=0.5)
+                            except subprocess.TimeoutExpired:
+                                proc.kill()
+                            break
+                # (device-buffer drain grace moved to the PLAYER, end of
+                # run only — per-sentence it was ~0.25 s dead air at
+                # every sentence boundary)
+                self._proc = None
+            except Exception:                               # noqa: BLE001
+                pass
+            finally:
+                self._active.clear()
+            return
+        data = np.ascontiguousarray(flat.reshape(-1, 1))
         self._active.set()
         try:
             out = self._stream(int(sr))
@@ -375,6 +601,12 @@ class _KokoroBackend:
 
     def cut(self) -> None:
         self._cancel.set()               # covers synthesis + write loop
+        p = getattr(self, "_proc", None)
+        if p is not None:                # afplay path: instant cut
+            try:
+                p.terminate()
+            except Exception:                               # noqa: BLE001
+                pass
 
 
 class _SayBackend:
@@ -384,8 +616,23 @@ class _SayBackend:
         self._proc = None
 
     def speak(self, text: str) -> None:
-        self._proc = subprocess.Popen(["say", "-r", "195", text])
-        self._proc.wait()
+        self._proc = proc = subprocess.Popen(["say", "-r", "195", text])
+        # bounded wait (same wedge class as the afplay watchdog): a
+        # hung `say` must never hold the player/mic-pause gate forever
+        # ~16 chars/s at 195 wpm; generous headroom, never unbounded
+        deadline = time.monotonic() + max(10.0, len(text) / 10.0 + 5.0)
+        while True:
+            try:
+                proc.wait(timeout=0.25)
+                break
+            except subprocess.TimeoutExpired:
+                if time.monotonic() > deadline:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=0.5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    break
         self._proc = None
 
     def cut(self) -> None:
@@ -447,18 +694,33 @@ class Speaker:
         self._turn_open = False
         self._reported = False
         self._playing = False
+        # a sentence pulled from the queue for prefetch but not yet
+        # played — MUST count as pending speech everywhere (the drain
+        # checks once missed it: the follow-up mic opened between
+        # sentences and the assistant heard its own next sentence)
+        self._ahead_pending = False
+        # sentences DEQUEUED by the player but not yet through play() —
+        # covers the first-sentence synthesis window (0.3–3 s) where
+        # every other flag is false: busy() read False there, the
+        # follow-up mic opened ON TOP of the reply, recorded the
+        # assistant, and wake went deaf for the whole cascade (audit R1
+        # — the root cause behind all three live complaints)
+        self._pending_play = 0
+        # a stop() flushes the pipeline: the drain may then report even
+        # inside an open turn (barge/Stop used to wedge the mic-pause
+        # gate until turn end)
+        self._flushed = False
         threading.Thread(target=self._player, daemon=True,
                          name="assist-tts").start()
 
     def say(self, text: str) -> None:
         if self._muted:
             return
-        # THE speech choke point: markdown syntax out first (never say
-        # "asterisk"), then units (they must see raw digits), then
-        # number rewriting
-        text = strip_markdown_for_speech(str(text).strip())
-        text = normalize_units_for_speech(text)
-        text = speakable_numbers(text)
+        with self._state_lock:
+            self._flushed = False        # fresh speech: turn rules apply
+        # THE speech choke point — full normalization chain (order
+        # documented on speechify)
+        text = speechify(text)
         for sent in _SENT_SPLIT.split(text):
             sent = sent.strip()
             if sent:
@@ -477,10 +739,16 @@ class Speaker:
             pass
         # a stop between sentences leaves no player pass to report the
         # drain — close the speaking state here (skip if a sentence is
-        # mid-play: its own teardown or end_turn() will report)
+        # mid-play: its own teardown will report).  _flushed lets the
+        # drain report even inside an OPEN turn: a barge/Stop used to
+        # leave _reported wedged True until turn end, pausing the mic
+        # for the rest of a possibly long turn.
         with self._state_lock:
+            self._flushed = True
             done = (self._reported and not self._playing
-                    and self._q.empty() and not self._turn_open)
+                    and not self._ahead_pending
+                    and self._pending_play == 0
+                    and self._q.empty())
             if done:
                 self._reported = False
         if done:
@@ -497,10 +765,15 @@ class Speaker:
 
     def end_turn(self) -> None:
         """Close the bracket; if speech already drained, report the
-        pending speaking-stopped exactly once."""
+        pending speaking-stopped exactly once.  A PREFETCHED sentence
+        (outside the queue, not yet playing) blocks the drain — this
+        was the she-hears-herself bug: the follow-up mic opened in the
+        gap and captured the assistant's own next sentence."""
         with self._state_lock:
             self._turn_open = False
             done = (self._reported and self._q.empty()
+                    and not self._ahead_pending
+                    and self._pending_play == 0
                     and not self._playing)
             if done:
                 self._reported = False
@@ -515,28 +788,149 @@ class Speaker:
         if muted:
             self.stop()
 
-    def _player(self) -> None:
-        while True:
-            gen, sent = self._q.get()
-            if gen != self._gen:         # barge-in invalidated this sentence
-                continue
-            with self._state_lock:
-                self._playing = True
-                announce = not self._reported
-                self._reported = True
-            if announce:                 # transition only, not per sentence
-                try:
-                    self.on_speaking(True)
-                except Exception:                           # noqa: BLE001
-                    pass
+    def busy(self) -> bool:
+        """Live speech state, DERIVED from the player — never mirror
+        this into a stored flag (a missed transition once wedged the
+        mic-pause gate forever).  A PREFETCHED sentence counts, and so
+        does one the player has DEQUEUED but not yet played (the
+        first-sentence synthesis window — audit R1)."""
+        with self._state_lock:
+            return (self._playing or self._reported
+                    or self._ahead_pending or self._pending_play > 0
+                    or not self._q.empty())
+
+    def _prefetch(self):
+        """One-deep lookahead: pull the next queued sentence and start
+        synthesizing it on a side thread NOW, while the current one is
+        about to play.  Returns (gen, box) or None."""
+        if not (hasattr(self.backend, "prepare")
+                and hasattr(self.backend, "play")):
+            return None
+        try:
+            ngen, nsent = self._q.get_nowait()
+        except _queue.Empty:
+            return None
+        with self._state_lock:
+            self._ahead_pending = True   # out of the queue, still unspoken
+        box = [None, threading.Event()]
+
+        def _synth(b=box, s=nsent):
             try:
-                self.backend.speak(sent)
+                b[0] = self.backend.prepare(s)
             except Exception:                               # noqa: BLE001
-                pass
+                b[0] = None
             finally:
+                b[1].set()
+        th = threading.Thread(target=_synth, daemon=True,
+                              name="assist-tts-prefetch")
+        try:
+            th.start()
+        except RuntimeError:
+            # thread exhaustion / interpreter finalization: never leak
+            # _ahead_pending=True (busy() would wedge forever) — hand
+            # the sentence back with an empty ready box so the player's
+            # payload-None path synthesizes it inline
+            with self._state_lock:
+                self._ahead_pending = False
+            box[1].set()
+            return (ngen, nsent, box)
+        return (ngen, nsent, box)
+
+    def _player(self) -> None:
+        split = (hasattr(self.backend, "prepare")
+                 and hasattr(self.backend, "play"))
+        ahead = None                     # (gen, sent, box) synthesized ahead
+        while True:
+            if ahead is not None:
+                gen, sent, box = ahead
+                ahead = None
+                with self._state_lock:
+                    self._ahead_pending = False   # ...now _pending_play's
+                    self._pending_play += 1
+                box[1].wait(timeout=30.0)   # bounded: a wedged synth
+                payload = box[0]            # must not wedge the player
+            else:
+                gen, sent = self._q.get()
+                # dequeued-but-unplayed MUST count as speech: this is
+                # the first-sentence synthesis window (0.3–3 s) where
+                # every other flag was false — busy() read False, the
+                # follow-up mic opened ON TOP of the reply and recorded
+                # the assistant (audit R1, the root of all three live
+                # complaints)
+                with self._state_lock:
+                    self._pending_play += 1
+                payload = None
+            if gen != self._gen:         # barge-in invalidated this sentence
+                # a skipped item is outside the queue, so a stop() that
+                # raced it saw _playing/queue clear but not this —
+                # recompute the drain here or _reported wedges True and
+                # busy() pauses the mic forever
+                with self._state_lock:
+                    self._pending_play = max(0, self._pending_play - 1)
+                    done = (self._q.empty() and ahead is None
+                            and not self._ahead_pending
+                            and self._pending_play == 0
+                            and (not self._turn_open or self._flushed)
+                            and self._reported
+                            and not self._playing)
+                    if done:
+                        self._reported = False
+                if done:
+                    try:
+                        self.on_speaking(False)
+                    except Exception:                       # noqa: BLE001
+                        pass
+                continue
+            try:
+                if split and payload is None:
+                    try:
+                        payload = self.backend.prepare(sent)
+                    except Exception:                       # noqa: BLE001
+                        payload = None
+                with self._state_lock:
+                    self._playing = True
+                    announce = not self._reported
+                    self._reported = True
+                if split:
+                    # prefetch AFTER _playing is up: the next item's
+                    # pending flag must never be cleared by this one
+                    ahead = self._prefetch()   # synth next WHILE this plays
+                if announce:             # transition only, not per sentence
+                    try:
+                        self.on_speaking(True)
+                    except Exception:                       # noqa: BLE001
+                        pass
+                if split:
+                    if payload is not None:
+                        self.backend.play(payload)
+                else:
+                    self.backend.speak(sent)
+                # device-buffer drain grace ONLY at the end of the run
+                # (afplay exits before the room is silent) — doing it
+                # per sentence inside play() added ~0.25 s of dead air
+                # at EVERY sentence boundary
+                with self._state_lock:
+                    tail = (self._q.empty() and ahead is None
+                            and not self._ahead_pending)
+                cancelled = False
+                c = getattr(self.backend, "_cancel", None)
+                if c is not None:
+                    try:
+                        cancelled = c.is_set()
+                    except Exception:                       # noqa: BLE001
+                        pass
+                if tail and not cancelled:
+                    time.sleep(0.25)
+            except Exception:                               # noqa: BLE001
+                pass                     # a dead backend must never kill
+            finally:                     # the player thread
                 with self._state_lock:
                     self._playing = False
-                    done = (self._q.empty() and not self._turn_open
+                    self._pending_play = max(0, self._pending_play - 1)
+                    done = (self._q.empty() and ahead is None
+                            and not self._ahead_pending
+                            and self._pending_play == 0
+                            and (not self._turn_open or self._flushed)
                             and self._reported)
                     if done:
                         self._reported = False
@@ -586,6 +980,8 @@ class PushToTalkRecorder:
 
     def start(self) -> None:
         import sounddevice as sd
+        if getattr(self, "_dead", False):
+            return              # stop() already ran (async-start race)
         if self._thread is not None and self._thread.is_alive():
             return                                  # already recording
         if self._stream is not None:
@@ -602,6 +998,10 @@ class PushToTalkRecorder:
             self._stream.start()
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
+        if getattr(self, "_dead", False):
+            # stop() raced our open (start now runs off the GUI thread):
+            # the reader sees the flag and closes the stream itself
+            self._stop.set()
 
     def _loop(self) -> None:
         # blocking reads on THIS worker thread — never the RT audio thread
@@ -631,7 +1031,8 @@ class PushToTalkRecorder:
 
     def stop(self):
         import numpy as np
-        self._stop.set()
+        self._dead = True        # a start() that hasn't run yet must not
+        self._stop.set()         # open a stream nobody will ever stop
         if self._thread is not None:
             self._thread.join(timeout=self._join_timeout_s)
             if self._thread.is_alive():

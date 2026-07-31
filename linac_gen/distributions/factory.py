@@ -125,6 +125,19 @@ def create_beam(config: BeamConfig, seed: int = None) -> Beam:
             # We follow the same convention: the file is authoritative for
             # the beam state.  We override ref energy + frequency + ε + Twiss
             # in the BeamConfig using values derived from the file.
+            #
+            # CAVEAT (deferred 2026-07-31): authoritative for the RF
+            # CLOCK, but the file cannot be authoritative for the BUNCH
+            # REPETITION RATE — the .dst format carries no such field.
+            # ``Beam.__init__`` derives ``bunch_frequency`` from this
+            # ref, so importing a distribution written downstream of a
+            # frequency jump silently adopts the local clock as the
+            # bunch rate and the macrocharge Q = I/f comes out wrong by
+            # the harmonic ratio (×4 for a 650 MHz file off a 162.5 MHz
+            # train).  A Beam-tab / BeamConfig frequency does NOT
+            # override it — the file wins here by design.  Planned:
+            # BeamConfig.bunch_frequency_MHz, explicitly NOT
+            # file-overridden.  See io/tracewin_dst.py DEFERRED FIX.
             from linac_gen.io.tracewin_dst import load_dst
             particles_array, header = load_dst(path)
             file_W = header["w_kin_ref"]
@@ -263,6 +276,7 @@ def create_beam(config: BeamConfig, seed: int = None) -> Beam:
     )
     beam.particles[:] = particles_array
     beam.continuous = bool(getattr(config, "continuous", False))
+    beam.periodic_phase = bool(getattr(config, "periodic_phase", False))
 
     # Input dispersion shear (generate path only — a loaded file is
     # authoritative as-is): x += disp_x·ΔW etc., applied BEFORE the

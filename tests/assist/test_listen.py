@@ -332,9 +332,10 @@ def test_capture_tap_accumulates_between_start_stop():
 def test_normalize_units_for_speech():
     from linac_gen.assist.voice import normalize_units_for_speech as f
     assert f("sigma is 2.5 mm") == "sigma is 2.5 millimeters"
-    assert f("energy 800.6 MeV") == "energy 800.6 M e V"
+    # 2026-07-28 MIRAGE parity: full unit words, not spelled letters
+    assert f("energy 800.6 MeV") == "energy 800.6 mega-electron-volts"
     assert f("0.21 pi.mm.mrad") == "0.21 pi millimeter milliradian"
-    assert f("emit_z 0.06 deg.MeV") == "emit_z 0.06 degree M e V"
+    assert f("emit_z 0.06 deg.MeV") == "emit_z 0.06 degree mega-electron-volts"
     assert f("loss 2.7 %") == "loss 2.7 percent"
     assert f("QF-3 gradient") == "QF 3 gradient"
     assert f("HWR:CAV1 phase") == "HWR CAV1 phase"
@@ -401,14 +402,20 @@ def test_speaker_never_says_asterisk(qapp_none=None):
     sp._turn_open = False
     sp._reported = False
     sp._playing = False
+    sp._ahead_pending = False
+    sp._pending_play = 0
+    sp._flushed = False
     threading.Thread(target=sp._player, daemon=True).start()
     sp.say("The exit is **0.62 mm** — see `sigma_x` and *note* the "
            "[plot](http://x).")
     time.sleep(0.3)
     joined = " ".join(spoken)
     assert "*" not in joined and "`" not in joined and "[" not in joined
-    assert "0 point 62 millimeters" in joined
-    assert "sigma_x" in joined
+    # since the 2026-07-28 speechify round: numerals fully worded and
+    # sigma_x spoken as "sigma x" (the raw identifier reached the
+    # phonemizer before, which dropped the glyphless token)
+    assert "zero point six two millimeters" in joined
+    assert "sigma x" in joined
 
 
 def test_whisper_ready_property(monkeypatch):

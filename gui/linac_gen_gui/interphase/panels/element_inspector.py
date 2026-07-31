@@ -51,6 +51,11 @@ _STR_CHOICES: dict[tuple[str, str], list[str]] = {
         "laplace2d",
         "laplace3d",
     ],
+    # RfqCell.field_model is deliberately NOT exposed here: neither the
+    # TW RFQ_CELL card nor .lgproj can persist it, so a GUI edit would
+    # silently revert to the default on any save/reload (adversarial
+    # finding 2026-07-30).  The legacy "2term" fallback stays a
+    # code/API opt-in only.
 }
 
 

@@ -91,8 +91,10 @@ def test_followup_vad_onset_and_endpoint():
         source_factory=lambda: src,
         window_s=2.0, endpoint_s=0.1, max_s=3.0, poll_s=0.01,
         vad=_FakeVad([0.9, 0.9, 0.9, 0.05]))
-    assert fl.open_window()
-    time.sleep(0.3)
+    fl.TAIL_DISCARD_S = 0.05     # keep the timing script fast (the
+    fl.MIN_SPEECH_S = 0.0        # scripted blocks are milliseconds long
+    assert fl.open_window()      # production 0.5 s echo guard is not
+    time.sleep(0.3)              # under test here)
     src.push(0.01, n=3)          # QUIET blocks — but VAD says speech
     time.sleep(0.05)
     src.push(0.01, n=1)          # VAD now says silence → endpoint
@@ -245,6 +247,7 @@ def test_followup_fresh_stream_keeps_first_words():
         on_text=lambda t: out.__setitem__("text", t),
         source_factory=lambda: src,
         window_s=2.0, endpoint_s=0.1, max_s=3.0, poll_s=0.01)
+    fl.MIN_SPEECH_S = 0.0     # scripted blocks are milliseconds long
     assert fl.open_window()
     time.sleep(0.05)                  # IMMEDIATELY — inside the old
     src.push(0.2, n=4)                # 0.25 s discard window
@@ -352,10 +355,19 @@ def test_real_speech_scores_high(tmp_path):
 
 def test_make_refuses_until_selftest_passes(monkeypatch):
     """A deaf VAD must never gate anything again: make() returns None
-    (pure MIRAGE RMS mode) unless the model PROVED it hears speech."""
+    (pure MIRAGE RMS mode) unless the model PROVED it hears speech.
+    Since 2026-07-28 'pending' is RESOLVED synchronously (marker or a
+    real run) instead of refused — refusing it made listener startup a
+    race against the async self-test."""
     monkeypatch.setattr(V, "available", lambda: True)
+    monkeypatch.setattr(V, "model_path", lambda: "/nonexistent/m.onnx")
     monkeypatch.setattr(V, "_SELFTEST", "pending")
-    assert V.make() is None
+
+    def fake_selftest_fails():
+        V._SELFTEST = "fail"
+        return False
+    monkeypatch.setattr(V, "self_test", fake_selftest_fails)
+    assert V.make() is None                 # pending -> decided -> fail
     monkeypatch.setattr(V, "_SELFTEST", "fail")
     assert V.make() is None
     made = {}
@@ -408,3 +420,86 @@ def test_wake_miss_shows_what_was_heard(monkeypatch):
         assert any("hello there computer" in x for x in status)
     finally:
         wl.shutdown()
+
+
+# --- deterministic make() (2026-07-28 wake regression) -----------------
+def test_make_resolves_pending_selftest_synchronously(monkeypatch, tmp_path):
+    """A cold make() must never lose a race against the async self-test:
+    it resolves 'pending' itself (via _self_test_locked — marker file
+    first, else a real run) when the lock is free."""
+    from linac_gen.assist import vad as V
+
+    calls = []
+    monkeypatch.setattr(V, "available", lambda: True)
+    monkeypatch.setattr(V, "model_path", lambda: str(tmp_path / "m.onnx"))
+    monkeypatch.setattr(V, "SileroVAD", lambda *a, **k: "vad-instance")
+
+    def fake_locked():
+        calls.append(1)
+        V._SELFTEST = "pass"
+        return True
+    monkeypatch.setattr(V, "_self_test_locked", fake_locked)
+
+    monkeypatch.setattr(V, "_SELFTEST", "pending")
+    assert V.make() == "vad-instance"       # ran the test itself
+    assert calls == [1]
+
+
+def test_make_never_blocks_on_a_held_lock(monkeypatch, tmp_path):
+    """AUDIT F1: a proof already running elsewhere must NOT convoy a
+    make() on the main thread — it falls back to None (RMS gates)
+    within the 50 ms grace instead of freezing the GUI."""
+    import time as _t
+
+    from linac_gen.assist import vad as V
+
+    monkeypatch.setattr(V, "available", lambda: True)
+    monkeypatch.setattr(V, "model_path", lambda: str(tmp_path / "m.onnx"))
+    monkeypatch.setattr(V, "SileroVAD", lambda *a, **k: "vad-instance")
+    monkeypatch.setattr(V, "_SELFTEST", "pending")
+    assert V._SELFTEST_LOCK.acquire(timeout=1.0)   # simulate async proof
+    try:
+        t0 = _t.monotonic()
+        assert V.make() is None                    # RMS fallback, no wait
+        assert _t.monotonic() - t0 < 0.5
+    finally:
+        V._SELFTEST_LOCK.release()
+
+
+def test_selftest_locked_marker_short_circuit(monkeypatch, tmp_path):
+    """AUDIT F1 root cause: _self_test_locked used to IGNORE the marker
+    and re-run the 1.2 s `say` proof at every launch.  With the marker
+    present it must pass instantly and spawn NOTHING."""
+    import subprocess as _sp
+
+    from linac_gen.assist import vad as V
+
+    model = tmp_path / "m.onnx"
+    monkeypatch.setattr(V, "model_path", lambda: str(model))
+    monkeypatch.setattr(V, "available", lambda: True)
+    open(str(model) + ".selftest_ok", "w").close()
+
+    def boom(*a, **k):
+        raise AssertionError("self-test spawned a subprocess despite "
+                             "the marker")
+    monkeypatch.setattr(_sp, "run", boom)
+    monkeypatch.setattr(V, "_SELFTEST", "pending")
+    assert V.self_test() is True
+    assert V._SELFTEST == "pass"
+
+
+def test_selftest_pass_writes_marker(monkeypatch, tmp_path):
+    from linac_gen.assist import vad as V
+    import numpy as np
+
+    model = tmp_path / "m.onnx"
+    monkeypatch.setattr(V, "model_path", lambda: str(model))
+    monkeypatch.setattr(V, "available", lambda: True)
+
+    class _FakeVad:
+        def prob(self, block):
+            return 0.95                     # demonstrably hears
+    monkeypatch.setattr(V, "SileroVAD", lambda *a, **k: _FakeVad())
+    monkeypatch.setattr(V, "_SELFTEST", "pending")
+    assert V.self_test() is True
+    assert (tmp_path / "m.onnx.selftest_ok").exists()

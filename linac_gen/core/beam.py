@@ -51,6 +51,27 @@ class Beam:
         # (e.g. MEBT 162.5 → SSR1 325 MHz) keep using the bunch's actual
         # repetition rate for Q = I / f_bunch, independent of cavity freq.
         self.bunch_frequency: float = float(ref.frequency)
+        # Set by the tracker at the DC → bunched transition, and only
+        # when the element doing the bunching is a TIME-VARYING RF one:
+        # this beam was injected DC and has been bunched, i.e. it is one
+        # period of a bunch TRAIN.  A beam born bunched never gets this
+        # marker, and neither does one that merely passed a static
+        # electrostatic column (einzel lens, extraction gap), which
+        # cannot bunch anything.
+        self.bunch_train: bool = False
+        # The rate at which those bunches are produced [MHz] — the RF
+        # clock of the element that did the bunching, captured at the
+        # same moment.  This is the fold period for periodic phase
+        # coordinates, and it is NOT ``bunch_frequency``: that one comes
+        # from the beam config (or a .dst header) and only coincides
+        # when the config frequency happens to equal the buncher's.
+        self.bunch_train_frequency: float = 0.0
+        # Opt-in periodic phase coordinates (see BeamConfig.periodic_
+        # phase).  Honoured by the tracker only together with
+        # ``bunch_train``; declared here — not added dynamically —
+        # because cli/backtrack.py rebuilds a Beam by hand and must
+        # copy it explicitly.
+        self.periodic_phase: bool = False
 
     @property
     def average_current(self) -> float:

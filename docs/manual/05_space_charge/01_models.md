@@ -56,6 +56,25 @@ For details see [PIC solver](02_pic_solver.md) and
 * **Cons**: ~10× slower than envelope; statistical noise floor
   ≈ 1/√N on σ.
 
+**Single bunch, no neighbour images.**  The solver sees the
+macroparticles it is given and nothing else, so a run downstream of an
+RFQ models one bunch of what is physically a train.  In a real train
+the neighbouring bunches partially cancel the longitudinal field, so
+E_z is slightly **over**estimated; the transverse field is barely
+affected at typical bunch aspect ratios.  Periodic images (the
+TraceWin PICNIR practice) are not implemented.
+
+This matters most alongside
+[`periodic_phase`](../04_beam/03_beam_config.md): with the flag on,
+particles that slip a bucket are folded back into the bunch, so the
+solver sees a single compact bunch rather than a finite three-bucket
+clump.  Measured on the PXIE deck at 5 mA that removes a spurious
+≈ −35 keV/bucket chirp (exit energy spread 24.0 → 15.4 keV) and moves
+line transmission only slightly (62.0 → 60.6 %).  Without the flag
+the clump is what the solver sees, which is a *different* wrong — the
+neighbour bunches are present but only three of them, unshielded and
+at the wrong separation once they start to drift apart.
+
 ## Model 3: Sacherer / KV ODE (continuous beam)
 
 For pre-RFQ continuous beams, `linac_gen.tracking.sacherer` solves

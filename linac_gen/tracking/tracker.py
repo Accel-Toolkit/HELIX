@@ -10,6 +10,24 @@ from linac_gen.elements.sc_grid import ScGridDirective
 from linac_gen.diagnostics.recorder import DiagnosticRecorder
 
 
+class PeriodicPhaseWarning(UserWarning):
+    """``periodic_phase`` was requested where folding is not meaningful.
+
+    The fold moves a particle by one bunch spacing, which is only a
+    real place for it to be when the local RF frequency is a whole
+    multiple of the bunch repetition rate.  At a genuine sub-harmonic
+    the neighbouring bunch is somewhere else entirely, so the fold is
+    skipped and this is raised once.
+
+    Note the failure mode is PLACEMENT, not force: the fold period is
+    360·round(ratio), a whole number of local degrees, and cos/sin are
+    exactly 360°-periodic in those.  The force only goes wrong for
+    folds that a LATER frequency change rescales into a non-period —
+    that case raises ``ValueError`` instead, because it cannot be
+    undone.
+    """
+
+
 class NoSpaceChargeWarning(UserWarning):
     """A bunched beam carrying current is tracked with NO space-charge
     solver — every SC kick is silently omitted.
@@ -121,6 +139,66 @@ def _is_rf_bunching_element(element) -> bool:
         return False
     for ch_enum, ch in fd.channels.items():
         if ch_enum.is_electric and int(getattr(ch, "geometry", 0) or 0) != 9:
+            return True
+    return False
+
+
+def _is_time_varying_rf_buncher(element) -> bool:
+    """True only for a genuinely TIME-VARYING RF buncher.
+
+    Deliberately narrower than :func:`_is_rf_bunching_element`, which
+    accepts any ELECTRIC channel and therefore also matches a static
+    field — an einzel lens or DC extraction column (``Channel.STAT_E``,
+    ``is_electric`` but not ``is_rf``).  A static electrostatic element
+    cannot bunch anything, so a beam that meets one is still DC and
+    must never be marked a bunch train: folding it would compress a
+    genuinely uniform ±180° phase distribution into a fictitious
+    bucket.
+
+    Used ONLY to set ``Beam.bunch_train``.  The looser predicate keeps
+    driving ``beam.continuous`` so this change cannot alter any
+    existing run.
+    """
+    try:
+        from linac_gen.elements.rf_gap import RFGap
+    except Exception:
+        RFGap = None
+    if RFGap is not None and isinstance(element, RFGap) \
+            and abs(getattr(element, "voltage", 0.0) or 0.0) > 0:
+        return True
+    try:
+        from linac_gen.elements.rfq_cell import RfqCell
+    except Exception:
+        RfqCell = None
+    if RfqCell is not None and isinstance(element, RfqCell) \
+            and abs(getattr(element, "voltage_V", 0.0) or 0.0) > 0:
+        return True
+    try:
+        from linac_gen.elements.ncells import NCells
+    except Exception:
+        NCells = None
+    if NCells is not None and isinstance(element, NCells) \
+            and abs(getattr(element, "eot_v_per_m", 0.0) or 0.0) > 0:
+        return True
+    try:
+        from linac_gen.elements.field_map import FieldMap
+        from linac_gen.elements.field_map_3d import FieldMap3D
+        from linac_gen.elements.superposed_field_map import (
+            SuperposedFieldMap,
+        )
+    except Exception:
+        return False
+    if isinstance(element, SuperposedFieldMap):
+        return any(_is_time_varying_rf_buncher(child)
+                   for _z0, child in element.children)
+    if not isinstance(element, (FieldMap, FieldMap3D)):
+        return False
+    fd = getattr(element, "field_data", None)
+    if fd is None:
+        return False
+    for ch_enum, ch in fd.channels.items():
+        if ch_enum.is_electric and ch_enum.is_rf \
+                and int(getattr(ch, "geometry", 0) or 0) != 9:
             return True
     return False
 
@@ -240,6 +318,22 @@ class Tracker:
         # ``SetBeamEnergy`` etc. flow straight through to the tracker.
         self.track_state = TrackState(ref=self.beam.ref, beam=self.beam)
         self._warned_no_sc = False
+        # Periodic phase coordinates: read once so the hot path (called
+        # per element AND per SC kick) is a plain attribute test.
+        self._periodic_phase = bool(getattr(self.beam, "periodic_phase",
+                                            False))
+        self._phase_fold_warned = False
+        self._n_phase_folded = 0
+        self._pending_bunch_train = False
+        # Stamp the run so downstream consumers (notably the GUI display
+        # fold) can tell folded results from unfolded ones instead of
+        # guessing from a checkbox.
+        try:
+            self.recorder.periodic_phase = self._periodic_phase
+        except Exception:                                   # noqa: BLE001
+            pass        # custom/null recorders need not carry provenance
+        if self._periodic_phase:
+            self._check_periodic_phase_compatible()
 
     def _warn_if_sc_missing(self, where: str) -> None:
         """Warn (once per run) when a bunched beam carries current but no
@@ -284,6 +378,20 @@ class Tracker:
             if getattr(self.beam, "continuous", False) \
                     and _is_rf_bunching_element(element):
                 self.beam.continuous = False
+                # This beam was injected DC and has just been bunched:
+                # from here on it is ONE PERIOD OF A BUNCH TRAIN.  Only
+                # such a beam may use periodic phase coordinates — a
+                # beam born bunched never gets the marker, so it can
+                # never be folded.  The stricter predicate excludes
+                # STATIC electric elements (einzel lens, DC extraction
+                # column), which satisfy the looser flip test above but
+                # cannot bunch anything.
+                if _is_time_varying_rf_buncher(element):
+                    # Defer by one element: the bunch repetition rate is
+                    # the RF clock of the element doing the bunching,
+                    # which for an RFGap/FieldMap is only installed on
+                    # ``ref`` once that element has been tracked.
+                    self._pending_bunch_train = True
                 if self.pic_solver is None:
                     # The built-in continuous-beam 2-D analytic kick no
                     # longer applies past this point — without a solver
@@ -292,6 +400,21 @@ class Tracker:
                         f"after the DC-to-bunched transition at "
                         f"'{getattr(element, 'name', element)}'")
             self._track_element(element)
+            if self._pending_bunch_train:
+                # The bunching element has now run, so ``ref.frequency``
+                # holds ITS clock — that, not the beam-config frequency,
+                # is the rate at which bunches are produced.  Pinning it
+                # here is what makes the fold period right for a beam
+                # created at one frequency and bunched at another (a
+                # 162.5 MHz config bunched by a 325 MHz gap would
+                # otherwise fold with a 720° period and leave every
+                # satellite in place, silently).  ``bunch_frequency`` is
+                # deliberately NOT touched: it sets the space-charge
+                # Q = I/f and changing it would move existing results.
+                self._pending_bunch_train = False
+                self.beam.bunch_train = True
+                self.beam.bunch_train_frequency = float(
+                    self.beam.ref.frequency)
             self._check_aperture(element)
             s = self.beam.ref.s
             if self._progress_callback is not None:
@@ -430,6 +553,195 @@ class Tracker:
             alive = self.beam.alive_mask
             self.beam.particles[alive, 0] += dx
             self.beam.particles[alive, 2] += dy
+        # Reporting hook: every recorded row, snapshot, .dst export and
+        # aperture-loss coordinate downstream of here sees folded
+        # phases, and SC-off runs are covered (they never reach the
+        # kick hook below).
+        self._fold_phase()
+
+    # ------------------------------------------------------------------
+    # Periodic phase coordinates (opt-in; see BeamConfig.periodic_phase)
+    # ------------------------------------------------------------------
+    def _fold_phase(self) -> None:
+        """Fold Δφ into ONE BUNCH SPACING about the synchronous particle.
+
+        No-op unless the run opted in AND the beam is genuinely a bunch
+        train (DC-injected then bunched).  The period is the bunch
+        spacing expressed in LOCAL RF degrees,
+
+            P = 360 · f_local / f_bunch,
+
+        so it is 360° at the RFQ's own frequency and 720° after a
+        162.5 → 325 MHz jump.  ``f_bunch`` is
+        ``Beam.bunch_train_frequency`` — the clock of the element that
+        actually bunched the beam, pinned at the transition — and NOT
+        ``bunch_frequency``, which comes from the beam config and only
+        coincides when the config frequency equals the buncher's.
+        Because the FREQ rescale multiplies Δφ and P by the same ratio,
+        the fold and the rescale commute exactly; P is therefore
+        recomputed from the LIVE ``ref.frequency`` every time and never
+        cached.
+
+        Physics: the RF kicks depend on Δφ only through cos/sin, whose
+        period is 360° in LOCAL degrees, and the fold shifts by
+        360·round(ratio) — so the force a folded particle then feels is
+        exactly unchanged, always.  What the integer test protects is
+        MEANING: the shift only lands the particle on a real
+        neighbouring bunch when the local frequency is a whole multiple
+        of the bunch rate.  Harmonic linacs qualify; a sub-harmonic
+        buncher does not, and is skipped with a single warning.
+
+        The one case where the force does go wrong is a fold that a
+        LATER frequency change rescales by a non-integer factor, at
+        which point it is no longer a whole RF period.  That is not
+        recoverable, so it raises rather than warns.
+
+        Only particles that actually left the bucket are touched: the
+        blanket ``(φ+P/2) % P − P/2`` is not exactly the identity in
+        floating point and drifts ~1e-13 per application, which over a
+        2872-element line accumulated to 8e-11 deg on a beam that
+        should not have moved at all.
+        """
+        beam = self.beam
+        if not self._periodic_phase or not getattr(beam, "bunch_train",
+                                                   False):
+            return
+        f_local = float(beam.ref.frequency)
+        # The BUNCH REPETITION RATE — the clock of the element that
+        # actually bunched this beam, captured at the transition.  NOT
+        # ``bunch_frequency``, which comes from the beam config and is
+        # only the same number when the config frequency happens to
+        # match the buncher's.
+        f_bunch = float(getattr(beam, "bunch_train_frequency", 0.0) or 0.0)
+        # np.isfinite, not just > 0: a NaN frequency passes ``<= 0`` and
+        # would then blow up inside round() with an opaque
+        # "cannot convert float NaN to integer".
+        if not (np.isfinite(f_local) and np.isfinite(f_bunch)
+                and f_local > 0.0 and f_bunch > 0.0):
+            return
+        ratio = f_local / f_bunch
+        # Tolerance 1e-3, NOT machine epsilon.  The fold period is
+        # 360·round(ratio) — a whole number of LOCAL RF degrees — so the
+        # RF force it produces is exactly unchanged whatever the
+        # residual: cos has period 360° in local degrees, full stop.
+        # What the residual costs is placement: the particle lands
+        # 360·|ratio − round(ratio)| degrees off the neighbouring
+        # bunch's true centre, i.e. ≤ 0.36° here, against a bunch that
+        # is several degrees wide.  Machine-epsilon strictness instead
+        # made the feature hostage to cavity detuning — an error study
+        # perturbing a cavity by a few kHz (Δratio ~ 6e-5) would have
+        # tripped it — while a genuine sub-harmonic sits 0.5 away and
+        # is still caught with three orders of magnitude to spare.
+        if abs(ratio - round(ratio)) > 1e-3 or round(ratio) < 1:
+            # Skipping is only safe while NOTHING has been folded yet.
+            # Once folds are baked in, every downstream RF element
+            # rescales them by f_new/f_old, and a non-integer ratio
+            # means those already-applied 360° shifts are no longer
+            # whole RF periods — the beam is silently corrupted by up
+            # to the full crest-to-trough cavity voltage.  There is no
+            # way to undo them, so fail loudly instead of continuing.
+            if self._n_phase_folded:
+                raise ValueError(
+                    f"periodic_phase: the RF clock moved to "
+                    f"{f_local:g} MHz, which is not an integer multiple "
+                    f"of the {f_bunch:g} MHz bunch repetition rate "
+                    f"(ratio {ratio:.6f}), AFTER "
+                    f"{self._n_phase_folded} phase folds had already "
+                    "been applied.  Those folds are rescaled by every "
+                    "downstream RF element and are no longer whole RF "
+                    "periods, so the run is not recoverable.  Re-run "
+                    "with periodic_phase=False, or with a lattice whose "
+                    "frequencies are all harmonics of the buncher.")
+            if not self._phase_fold_warned:
+                self._phase_fold_warned = True
+                warnings.warn(
+                    f"periodic_phase: local RF frequency {f_local:g} MHz "
+                    f"is not an integer multiple of the bunch repetition "
+                    f"rate {f_bunch:g} MHz (ratio {ratio:.4f}) — one "
+                    "bunch spacing is not a whole number of local RF "
+                    "degrees here, so a fold would move a particle to a "
+                    "phase where no bunch exists.  Skipped.",
+                    PeriodicPhaseWarning, stacklevel=2)
+            return
+        period = 360.0 * round(ratio)
+        half = 0.5 * period
+        phi = beam.particles[:, 4]
+        need = beam.alive_mask & (np.abs(phi) > half)
+        n = int(np.count_nonzero(need))
+        if not n:
+            return
+        beam.particles[need, 4] = (phi[need] + half) % period - half
+        # Running tally of bucket crossings — the honest measure of how
+        # much of the run this feature actually changed.  Read it off the
+        # tracker after a run; it is 0 whenever the fold never fired.
+        self._n_phase_folded += n
+
+    def _check_periodic_phase_compatible(self) -> None:
+        """Refuse the combinations where folding is provably wrong.
+
+        CSR is the one longitudinal model in HELIX that is NOT
+        360°-periodic: ``csr.py`` converts Δφ to metres, then derives
+        the histogram range, bin width and smoothing scale from
+        ``z.min()``/``z.max()`` of the whole ensemble.  Folding
+        therefore changes the wake felt by particles it never touched
+        (measured: 5 % of σ_W on the unfolded core), and it teleports a
+        head particle to the tail, flipping the sign of its wake.
+        There is no cheap fix — a train's CSR needs the real
+        multi-bunch geometry — so the two features are declared
+        mutually exclusive rather than silently combined.
+        """
+        cfg = getattr(self.pic_solver, "config", None)
+        if cfg is not None and getattr(cfg, "csr_enabled", False):
+            raise ValueError(
+                "periodic_phase and csr_enabled cannot be used together: "
+                "the CSR wake is computed from the ensemble's absolute "
+                "longitudinal extent (z from Δφ, then a histogram over "
+                "z.min()..z.max()), so it is not periodic in the bunch "
+                "spacing and the fold changes the force on particles it "
+                "never moved.  Disable one of the two.")
+        # A hand-supplied 6×6 (Elegant EMATRIX) applies column 4
+        # LINEARLY: any M[i,4] != 0 for i != 4 turns a fold into a
+        # deterministic shift of M[i,4]·P in coordinate i.  Every
+        # HELIX-generated matrix has column 4 = [0,0,0,0,1,0], so this
+        # only ever fires on an imported one.
+        try:
+            from linac_gen.elements.matrix_element import MatrixElement
+        except Exception:                                   # noqa: BLE001
+            return
+        bad = []
+        for el in getattr(self.lattice, "elements", ()):
+            if not isinstance(el, MatrixElement):
+                continue
+            m = getattr(el, "matrix", None)
+            if m is None:
+                continue
+            m = np.asarray(m)
+            if m.shape != (6, 6):
+                continue
+            col = np.delete(m[:, 4], 4)
+            if np.any(np.abs(col) > 0):
+                bad.append(getattr(el, "name", "?"))
+        if bad:
+            raise ValueError(
+                f"periodic_phase cannot be used with a MATRIX element "
+                f"whose column 4 couples Δφ into another coordinate "
+                f"({', '.join(bad[:5])}): that coupling is linear in "
+                "Δφ, not 360°-periodic, so folding a particle by one "
+                "bunch spacing P shifts its output by M[i,4]·P.  Use "
+                "periodic_phase=False for this lattice.")
+
+    def _record_substep(self, element) -> None:
+        """Record one substep row, folded first.
+
+        Without the fold a substep-resolved σ_φ(s) of a flagged run
+        would still spike wherever a particle is transiently outside
+        its bucket mid-element — precisely the artefact the flag exists
+        to remove.  The whole-element hook cannot cover this because it
+        runs after the element finishes.  A no-op when the flag is off.
+        """
+        self._fold_phase()
+        self.recorder.record(self.beam, self.beam.ref.s,
+                             element_name=element.name)
 
     def _apply_sc_kick(self, ds_mm: float) -> None:
         """Dispatch to the correct SC kick based on beam type.
@@ -438,6 +750,11 @@ class Tracker:
         - Bunched beam → 3-D PIC kick via ``self.pic_solver`` if one was
           configured, else no kick.
         """
+        # Correctness hook: fold BEFORE the guards below, so the solver
+        # can never see an unwrapped train — this is the single choke
+        # point through which all five SC call sites pass (including the
+        # torch PIC solver, which bypasses pic.coordinates).
+        self._fold_phase()
         if ds_mm <= 0 or self._sc_factor <= 0:
             return
         if self._sc_explicitly_off:
@@ -488,8 +805,7 @@ class Tracker:
             element.track(self.beam, ds=ds / 2)
             self._check_aperture(element)
             if self._record_substeps:
-                self.recorder.record(self.beam, self.beam.ref.s,
-                                     element_name=element.name)
+                self._record_substep(element)
 
     def _apply_csr_kick(self, element, ds_mm: float) -> None:
         """Apply a 1-D steady-state CSR energy kick — Dipole elements only.
@@ -615,16 +931,14 @@ class Tracker:
                 if self._record_substeps:
                     # k-th pair is now complete (one ds/2 before SC, one
                     # ds/2 after).  Record at the slice's exit position.
-                    self.recorder.record(self.beam, self.beam.ref.s,
-                                         element_name=element.name)
+                    self._record_substep(element)
             self._check_aperture(element)
         # Any trailing sub-steps (n_int not a multiple of sc_every) get RK4 only
         for _ in range(n_int - n_bundles * sc_every):
             effective_element.track_rk4(self.beam, ds)
             _record_marker_crossings()
             if self._record_substeps:
-                self.recorder.record(self.beam, self.beam.ref.s,
-                                     element_name=element.name)
+                self._record_substep(element)
         if n_int > n_bundles * sc_every:
             self._check_aperture(element)
 
@@ -650,15 +964,13 @@ class Tracker:
             element.track(self.beam, ds=bundle_len / 2)
             self._check_aperture(element)
             if self._record_substeps:
-                self.recorder.record(self.beam, self.beam.ref.s,
-                                     element_name=element.name)
+                self._record_substep(element)
         remainder_len = element.length - n_bundles * bundle_len
         if remainder_len > 0:
             element.track(self.beam, ds=remainder_len)
             self._check_aperture(element)
             if self._record_substeps:
-                self.recorder.record(self.beam, self.beam.ref.s,
-                                     element_name=element.name)
+                self._record_substep(element)
 
     def _check_aperture(self, element) -> None:
         """Mark alive particles outside the element's aperture as lost.

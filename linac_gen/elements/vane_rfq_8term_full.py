@@ -197,6 +197,76 @@ def solve_cell_coeffs_dat(z_start_mm: float, z_end_mm: float,
 
 
 # ------------------------------------------------------------------
+# Vectorised basis matrix + surface fit (vane8t, 2026-07-30)
+# ------------------------------------------------------------------
+def basis_matrix(pts_mm: np.ndarray, k_per_mm: float,
+                 r0_mm: float) -> np.ndarray:
+    """(N, 8) basis-function matrix at points (x, y, z_rel) [mm].
+
+    Vectorised twin of :func:`_basis_at` (same MODES order, same
+    Chebyshev azimuthal recursion)."""
+    x = pts_mm[:, 0]
+    y = pts_mm[:, 1]
+    z = pts_mm[:, 2]
+    r2 = x * x + y * y
+    r = np.sqrt(r2)
+    safe = r2 > 0.0
+    c2 = np.where(safe, (x * x - y * y) / np.where(safe, r2, 1.0), 1.0)
+    c4 = 2.0 * c2 * c2 - 1.0
+    c6 = 4.0 * c2 ** 3 - 3.0 * c2
+    kr = k_per_mm * r
+    cz1 = np.cos(k_per_mm * z)
+    cz2 = np.cos(2.0 * k_per_mm * z)
+    cz3 = np.cos(3.0 * k_per_mm * z)
+    rho2 = r2 / (r0_mm * r0_mm)
+    return np.column_stack([
+        rho2 * c2,
+        rho2 ** 3 * c6,
+        iv(0, kr) * cz1,
+        iv(4, kr) * c4 * cz1,
+        iv(2, 2.0 * kr) * c2 * cz2,
+        iv(6, 2.0 * kr) * c6 * cz2,
+        iv(0, 3.0 * kr) * cz3,
+        iv(4, 3.0 * kr) * c4 * cz3,
+    ])
+
+
+def fit_cell_multipoles(pts_mm: np.ndarray, v_norm: np.ndarray,
+                        z_start_mm: float, length_mm: float,
+                        r0_mm: float, V_amp_volts: float) -> CellCoeffs:
+    """Least-squares 8-term fit to TRUE electrode-surface points.
+
+    ``pts_mm`` are (x, y, z_local) boundary samples from
+    :mod:`linac_gen.elements.rfq_vane_surface` (the Tc tip arcs — NOT
+    just the four apexes, which carry only two-term information);
+    ``v_norm`` is the normalised electrode potential (±1 ≡ ±V/2).
+    Returns a :class:`CellCoeffs` with conditioning diagnostics.
+
+    .. warning:: DIAGNOSTIC USE ONLY — never feed the result into
+       tracking.  Surface points sit OUTSIDE the expansion's
+       convergence radius (r > a), so while the leading modes are
+       stable, the degenerate higher modes come back as wild
+       unregularised extrapolations (|A| up to ~10²-10³ on long PXIE
+       cells).  The interior-field route (FD solve + cylinder Fourier
+       projection, see the vane-field campaign record in tests/rfq/
+       test_vane_campaign.py) is the valid extraction; this fitter
+       exists to quantify the leading-mode surface content (the quad
+       reduction that motivated the TW calibration).
+    """
+    if length_mm <= 0:
+        raise ValueError("cell length must be positive")
+    k = np.pi / length_mm
+    M = basis_matrix(pts_mm, k, r0_mm)
+    A, _res, _rank, sv = np.linalg.lstsq(M, v_norm, rcond=None)
+    cond = float(sv[0] / sv[-1]) if sv[-1] > 0 else float("inf")
+    res_max = float(np.max(np.abs(M @ A - v_norm)))
+    return CellCoeffs(A=A, r0_mm=float(r0_mm), k_per_mm=k,
+                      L_mm=float(length_mm), z_start_mm=float(z_start_mm),
+                      V_amp_volts=float(V_amp_volts),
+                      cond_number=cond, residual=res_max)
+
+
+# ------------------------------------------------------------------
 # Coefficient solver — BC fit on .vane geometry (legacy/diagnostic)
 # ------------------------------------------------------------------
 def solve_cell_coeffs(z_start_mm: float, z_end_mm: float,

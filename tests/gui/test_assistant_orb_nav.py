@@ -69,7 +69,7 @@ def test_panel_navigate_calls_app_show_tab(qapp, monkeypatch, tmp_path):
         panel._set_state("responding")
         assert "responding" in panel._lamp.text()
     finally:
-        panel.close()
+        panel.shutdown()
 
 
 # ---- context navigation: resolves + emits the queued signal ----------
@@ -109,7 +109,7 @@ def test_context_show_tab_resolves_and_emits(qapp, monkeypatch, tmp_path):
                            ("Lattice", "breakdown")]
         assert plots == ["phase", "tune_depr"]
     finally:
-        panel.close()
+        panel.shutdown()
 
 
 def test_app_show_result_plot_and_subtab(qapp):
@@ -192,7 +192,7 @@ def test_highlight_and_cursor_signal_chain(qapp, monkeypatch, tmp_path):
         assert getattr(st.selected, "name", "") == "QF1"
         assert st.s_cursor == 450.0                   # last cursor request
     finally:
-        panel.close()
+        panel.shutdown()
 
 
 def test_gui_context_snapshot(qapp, monkeypatch, tmp_path):
@@ -219,7 +219,7 @@ def test_gui_context_snapshot(qapp, monkeypatch, tmp_path):
         assert snap["current_tab"] == "Results"
         assert snap["open_plot_windows"] == ["Phase space (4-panel)"]
     finally:
-        panel.close()
+        panel.shutdown()
 
 
 def test_run_on_gui_roundtrip_from_worker_thread(qapp, monkeypatch, tmp_path):
@@ -247,7 +247,7 @@ def test_run_on_gui_roundtrip_from_worker_thread(qapp, monkeypatch, tmp_path):
         t.join(timeout=1.0)
         assert out.get("r") == 42
     finally:
-        panel.close()
+        panel.shutdown()
 
 
 def test_open_plot_respects_disabled_cards(qapp):
@@ -316,4 +316,4 @@ def test_context_run_gui_simulation_roundtrip(qapp, monkeypatch, tmp_path):
         assert ctx.run_gui_simulation("mp") == "started"   # on GUI thread
         assert got == ["mp"]
     finally:
-        panel.close()
+        panel.shutdown()

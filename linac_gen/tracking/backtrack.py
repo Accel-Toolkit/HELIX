@@ -342,6 +342,15 @@ class _Backtracker:
 
     # ------------------------------------------------------------------
     def run(self) -> DiagnosticRecorder:
+        # Same refusal as backtrack_distribution, repeated here because
+        # this class is also driven directly (tests, Simulation
+        # internals) and the fold is no more invertible on that path.
+        if getattr(self.beam, "periodic_phase", False) \
+                and getattr(self.beam, "bunch_train", False):
+            raise ValueError(
+                "the supplied beam was tracked with periodic phase "
+                "coordinates — the fold discards which bunch of the "
+                "train each particle landed in and cannot be undone.")
         elements = self.lattice.elements
         species = self.beam.ref.species
         n_total = self.end - self.start + 1
@@ -371,6 +380,13 @@ class _Backtracker:
             if self._dc_upstream and not entry.rf_seen \
                     and not self.beam.continuous:
                 self.beam.continuous = True
+                # Mirror the forward marker too.  Leaving it set gave a
+                # beam that was simultaneously continuous AND a bunch
+                # train, and a later forward run of that object would
+                # have folded a genuinely DC distribution — the fold
+                # tests only the marker, never ``continuous``.
+                self.beam.bunch_train = False
+                self.beam.bunch_train_frequency = 0.0
             if self._progress_callback is not None:
                 try:
                     self._progress_callback(entry.s, done + 1, n_total)
@@ -878,6 +894,30 @@ def backtrack_distribution(lattice, beam,
             "applies no cuts and the reconstruction is valid for the "
             f"surviving particles only ({lost} already lost in the "
             "supplied distribution).", BacktrackWarning, stacklevel=2)
+
+    # Periodic phase coordinates are NOT invertible.  The forward fold
+    # discards which bunch of the train a particle ended up in, so the
+    # backward walk cannot know whether to put it back at Δφ, Δφ ± P,
+    # Δφ ± 2P …  Reconstructing it would silently miss by whole bunch
+    # spacings and quietly break the machine-precision closure contract
+    # this module exists to provide.  Refuse rather than approximate.
+    # The test is the MARKER, not the flag: ``bunch_train`` is set only
+    # by a forward run that actually bunched this beam, so it is the
+    # thing that says "these coordinates have been folded".  Testing the
+    # flag alone refused design-mode backtracking of a freshly generated
+    # beam that had never been tracked at all — including the shipped
+    # LEBT+RFQ examples, which now enable the flag.  The other hazard,
+    # backtracking a .dst exported FROM a folded run, is caught at the
+    # CLI where the file source is known (``cli/backtrack.py``).
+    if getattr(beam, "periodic_phase", False) \
+            and getattr(beam, "bunch_train", False):
+        raise ValueError(
+            "the supplied beam was tracked with periodic phase "
+            "coordinates (BeamConfig.periodic_phase) — the phase fold "
+            "is non-invertible (it discards which bunch of the train "
+            "each particle landed in), so backtracking it would be "
+            "wrong by whole multiples of the bunch spacing.  Re-run the "
+            "forward pass with periodic_phase=False to backtrack.")
 
     # DC↔bunched.  The forward tracker flips `continuous` only for DC
     # beams, so a bunched exit beam inverts through RF elements with no

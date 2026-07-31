@@ -187,6 +187,7 @@ nav:
       - Matching walkthrough: 11_examples/07_matching_walkthrough.md
       - Tolerance study: 11_examples/08_tolerance_study.md
       - Eigenemittance: 11_examples/09_eigenemittance.md
+      - Synthetic RFQ: 11_examples/10_rfq_demo.md
   - Validation:
       - TraceWin parity: 12_validation/01_tracewin_parity.md
       - Known limitations: 12_validation/03_known_limitations.md

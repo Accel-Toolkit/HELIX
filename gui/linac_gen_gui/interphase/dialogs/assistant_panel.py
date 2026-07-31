@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import threading
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QHBoxLayout, QLabel, QLineEdit,
     QPlainTextEdit, QPushButton, QVBoxLayout, QWidget,
@@ -202,9 +202,12 @@ def _make_context(state, calc_dir: str, nav=None):
             app = self._nav._app
 
             def _do():
+                from PyQt6.QtCore import QEventLoop
                 from PyQt6.QtWidgets import QApplication
                 app.show_result_plot(key)          # opens + switches
-                QApplication.processEvents()       # let it lay out
+                QApplication.processEvents(        # let it lay out — but
+                    QEventLoop.ProcessEventsFlag   # never re-enter user
+                    .ExcludeUserInputEvents)       # input (click storms)
                 dlg = getattr(app.results_tab, "_popups", {}).get(key)
                 if dlg is None:
                     return None
@@ -563,6 +566,7 @@ class AssistantPanel(QDialog):
         v = QVBoxLayout(self)
         v.setContentsMargins(12, 12, 12, 12)
         v.setSpacing(8)
+        self._vbox = v          # voice-only view re-weights the stretch
 
         # animated state orb + lamp (optional visual; degrades if it fails)
         try:
@@ -761,11 +765,22 @@ class AssistantPanel(QDialog):
         self._prog.setStyleSheet(
             f"color:{theme.TEXT_2}; font-family:{theme.FONT_MONO};"
             f"font-size:10px;")
+        # voice-only view: untick to hide the conversation text — the
+        # orb, mic controls and confirm strip stay (user request)
+        self._text_chk = QCheckBox("Text")
+        self._text_chk.setToolTip(
+            "Show the conversation text.  Untick for a voice-only view "
+            "— the orb, voice controls and approval strip stay; the "
+            "conversation keeps recording underneath.")
+        self._text_chk.setChecked(
+            str(self._settings().value("assist/show_text", "1")) == "1")
+        self._text_chk.toggled.connect(self._on_text_toggled)
         opts.addWidget(self._auto)
         opts.addWidget(self._speak)
         opts.addWidget(self._fast_chk)
         opts.addWidget(self._narrate)
         opts.addWidget(self._watch_chk)
+        opts.addWidget(self._text_chk)
         opts.addWidget(self._prog, stretch=1)
         # conversation text size — the user dials it, it persists
         self._font_minus = QPushButton("A−")
@@ -810,6 +825,32 @@ class AssistantPanel(QDialog):
         self._perf_parts = {}
         self._fast_worker = None
         self._fast_text = ""
+        # never-drop inbox: utterances arriving mid-turn are held (small
+        # FIFO — the one-slot version silently OVERWROTE the first
+        # message when a second arrived) and run in order at turn end
+        import collections as _co
+        self._inbox: _co.deque = _co.deque(maxlen=3)
+        self._barged_this_turn = False
+        self._dismissed = False
+        # everything the assistant SPOKE recently (post-normalization),
+        # for the own-echo filter — the semantic backstop that breaks
+        # the she-answers-herself loop no matter how the audio leaks in
+        import collections as _coll
+        self._spoken_recent: _coll.deque = _coll.deque()
+        self._orb_state = "starting"
+        self._responding_latch = False
+        self._followup_lock = threading.Lock()
+        self._runwatch_lock = threading.Lock()
+        self._listen_gen = 0
+        self._warned_no_speaker = False
+        # turn watchdog: a wedged/dead worker must surface within
+        # seconds, never as a silent forever-hang
+        self._turn_open_ui = False
+        self._stall_notified = False
+        self._t_activity = 0.0
+        self._turn_watchdog = QTimer(self)
+        self._turn_watchdog.setInterval(5000)
+        self._turn_watchdog.timeout.connect(self._check_turn_health)
         self._init_voice()
 
         self._append("[starting] warming up in the background (brain "
@@ -820,6 +861,19 @@ class AssistantPanel(QDialog):
             _vadmod.self_test_async()            # else pure RMS gates
         except Exception:                        # noqa: BLE001
             pass
+        # MIRAGE parity (2026-07-28): hands-free listening starts WITH
+        # the assistant — the orb must react to the room immediately,
+        # never sit gray until a button press.  Every relaunch used to
+        # reset the toggle to OFF, so sessions began silently deaf and
+        # the wake word "mostly didn't work".  Deferred one event-loop
+        # turn so panel construction finishes first; the user's choice
+        # is persisted (turning it off stays off).
+        import os as _os
+        if (str(self._settings().value("assist/wake_on", "1")) == "1"
+                and _os.environ.get("HELIX_ASSIST_NO_PREWARM") != "1"):
+            # NO_PREWARM (tests/soaks) also gates auto-listen: panels
+            # constructed in tests were opening the REAL microphone
+            QTimer.singleShot(0, self._auto_enable_wake)
         self.confirmation_needed.connect(self._show_confirmation)
         self.confirm_timed_out.connect(self._on_confirm_timeout)
         self.mic_died.connect(self._on_mic_died)
@@ -834,6 +888,7 @@ class AssistantPanel(QDialog):
         self.cursor_requested.connect(self._on_cursor)
         self.gui_call.connect(self._on_gui_call)
         self.state_changed.connect(self._set_state)
+        self.state_changed.connect(self._popup_on_wake)
         self.level_changed.connect(self._on_level)
         self.speaking_changed.connect(self._on_speaking)
         self._speaker = None                     # streaming TTS, lazy
@@ -846,6 +901,8 @@ class AssistantPanel(QDialog):
         self._last_reply = ""
         self._speak_carry = ""
         self._speak_in_fence = False
+        if not self._text_chk.isChecked():       # voice-only view persisted
+            self._apply_text_visible(False)
         self._init_session()
 
     def _on_level(self, rms: float):
@@ -858,6 +915,30 @@ class AssistantPanel(QDialog):
             self._set_state("responding")
         elif not (self._worker and self._worker.isRunning()):
             self._set_state("idle")
+
+    def _on_text_toggled(self, on: bool):
+        try:
+            self._settings().setValue("assist/show_text",
+                                      "1" if on else "0")
+        except Exception:                        # noqa: BLE001
+            pass
+        self._apply_text_visible(on)
+
+    def _apply_text_visible(self, on: bool):
+        """Voice-only view: hide the transcript (it keeps recording
+        underneath) and hand its stretch to the ORB — the sphere fills
+        the whole window, maximized included (user request: it used to
+        sit small at the top of the freed space)."""
+        if on:
+            self._transcript.setVisible(True)
+            self._vbox.setStretchFactor(self._transcript, 1)
+            if self._orb is not None:
+                self._vbox.setStretchFactor(self._orb, 0)
+        else:
+            self._transcript.setVisible(False)
+            self._vbox.setStretchFactor(self._transcript, 0)
+            if self._orb is not None:
+                self._vbox.setStretchFactor(self._orb, 1)
 
     def _on_fast_toggled(self, on: bool):
         try:
@@ -912,8 +993,12 @@ class AssistantPanel(QDialog):
                 # surface the live TTS backend in the mic tooltip
                 self.gui_call.emit(partial(self._set_tts_tooltip,
                                            sp.backend_name))
-            except Exception:                    # noqa: BLE001
+            except Exception as exc:             # noqa: BLE001
                 self._speaker = None
+                # fail-loud: a dead speech engine must be VISIBLE, not
+                # a mystery of missing audio
+                self.wake_status.emit(
+                    f"speech engine failed to load: {exc} — text only")
 
         _th.Thread(target=_build, daemon=True,
                    name="assist-tts-warmup").start()
@@ -987,6 +1072,7 @@ class AssistantPanel(QDialog):
     def _set_state(self, state: str):
         """Drive the orb + lamp.  Must run on the GUI thread (callers on a
         worker thread emit ``state_changed`` instead of calling directly)."""
+        self._orb_state = state
         if self._orb is not None:
             self._orb.set_state(state)
         if self._lamp is not None:
@@ -1058,9 +1144,13 @@ class AssistantPanel(QDialog):
         if not voice.tts_available():
             self._speak.setEnabled(False)
         else:
-            # pre-warm the Speaker off-thread the moment speech is enabled
-            # (kokoro loads a ~325 MB model — never on the GUI thread)
             self._speak.toggled.connect(self._on_speak_toggled)
+            # pre-warm the Speaker at PANEL BUILD (off-thread — kokoro
+            # loads a ~325 MB model): the first spoken confirm/reply
+            # used to lose its audio because the speaker was still None
+            import os as _os
+            if _os.environ.get("HELIX_ASSIST_NO_PREWARM") != "1":
+                self._prewarm_speaker()
 
     def _on_speak_toggled(self, on: bool):
         if on and self._speaker is None:
@@ -1072,9 +1162,12 @@ class AssistantPanel(QDialog):
                 pass
 
     def _mic_pressed(self):
+        if self._recorder is not None or self._capture_tap is not None:
+            return                               # already recording (re-entry)
         if self._speaker is not None:            # barge-in: cut the TTS
-            try:
-                self._speaker.stop()
+            self._barged_this_turn = True        # …and STAY quiet: late
+            try:                                 # sentences must not talk
+                self._speaker.stop()             # into the recording
             except Exception:                    # noqa: BLE001
                 pass
         if self._followup is not None:           # PTT takes over the mic
@@ -1098,18 +1191,42 @@ class AssistantPanel(QDialog):
                 self._wake_btn.setEnabled(True)
             return
         try:
+            from functools import partial
+
             from linac_gen.assist.voice import PushToTalkRecorder
-            self._recorder = PushToTalkRecorder(
+            rec = PushToTalkRecorder(
                 on_level=self.level_changed.emit)   # queued → orb bars
-            self._recorder.start()
+            self._recorder = rec
             self._mic_btn.setText("● rec")
             self._set_state("listening")
+
+            # start OFF the GUI thread: the CoreAudio open can block for
+            # seconds and used to freeze the UI mid-press.  A release
+            # racing the open is safe: stop() marks the recorder dead
+            # and the reader closes the stream itself.
+            def _start(r=rec):
+                try:
+                    r.start()
+                except Exception as exc:         # noqa: BLE001
+                    self.gui_call.emit(partial(
+                        self._ptt_start_failed, r, str(exc)))
+
+            threading.Thread(target=_start, daemon=True,
+                             name="assist-ptt-start").start()
         except Exception as exc:                 # noqa: BLE001
             self._append(f"[voice] microphone unavailable: {exc}")
-            self._append("  · if macOS never asked for permission: "
-                         "System Settings → Privacy & Security → "
-                         "Microphone → allow this app, then relaunch.")
             self._recorder = None
+
+    def _ptt_start_failed(self, rec, err: str):
+        if self._recorder is not rec:
+            return                               # already released/replaced
+        self._recorder = None
+        self._mic_btn.setText("🎤 Hold")
+        self._set_state("idle")
+        self._append(f"[voice] microphone unavailable: {err}")
+        self._append("  · if macOS never asked for permission: "
+                     "System Settings → Privacy & Security → "
+                     "Microphone → allow this app, then relaunch.")
 
     def _mic_released(self):
         self._mic_btn.setText("🎤 Hold")
@@ -1159,6 +1276,61 @@ class AssistantPanel(QDialog):
             return
         self._on_voice_text(text)
 
+    # -- own-echo filter (the she-answers-herself loop breaker) ----------
+    def _note_spoken(self, text: str):
+        """Remember what WE just said (any speak path) — captured audio
+        that transcribes to mostly these words is our own echo."""
+        import time as _time
+        t = (text or "").strip()
+        if not t:
+            return
+        try:                 # store what the TTS will actually SAY —
+            from linac_gen.assist.voice import speechify
+            t = speechify(t)         # numerals as words etc., so the
+        except Exception:            # echo's transcript matches
+            pass
+        d = self._spoken_recent
+        d.append((_time.monotonic(), t))
+        while len(d) > 80:
+            d.popleft()
+
+    def _is_own_echo(self, text: str) -> bool:
+        """True when the utterance is a CONTIGUOUS replay of something
+        the assistant itself spoke in the last ~10 s (4-gram phrase
+        match, ≥5 content words).  v1 used a 45 s token-SET union at
+        80% membership — it ate every legitimate reply that reused her
+        words, e.g. picking "show the transmission plot" from a menu
+        she had just offered.  A real echo replays a contiguous
+        stretch; a menu pick recombines words in a new order."""
+        import re as _re
+        import time as _time
+        toks = _re.findall(r"[a-z']+", (text or "").lower())
+        content = [t for t in toks if len(t) > 2]
+        if len(content) < 5:
+            return False                 # short replies always pass
+        grams = {" ".join(toks[i:i + 4]) for i in range(len(toks) - 3)}
+        if not grams:
+            return False
+        now = _time.monotonic()
+        # 30 s window: entries are stamped at QUEUE time but a long
+        # reply takes 20-30 s to actually play — 10 s missed the tail.
+        # Threshold 0.35 with >=2 gram hits: ONE Whisper mis-hearing in
+        # a 12-token echo destroys 4 of 9 grams (ratio 0.56) — 0.6 let
+        # the loop straight back in; a menu-pick recombination shares
+        # ~0 contiguous grams, so 0.35 stays safe for real replies.
+        for ts, s in reversed(self._spoken_recent):
+            if now - ts > 30.0:
+                break
+            stoks = _re.findall(r"[a-z']+", s.lower())
+            sg = {" ".join(stoks[i:i + 4])
+                  for i in range(len(stoks) - 3)}
+            if not sg:
+                continue
+            hit = len(grams & sg)
+            if hit >= 2 and hit / len(grams) >= 0.35:
+                return True
+        return False
+
     # -- hands-free listening stack --------------------------------------
     def _on_voice_text(self, text: str):
         """Every spoken utterance (PTT, wake, follow-up) routes here.
@@ -1166,6 +1338,9 @@ class AssistantPanel(QDialog):
         model is never in that loop); anything else auto-sends."""
         text = (text or "").strip()
         if not text:
+            return
+        if self._is_own_echo(text):
+            self._append(f"[voice] (ignored own echo: «{text[:48]}»)")
             return
         ap = self._approver
         if ap is not None and ap.pending is not None:
@@ -1180,9 +1355,14 @@ class AssistantPanel(QDialog):
                 self._resolve_confirm(Decision.DENY)
             else:
                 self._speak_line("Please say confirm, or cancel.")
-                fl = self._ensure_followup()
-                if fl is not None:
-                    fl.open_window()
+                # open the mic NOW only when nothing will be spoken —
+                # otherwise the TTS drain opens it (opening while our
+                # own voice plays let the echo's "cancel" self-deny)
+                if not (self._speak.isChecked()
+                        and self._get_speaker() is not None):
+                    fl = self._ensure_followup()
+                    if fl is not None:
+                        self._open_fl_window(fl)
             return
         self._pending_voice = True
         self._input.setText(text)
@@ -1193,6 +1373,7 @@ class AssistantPanel(QDialog):
         if sp is not None and self._speak.isChecked():
             try:
                 sp.say(text)
+                self._note_spoken(text)
             except Exception:                    # noqa: BLE001
                 pass
 
@@ -1213,89 +1394,285 @@ class AssistantPanel(QDialog):
         once per station killed it."""
         if self._closing:
             return
-        if not self._last_turn_was_voice and not self._tour_active():
+        if self._dismissed:
+            return          # user ✕-dismissed mid-turn: no hot mic —
+                            # saying "HELIX" (or reopening) re-engages.
+                            # NOT isVisible(): the warm panel legitimately
+                            # runs voice turns while never yet shown.
+        sticky = False
+        try:
+            # STICKY voice mode: while hands-free (👂) is on, a typed
+            # turn no longer silently ends the voice loop — the mic is
+            # armed anyway, so the natural back-and-forth continues
+            sticky = self._wake_btn.isChecked()
+        except RuntimeError:
+            pass
+        if (not self._last_turn_was_voice and not sticky
+                and not self._tour_active()):
             return
         fl = self._ensure_followup()
         if fl is not None:
-            fl.open_window()
+            self._open_fl_window(fl)
+
+    def _open_fl_window(self, fl) -> bool:
+        """Open a follow-up window AND make the open mic visible: the
+        orb shows the listening hue while the window is armed (the user
+        could never tell whether the mic was open)."""
+        try:
+            ok = fl.open_window()
+        except Exception:                        # noqa: BLE001
+            return False
+        if ok:
+            self.state_changed.emit("listening")
+        return ok
+
+    def _on_fl_timeout(self):
+        # follow-up thread: window expired silently before — reflect it
+        self.state_changed.emit("idle")
+        self.wake_status.emit("say 'HELIX'")
 
     def _ensure_followup(self):
         if self._followup is not None:
             return self._followup
         try:
+            # vad.make() BEFORE the lock (it may wait for the self-test
+            # proof off-GUI; holding the build lock through that would
+            # convoy other callers)
+            from linac_gen.assist import vad as _vadmod
             from linac_gen.assist.listen import (
                 FollowUpListener, TransientMic, _SharedSource,
             )
             from linac_gen.assist.voice import WhisperSTT
-
-            def _source():
-                ms = self._mic_stream
-                if ms is not None and ms.running:
-                    return _SharedSource(ms)
-                return TransientMic()
-
-            from linac_gen.assist import vad as _vadmod
-            self._followup = FollowUpListener(
-                self._wake_stt or WhisperSTT(),
-                on_text=self.wake_text.emit,
-                source_factory=_source,
-                on_status=self.wake_status.emit,
-                on_level=self.level_changed.emit,
-                vad=_vadmod.make())              # None -> RMS gates
+            vad = _vadmod.make()
         except Exception:                        # noqa: BLE001
-            self._followup = None
-        return self._followup
+            return None
+
+        def _source():
+            ms = self._mic_stream
+            if ms is not None and ms.running:
+                return _SharedSource(ms)
+            return TransientMic()
+
+        # LOCKED build: GUI thread + TTS player thread both come through
+        # here — a race once built two listeners over two streams (the
+        # CoreAudio HAL-mutex deadlock)
+        def _speaker_audible():
+            sp = self._speaker
+            try:
+                return sp is not None and sp.busy()
+            except Exception:                    # noqa: BLE001
+                return False
+
+        with self._followup_lock:
+            if self._followup is None:
+                try:
+                    self._followup = FollowUpListener(
+                        self._wake_stt or WhisperSTT(),
+                        on_text=self.wake_text.emit,
+                        source_factory=_source,
+                        on_status=self.wake_status.emit,
+                        on_level=self.level_changed.emit,
+                        on_timeout=self._on_fl_timeout,
+                        vad=vad,                 # None -> RMS gates
+                        busy_probe=_speaker_audible)
+                except Exception as exc:         # noqa: BLE001
+                    self._followup = None
+                    self.wake_status.emit(
+                        f"follow-up listening unavailable: {exc}")
+            return self._followup
+
+    def _auto_enable_wake(self):
+        # bound method on a timer (never a lambda — destroyed-widget rule)
+        try:
+            if not self._closing:
+                self._wake_btn.setChecked(True)
+        except RuntimeError:
+            pass
 
     def _on_wake_toggled(self, on: bool):
+        try:
+            self._settings().setValue("assist/wake_on", "1" if on else "0")
+        except Exception:                        # noqa: BLE001
+            pass
         if on:
-            try:
-                from linac_gen.assist.listen import (
-                    BargeListener, MicStream, WakeListener,
-                    barge_in_enabled,
-                )
-                from linac_gen.assist.voice import WhisperSTT
-                self._wake_stt = self._wake_stt or WhisperSTT()
-                self._prewarm_stt()
-                from linac_gen.assist import vad as _vadmod
-                self._mic_stream = MicStream(on_died=self.mic_died.emit)
-                self._mic_stream.open()          # device errors surface here
-                self._wake = WakeListener(
-                    self._mic_stream, self._wake_stt,
-                    on_command=self.wake_text.emit,
-                    is_paused=self._listening_paused,
-                    on_status=self.wake_status.emit,
-                    on_wake=self._on_wake_word,
-                    on_level=self.level_changed.emit,
-                    vad=_vadmod.make())          # None -> RMS gates
-                self._wake.start()
-                if barge_in_enabled():
-                    self._barge = BargeListener(on_barge=self._on_barge,
-                                                vad=_vadmod.make())
-                    self._mic_stream.subscribe(self._barge.feed)
-            except Exception as exc:             # noqa: BLE001
-                self._append(f"[voice] wake listening unavailable: {exc}")
-                self._append("  · if macOS never asked for permission: "
-                             "System Settings → Privacy & Security → "
-                             "Microphone → allow this app, then "
-                             "relaunch.")
-                self._shutdown_listening()
-                self._wake_btn.setChecked(False)
+            self._start_listening_async()
         else:
+            self._listen_gen += 1                # invalidate an in-flight start
             self._shutdown_listening()
             self._prog.setText("")
+            self.state_changed.emit("off")       # orb: gray, not hearing
+
+    def _start_listening_async(self):
+        """Build the hands-free stack OFF the GUI thread.  CoreAudio's
+        InputStream open can block for seconds (device wake, permission
+        prompt, HAL contention) — it used to run in the toggle handler
+        and freeze the whole UI at every launch."""
+        self._listen_gen += 1
+        gen = self._listen_gen
+        self._prog.setText("starting hands-free listening …")
+        try:
+            from linac_gen.assist.voice import WhisperSTT
+            self._wake_stt = self._wake_stt or WhisperSTT()
+            self._prewarm_stt()
+        except Exception:                        # noqa: BLE001
+            pass
+
+        def _build():
+            from functools import partial
+            try:
+                from linac_gen.assist import vad as _vadmod
+                from linac_gen.assist.listen import MicStream
+                vad = _vadmod.make()             # off-GUI: may wait for proof
+                # the barge listener gets its OWN instance: silero
+                # carries recurrent state, and sharing one model between
+                # the wake tap and the barge tap fed every block twice —
+                # smearing the probabilities exactly when the user spoke
+                barge_vad = _vadmod.make() if vad is not None else None
+                mic = MicStream(on_died=self.mic_died.emit)
+                mic.on_overflow = self._on_mic_overflow
+                mic.open()                       # the blocking CoreAudio call
+            except Exception as exc:             # noqa: BLE001
+                import traceback as _tb
+                _tb.print_exc()      # land the real error in the launch log
+                try:
+                    self.gui_call.emit(partial(self._listen_start_failed,
+                                               gen, str(exc)))
+                except RuntimeError:             # panel died while we built
+                    pass
+                return
+            try:
+                self.gui_call.emit(partial(self._listen_started,
+                                           gen, mic, vad, barge_vad))
+            except RuntimeError:
+                # panel destroyed while the mic was opening: WE still
+                # own the stream — close it, never leak a hot mic
+                try:
+                    mic.close()
+                except Exception:                # noqa: BLE001
+                    pass
+
+        threading.Thread(target=_build, daemon=True,
+                         name="assist-listen-start").start()
+
+    def _listen_started(self, gen: int, mic, vad, barge_vad=None):
+        """GUI thread: adopt the freshly opened mic (or discard it if the
+        toggle flipped / panel began closing while it was starting)."""
+        if (gen != self._listen_gen or self._closing
+                or not self._wake_btn.isChecked()):
+            threading.Thread(target=mic.close, daemon=True,
+                             name="assist-mic-discard").start()
+            return
+        try:
+            from linac_gen.assist.listen import (
+                BargeListener, WakeListener, barge_in_enabled,
+            )
+            self._mic_stream = mic
+            self._reopen_attempt = 0             # recovery backoff reset
+            self._wake = WakeListener(
+                mic, self._wake_stt,
+                on_command=self.wake_text.emit,
+                is_paused=self._listening_paused,
+                on_status=self.wake_status.emit,
+                on_wake=self._on_wake_word,
+                on_level=self.level_changed.emit,
+                vad=vad)                         # None -> RMS gates
+            self._wake.start()
+            self.state_changed.emit("idle")      # orb: alive + hearing
+            if barge_in_enabled():
+                self._barge = BargeListener(on_barge=self._on_barge,
+                                            vad=barge_vad)
+                mic.subscribe(self._barge.feed)
+            if vad is None:
+                # fail-loud: RMS-only wake is a real degradation the
+                # user must see — and RETRY in the background so a lost
+                # first-launch self-test race no longer locks the whole
+                # session into loudness-only hearing
+                self._prog.setText("VAD warming up — wake uses loudness "
+                                   "gates until it lands")
+                threading.Thread(target=self._vad_hot_swap,
+                                 args=(gen,), daemon=True,
+                                 name="assist-vad-hotswap").start()
+        except Exception as exc:                 # noqa: BLE001
+            self._listen_start_failed(gen, str(exc))
+
+    def _vad_hot_swap(self, gen: int):
+        import time as _time
+        from linac_gen.assist import vad as _vadmod
+        for _ in range(6):
+            _time.sleep(3.0)
+            if gen != self._listen_gen or self._closing:
+                return
+            v = _vadmod.make()
+            if v is not None:
+                # a ref swap is NOT enough: the wake thread chose
+                # cadence-vs-event mode once at start — rebuild the
+                # stack so event-driven wake actually engages
+                self.gui_call.emit(self._restart_listening_for_vad)
+                return
+
+    def _restart_listening_for_vad(self):
+        try:
+            if not self._closing and self._wake_btn.isChecked():
+                self.wake_status.emit("voice detection ready — "
+                                      "re-arming the mic")
+                self._listen_gen += 1
+                self._shutdown_listening()
+                self._start_listening_async()
+        except RuntimeError:
+            pass
+
+    def _listen_start_failed(self, gen: int, err: str):
+        if gen != self._listen_gen or self._closing:
+            return
+        self._append(f"[voice] wake listening unavailable: {err}")
+        self._shutdown_listening()
+        # RETRY with backoff (2→30 s) instead of giving up after one
+        # attempt: a device mid-switch cured itself seconds later while
+        # the assistant stayed permanently deaf
+        self._reopen_attempt = getattr(self, "_reopen_attempt", 0) + 1
+        if self._reopen_attempt <= 5:
+            delay = min(30, 2 ** self._reopen_attempt)
+            self._prog.setText(f"mic unavailable — retrying in {delay} s")
+            QTimer.singleShot(delay * 1000, self._retry_listen_start)
+        else:
+            self._append("  · if macOS never asked for permission: "
+                         "System Settings → Privacy & Security → "
+                         "Microphone → allow this app, then "
+                         "relaunch.")
+            self._wake_btn.setChecked(False)
+
+    def _retry_listen_start(self):
+        try:
+            if (not self._closing and self._wake_btn.isChecked()
+                    and self._mic_stream is None):
+                self._start_listening_async()
+        except RuntimeError:
+            pass
+
+    def _on_mic_overflow(self):
+        # reader thread, first overflow only → visible once
+        self.wake_status.emit("mic overloaded — audio may be choppy")
 
     def _on_mic_died(self):
         """The wake stream's reader exited on a device error (sleep/
-        wake, headset change).  Without this the hands-free stack goes
-        SILENTLY deaf: no wake word, PTT taps capture nothing.  Recover
-        by cycling the toggle — teardown is instant (stream already
-        closed) and reopen surfaces device errors via the normal path."""
+        wake, headset change) or the data watchdog saw it starve.
+        Without this the hands-free stack goes SILENTLY deaf.  Recover
+        by cycling the toggle — DEBOUNCED 1.5 s so device churn settles
+        first (an instant reopen lands on the device mid-switch and
+        dies again, looping)."""
         if self._closing or self._mic_stream is None:
             return
         self._append("[voice] microphone stream lost (device change or "
                      "sleep) — reopening")
         self._wake_btn.setChecked(False)
-        self._wake_btn.setChecked(True)
+        QTimer.singleShot(1500, self._reopen_wake)
+
+    def _reopen_wake(self):
+        try:
+            if not self._closing and not self._wake_btn.isChecked():
+                self._wake_btn.setChecked(True)
+        except RuntimeError:
+            pass
 
     def _ensure_stt_warm(self):
         """Create the shared WhisperSTT and load its model off-thread."""
@@ -1328,31 +1705,74 @@ class AssistantPanel(QDialog):
     def _listening_paused(self) -> bool:
         """Thread-safe pause gate for wake detection: never listen for
         the wake word while WE are speaking, PTT records, or a follow-up
-        window owns the conversation."""
+        window owns the conversation.
+
+        Speaking is DERIVED from the live Speaker (busy()), not from the
+        stored flag — one missed on_speaking(False) once wedged the gate
+        (and with it the whole hands-free stack) forever."""
         fl = self._followup
-        return (self._tts_speaking or self._recorder is not None
+        sp = self._speaker
+        if sp is not None:
+            try:
+                speaking = sp.busy()
+            except Exception:                    # noqa: BLE001
+                speaking = self._tts_speaking
+        else:
+            speaking = self._tts_speaking
+        return (speaking or self._recorder is not None
                 or self._capture_tap is not None
                 or (fl is not None and fl.active))
 
+    def _popup_on_wake(self, state: str) -> None:
+        """Wake word while the panel is hidden (app-startup warm panel)
+        → bring the conversation into view."""
+        if state == "listening" and not self.isVisible():
+            self.show()
+            self.raise_()
+
     def _on_wake_word(self):
-        # reader-thread callback → queued signal for the orb
+        # reader-thread callback → queued signal for the orb, plus a
+        # visible acknowledgment so a heard wake is never a mystery
         self.state_changed.emit("listening")
+        self.gui_call.emit(self._ack_wake)
+
+    def _ack_wake(self):
+        self._append("[voice] heard 'HELIX' — go ahead")
 
     def _on_barge(self):
-        # spoken-over: cut the TTS and hand the floor to the human
+        # spoken-over: cut the TTS, ABANDON the answer, and hand the
+        # floor to the human.  Muting alone kept the old turn computing
+        # silently while the user's redirect waited in the queue — the
+        # "does not gear well" experience.
+        self._barged_this_turn = True
         sp = self._get_speaker()
         if sp is not None:
             try:
                 sp.stop()
             except Exception:                    # noqa: BLE001
                 pass
+        if self._session is not None:
+            try:
+                self._session.request_stop()     # interrupting = redirect
+            except Exception:                    # noqa: BLE001
+                pass
+        self.gui_call.emit(self._note_interrupted)
         self._last_turn_was_voice = True
         fl = self._ensure_followup()
         if fl is not None:
-            fl.open_window()
+            self._open_fl_window(fl)
+
+    def _note_interrupted(self):
+        self._append("  · interrupted — go ahead")
 
     def _on_wake_status(self, text: str):
+        self._last_wake_status = text
         self._prog.setText(text)
+        # an EMPTY wake capture leaves no command to advance the state —
+        # when the listener re-arms, pull the orb out of "listening"
+        if (text.startswith("say 'HELIX'")
+                and self._orb_state == "listening"):
+            self._set_state("idle")
 
     # -- proactive run watching ------------------------------------------
     def _on_watch_toggled(self, on: bool):
@@ -1392,11 +1812,23 @@ class AssistantPanel(QDialog):
             watch = self._get_run_watch()
             if watch is None:
                 return
-            from linac_gen.assist.tools_analysis import _identity
-            alerts = watch.inspect(
-                results, identity=_identity(self._session.context))
-            for a in alerts:
-                self._session.submit_event(a)
+            sess = self._session
+
+            # numpy over full MP results — OFF the GUI thread (it used
+            # to run inline in this slot and stall the UI after every run)
+            def _inspect(w=watch, res=results, s=sess):
+                try:
+                    from linac_gen.assist.tools_analysis import _identity
+                    with self._runwatch_lock:    # RunWatch mutates its
+                        alerts = w.inspect(      # baselines — serialize
+                            res, identity=_identity(s.context))
+                    for a in alerts:
+                        s.submit_event(a)
+                except Exception:                # noqa: BLE001
+                    pass
+
+            threading.Thread(target=_inspect, daemon=True,
+                             name="assist-runwatch").start()
         except RuntimeError:
             # widget destroyed while the state signal outlived us
             pass
@@ -1434,13 +1866,15 @@ class AssistantPanel(QDialog):
             self._mic_stream = None
 
     def _maybe_speak(self, reply: str):
-        if not self._speak.isChecked():
+        if not self._speak.isChecked() or self._barged_this_turn:
             return
         try:
             from linac_gen.assist.voice import summarize_for_speech
             sp = self._get_speaker()
             if sp is not None:
-                sp.say(summarize_for_speech(reply))
+                spoken = summarize_for_speech(reply)
+                sp.say(spoken)
+                self._note_spoken(spoken)
         except Exception:                        # noqa: BLE001
             pass
 
@@ -1634,7 +2068,16 @@ class AssistantPanel(QDialog):
         self._start_session(cfg)
 
     def _start_session(self, cfg, provider=None):
-        from linac_gen.assist.agent import AgentSession
+        from linac_gen.assist.agent import AgentSession, Decision
+        # a confirmation still blocking the OLD session's worker must
+        # resolve now, or that executor thread waits forever (leak that
+        # also blocks the SDK loop's shutdown at quit)
+        if self._approver is not None and self._approver.pending is not None:
+            try:
+                self._set_confirm_visible(False)
+                self._approver.resolve(Decision.ABORT)
+            except Exception:                    # noqa: BLE001
+                pass
         if self._session is not None:            # replace: don't leak the old
             try:                                 # session's SDK thread/process
                 self._session.close()
@@ -1653,6 +2096,22 @@ class AssistantPanel(QDialog):
         self._session = AgentSession(
             cfg, ctx, approver=self._approver, provider=provider,
             on_event=self._on_event_threadsafe)
+        # prewarm the SDK client OFF-thread: the first command of every
+        # launch used to pay the 1.5–5 s CLI startup inside ask()
+        import os as _os
+        sdk = getattr(self._session, "_sdk", None)
+        if (sdk is not None
+                and _os.environ.get("HELIX_ASSIST_NO_PREWARM") != "1"):
+            # gated: the prewarm spawned REAL claude CLI processes in
+            # every test that constructs a panel (the constructor reads
+            # the user's saved claude_sdk settings before mock injection)
+            def _warm_sdk(b=sdk):
+                try:
+                    b._ensure_started()
+                except Exception:                # noqa: BLE001
+                    pass                         # surfaces on first ask
+            threading.Thread(target=_warm_sdk, daemon=True,
+                             name="assist-sdk-prewarm").start()
         self._set_enabled(True)
         self._settings_box.setVisible(False)     # hide once connected
         who = (cfg.provider + f" ({cfg.model})") if cfg else "mock"
@@ -1703,10 +2162,33 @@ class AssistantPanel(QDialog):
             f"line unfocused.  TTS: {backend_name}.")
 
     def _send(self):
-        if self._session is None:
-            return
         text = self._input.text().strip()
-        if not text or (self._worker and self._worker.isRunning()):
+        if not text:
+            return
+        if self._session is None:
+            # NEVER swallow a command silently (a dead backend used to
+            # eat wake+command with zero feedback of any kind).  The
+            # text STAYS in the box, ready to send once connected.
+            self._append("[error] the assistant backend is not "
+                         "connected — open backend… and press Connect")
+            self._speak_line("The assistant backend is not connected.")
+            return
+        busy = False
+        try:
+            busy = bool(self._worker and self._worker.isRunning())
+        except RuntimeError:
+            busy = False
+        if busy:
+            # NEVER silently drop input mid-turn.  FIFO of 3: the old
+            # one-slot version destroyed message A when B arrived.
+            if len(self._inbox) == self._inbox.maxlen:
+                lost = self._inbox.popleft()[0]
+                self._append(f"  · inbox full — dropped «{lost[:40]}»")
+            self._inbox.append((text, self._pending_voice))
+            self._pending_voice = False
+            self._input.clear()
+            self._append(f"\n▷ {text}    · queued "
+                         f"({len(self._inbox)}) — runs after this turn")
             return
         # a voice-initiated turn earns a follow-up window after the
         # spoken reply; a typed turn never opens the mic
@@ -1757,12 +2239,30 @@ class AssistantPanel(QDialog):
         self._perf_update(
             turn=f"instant {(_time.monotonic() - self._t_turn0)*1e3:.0f} ms")
         self._set_state("idle")
-        if speech and self._speak.isChecked():
+        spoke = False
+        if (speech and self._speak.isChecked()
+                and self._get_speaker() is not None):
             self._speak_line(speech)
-        else:
+            spoke = True                 # its drain opens the follow-up
+        if not spoke:
             self._open_followup_if_voice()
 
-    def _dispatch_model(self, text: str):
+    def _reap_finished_worker(self):
+        """Delete the PREVIOUS turn's finished QThread wrapper before
+        replacing the reference (they used to accumulate for the
+        panel's whole life)."""
+        old = self._worker
+        if old is None:
+            return
+        try:
+            if not old.isRunning():
+                old.deleteLater()
+        except RuntimeError:
+            pass
+
+    def _begin_turn_ui(self):
+        """Shared per-turn state reset + the turn watchdog."""
+        import time as _time
         self._set_state("thinking")
         try:
             self._transcript.show_thinking()
@@ -1775,7 +2275,17 @@ class AssistantPanel(QDialog):
         self._speak_carry = ""
         self._speak_in_fence = False
         self._spoke_streaming = False
+        self._barged_this_turn = False
+        self._responding_latch = False
+        self._turn_open_ui = True
+        self._stall_notified = False
+        self._t_activity = _time.monotonic()
+        self._turn_watchdog.start()
         self._speaker_turn(True)
+
+    def _dispatch_model(self, text: str):
+        self._begin_turn_ui()
+        self._reap_finished_worker()
         self._worker = _AgentWorker(self._session, text, self)
         self._worker.assistant_text.connect(self._append)
         self._worker.assistant_text.connect(self._track_reply)
@@ -1839,8 +2349,8 @@ class AssistantPanel(QDialog):
 
     def _speak_sentence(self, sent: str):
         sent = (sent or "").strip()
-        if not sent:
-            return
+        if not sent or self._barged_this_turn:
+            return                   # barged: stay quiet for this turn
         sp = self._get_speaker()
         if sp is None:
             return
@@ -1849,6 +2359,7 @@ class AssistantPanel(QDialog):
             spoken = summarize_for_speech(sent)
             if spoken:
                 sp.say(spoken)
+                self._note_spoken(spoken)
                 self._spoke_streaming = True
         except Exception:                        # noqa: BLE001
             pass
@@ -1876,6 +2387,11 @@ class AssistantPanel(QDialog):
             self._last_reply = t
 
     def _on_turn_done(self):
+        if not self._turn_open_ui:
+            return          # already finalized (watchdog recovery raced
+        #                     the worker's own queued turn_done)
+        self._turn_watchdog.stop()
+        self._turn_open_ui = False
         self._set_state("idle")
         self._prog.setText("")
         try:
@@ -1886,18 +2402,95 @@ class AssistantPanel(QDialog):
         if not self._spoke_streaming and getattr(self, "_last_reply", ""):
             self._maybe_speak(self._last_reply)
         self._speaker_turn(False)                # queue drain now = done
-        if not self._tts_speaking:               # nothing spoken -> the
+        if self._drain_queued():
+            return                               # a held utterance runs now
+        sp = self._speaker
+        speaking = self._tts_speaking
+        if sp is not None:
+            try:
+                # LIVE derived read, never the mirrored flag: the flag
+                # is False during the first sentence's synthesis, and
+                # opening the mic there recorded the assistant's own
+                # reply (audit R1 — the cascade behind every complaint)
+                speaking = sp.busy()
+            except Exception:                    # noqa: BLE001
+                pass
+        if not speaking:                         # nothing spoken -> the
             self._open_followup_if_voice()       # drain path won't fire
+
+    def _drain_queued(self) -> bool:
+        """Run the next held utterance (FIFO order)."""
+        if not self._inbox or self._closing:
+            return False
+        qt, was_voice = self._inbox.popleft()
+        self._pending_voice = was_voice
+        self._input.setText(qt)
+        QTimer.singleShot(0, self._send_queued)
+        return True
+
+    def _send_queued(self):
+        try:
+            if not self._closing:
+                self._send()
+        except RuntimeError:
+            pass
+
+    def _check_turn_health(self):
+        """Watchdog while a turn runs: a dead worker or a long-silent
+        one must SURFACE — a wedge may last minutes, never forever, and
+        never silently."""
+        if not self._turn_open_ui:
+            self._turn_watchdog.stop()
+            return
+        w = self._worker
+        try:
+            running = bool(w is not None and w.isRunning())
+        except RuntimeError:
+            running = False
+        if not running:
+            # hard-crashed worker: turn_done never fired — recover the UI
+            self._append("[error] the reasoning worker stopped "
+                         "unexpectedly — input re-enabled")
+            self._on_turn_done()
+            return
+        import time as _time
+        if (_time.monotonic() - self._t_activity > 300.0
+                and not self._stall_notified):
+            self._stall_notified = True
+            self._append("  · still working (no output for 5 min) — "
+                         "press ■ Stop to abort if this looks wrong")
 
     # -- stop / interrupt ------------------------------------------------
     def _on_stop(self):
         """Interrupt the current turn (button or Esc).  Session stays
         usable — ``ask()`` re-arms the abort flag on the next turn."""
+        self._barged_this_turn = True            # Stop = SILENCE: late
+        #                                          streamed sentences must
+        #                                          not speak or re-open
+        #                                          the mic-pause gate
+        fl = self._followup                      # Stop also closes an open
+        if fl is not None and fl.active:         # mic window (MIRAGE
+            try:                                 # behavior; ours left it
+                fl.cancel()                      # listening for 10-30 s)
+            except Exception:                    # noqa: BLE001
+                pass
+            self.state_changed.emit("idle")
+        if self._inbox:                          # Stop drops the inbox —
+            self._append(f"  · dropped {len(self._inbox)} queued "
+                         "message(s)")           # but never silently
+            self._inbox.clear()
         if self._session is not None:
             try:
                 self._session.request_stop()
             except Exception:                    # noqa: BLE001
                 pass
+        # a pending confirmation must RESOLVE (deny) — Stop used to
+        # leave the approver blocked and the turn wedged behind it
+        ap = self._approver
+        if ap is not None and ap.pending is not None:
+            from linac_gen.assist.agent import Decision
+            self._set_confirm_visible(False)
+            ap.resolve(Decision.DENY)
         sp = self._get_speaker()
         if sp is not None:
             try:
@@ -1950,6 +2543,26 @@ class AssistantPanel(QDialog):
             return
         super().keyReleaseEvent(ev)
 
+    def showEvent(self, ev):                                 # noqa: N802
+        # any way of coming back into view (toolbar reopen, wake popup)
+        # clears the dismissal — hands-free follow-ups resume
+        try:
+            self._dismissed = False
+        except Exception:                        # noqa: BLE001
+            pass
+        super().showEvent(ev)
+
+    def focusOutEvent(self, ev):                             # noqa: N802
+        # SPACE-held PTT + focus stolen (dialog, cmd-tab) = the release
+        # never arrives and the mic stays hot — force-release instead
+        try:
+            if (self._recorder is not None
+                    or self._capture_tap is not None):
+                self._mic_released()
+        except Exception:                        # noqa: BLE001
+            pass
+        super().focusOutEvent(ev)
+
     # -- machine events / progress --------------------------------------
     def _on_event_line(self, text: str):
         """GUI-thread: render a machine event; optionally narrate it."""
@@ -1960,19 +2573,11 @@ class AssistantPanel(QDialog):
 
     def _start_event_worker(self):
         """Give the model an unprompted turn to react to queued events."""
-        self._set_state("thinking")
-        try:
-            self._transcript.show_thinking()
-        except Exception:                        # noqa: BLE001
-            pass
-        self._last_reply = ""
-        self._stream_buf = ""
-        self._streaming = False
-        self._speak_pend = ""
-        self._speak_carry = ""
-        self._speak_in_fence = False
-        self._spoke_streaming = False
-        self._speaker_turn(True)
+        self._begin_turn_ui()
+        self._reap_finished_worker()
+        # machine-initiated: must not inherit a stale voice flag and
+        # reopen the mic after ITS reply
+        self._last_turn_was_voice = False
         w = _EventWorker(self._session, self)
         w.assistant_text.connect(self._append)
         w.assistant_text.connect(self._track_reply)
@@ -1987,7 +2592,13 @@ class AssistantPanel(QDialog):
         self._append(f"[error] {msg}")
 
     def _on_progress(self, text: str):
-        self._prog.setText(text)
+        import time as _time
+        self._t_activity = _time.monotonic()     # long tools stay "alive"
+        if not text:
+            # progress cleared: restore the listening cue it displaced
+            self._prog.setText(getattr(self, "_last_wake_status", ""))
+        else:
+            self._prog.setText(text)
 
     # -- conversation text size -----------------------------------------
     def _bump_font(self, delta: int):
@@ -2035,23 +2646,47 @@ class AssistantPanel(QDialog):
             return
         if not self._worker:
             return
+        import time as _time
+        self._t_activity = _time.monotonic()     # turn-watchdog heartbeat
         if t == "assistant_delta":
             self._worker.assistant_delta.emit(event.get("text", ""))
-            self.state_changed.emit("responding")
+            # LATCHED: one state emission per streamed segment, not one
+            # per token (the per-delta storm re-styled the orb/lamp
+            # hundreds of times per reply)
+            if not self._responding_latch:
+                self._responding_latch = True
+                self.state_changed.emit("responding")
         elif t == "assistant_delta_done":
+            self._responding_latch = False
             self._worker.assistant_delta_done.emit()
         elif t == "assistant_text":
             self._worker.assistant_text.emit("\n" + event["text"])
+            self._responding_latch = False
             self.state_changed.emit("responding")
         elif t == "tool_start":
             self._worker.assistant_delta_done.emit()   # close any open line
             self._worker.assistant_text.emit(
                 f"  · {event['tool']} …")
+            self._responding_latch = False
             self.state_changed.emit("thinking")
         elif t == "error":
             self._worker.assistant_text.emit(
                 f"[error] {event.get('message', '')}")
+            self._responding_latch = False
             self.state_changed.emit("error")
+            if ("turn error" in str(event.get("message", ""))
+                    and not getattr(self, "_opus_tip_shown", False)):
+                try:
+                    model = str(self._settings().value(
+                        "assist/model", "")).lower()
+                except Exception:                # noqa: BLE001
+                    model = ""
+                if "opus" in model:
+                    self._opus_tip_shown = True
+                    self._worker.assistant_text.emit(
+                        "[tip] opus looks unavailable right now — "
+                        "backend… → model 'sonnet' → Connect usually "
+                        "answers immediately")
         elif t == "job_submitted" and self._worker:
             self._worker.assistant_text.emit(
                 f"  · {event['tool']} → {event['job_id']} (background)")
@@ -2065,6 +2700,9 @@ class AssistantPanel(QDialog):
         self._btn_deny.setVisible(on)
 
     def _show_confirmation(self, req):
+        if self._closing:
+            return          # late worker emit after shutdown began — the
+                            # approver's own closing check resolves it
         self._btn_always.setVisible(req.allow_session_auto)
         self._confirm_label.setText(
             f"Confirm {req.tier}:\n{req.pretty}")
@@ -2082,10 +2720,17 @@ class AssistantPanel(QDialog):
             self._speaker_turn(False)  # echo drain must report + open mic
             self._speak_line(f"Approval needed: {req.tool}. "
                              "Say confirm, or cancel.")
-            self._last_turn_was_voice = True
-            fl = self._ensure_followup()
-            if fl is not None and not self._speak.isChecked():
-                fl.open_window()     # no speech → open immediately
+            # open the mic NOW unless our own echo is about to play (the
+            # TTS drain opens it then) — hands-free must survive a
+            # missing/failed speaker
+            if not (self._speak.isChecked()
+                    and self._get_speaker() is not None):
+                self._last_turn_was_voice = True
+                fl = self._ensure_followup()
+                if fl is not None:
+                    self._open_fl_window(fl)
+            else:
+                self._last_turn_was_voice = True
 
     def _resolve_confirm(self, decision):
         self._set_confirm_visible(False)
@@ -2113,8 +2758,47 @@ class AssistantPanel(QDialog):
             self._session.auto_approve_compute = self._auto.isChecked()
 
     # -- teardown -------------------------------------------------------
-    def closeEvent(self, ev):
+    def closeEvent(self, ev):                                # noqa: N802
+        """✕ HIDES the panel — it never tears the session down.
+
+        The old behavior was THE hang: closing the window killed the
+        SDK session and the listeners, but the app kept REUSING the
+        dead panel — the worker then blocked forever on a closed
+        backend and every later message was silently swallowed.  The
+        assistant is an app-level service now: it dies only at app
+        shutdown (via :meth:`shutdown`).
+
+        Dismissing the window also SILENCES it (user report: "I closed
+        it but still can hear it"): speech is cut, the rest of the turn
+        stays muted, and any open follow-up mic window is cancelled.
+        The turn itself keeps computing — its text lands in the
+        transcript — and the wake word still reopens the panel."""
+        if not self._closing:
+            ev.ignore()
+            self.hide()
+            self._dismissed = True               # explicit user dismissal
+            self._barged_this_turn = True        # mute the rest of the turn
+            sp = self._speaker
+            if sp is not None:
+                try:
+                    sp.stop()                    # cut current speech NOW
+                except Exception:                # noqa: BLE001
+                    pass
+            fl = self._followup
+            if fl is not None:
+                try:
+                    fl.cancel()                  # no open mic on a hidden panel
+                except Exception:                # noqa: BLE001
+                    pass
+            return
+        super().closeEvent(ev)
+
+    def shutdown(self):
+        """REAL teardown — called by the app at quit (never by ✕)."""
+        if self._closing:
+            return
         self._closing = True
+        self._turn_watchdog.stop()
         try:
             self._state.results_changed.disconnect(
                 self._on_results_changed)
@@ -2137,8 +2821,17 @@ class AssistantPanel(QDialog):
                 self._session.close()
             except Exception:                    # noqa: BLE001
                 pass
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.wait(3000)
+        try:
+            if self._worker is not None and self._worker.isRunning():
+                self._worker.wait(3000)
+        except (RuntimeError, AttributeError):   # deleted / test double
+            pass
+        try:
+            if (getattr(self, "_fast_worker", None) is not None
+                    and self._fast_worker.isRunning()):
+                self._fast_worker.wait(2000)     # else qFatal at app quit
+        except (RuntimeError, AttributeError):
+            pass
         # voice teardown
         if getattr(self, "_recorder", None) is not None:
             try:
@@ -2158,4 +2851,4 @@ class AssistantPanel(QDialog):
                 self._speaker.stop()             # flush queue + cut audio
             except Exception:                    # noqa: BLE001
                 pass
-        super().closeEvent(ev)
+        self.close()                             # real close (closing=True)

@@ -51,9 +51,24 @@ TOOLS:
   identical call.
 - Long simulations return a job_id immediately: poll job_status when
   the user asks; never busy-loop.
-- You have NO shell, NO eval, NO file access — only the registered
-  tools.  Do not ask for more.  Distinguish envelope vs multiparticle
-  vs matrix results explicitly.
+- You have NO shell, NO eval and can NEVER write files — but you DO
+  have read-only file access via the read_file tool (windowed; it
+  defaults to the loaded lattice .dat, so the raw element cards are
+  always inspectable).  Distinguish envelope vs multiparticle vs
+  matrix results explicitly.
+
+ELEMENT SEMANTICS (what the deck's cards mean):
+- Cavities and solenoids are BOTH FIELD_MAP cards — the class name
+  does not decide.  The 5-digit geom index (aper·10^4 + rfB·10^3 +
+  rfE·10^2 + statB·10 + statE; digits: 1=1-D, 4/5=2-D, 7=3-D,
+  9=G(z) quad map) enables field CHANNELS: an RF channel present =
+  cavity, static-B only = solenoid — REGARDLESS of ke/kb (a cavity
+  parked at ke=0 is still a cavity, just unpowered).
+- Use describe_lattice for hardware counts (cavities powered/parked,
+  solenoids, quads, dipoles, correctors, BPMs), list_lattice_elements
+  (filter="cavity"/"solenoid"/name substring) for the element table
+  with decoded field types and parameters, read_file for the raw
+  cards, and search_manual for the full .dat syntax reference.
 - When you answer from the manual (search_manual), cite the section
   title(s) you used.
 - In the GUI you can also point and look: highlight_element /
@@ -119,6 +134,29 @@ def build_system_prompt(context=None, extra: str = "") -> str:
         if getattr(context, "lattice", None) is not None:
             lines.append(
                 f"- {len(context.lattice.elements)} elements loaded")
+            try:
+                # hardware rollup: "how many cavities" costs ZERO tool
+                # calls (channel-based counts, cavities incl. parked)
+                from linac_gen.lattice_semantics import summarize_lattice
+                s = summarize_lattice(context.lattice)
+                cav = s["cavities"]
+                parked = s["cavities_parked_zero_amplitude"]
+                cav_txt = (f"{cav} RF cavities"
+                           + (f" ({parked} parked at zero amplitude)"
+                              if parked else ""))
+                hw = (f"- hardware: {cav_txt}, "
+                      f"{s['solenoids']} solenoids, {s['quads']} quads, "
+                      f"{s['dipoles']} dipoles, {s['correctors']} "
+                      f"correctors, {s['bpms']} BPMs; "
+                      f"length {s['length_m']:.1f} m")
+                if s["rf_sections_mhz"]:
+                    hw += ("; RF sections "
+                           + "/".join(f"{f:g}"
+                                      for f in s["rf_sections_mhz"])
+                           + " MHz")
+                lines.append(hw)
+            except Exception:                               # noqa: BLE001
+                pass
         if getattr(context, "beam_config", None) is not None:
             bc = context.beam_config
             lines.append(

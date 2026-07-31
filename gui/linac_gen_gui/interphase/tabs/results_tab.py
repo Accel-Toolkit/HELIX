@@ -5120,6 +5120,17 @@ class _CentroidPopup(_PopupPlot):
 
 
 class _PhaseSpacePopup(_PopupPlot):
+    _FOLD_TIP = (
+        "Fold Δφ into ONE RF period about the bunch centroid.\n"
+        "Particles a full period away are in the neighbouring bucket "
+        "of the same bunch train — the same physical bunch — and "
+        "this is what TraceWin/Toutatis display.\n"
+        "Uncheck to see the raw unwrapped phase (the bunch train).\n\n"
+        "This is a DISPLAY fold: it changes the plot and the numbers "
+        "beside it, not the run.  To remove the train at the source, "
+        "enable Periodic phase in the Beam tab — then this control is "
+        "disabled because there is nothing left to fold.")
+
     def __init__(self, parent, state: AppState):
         super().__init__(parent, "Phase Space  —  x-x' · y-y' · x-y · φ-W", size=(1000, 760))
         self._state = state
@@ -5177,6 +5188,18 @@ class _PhaseSpacePopup(_PopupPlot):
             "exports the table.")
         self._params_btn.toggled.connect(self._toggle_view)
         top.addWidget(self._params_btn)
+        # Bunch-train fold.  An RFQ turns a DC beam into a train of
+        # bunches one RF period apart; particles that slipped into a
+        # neighbouring bucket are drawn 360° away, so the φ–ΔW panel
+        # shows a row of stripes instead of one bunch.  Folding restores
+        # the single-bucket view (TraceWin/Toutatis convention) and
+        # matches the σ_φ / ε_z the parameters table reports.
+        from PyQt6.QtWidgets import QCheckBox
+        self._wrap_phi = QCheckBox("fold φ")
+        self._wrap_phi.setChecked(True)
+        self._wrap_phi.setToolTip(self._FOLD_TIP)
+        self._wrap_phi.toggled.connect(self._redraw)
+        top.addWidget(self._wrap_phi)
         top.addStretch(1)
         v.addLayout(top)
         # The 2x2 density grid lives in a container widget so the
@@ -5211,7 +5234,36 @@ class _PhaseSpacePopup(_PopupPlot):
         # Populate the location dropdown from any snapshots captured this
         # run, then redraw the currently-selected location.
         self._populate_locations(results)
+        self._sync_fold_to_run(results)
         self._redraw()
+
+    def _sync_fold_to_run(self, results) -> None:
+        """Disable the display fold for a run that folded while tracking.
+
+        ``wrap_phase_column`` folds about the MEDIAN with a hard 360°
+        period.  A run made with ``periodic_phase`` has already folded
+        about the synchronous particle using the true bunch spacing —
+        720° downstream of a 162.5 → 325 MHz jump — so applying the
+        display fold on top would slice a legitimately ±360°-wide bunch
+        in half.  Nothing to fold, so take the control away rather than
+        leave a checkbox that silently corrupts the picture.
+        """
+        folded = bool(getattr(results, "periodic_phase", False))
+        self._wrap_phi.blockSignals(True)
+        if folded:
+            self._wrap_phi.setChecked(False)
+            self._wrap_phi.setEnabled(False)
+            self._wrap_phi.setToolTip(
+                "Disabled: this run tracked with periodic phase "
+                "coordinates (Beam tab → Periodic phase), so Δφ was "
+                "already folded into one bunch spacing during tracking "
+                "and the plot below is the single-bunch view.\n\n"
+                "The display fold assumes a 360° period, which would be "
+                "wrong here downstream of a frequency jump.")
+        else:
+            self._wrap_phi.setEnabled(True)
+            self._wrap_phi.setToolTip(self._FOLD_TIP)
+        self._wrap_phi.blockSignals(False)
 
     def _populate_locations(self, results):
         """Rebuild the location combo: 'exit (final)' + one entry per
@@ -5302,6 +5354,17 @@ class _PhaseSpacePopup(_PopupPlot):
         loc_label = self._location.currentText()
         if src and not src.startswith("snapshot"):
             loc_label = f"{loc_label}  [{src}]"
+        # Follow the "fold φ" checkbox so the table can never disagree
+        # with the plot beside it (a train would otherwise show
+        # σ_φ = 183° next to a picture of a 4° bunch).  Folded rows are
+        # labelled so the number is never mistaken for the raw one.
+        if q is not None and len(q) and getattr(self, "_wrap_phi", None) \
+                is not None and self._wrap_phi.isChecked():
+            from linac_gen.diagnostics.moments import wrap_phase_column
+            q, n_folded = wrap_phase_column(q)
+            if n_folded:
+                loc_label = (f"{loc_label}  [φ folded: {n_folded} "
+                             "particles from adjacent RF buckets]")
         cfg = self._state.beam_config
         rows = summarize_particles(
             q, ref,
@@ -5343,6 +5406,19 @@ class _PhaseSpacePopup(_PopupPlot):
                 panel.set_data([], [])
             return
         q = particles
+        # Fold BEFORE the (z, δ) basis conversion below, otherwise z
+        # would be folded instead of φ.  Same helper as the physics
+        # moments, so plot and parameters table always agree.
+        n_folded = 0
+        if getattr(self, "_wrap_phi", None) is not None \
+                and self._wrap_phi.isChecked():
+            from linac_gen.diagnostics.moments import wrap_phase_column
+            q, n_folded = wrap_phase_column(q)
+        self._wrap_phi.setToolTip(
+            self._wrap_phi.toolTip().split("\n\nCurrently")[0]
+            + (f"\n\nCurrently folding {n_folded} particles from "
+               "adjacent RF buckets." if n_folded else
+               "\n\nCurrently nothing to fold (single bucket)."))
         phi, dw = q[:, 4], q[:, 5]
         basis = self._basis.currentData()
         cfg = self._state.beam_config
@@ -5399,6 +5475,12 @@ class _PhaseSpacePopup(_PopupPlot):
         if particles is None or len(particles) == 0:
             return []
         q = np.asarray(particles)
+        # Same fold as the view, so a Ctrl+S CSV never mixes a folded
+        # picture with a raw φ column.
+        if getattr(self, "_wrap_phi", None) is not None \
+                and self._wrap_phi.isChecked():
+            from linac_gen.diagnostics.moments import wrap_phase_column
+            q, _ = wrap_phase_column(q)
         n = q.shape[0]
         idx = np.arange(n, dtype=float)
         names = ("x_mm", "xprime_mrad", "y_mm", "yprime_mrad",

@@ -247,9 +247,45 @@ def _get_lattice_info(ctx):
                _ctx_provenance(ctx))
 
 
+@_tool("describe_lattice",
+       "Physicist-level rollup of the loaded lattice: how many RF "
+       "cavities (powered vs parked), solenoids, quads, dipoles, "
+       "correctors, BPMs…, lengths per kind, RF frequency sections.  "
+       "THE tool for 'how many cavities' questions — field maps are "
+       "classified by their field CHANNELS (RF vs static), not by "
+       "class name or amplitude.",
+       {"type": "object", "properties": {}, "required": []},
+       "read")
+def _describe_lattice(ctx):
+    gate = _need(ctx, "lattice")
+    if gate:
+        return gate
+    from linac_gen.lattice_semantics import summarize_lattice
+    out, refusal, warns = _capture(summarize_lattice, ctx.lattice)
+    if refusal:
+        return refusal
+    return _ok(out, _ctx_provenance(ctx), warns)
+
+
+_PARAM_ATTRS = ("gradient", "field", "angle", "rho", "ke", "kb", "phase",
+                "frequency", "voltage", "bx_l", "by_l")
+
+
+def _element_params(e) -> dict:
+    out = {}
+    for attr in _PARAM_ATTRS:
+        v = getattr(e, attr, None)
+        if isinstance(v, (int, float)) and float(v) != 0.0:
+            out[attr] = round(float(v), 6)
+    return out
+
+
 @_tool("list_lattice_elements",
-       "List elements (name, class, length_mm), optionally filtered by "
-       "class name substring; truncated to 'limit'.",
+       "List elements with physics semantics: name, class, KIND "
+       "(cavity/solenoid/quad/dipole/corrector/diagnostic…), decoded "
+       "field-map type + dimensionality, key parameters (ke/kb/"
+       "gradient/angle/phase/frequency…), length.  'filter' matches "
+       "kind OR class OR name substring; reports total_matched.",
        {"type": "object",
         "properties": {"filter": {"type": "string"},
                        "limit": {"type": "integer", "default": 40}},
@@ -259,19 +295,133 @@ def _list_elements(ctx, filter: str = "", limit: int = 40):
     gate = _need(ctx, "lattice")
     if gate:
         return gate
+    from linac_gen.lattice_semantics import classify_element
+    want = (filter or "").strip().lower()
+    # semantic synonyms an operator uses
+    kind_alias = {"cavities": "cavity", "cavs": "cavity", "rf": "cavity",
+                  "solenoids": "solenoid", "quads": "quad",
+                  "quadrupoles": "quad", "bends": "dipole",
+                  "dipoles": "dipole", "steerers": "corrector",
+                  "correctors": "corrector", "bpms": "diagnostic",
+                  "diagnostics": "diagnostic"}
+    want = kind_alias.get(want, want)
     rows = []
+    total = 0
+    limit = max(1, int(limit))
+    import os as _os
     for i, e in enumerate(ctx.lattice.elements):
         cls = type(e).__name__
-        if filter and filter.lower() not in cls.lower():
+        name = str(getattr(e, "name", "?"))
+        sem = classify_element(e)
+        # the parser SYNTHESIZES names (FMAP_001…) and discards deck
+        # labels — the field-map FILE name is the surviving human label
+        ffile = _os.path.basename(str(getattr(e, "field_file", "")
+                                      or ""))
+        if want and (want not in cls.lower()
+                     and want not in name.lower()
+                     and want not in ffile.lower()
+                     and want != sem["kind"]):
             continue
-        rows.append({"index": i, "name": getattr(e, "name", "?"),
-                     "class": cls,
-                     "length_mm": float(getattr(e, "length", 0.0) or 0.0)})
-        if len(rows) >= max(1, int(limit)):
-            break
+        total += 1                    # count EVERY match, past the limit
+        if len(rows) < limit:
+            row = {"index": i, "name": name, "class": cls,
+                   "kind": sem["kind"],
+                   "length_mm": float(getattr(e, "length", 0.0) or 0.0)}
+            if sem["field_type"]:
+                row["field_type"] = (f"{sem['field_type']}, "
+                                     f"{sem['dims']}")
+                row["powered"] = sem["powered"]
+                geom = getattr(e, "geom", None)
+                if geom is not None:
+                    row["geom"] = int(geom)
+                if ffile:
+                    row["field_file"] = ffile
+            params = _element_params(e)
+            if params:
+                row["params"] = params
+            rows.append(row)
     return _ok({"elements": rows,
-                "truncated": len(rows) >= max(1, int(limit))},
+                "total_matched": total,
+                "truncated": total > len(rows)},
                _ctx_provenance(ctx))
+
+
+@_tool("read_file",
+       "READ-ONLY windowed view of a local text file — defaults to the "
+       "loaded lattice .dat, so the raw element cards (FIELD_MAP geom "
+       "codes, SET_* commands…) are directly inspectable.  Page with "
+       "start_line/max_lines, or pass 'pattern' (case-insensitive "
+       "regex/substring) to get matching lines with numbers.  Local "
+       "files only; binary files return a summary, never bytes; no "
+       "writes ever.",
+       {"type": "object",
+        "properties": {
+            "path": {"type": "string",
+                     "description": "file to read; empty = the loaded "
+                                    "lattice file"},
+            "start_line": {"type": "integer", "default": 1},
+            "max_lines": {"type": "integer", "default": 120,
+                          "description": "lines per page (cap 200)"},
+            "pattern": {"type": "string",
+                        "description": "return only lines matching this "
+                                       "case-insensitive regex"}},
+        "required": []},
+       "read")
+def _read_file(ctx, path: str = "", start_line: int = 1,
+               max_lines: int = 120, pattern: str = ""):
+    import os as _os
+    import re as _re
+    p = str(path or "").strip() or (ctx.lattice_path or "")
+    if not p:
+        return _err("no path given and no lattice is loaded — pass "
+                    "'path' or load_lattice first")
+    try:
+        p = _local_path(p)
+    except ValueError as exc:
+        return _refused(exc)
+    p = _os.path.expanduser(p)
+    if not _os.path.isfile(p):
+        return _err(f"not a file: {p}")
+    size = _os.path.getsize(p)
+    with open(p, "rb") as f:
+        if b"\x00" in f.read(4096):
+            return _ok({"path": p, "binary": True, "size_bytes": size,
+                        "message": "binary file — no bytes shown "
+                                   "(HDF5 results: use read_provenance "
+                                   "/ load_results)"},
+                       _ctx_provenance(ctx))
+    max_lines = max(1, min(int(max_lines), 200))
+    start_line = max(1, int(start_line))
+    rx = None
+    if pattern:
+        try:
+            rx = _re.compile(pattern, _re.I)
+        except _re.error:
+            rx = _re.compile(_re.escape(pattern), _re.I)
+    lines: list[str] = []
+    total = 0
+    matches = 0
+    scan_cap = 500_000                    # huge-file safety
+    with open(p, encoding="utf-8", errors="replace") as f:
+        for n, raw in enumerate(f, start=1):
+            total = n
+            if n > scan_cap:
+                break
+            txt = raw.rstrip("\n")
+            if rx is not None:
+                if rx.search(txt):
+                    matches += 1
+                    if len(lines) < max_lines:
+                        lines.append(f"{n:5d}| {txt[:300]}")
+            elif start_line <= n < start_line + max_lines:
+                lines.append(f"{n:5d}| {txt[:300]}")
+    data = {"path": p, "total_lines": total, "lines": lines}
+    if rx is not None:
+        data["matches_total"] = matches
+        data["truncated"] = matches > len(lines)
+    else:
+        data["truncated"] = total > start_line + max_lines - 1
+    return _ok(data, _ctx_provenance(ctx))
 
 
 @_tool("result_summary",
@@ -607,8 +757,10 @@ def _search_manual(ctx, query: str, k: int = 5):
     for score, title, location, text in scored[:max(1, min(int(k), 10))]:
         pos = min((text.lower().find(t) for t in terms
                    if t in text.lower()), default=0)
-        lo = max(0, pos - 60)
-        snippet = " ".join(text[lo:lo + 280].split())
+        lo = max(0, pos - 80)
+        # 700 chars, not 280: syntax answers are often TABLES (the
+        # FIELD_MAP geom-digit table) that a narrow window clipped
+        snippet = " ".join(text[lo:lo + 700].split())
         out.append({"title": title, "location": location,
                     "snippet": snippet})
     if not out:

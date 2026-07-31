@@ -319,3 +319,81 @@ def test_statusbar_displays_status_message(qapp):
         assert bar._msg_seg.text() == ""
     finally:
         bar.deleteLater()
+
+
+def test_statusbar_accepts_ndarray_results(qapp):
+    """2026-07-28 live crash: ``if sigma_x:`` on an ndarray raises
+    'truth value of an array is ambiguous' — results loaded from h5
+    carry numpy arrays, not lists."""
+    import numpy as np
+    from linac_gen_gui.interphase.chrome.statusbar import StatusBar
+    from linac_gen_gui.interphase.state import AppState
+
+    class _R:
+        sigma_x = np.array([1.0, 2.0, 3.25])
+        transmission = np.array([100.0, 99.0, 97.4])
+
+    sb = StatusBar(AppState())
+    sb._refresh_results(_R())                  # must not raise
+    assert "3.250" in sb._sigma_seg.text()
+    assert "2.60" in sb._loss_seg.text()
+    sb._refresh_results(None)                  # clear path intact
+    assert "—" in sb._sigma_seg.text()
+
+
+def test_excepthook_dialog_survives_window_close(tmp_path):
+    """2026-07-28 native SIGSEGV: closing the excepthook's QMessageBox via
+    the window-manager close button destroyed the C++ dialog from INSIDE
+    its own closeEvent (the ``finished`` handler dropped the last Python
+    reference mid-emission) — use-after-free in QDialogButtonBox.  The
+    killer sequence must run in a subprocess so a regression cannot take
+    pytest down with it."""
+    import subprocess
+    import sys as _sys
+
+    code = """
+import sys
+from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QTimer
+app = QApplication(sys.argv)
+from linac_gen_gui.interphase.app import _install_excepthook
+_install_excepthook()
+try:
+    raise RuntimeError("boom")            # summon the dialog
+except RuntimeError:
+    sys.excepthook(*sys.exc_info())
+dlg = app.activeModalWidget() or next(
+    (w for w in app.topLevelWidgets() if w.isVisible()
+     and w.metaObject().className() == "QMessageBox"), None)
+assert dlg is not None, "excepthook dialog never appeared"
+dlg.close()                               # the killer: WM close path
+app.processEvents()                       # unwind closeEvent frames
+app.processEvents()                       # deferred deleteLater runs
+# a SECOND dialog must be possible (state actually released)
+try:
+    raise RuntimeError("boom2")
+except RuntimeError:
+    sys.excepthook(*sys.exc_info())
+QTimer.singleShot(0, app.processEvents)
+app.processEvents()
+n = sum(1 for w in app.topLevelWidgets()
+        if w.isVisible() and w.metaObject().className() == "QMessageBox")
+assert n == 1, f"second dialog blocked (n={n}) — state leaked"
+print("EXCEPTHOOK_CLOSE_OK")
+"""
+    import os as _os
+    from pathlib import Path as _Path
+    env = dict(_os.environ)
+    env["QT_QPA_PLATFORM"] = "offscreen"
+    # the subprocess must find linac_gen_gui regardless of how the
+    # PARENT pytest got it (conftest sys.path vs shell PYTHONPATH)
+    repo = _Path(__file__).resolve().parents[2]
+    env["PYTHONPATH"] = _os.pathsep.join(
+        [str(repo), str(repo / "gui"),
+         env.get("PYTHONPATH", "")]).rstrip(_os.pathsep)
+    res = subprocess.run([_sys.executable, "-c", code],
+                         capture_output=True, text=True, timeout=120,
+                         env=env)
+    assert res.returncode == 0, (
+        f"crashed rc={res.returncode}\n{res.stderr[-2000:]}")
+    assert "EXCEPTHOOK_CLOSE_OK" in res.stdout

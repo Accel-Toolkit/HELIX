@@ -918,11 +918,22 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                     )
                     # Back-link the previous RFQ cell so it knows its
                     # forward neighbour, and prime our prev-link from it.
-                    if lattice.elements:
-                        prev = lattice.elements[-1]
+                    # Walk back over zero-length passive cards ("lattice",
+                    # "lattice_end", markers…) — genuine TW decks place
+                    # them BETWEEN RFQ_CELL lines and the naive
+                    # elements[-1] check silently broke the type chain
+                    # exactly there (found 2026-07-30: the -4 transcell
+                    # after "lattice_end" got a default neighbour and a
+                    # plane-swapped transverse matrix).  A thick element
+                    # still terminates the chain: separate RFQ sections
+                    # must not couple.
+                    for prev in reversed(lattice.elements):
                         if isinstance(prev, RfqCell):
                             rfq.type_prev = prev.cell_type
                             prev.type_next = rfq.cell_type
+                            break
+                        if float(getattr(prev, "length", 0.0) or 0.0) > 0.0:
+                            break
                     lattice.add(rfq)
 
                 # ── Multi-gap cavity (NCELLS) ─────────────────────────────

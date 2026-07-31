@@ -130,12 +130,14 @@ class StatusBar(QFrame):
             self._loss_seg.setText("loss 0.0 %")
             return
         # End-of-lattice σ_x
+        # numpy arrays refuse bare truthiness ("ambiguous") — these
+        # fields arrive as ndarrays from h5-loaded results
         sigma_x = getattr(results, "sigma_x", None)
-        if sigma_x:
+        if sigma_x is not None and len(sigma_x):
             self._sigma_seg.setText(f"σ_x = {sigma_x[-1]:.3f} mm")
         # Transmission → loss
         trans = getattr(results, "transmission", None)
-        if trans:
+        if trans is not None and len(trans):
             loss = 100.0 - trans[-1]
             self._loss_color = theme.WARN if loss > 1.0 else theme.TEXT_1
             self._loss_seg.setText(f"loss {loss:.2f} %")

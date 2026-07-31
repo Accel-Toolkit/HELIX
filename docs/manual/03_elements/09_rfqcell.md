@@ -49,13 +49,30 @@ A₁₀ encodes modulation strength (longitudinal acceleration).
 
 Like a FieldMap, an RFQ cell has **no closed-form 6×6 transfer
 matrix** — the 2-term potential mixes transverse position with z
-non-linearly.  The production integrator in this codebase is the
-**2-term Strang Drift–Kick–Drift** splitting: each substep applies
-a half-drift, the full AG transverse + longitudinal kick, then the
-second half-drift (TraceWin manual convention).  The default
-`field_model="2term"` — `A_quad = (1−A₁₀)/R₀²` with
-`S = −sign(Type)` — is the path validated against TraceWin envelope
-output; three diagnostic-only variants (`crand_x`,
+non-linearly.  Both models use a per-substep **Strang
+Drift–Kick–Drift** splitting (TraceWin manual convention).
+
+**`field_model="tw2term"` (DEFAULT since 2026-07-30)** — the exact
+TraceWin annex per-step algorithm, with every formula-transcription
+ambiguity resolved numerically against TraceWin's own per-cell
+transfer matrices (203 PXIE cells; full derivation and calibration
+record in `linac_gen/elements/rfq_coefficients.py`).  Key physics:
+sin-phased quadrupole of strength V/R₀² (no `(1−A₁₀)` reduction —
+TW's R₀ is *defined* as the radius where the quad term is V/R₀²),
+cos-phased RF defocus, exact ±3 front-end / ±4 transcell
+coefficient forms (±3 are the sin³/cos³ ramps), per-substep
+synchronous-γ advance, TW's sin-phased K₂
+momentum rescale, and the **per-particle longitudinal phase slip**
+in multiparticle tracking — absent from the legacy path, which is
+why a DC beam could never bunch there (legacy PXIE capture: 24 %;
+tw2term: **99 %** vs the 98±2 % PIP2IT measurement).  The
+synchronous ramp reproduces TW's exit energy to all printed digits.
+
+**`field_model="2term"` (legacy fallback, explicit opt-in)** —
+`A_quad = (1−A₁₀)/R₀²` with `S = −sign(Type)`, the empirically-
+calibrated 2026-04 path, kept bit-identical; its multiparticle
+path has no phase slip and no losses and must not be used for capture
+or transmission studies.  Three diagnostic-only variants (`crand_x`,
 `crand_x_noflip`, `pdf_2term`) are kept for comparison but blow up
 in envelope runs and must not be used for production.
 
@@ -77,6 +94,222 @@ is what bunches a continuous beam.  No purely-transverse subspace
 is invariant.
 
 ### Validation status
+
+**tw2term vs TraceWin ground truth** (PXIE LEBT+RFQ project,
+2026-07-30; pinned in `tests/rfq/test_tw2term_benchmarks.py`):
+
+| Quantity | tw2term | Reference |
+|---|---|---|
+| Per-cell 4×4 matrix, median rel. error | 1.25 % (200/203 cells < 10 %) | TW `Transfer_matrix1.dat` |
+| Cumulative Π det(x-block) (momentum invariant) | 0.1237 | TW 0.1236, physical 0.1238 |
+| Synchronous exit energy | 1.955717 MeV (exact) | TW chart 1.955717 MeV |
+| MP capture (5 mA DC, no SC) | ~99 % | design 99.8 %, measured 98±2 % |
+| Envelope σ vs TW ENV export | **1.1 % (x) / 1.7 % (y)** | vane-based reference — TW's own matrices reproduce it only to ~4 % |
+
+**Smooth TW calibration (vane-field campaign, 2026-07-30)**: on top of
+the exact annex algorithm, `step_kicks` applies a small smooth
+correction pair (quad ≤1 %, transverse defocus ≤2.5 %, parameterised
+by the card A₁₀; `rfq_coefficients.tw_calibration`).  Its physical
+origin is the Toutatis vane-field solution: an FD Laplace solve of the
+true constant-Tc electrode (pipeline validated to 0.1–0.7 % on the
+exact two-term surface) predicts corrections of the same sign and
+cell-trend; the magnitudes are calibrated to the 203 ground-truth
+matrices (the same mode-faithful method as the fnalscl T(β) factor).
+The longitudinal channel (E_z ramp, K₁, K₂) deliberately stays on the
+card A₁₀ — it already matched TW exactly.  Two pinned negative
+results: per-slice coefficients inverted from the vane-TIP table add
+nothing (tips are two-term to noise), and RAW per-cell fitted
+corrections make the beam WORSE (cell-to-cell jitter breaks AG
+coherence; envelope y 7.4 → 16 %) — smoothness is load-bearing.
+
+Two epistemic cautions: (1) 1.1 % is *below* the ~4 % with which TW's
+own matrices reproduce the same chart — part of the calibration
+absorbs chart-specific residuals, so treat sub-floor agreement as a
+fit property, not extra physics; (2) the calibration is
+**single-project** (PXIE) and applies, bounded but unvalidated, to
+any other RFQ — set
+`linac_gen.elements.rfq_coefficients.TW_CALIBRATION_ENABLED = False`
+for the uncalibrated exact-annex model.
+
+**Losses (tw2term only, 2026-07-30)**: the multiparticle path checks
+each substep against the actual vane-tip apertures
+``x_lim(z)/y_lim(z)`` solved from the two-term equipotential
+condition (validated to 0.03–0.14 % against the PXIE
+``pxie-rfq.vane`` tip table — no empirical factor needed), plus a
+W&nbsp;<&nbsp;0 kill for back-accelerated junk.  ±3 front-end/exit
+cells skip the transverse check (their real vanes flare to ~3.5·R₀).
+With TraceWin's measured input distribution the full LEBT+RFQ line
+reproduces TW's LEBT scraping (77.5 % vs 77.3 % — requires the
+solenoids' ``.ouv`` bore profiles, i.e. ``Ka=1`` on their FIELD_MAP
+cards as in TW's own decks), the transmission–voltage S-curve has its
+shoulder just below nominal voltage as measured at PIP2IT, and the
+captured beam exits at ε = 0.133/0.167 π·mm·mrad vs the PIP2IT
+measurement 0.17/0.16.  Known gap: RFQ transmission of LEBT survivors
+is ~82 % vs TW/Toutatis ~97 %, concentrated in the last tight-bore
+(3.1 mm) cells — see the vane-coefficient plan below.
+
+**Reading RFQ output: the bunch train (2026-07-30)**.  An RFQ turns a
+DC beam into a *train* of bunches one RF period apart.  HELIX seeds one
+RF period of DC beam, and during bunching space charge pushes ~20 % of
+the particles across a bucket boundary — physically into the
+neighbouring bunch of the same train.  Because Δφ is unwrapped, a raw
+φ–ΔW plot then shows a row of vertical stripes 360° apart rather than
+one bunch; each stripe is a real, fully accelerated bunch (the leading
+one sits slightly high in energy, the trailing one low — the signature
+of having slipped a period).
+
+**Viewing it**: the phase-space popup's **fold φ** checkbox (on by
+default) folds Δφ into one RF period about the bunch centroid, giving
+the single-bunch picture TraceWin/Toutatis draw; unchecking shows the
+raw train.  The beam-parameters table and the Ctrl+S export follow the
+same checkbox, so the numbers beside the plot always match it, and a
+folded table is labelled with how many particles came from adjacent
+buckets.
+
+**The fix: periodic phase coordinates (`periodic_phase`)**.  Tick
+**Periodic phase (bunch train)** in the Beam tab — or set
+`periodic_phase: true` in the project's `beam` block, or
+`BeamConfig(periodic_phase=True)` from Python — and the tracker folds
+Δφ into one bunch spacing after every element and before every
+space-charge kick, the convention Toutatis uses.  A particle that
+slips past a bucket boundary then simply re-enters the neighbouring
+one, the satellite stripes never form, and `sigma_phi`, `emit_z` and
+the z-Twiss become single-bunch numbers **with no statistics treatment
+at all** — on the PXIE deck at 5 mA, σ_φ 172° → 5.0° and ε_z 3.05 →
+0.073 deg·MeV, while line transmission (62.0 → 60.6 %) and the exit
+energy (2.1025 → 2.1035 MeV) barely move.  The energy *spread* improves
+genuinely, 24.0 → 15.4 keV, because the folded beam no longer carries
+the spurious chirp of a finite three-bucket clump.  Both shipped RFQ
+example projects enable it.
+
+The fold is physics-neutral: the RF forces depend on Δφ only through
+cos/sin, so shifting a particle by a whole bunch spacing changes
+nothing.  With space charge off, a flagged run reproduces the
+unflagged one to 4e-14 in energy and 1e-12 transversely, with an
+identical loss mask and Δφ differing only by multiples of the spacing.
+Four guard rails keep it honest:
+
+* **Opt-in, default off** — no existing run changes.
+* **Only a beam that was injected DC and has since been bunched.**  A
+  beam born bunched (a `.dst` input, an MEBT deck) is one bunch, not a
+  seeded period of a train, and is never touched even with the flag on.
+* **The period is the bunch spacing, not the RF period** —
+  360·f_local/f_bunch, so it is 360° in the RFQ and **720° after a
+  162.5 → 325 MHz jump**.  A non-integer ratio (a sub-harmonic
+  buncher) would make the fold change the phase a particle sees, so it
+  is skipped with a `PeriodicPhaseWarning`.
+* **Backtracking refuses a flagged run.**  The fold discards which
+  bunch a particle landed in, so it cannot be undone; `helix backtrack`
+  raises rather than return a reconstruction wrong by whole spacings.
+* **CSR is rejected outright.**  `csr_enabled` builds its wake from the
+  ensemble's absolute longitudinal extent (z from Δφ, then a histogram
+  over `z.min()..z.max()`), which is not periodic in the bunch spacing:
+  folding changes the force on particles it never moved.  The two
+  flags together raise.
+* **A frequency that is not a harmonic of the buncher stops the fold.**
+  If that happens before any particle has been folded it is a warning
+  and the fold is skipped; if folds are already in flight it is an
+  error, because every downstream RF element rescales them by
+  f_new/f_old and they are no longer whole RF periods.  The test has a
+  1e-3 tolerance on the ratio, so ordinary cavity detuning (kHz) does
+  not disturb it while a genuine sub-harmonic is caught with three
+  orders of magnitude to spare.
+* **An imported `MATRIX` element that couples Δφ is rejected.**  An
+  Elegant `EMATRIX` applies the full 6×6, so a non-zero `M[i,4]` is
+  linear in Δφ rather than 360°-periodic and a fold would shift
+  coordinate *i* by `M[i,4]·P`.  Everything HELIX generates itself has
+  column 4 = (0,0,0,0,1,0) and is unaffected.
+* **A static electrostatic element does not create a train.**  An
+  einzel lens or DC extraction column carries an electric field but
+  cannot bunch anything; the beam stays DC and is never folded.
+
+The period is taken from the element that actually bunched the beam —
+its RF clock is captured at the DC→bunched transition — not from
+`BeamConfig.frequency`.  A beam configured at 162.5 MHz and bunched by
+a 325 MHz gap therefore folds at 360°, as it must; using the config
+frequency would have given 720° and left every satellite in place with
+no warning.
+
+*Cost*: ε_z is no longer exactly constant through a drift.  Each
+bucket crossing is a step in the reported value, so ε_z(s) carries a
+staircase wherever particles are still crossing — measured over 40
+identical drifts, a badly debunched beam went from 1.4 % spread to
+64 %, while a beam that stays inside its bucket measured exactly
+0.000 % either way.  Inherent to the convention, since the particle
+really did change bunch.  Re-tune any σ_φ / ε_z matching objective
+rather than reusing one across the switch.
+
+*What does change under space charge*: the solver now sees a compact
+bunch instead of a clump spread over several buckets, so the charge
+density it works from is genuinely different and the transverse
+emittance responds.  Measured at 5 mA on the 66 kV deck (3000
+particles), ε_nx went 0.142 → 0.194 π·mm·mrad against the PIP2IT
+measurement 0.17 — the unfolded run undershoots and the folded one
+overshoots by a similar margin.  At 0 mA the two agree exactly, which
+is what identifies this as a space-charge effect rather than a
+bookkeeping artefact.
+
+*Limitation*: space charge then sees one isolated bunch.  In a real
+train the neighbours partially cancel the longitudinal field, so it is
+slightly overestimated; periodic SC images are not implemented.
+
+**Without the flag, reported σ_φ / ε_z are train-wide, deliberately.**
+For a bunch-train beam the recorded `sigma_phi`, `emit_z` and z-Twiss
+are computed on the RAW phase, so an unflagged RFQ run reports
+σ_φ ≈ 183° where the individual bunch is ≈ 4°.  Folding the
+*statistics* instead was implemented, measured and REJECTED
+(2026-07-30, two adversarial reviews — see the evidence in
+`diagnostics/moments.py::wrap_phase_column`): the satellite buckets are
+not periodic images of the core (they carry a space-charge-generated
+≈ −35 keV/bucket chirp and differ at 8–52 σ), so folding is a biased
+estimator — ε_z +123 %, σ_W +69 %, α_z with the *wrong sign* — and no
+shot-noise-robust rule exists to decide when to apply it at the
+statistics level (a compactness gate swung the reported σ_φ by 271 %
+from a 0.9 % input change, under-reported genuine debunching 10× on a
+mismatched beam, and turned a drift's exactly-constant ε_z into a
+staircase).  A visibly wrong number is safer than a subtly wrong one.
+
+That is why the fix lives in the tracking coordinates
+(`periodic_phase`, above) rather than in the moments: with the train
+gone there is nothing left to decide.  For a run made without the
+flag, read bunch length off the folded plot.
+
+**Space charge through the RFQ (Phase 4 audit, 2026-07-30)**: RFQ
+cells ride the tracker's Strang SC bundles like any field map, and the
+LEBT solenoids' `.scc` neutralisation profiles are honoured.  The
+DC→bunched transition fires at the first RFQ cell — physically early
+(the beam stays quasi-DC through the shaper) — but a controlled
+experiment keeping the DC 2-D kick through the whole line changed
+transmission by only 0.1 point at 5 mA, so the early flip is benign
+at PIP-II current; neighbour-bunch periodic images (TraceWin PICNIR
+practice) are deferred on that evidence.  With SC on, the captured
+exit emittances land at 0.170/0.159 π·mm·mrad vs the PIP2IT
+measurement 0.17/0.16.  When quoting exit bunch length, use the
+*wrapped* Δφ (±n·360° offsets of barely-captured particles inflate
+the unwrapped rms from ~5–7° to ~33°).  Note there is currently NO
+genuine SC envelope reference in the repo — the historical
+`LEBT+RFQ_ENV+SC.txt` is a byte-identical copy of the no-SC export.
+
+**Modulation checks (Phase 3)**: the card's `m` operand is live as a
+consistency check — a >15 % mismatch between the card A₁₀ and the
+two-term value implied by (R₀, m) warns, as does m > 3.2 (the
+documented breakdown of the two-term treatment).  Fields always follow
+the card A₁₀, exactly as TraceWin.  A per-slice coefficient inversion
+from the `.vane` tip table was tried and REJECTED with evidence: the
+PXIE tips are two-term to within the inversion's own noise, so the
+residual difference to TW's matrices lives in the Toutatis field
+solution, not in tip data.
+
+**Caveat on the reference**: the project decks carry
+`RFQ_GEOM 1 pxie-rfq.vane` — TW's matrices and ENV charts were
+produced *with the Toutatis vane-geometry tables*, not the pure
+card model.  Even TW's **own** matrices reproduce the ENV chart only
+to ~4 %, so the ~7 % envelope agreement sits near the reference's
+intrinsic floor.  The remaining 10–17 % outliers (a few shaper cells
+with near-cancelling F/D halves) are plausibly
+vane-solution effects; closing them would require vane-table-driven
+coefficients (planned; the `.vane` reader already exists in
+`io/tracewin_vane.py`).
 
 The numbers below come from the **rfqtrack subproject's**
 Boris time-stepper + Hybrid field source exploration on PXIE NOSC
@@ -118,7 +351,7 @@ linac_gen.elements.rfq_cell.RfqCell(
     type_next: int | None = None,
     A_quad: float | None = None,
     aperture: float = 0.0,
-    field_model: str = "2term",
+    field_model: str = "tw2term",
 )
 ```
 
@@ -137,8 +370,8 @@ linac_gen.elements.rfq_cell.RfqCell(
 | `n_steps` | None | — | auto-picked: max(20, ceil(L/0.1 mm)) when None |
 | `type_prev`, `type_next` | None | int | neighbouring cell types (S = −sign(type[n±1])); default to `cell_type` |
 | `A_quad` | None | 1/mm² | DC quadrupole coefficient override; None → `(1 − A₁₀)/R₀²` |
-| `aperture` | 0.0 | mm | loss-tracking aperture radius; 0 = no check |
-| `field_model` | `"2term"` | — | production `2term`; diagnostic-only `crand_x`, `crand_x_noflip`, `pdf_2term` |
+| `aperture` | 0.0 | mm | scalar radius for the tracker's generic end-of-element check (0 = that check off); under `tw2term`, transverse losses follow the vane-tip profile regardless |
+| `field_model` | `"tw2term"` | — | default `tw2term` (exact TW annex, calibrated); legacy fallback `2term`; diagnostic-only `crand_x`, `crand_x_noflip`, `pdf_2term` |
 
 ### Source
 

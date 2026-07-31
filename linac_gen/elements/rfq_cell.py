@@ -95,12 +95,35 @@ class RfqCell(FieldMapElement):
         Override for the DC quadrupole coefficient.  When None, defaults
         to the two-term approximation ``(1 − A₁₀) / R₀²`` (units 1/mm²).
     aperture : float
-        Aperture radius (mm) for loss tracking.  0 = no check.
+        Scalar aperture radius (mm) consumed by the tracker's generic
+        end-of-element check; 0 disables THAT check.  NOTE: under
+        ``field_model="tw2term"`` transverse losses are governed by the
+        per-substep vane-tip profile x_lim(z)/y_lim(z) REGARDLESS of
+        this attribute (legacy models keep their historical no-loss
+        behaviour).
     field_model : str
-        DC-quadrupole coefficient choice.  Default ``"2term"`` keeps
-        ``A_quad = (1−A₁₀)/R₀²`` and ``S = −sign(Type)`` — the production
-        path validated against TraceWin envelope output.  Diagnostic-only
-        opt-ins:
+        Physics-model selector.
+
+        ``"tw2term"`` (DEFAULT since 2026-07-30, Phase 5 of the RFQ
+        overhaul) — the exact TraceWin annex per-step algorithm with
+        every transcription ambiguity resolved against TW's own per-cell
+        matrices (``linac_gen/elements/rfq_coefficients.py`` carries the
+        full derivation and calibration record; median per-cell relative
+        error ~3 % over the 203 PXIE cells — against a VANE-based
+        reference, see the coefficients module).  Differences vs the
+        legacy model: sin-phased quadrupole of strength V/R₀² (no
+        (1−A₁₀) reduction), cos-phased RF defocus
+        (π/L)²(A₁₀V/2)·sin(πz/L), exact
+        ±3/±4 C₁/C₂ forms, per-substep synchronous-γ advance, TW's K₂
+        momentum rescale in the matrix path, and — critically for
+        multiparticle capture — the per-particle longitudinal phase
+        slip that the legacy track path lacked entirely (without it a
+        DC beam can never bunch: exit σ_φ stayed at the injected 104°).
+
+        ``"2term"`` (legacy fallback) keeps ``A_quad = (1−A₁₀)/R₀²``
+        and ``S = −sign(Type)`` — the empirically-calibrated 2026-04
+        path, kept bit-identical; its multiparticle path has no phase
+        slip and no losses.  Diagnostic-only opt-ins:
 
           * ``"crand_x"`` — uses Crandall X = (m²−1)/(m²·I₀(ka)+I₀(mka))
             with ``a = R₀/√m``, ``k = π/L`` (Crandall LANL LA-11968-MS
@@ -148,7 +171,7 @@ class RfqCell(FieldMapElement):
                  type_next: int | None = None,
                  A_quad: float | None = None,
                  aperture: float = 0.0,
-                 field_model: str = "2term"):
+                 field_model: str = "tw2term"):
         # Auto-pick n_steps when not supplied: target ≤0.1 mm per substep,
         # never less than 20 substeps for very short cells.  See class
         # docstring for the rationale.
@@ -187,9 +210,11 @@ class RfqCell(FieldMapElement):
         # M[0,0] = +3.25 vs TW −0.05 (closer than any other variant tried).
         # ``field_model`` selector is opt-in; default ``"2term"`` keeps the
         # existing (1-A10)/R₀² short form and S = -sign(Type) bit-for-bit.
-        if field_model not in {"2term", "crand_x", "crand_x_noflip", "pdf_2term"}:
+        if field_model not in {"2term", "tw2term", "crand_x",
+                               "crand_x_noflip", "pdf_2term"}:
             raise ValueError(f"field_model must be one of "
-                             f"{{'2term','crand_x','crand_x_noflip','pdf_2term'}}, "
+                             f"{{'2term','tw2term','crand_x',"
+                             f"'crand_x_noflip','pdf_2term'}}, "
                              f"got {field_model!r}")
         self.field_model = field_model
         if field_model in ("crand_x", "crand_x_noflip"):
@@ -209,9 +234,42 @@ class RfqCell(FieldMapElement):
         else:
             self._X_crand = max(0.0, 1.0 - self.A10)
             self._A_quad_eff = self._A_quad
+        # Physics sanity warnings (Phase 3, 2026-07-30): the card's
+        # ``m`` operand becomes LIVE as a consistency check against
+        # (R0, A10) via the two-term closure, and m > 3.2 flags the
+        # documented breakdown of TraceWin's tabulated-A10 treatment
+        # (CEA forum).  Warnings only — the fields always follow the
+        # card A10, exactly as TraceWin does.
+        import warnings as _warnings
+        if self.modulation > 3.2:
+            _warnings.warn(
+                f"{name}: vane modulation m = {self.modulation:.3f} > 3.2 "
+                "— the two-term potential (and TraceWin's own tabulated "
+                "A10 treatment) is documented to break down here; "
+                "results are unreliable.", stacklevel=2)
+        if self.A10 > 0.02 and self.modulation > 1.0:
+            from linac_gen.elements.rfq_coefficients import (
+                modulation_consistency,
+            )
+            a10_th, dev = modulation_consistency(
+                self.r0_mm, self.A10, self.modulation, self.length)
+            if dev > 0.15:
+                _warnings.warn(
+                    f"{name}: card A10 = {self.A10:.4f} deviates "
+                    f"{dev*100:.0f} % from the two-term value "
+                    f"{a10_th:.4f} implied by (R0 = {self.r0_mm} mm, "
+                    f"m = {self.modulation}) — the card triplet is "
+                    "internally inconsistent; fields follow the card "
+                    "A10.", stacklevel=2)
         # Substep cursor — set to 0 at element entry (advance_ref / track
         # share this convention with the rest of LG's field-map elements).
         self._step_idx = 0
+        # Per-run cursors (re-armed at each cell entry; initialised here
+        # so an out-of-order first call degrades gracefully instead of
+        # raising AttributeError — adversarial hardening 2026-07-30).
+        self._z_cursor_mm = 0.0
+        self._tw_ts_deg = 0.0
+        self._adv_cell_phi_deg = 0.0
         # Cell-local synchronous phase, in degrees, advanced per substep
         # by 360·dz/(β·λ).  TraceWin's E_z(z,t) = (πA₁₀V/2L)·sin(πz/L)·
         # sin(ω t_s + φ_s) uses t_s **relative to cell entrance** (so that
@@ -322,16 +380,24 @@ class RfqCell(FieldMapElement):
         Strang DKD; the lattice tracker breaks the full cell into
         ``self.n_steps`` slices and calls this once per slice.
         """
+        if self.field_model == "tw2term":
+            self._track_tw2term(beam, ds)
+            return
         ref = beam.ref
         ds_m = ds * 1e-3
         ds_half_m = 0.5 * ds_m
 
-        z_local_mm = self._step_idx * ds + ds * 0.5
-        # Cell-local synchronous-phase value at the substep entrance.
-        # Reset to 0 on the first substep of the cell so each cell uses
-        # its own local-time origin.
+        # Accumulated z cursor — NOT ``_step_idx * ds``: the tracker's
+        # trailing substeps (n_int % sc_every != 0) arrive with a
+        # DIFFERENT ds than the paired ds/2 calls, and the multiply-out
+        # form then lands past the cell end (adversarial finding
+        # 2026-07-30; ncells.py documents the same rule).  Identical
+        # values whenever every call shares one ds.
         if self._step_idx == 0:
             self._cell_phi_deg = 0.0
+            self._z_cursor_mm = 0.0
+        z_local_mm = self._z_cursor_mm + ds * 0.5
+        self._z_cursor_mm += ds
         self._step_idx += 1
 
         beta = ref.beta
@@ -455,6 +521,221 @@ class RfqCell(FieldMapElement):
         beam.particles[alive, 2] += beam.particles[alive, 3] * ds_half_m
 
     # ------------------------------------------------------------------
+    # tw2term multiparticle path — the exact annex per-step algorithm
+    # (see rfq_coefficients module docstring for the derivation).
+    # ------------------------------------------------------------------
+    def _track_tw2term(self, beam, ds: float) -> None:
+        from linac_gen.elements.rfq_coefficients import (step_kicks,
+                                                         type_coeffs)
+        ref = beam.ref
+        mass = ref.species.mass
+        q_abs = abs(ref.species.charge)
+        wl = ref.wavelength
+        beta_in, gamma_in = ref.beta, ref.gamma
+        if self.length <= 0 or beta_in <= 0:
+            ref.s += ds
+            return
+        # Accumulated z cursor — see the legacy-path comment: the
+        # tracker's trailing substeps may use a different ds.
+        if self._step_idx == 0:
+            self._z_cursor_mm = 0.0
+        z_local_mm = self._z_cursor_mm + ds * 0.5
+        self._z_cursor_mm += ds
+        # Annex t_s cursor in RF degrees: initialised at the FIRST
+        # substep midpoint with the CELL-entry velocity [image 281],
+        # then advanced one full step with the post-step velocity
+        # [image 252].  (Recomputing the half-step with the running β —
+        # the legacy bookkeeping — integrates to the historical −0.12 %
+        # ramp error; the annex cursor reproduces TW's 1.955717 MeV on
+        # the PXIE deck to all printed digits.)
+        if self._step_idx == 0:
+            self._tw_ts_deg = (180.0 * ds / (beta_in * wl)) if wl > 0 else 0.0
+        self._step_idx += 1
+        phi_s_mid_rad = np.deg2rad(self._tw_ts_deg + self.phi_s_deg)
+
+        # ---- reference update (identical physics to the legacy path —
+        # the on-axis ramp is verified to −0.12 % vs TraceWin) ----------
+        E_z = self._Ez_onaxis(z_local_mm, phi_s_mid_rad)
+        dW_ref_MeV = q_abs * E_z * ds * 1e-6
+        ref.w_kin += dW_ref_MeV
+        ref.s += ds
+        beta_out, gamma_out = ref.beta, ref.gamma
+        if wl > 0:
+            # annex image 252 advances t_s with the POST-step velocity
+            full = 360.0 * ds / (beta_out * wl)
+            ref.phi_s += full
+            self._tw_ts_deg += full
+
+        alive = beam.alive_mask
+        if not np.any(alive):
+            return
+        P = beam.particles
+        ds_half_mm = 0.5 * ds
+
+        # ---- entry half-drift: transverse + LONGITUDINAL PHASE SLIP --
+        # (the slip was entirely absent from the legacy track path — a
+        # ΔW≠0 particle then never rotates in phase and a DC beam can
+        # never bunch; measured exit σ_φ stayed at the injected 104°.)
+        P[alive, 0] += P[alive, 1] * ds_half_mm * 1e-3
+        P[alive, 2] += P[alive, 3] * ds_half_mm * 1e-3
+        if wl > 0:
+            r45_in = -360.0 * ds_half_mm / (beta_in ** 3 * gamma_in ** 3
+                                            * mass * wl)
+            P[alive, 4] += r45_in * P[alive, 5]
+
+        # ---- midpoint kick, per-particle phases ----------------------
+        phi_part = phi_s_mid_rad + np.deg2rad(P[alive, 4])
+        E_z_part = ((np.pi * self.A10 * self.voltage_V)
+                    / (2.0 * self.length)
+                    * np.sin(np.pi * z_local_mm / self.length)
+                    * np.sin(phi_part))
+        dW_part_MeV = q_abs * E_z_part * ds * 1e-6
+        P[alive, 5] += dW_part_MeV - dW_ref_MeV
+
+        gamma_s = 0.5 * (gamma_in + gamma_out)
+        beta_s = float(np.sqrt(max(1.0 - gamma_s ** -2, 0.0)))
+        C1, C2, S, C3 = type_coeffs(self.cell_type, self.type_prev,
+                                    self.type_next,
+                                    z_local_mm / self.length)
+        kx1, ky1, _K1, _K2 = step_kicks(
+            self.voltage_V, self.r0_mm, self.A10, self.length,
+            phi_part, gamma_s, beta_s, ds, C1, C2, S, C3, mass)
+        xs_mm = P[alive, 0]
+        ys_mm = P[alive, 2]
+        P[alive, 1] += kx1 * xs_mm * 1e3          # rad → mrad
+        P[alive, 3] += ky1 * ys_mm * 1e3
+        # Adiabatic damping — the physical per-particle p-ratio (each
+        # particle's own energy gain), the nonlinear generalisation of
+        # TW's linear K₂ diagonal.
+        if beta_s > 0 and gamma_s > 0 and mass > 0:
+            damp = 1.0 / (1.0 + dW_part_MeV
+                          / (beta_s * beta_s * gamma_s * mass))
+            P[alive, 1] *= damp
+            P[alive, 3] *= damp
+
+        # ---- exit half-drift (post-kick kinematics) ------------------
+        P[alive, 0] += P[alive, 1] * ds_half_mm * 1e-3
+        P[alive, 2] += P[alive, 3] * ds_half_mm * 1e-3
+        if wl > 0:
+            r45_out = -360.0 * ds_half_mm / (beta_out ** 3
+                                             * gamma_out ** 3 * mass * wl)
+            P[alive, 4] += r45_out * P[alive, 5]
+
+        # ---- LOSSES (tw2term only — the legacy path keeps its
+        # historical no-loss behavior).  Two physical criteria per
+        # substep, checked at the substep exit:
+        #   * transverse: outside the actual vane tip x_lim(z)/y_lim(z)
+        #     from the two-term equipotential condition (validated to
+        #     0.03-0.14 % against the PXIE .vane table) — skipped in ±3
+        #     front-end/exit cells whose real vanes flare to ~3.5·r0;
+        #   * longitudinal: total kinetic energy below zero
+        #     (back-accelerated junk — unphysical to keep tracking).
+        # The DYNAC-style ±π phase-window kill is deliberately NOT
+        # applied: with the phase slip active, uncaptured particles
+        # drift in φ and are removed by the vanes on physical grounds.
+        from linac_gen.elements.rfq_coefficients import vane_apertures
+        alive_idx = np.where(alive)[0]
+        if alive_idx.size:
+            bad = P[alive_idx, 5] < -ref.w_kin          # W_total < 0
+            if abs(self.cell_type) != 3:
+                z_exit = min(z_local_mm + 0.5 * ds, self.length)
+                x_lim, y_lim = vane_apertures(self.r0_mm, self.A10,
+                                              self.length, self.cell_type,
+                                              z_exit)
+                bad |= (np.abs(P[alive_idx, 0]) > x_lim) \
+                    | (np.abs(P[alive_idx, 2]) > y_lim)
+            for pid in alive_idx[bad]:
+                beam.record_loss(int(pid), ref.s, self.name)
+
+    # ------------------------------------------------------------------
+    # tw2term matrix path — exact annex loop; longitudinal built in TW
+    # native (δz, δ) then converted to HELIX (Δφ deg, ΔW MeV) once per
+    # slice with entry/exit kinematics.
+    # ------------------------------------------------------------------
+    def _fitted_matrix_slice_tw2term(self, ref, ds_mm: float,
+                                     z_from: float) -> np.ndarray:
+        from linac_gen.elements.rfq_coefficients import (step_kicks,
+                                                         type_coeffs)
+        if ds_mm <= 0 or self.length <= 0:
+            return np.eye(6)
+        n_full = max(1, self.n_steps)
+        native_ds = self.length / n_full
+        n_sub = max(1, int(round(ds_mm / native_ds)))
+        dz = ds_mm / n_sub
+
+        mass = ref.species.mass
+        q_abs = abs(ref.species.charge)
+        wl = ref.wavelength
+        gamma_i = ref.gamma
+        beta_i = ref.beta
+        if beta_i <= 0 or mass <= 0:
+            return np.eye(6)
+        gamma_entry, beta_entry = gamma_i, beta_i
+
+        # Annex t_s cursor (RF degrees) at the first substep midpoint of
+        # this slice.  z<z_from history approximated with the slice-entry
+        # β (same approximation as the legacy path; exact for whole-cell
+        # slices, which is how the matrix path is normally called).
+        if wl > 0 and beta_i > 0:
+            ts_deg = (360.0 * z_from + 180.0 * dz) / (beta_i * wl)
+        else:
+            ts_deg = 0.0
+
+        Mx = np.eye(2)
+        My = np.eye(2)
+        Mz = np.eye(2)                       # TW native (δz[m], δ=dp/p)
+        for i in range(n_sub):
+            z_local = z_from + (i + 0.5) * dz
+            ph = np.deg2rad(ts_deg + self.phi_s_deg)
+
+            # synchronous-γ advance across the substep (annex image 282)
+            dgam = q_abs * self._Ez_onaxis(z_local, ph) * dz * 1e-6 / mass
+            gamma_o = gamma_i + dgam
+            beta_o = float(np.sqrt(max(1.0 - gamma_o ** -2, 0.0)))
+            gamma_s = 0.5 * (gamma_i + gamma_o)
+            beta_s = float(np.sqrt(max(1.0 - gamma_s ** -2, 0.0)))
+
+            C1, C2, S, C3 = type_coeffs(self.cell_type,
+                                        self.type_prev,
+                                        self.type_next,
+                                        z_local / self.length)
+            kx1, ky1, K1, K2 = step_kicks(
+                self.voltage_V, self.r0_mm, self.A10, self.length,
+                float(ph), gamma_s, beta_s, dz, C1, C2, S, C3, mass)
+
+            dh = dz * 0.5e-3                 # mm per mrad (≡ m per rad)
+            Dh = np.array([[1.0, dh], [0.0, 1.0]])
+            Mx = Dh @ np.array([[1.0, 0.0], [kx1 * 1e3, K2]]) @ Dh @ Mx
+            My = Dh @ np.array([[1.0, 0.0], [ky1 * 1e3, K2]]) @ Dh @ My
+            dz_m = dz * 1e-3
+            Dzi = np.array([[1.0, dz_m / (2.0 * gamma_i ** 2)],
+                            [0.0, 1.0]])
+            Dzo = np.array([[1.0, dz_m / (2.0 * gamma_o ** 2)],
+                            [0.0, 1.0]])
+            Mz = Dzo @ np.array([[1.0, 0.0], [K1, K2]]) @ Dzi @ Mz
+
+            gamma_i, beta_i = gamma_o, beta_o
+            if wl > 0 and beta_o > 0:
+                ts_deg += 360.0 * dz / (beta_o * wl)
+
+        # (δz[m], δ) → (Δφ[deg], ΔW[MeV]):  Δφ = −360·δz·1e3/(β·λ[mm]),
+        # ΔW = δ·β²γ·mc².  Entry kinematics on the way in, exit on the
+        # way out (T_out · Mz · T_in⁻¹) — this asymmetry carries the
+        # adiabatic part of TW's K₂ into HELIX coordinates exactly.
+        M = np.eye(6)
+        M[0:2, 0:2] = Mx
+        M[2:4, 2:4] = My
+        if wl > 0:
+            T_in = np.array([[-360.0e3 / (beta_entry * wl), 0.0],
+                             [0.0, beta_entry ** 2 * gamma_entry * mass]])
+            T_out = np.array([[-360.0e3 / (beta_i * wl), 0.0],
+                              [0.0, beta_i ** 2 * gamma_i * mass]])
+            M[4:6, 4:6] = T_out @ Mz @ np.linalg.inv(T_in)
+        else:
+            M[4:6, 4:6] = Mz
+        return M
+
+    # ------------------------------------------------------------------
     def advance_ref(self, ref) -> None:
         """Advance the reference particle through the full cell.
 
@@ -466,13 +747,25 @@ class RfqCell(FieldMapElement):
         n = self.n_steps
         ds = self.length / n
         cell_phi_deg = 0.0
+        # tw2term: annex-exact t_s cursor — half-step frozen at the
+        # CELL-entry velocity (image 281), full steps with the post-step
+        # velocity (image 252).  The legacy bookkeeping (running-β
+        # half-step) integrates to a −0.12 % ramp error on the PXIE
+        # deck; the annex cursor reproduces TW's 1.955717 MeV exactly.
+        tw = self.field_model == "tw2term"
+        if tw and ref.wavelength > 0 and ref.beta > 0:
+            cell_phi_deg = 180.0 * ds / (ref.beta * ref.wavelength)
         for i in range(n):
             z_local = (i + 0.5) * ds
-            if ref.wavelength > 0:
-                dphi_mid = 180.0 * ds * 0.5 / (ref.beta * ref.wavelength)
+            if tw:
+                phi_s_mid_deg = cell_phi_deg + self.phi_s_deg
             else:
-                dphi_mid = 0.0
-            phi_s_mid_deg = cell_phi_deg + dphi_mid + self.phi_s_deg
+                if ref.wavelength > 0:
+                    dphi_mid = (180.0 * ds * 0.5
+                                / (ref.beta * ref.wavelength))
+                else:
+                    dphi_mid = 0.0
+                phi_s_mid_deg = cell_phi_deg + dphi_mid + self.phi_s_deg
             E_z = self._Ez_onaxis(z_local, np.deg2rad(phi_s_mid_deg))
             # Manual image 265: dW = |q|·dz·E_z (see track_rk4 comment).
             ref.w_kin += abs(ref.species.charge) * E_z * ds * 1e-6
@@ -500,20 +793,31 @@ class RfqCell(FieldMapElement):
         length_slice = z_to_mm - z_from_mm
         if length_slice <= 0.0:
             return
-        if z_from_mm == 0.0:
-            self._adv_cell_phi_deg = 0.0
+        tw = self.field_model == "tw2term"
         n = max(1, self.n_steps)
         native_ds = self.length / n
         n_sub = max(1, int(round(length_slice / native_ds)))
         ds = length_slice / n_sub
+        if z_from_mm == 0.0:
+            # tw2term: annex t_s cursor pre-loaded with the frozen
+            # entry-β half step (see advance_ref); legacy: zero.
+            if tw and ref.wavelength > 0 and ref.beta > 0:
+                self._adv_cell_phi_deg = (180.0 * ds
+                                          / (ref.beta * ref.wavelength))
+            else:
+                self._adv_cell_phi_deg = 0.0
         cell_phi_deg = float(self._adv_cell_phi_deg)
         for i in range(n_sub):
             z_local = z_from_mm + (i + 0.5) * ds
-            if ref.wavelength > 0:
-                dphi_mid = 180.0 * ds * 0.5 / (ref.beta * ref.wavelength)
+            if tw:
+                phi_s_mid_deg = cell_phi_deg + self.phi_s_deg
             else:
-                dphi_mid = 0.0
-            phi_s_mid_deg = cell_phi_deg + dphi_mid + self.phi_s_deg
+                if ref.wavelength > 0:
+                    dphi_mid = (180.0 * ds * 0.5
+                                / (ref.beta * ref.wavelength))
+                else:
+                    dphi_mid = 0.0
+                phi_s_mid_deg = cell_phi_deg + dphi_mid + self.phi_s_deg
             E_z = self._Ez_onaxis(z_local, np.deg2rad(phi_s_mid_deg))
             ref.w_kin += abs(ref.species.charge) * E_z * ds * 1e-6
             ref.s += ds
@@ -559,6 +863,8 @@ class RfqCell(FieldMapElement):
         if ds_mm <= 0:
             return np.eye(6)
         z_from = 0.0 if _z_from_mm is None else float(_z_from_mm)
+        if self.field_model == "tw2term":
+            return self._fitted_matrix_slice_tw2term(ref, ds_mm, z_from)
 
         # Native substep size for this cell (matches advance_ref / track_rk4).
         n_full = max(1, self.n_steps)

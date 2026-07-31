@@ -145,6 +145,7 @@ use it when you want the full reconstructed distribution
 | `… uses grid_mode='fixed' … ADAPTIVE grids instead` | SC undo is approximate without the forward run's solver — see the tip in [Python API](01_python_api.md#backward-tracking) |
 | `… crosses the DC↔bunched transition …` | pass `--allow-dc-crossing` if the machine really has a DC front end |
 | `… deviates … from the design exit energy` | the `.dst` and the lattice/energy pairing disagree — check `--energy` |
+| `… tracked with periodic phase coordinates … non-invertible` | **hard error, not a warning.** The run used [`periodic_phase`](../04_beam/03_beam_config.md), which discards which bunch of the train each particle landed in, so the undo would be wrong by whole bunch spacings.  Re-run the forward pass with `periodic_phase=False` to backtrack it. |
 
 ## See also
 

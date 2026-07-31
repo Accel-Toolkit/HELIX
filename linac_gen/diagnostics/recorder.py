@@ -163,6 +163,14 @@ class DiagnosticRecorder:
         # via ``beam.continuous``; clients use it to mark those points
         # as having non-physical σ_φ / σ_W / ε_z values.
         self.continuous_at = []
+        # Run-level provenance: True when this run tracked with periodic
+        # phase coordinates (BeamConfig.periodic_phase), so Δφ is already
+        # folded into one bunch spacing.  Consumers must NOT apply the
+        # display fold on top — ``wrap_phase_column`` uses a hard 360°
+        # period and would re-fold a legitimately ±360°-wide post-
+        # frequency-jump bunch.  Set by Tracker.record; False for every
+        # run that did not opt in, and for envelope runs.
+        self.periodic_phase: bool = False
         # Species rest mass (MeV) — constant across the whole run, stashed
         # once so popups can compute dispersion / dp-p / Δz without
         # rehydrating the ReferenceParticle object.

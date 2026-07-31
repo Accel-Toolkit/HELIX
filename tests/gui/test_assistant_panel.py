@@ -80,7 +80,7 @@ def test_panel_opens_and_reports_via_mock(qapp, monkeypatch, tmp_path):
         # a read tool needs NO confirmation
         assert panel._btn_approve.isHidden()
     finally:
-        panel.close()
+        panel.shutdown()
 
 
 def test_panel_confirmation_echoes_and_syncs_state(qapp, tmp_path):
@@ -134,7 +134,7 @@ def test_panel_confirmation_echoes_and_syncs_state(qapp, tmp_path):
         # the mutation reached the real lattice via AppState
         assert st.lattice.elements[0].gradient == 8.0
     finally:
-        panel.close()
+        panel.shutdown()
 
 
 def test_panel_close_midturn_does_not_hang(qapp, tmp_path):
@@ -170,7 +170,7 @@ def test_panel_close_midturn_does_not_hang(qapp, tmp_path):
         if not panel._btn_approve.isHidden():
             break
     # close WITHOUT answering — must not hang
-    panel.close()
+    panel.shutdown()
     qapp.processEvents()
     assert panel._worker.wait(5000) is True      # thread exited
 
@@ -201,7 +201,7 @@ def test_panel_offers_keyless_claude_sdk_backend(qapp, monkeypatch, tmp_path):
         assert panel._session.config.api_key == ""     # keyless
         assert panel._session._sdk is not None         # SDK backend wired
     finally:
-        panel.close()
+        panel.shutdown()
 
 
 def test_panel_keyless_backend_shows_guidance_when_login_missing(
@@ -225,7 +225,7 @@ def test_panel_keyless_backend_shows_guidance_when_login_missing(
         assert panel._session is None                  # not started
         assert "claude` CLI" in panel._status.text()
     finally:
-        panel.close()
+        panel.shutdown()
 
 
 def test_panel_streams_deltas_into_transcript(qapp, monkeypatch, tmp_path):
@@ -250,7 +250,7 @@ def test_panel_streams_deltas_into_transcript(qapp, monkeypatch, tmp_path):
         assert panel._last_reply == "800 MeV H-."   # captured for TTS
         assert panel._streaming is False
     finally:
-        panel.close()
+        panel.shutdown()
 
 
 def test_backend_button_reopens_provider_row_for_key_switch(
@@ -293,7 +293,7 @@ def test_backend_button_reopens_provider_row_for_key_switch(
         # the choice persisted (used at next panel open)
         assert store.value("assist/provider") == "anthropic"
     finally:
-        panel.close()
+        panel.shutdown()
 
 
 def test_model_choice_honored_for_api_key_and_local_backends(
@@ -344,7 +344,7 @@ def test_model_choice_honored_for_api_key_and_local_backends(
         assert panel._session.config.provider == "anthropic"
         assert panel._session.config.model == "azure/claude-sonnet-4-6"
     finally:
-        panel.close()
+        panel.shutdown()
 
 
 def test_model_dropdown_suggestions_and_local_server_fetch(
@@ -416,4 +416,4 @@ def test_model_dropdown_suggestions_and_local_server_fetch(
         panel._repopulate_models("claude_sdk")
         assert panel._model_edit.currentText() == "my/custom-alias"
     finally:
-        panel.close()
+        panel.shutdown()

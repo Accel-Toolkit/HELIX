@@ -161,6 +161,7 @@ def test_speaker_queues_sentences_and_barges_in():
     sp._q = q.Queue(); sp._muted = False; sp._gen = 0
     sp._state_lock = threading.Lock()
     sp._turn_open = False; sp._reported = False; sp._playing = False
+    sp._ahead_pending = False; sp._pending_play = 0; sp._flushed = False
     threading.Thread(target=sp._player, daemon=True).start()
 
     sp.say("First point. Second point! Third?")
@@ -223,13 +224,15 @@ def test_recorder_on_level_reports_rms(monkeypatch):
 
 
 def test_kokoro_playback_uses_persistent_chunked_stream(monkeypatch):
-    """Regression (crackling): playback must use ONE persistent
-    OutputStream with chunked blocking writes — not sd.play() per
-    sentence — and cut() must abort mid-sentence."""
+    """Regression (crackling): on hosts WITHOUT afplay the fallback must
+    use ONE persistent OutputStream with chunked blocking writes — not
+    sd.play() per sentence — and cut() must abort mid-sentence.  (On
+    macOS the primary path is afplay — separate test below.)"""
     import sys, types
     import numpy as np
     from linac_gen.assist import voice as V
 
+    monkeypatch.setattr(V, "_afplay_available", lambda: False)
     streams = []
 
     class _Out:
@@ -318,14 +321,17 @@ def test_speaker_normalizes_numbers_before_backend():
     sp._q = q.Queue(); sp._muted = False; sp._gen = 0
     sp._state_lock = threading.Lock()
     sp._turn_open = False; sp._reported = False; sp._playing = False
+    sp._ahead_pending = False; sp._pending_play = 0; sp._flushed = False
     threading.Thread(target=sp._player, daemon=True).start()
 
     sp.say("Sigma x at exit is about 0.62 mm. Energy 800 MeV.")
     time.sleep(0.3)
-    # since the MIRAGE-parity port, units are ALSO expanded to words
-    # (normalize_units_for_speech runs before speakable_numbers)
-    assert spoken == ["Sigma x at exit is about 0 point 62 millimeters.",
-                      "Energy 800 M e V."]
+    # since the 2026-07-28 speechify round, numerals are ALSO expanded
+    # to full words (kokoro's numeral G2P verified lossy: "297.6" was
+    # voiced "ninety seven")
+    assert spoken == [
+        "Sigma x at exit is about zero point six two millimeters.",
+        "Energy eight hundred mega-electron-volts."]
 
 
 # ---- speaking-state machine: turn bracketing (smoothness parity) ----
@@ -340,6 +346,7 @@ def _bare_speaker(backend, on_speaking):
     sp._q = q.Queue(); sp._muted = False; sp._gen = 0
     sp._state_lock = threading.Lock()
     sp._turn_open = False; sp._reported = False; sp._playing = False
+    sp._ahead_pending = False; sp._pending_play = 0; sp._flushed = False
     threading.Thread(target=sp._player, daemon=True).start()
     return sp
 
@@ -425,3 +432,132 @@ def test_whisper_short_blip_gated_before_model_load(monkeypatch):
         raise AssertionError("model must not load for a 0.19 s blip")
     monkeypatch.setattr(stt, "_model", _boom)
     assert stt.transcribe(np.ones(3000, dtype=np.float32)) == ""
+
+
+# --- speechify: the 2026-07-28 live-reported TTS reading bugs ----------
+# "297.6" was voiced "ninety seven" (hundreds digit and fraction lost in
+# kokoro's numeral G2P) and σ_x / sigma_x lost the sigma entirely (the
+# phonemizer drops glyphs without phonemes).  Numbers and physics
+# symbols must reach the engine as plain English words.
+
+def test_speechify_full_number_words():
+    assert voice.speechify("297.6") == "two hundred ninety seven point six"
+    assert voice.speechify("0.21") == "zero point two one"
+    assert voice.speechify("1,234 particles") == \
+        "one thousand two hundred thirty four particles"
+
+
+def test_speechify_greek_and_subscripts():
+    assert voice.speechify("sigma_x is 3.5 mm") == \
+        "sigma x is three point five millimeters"
+    assert voice.speechify("σ_x = 2.97 mm") == \
+        "sigma x = two point nine seven millimeters"
+    assert voice.speechify("σ_xx term") == "sigma x x term"
+    assert voice.speechify("ε_nx") == "epsilon n x"
+    assert voice.speechify("Δφ") == "delta phi"
+
+
+def test_speechify_scientific_notation_keeps_exponent_sign():
+    # the identifier-dash rule used to eat the exponent minus BEFORE the
+    # sci-notation rewrite ran: "2.1e-3" → "2 point 1e 3"
+    assert voice.speechify("2.1e-3") == \
+        "two point one times ten to the minus three"
+    assert voice.speechify("1e+04") == "one times ten to the four"
+
+
+def test_speechify_minus_and_units():
+    assert voice.speechify("Δφ = -12.5 deg") == \
+        "delta phi = minus twelve point five degrees"
+
+
+def test_speechify_plain_text_untouched():
+    assert voice.speechify("Run the envelope solver.") == \
+        "Run the envelope solver."
+
+
+# --- afplay playback path (2026-07-28 crackle fix, MIRAGE parity) ------
+def test_edge_fade_zeroes_boundaries():
+    import numpy as np
+    x = np.ones(16000, dtype=np.float32)
+    y = voice._edge_fade(x, 16000)
+    assert y[0] == 0.0 and abs(y[-1]) < 1e-6
+    assert y[8000] == 1.0                       # interior untouched
+
+
+def test_write_wav_roundtrip(tmp_path):
+    import wave
+
+    import numpy as np
+    p = str(tmp_path / "t.wav")
+    voice._write_wav(np.linspace(-1, 1, 1600).astype(np.float32), 16000, p)
+    with wave.open(p, "rb") as wf:
+        assert wf.getframerate() == 16000
+        assert wf.getnchannels() == 1
+        assert wf.getsampwidth() == 2
+        assert wf.getnframes() == 1600
+
+
+def test_chime_uses_prerendered_wav_via_afplay(monkeypatch, tmp_path):
+    """The wake chime must NOT open an in-process audio stream — it
+    fires while Whisper saturates the cores (underrun crackle)."""
+    import subprocess as sp
+    import wave
+
+    from linac_gen.assist import listen as L
+
+    calls = []
+    monkeypatch.setattr(voice, "_afplay_available", lambda: True)
+    monkeypatch.setattr(
+        sp, "Popen", lambda args, **k: calls.append(args) or None)
+    L._CHIME_WAV[0] = None                      # force a fresh render
+    L.chime()
+    assert calls and calls[0][0] == "afplay"
+    with wave.open(calls[0][1], "rb") as wf:    # rendered file is valid
+        assert wf.getnframes() > 1000
+    L.chime()                                   # second call reuses it
+    assert len(calls) == 2 and calls[1][1] == calls[0][1]
+
+
+def test_kokoro_playback_prefers_afplay_process(monkeypatch, tmp_path):
+    """2026-07-28 crackle fix (MIRAGE parity): on macOS playback is a
+    faded 16-bit wav handed to afplay — an OS process the GIL/CPU load
+    cannot starve — and cut() terminates it instantly."""
+    import subprocess as sp
+    import threading
+    import wave
+
+    import numpy as np
+    from linac_gen.assist import voice as V
+
+    monkeypatch.setattr(V, "_afplay_available", lambda: True)
+    played, procs = [], []
+
+    class _Proc:
+        def __init__(self):
+            self.terminated = False
+            procs.append(self)
+        def wait(self): ...
+        def terminate(self): self.terminated = True
+
+    monkeypatch.setattr(
+        sp, "Popen", lambda args, **k: played.append(args) or _Proc())
+
+    be = V._KokoroBackend.__new__(V._KokoroBackend)
+    be._active = threading.Event(); be._cancel = threading.Event()
+    be._out = None
+
+    class _K:
+        def create(self, text, voice, speed):
+            return np.ones(24000, dtype="float32"), 24000
+    be._k = _K()
+    be.speak("hello")
+    assert played and played[0][0] == "afplay"
+    with wave.open(played[0][1], "rb") as wf:   # faded, valid PCM
+        assert wf.getframerate() == 24000
+        frames = np.frombuffer(wf.readframes(10), dtype="<i2")
+    assert frames[0] == 0                       # edge fade applied
+
+    # cut() during playback terminates the process
+    be._proc = _Proc()
+    be.cut()
+    assert be._proc.terminated

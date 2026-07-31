@@ -54,12 +54,30 @@ def available() -> bool:
 #: gate runs the plain loudness algorithm (exactly MIRAGE's, which is
 #: known-good).  The upgrade may only ADD, never subtract.
 _SELFTEST = "pending"
+_SELFTEST_LOCK = threading.Lock()
+
+
+def _marker_path() -> str:
+    """Per-machine cache of a PASSED self-test, next to the model file.
+    The 1.2 s real-speech proof runs once per machine, ever — later
+    launches must not race it (a pending self-test at listener build
+    time silently locked whole sessions into RMS-only wake)."""
+    mp = model_path()
+    return (mp + ".selftest_ok") if mp else ""
 
 
 def self_test() -> bool:
     """Score real generated speech (macOS ``say``); True = the model
     demonstrably hears.  Without ``say`` the CI real-speech test is the
     guard and this passes trustingly."""
+    global _SELFTEST
+    with _SELFTEST_LOCK:
+        if _SELFTEST != "pending":            # already decided
+            return _SELFTEST == "pass"
+        return _self_test_locked()
+
+
+def _self_test_locked() -> bool:
     global _SELFTEST
     try:
         import shutil
@@ -69,6 +87,10 @@ def self_test() -> bool:
         if not available():
             _SELFTEST = "fail"
             return False
+        m = _marker_path()
+        if m and os.path.exists(m):           # proved once on this machine
+            _SELFTEST = "pass"                # — never re-run the 1.2 s
+            return True                       # ``say`` proof again
         if not shutil.which("say"):
             _SELFTEST = "pass"
             return True
@@ -86,6 +108,13 @@ def self_test() -> bool:
         best = max(vad.prob(audio[i:i + 3200])
                    for i in range(0, max(audio.size - 3200, 1), 3200))
         _SELFTEST = "pass" if best > 0.6 else "fail"
+        if _SELFTEST == "pass":
+            try:                              # remember across launches
+                m = _marker_path()
+                if m:
+                    open(m, "w").close()
+            except Exception:                 # noqa: BLE001
+                pass
         return _SELFTEST == "pass"
     except Exception:                             # noqa: BLE001
         _SELFTEST = "fail"
@@ -101,8 +130,35 @@ def self_test_async() -> None:
 def make() -> "SileroVAD | None":
     """A ready VAD instance — or None, in which case callers keep
     their RMS gates (MIRAGE's known-good algorithm).  None until the
-    self-test has PASSED on this machine."""
-    if not available() or _SELFTEST != "pass":
+    self-test has PASSED on this machine.
+
+    DETERMINISTIC (2026-07-28 wake regression): a still-pending
+    self-test is resolved HERE — from the on-disk marker (instant on
+    every launch after the first), else by running the 1.2 s
+    real-speech proof once.  Before this, listeners built within ~1 s
+    of panel startup lost the race against the async self-test and the
+    whole session silently ran RMS-only wake.
+
+    NEVER-BLOCK-THE-GUI (2026-07-28 audit F1): the main thread must
+    not convoy behind a proof already running elsewhere — it gets a
+    50 ms lock grace and otherwise falls back to None (RMS gates).
+    Worker threads may wait, keeping the deterministic guarantee."""
+    global _SELFTEST
+    if not available():
+        return None
+    if _SELFTEST == "pending":
+        wait_s = (0.05 if threading.current_thread()
+                  is threading.main_thread() else 6.0)
+        if not _SELFTEST_LOCK.acquire(timeout=wait_s):
+            return None                       # proof in flight — RMS for now
+        try:
+            if _SELFTEST == "pending":
+                _self_test_locked()
+        except Exception:                     # noqa: BLE001
+            return None
+        finally:
+            _SELFTEST_LOCK.release()
+    if _SELFTEST != "pass":
         return None
     try:
         return SileroVAD()

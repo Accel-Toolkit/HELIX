@@ -124,6 +124,64 @@ Trailer (8 bytes):
     float64    mc²  — particle rest-mass energy [MeV]
 ```
 
+!!! warning "`freq`: HELIX writes the LOCAL RF clock, TraceWin writes the BUNCH RATE"
+    The two codes do not agree on this field, and downstream of a
+    frequency jump they differ.
+
+    **What TraceWin does** (measured 2026-07-31 across six genuine
+    PIP-II files — `part_rfq.dst`, `part_dtl1.dst`, `lbin.dst`,
+    `input.dst`, `ssr2out.dst`, `output.dst`): every one carries
+    **162.5 MHz**, whether its particles sit at 30 keV, at 166 MeV in a
+    325 MHz section, or at 752 MeV in a 650 MHz section.  TraceWin
+    writes the bunch repetition rate, always.
+
+    **What HELIX does**: writes `beam.ref.frequency`, the live RF clock.
+    That is the clock its Δφ degrees are measured in — `write_dst` does
+    a pure deg→rad conversion and `load_dst` the inverse, the frequency
+    never entering either — so HELIX↔HELIX round-trips are exact.
+
+    **Consequence**: a HELIX `.dst` written downstream of a frequency
+    jump is **not interchangeable with TraceWin**, and re-importing one
+    gives a macrocharge `Q = I/f` computed at the local clock rather
+    than the bunch rate.  HELIX warns
+    (`DstHeaderWarning`) whenever it writes such a file.  Reading a
+    *TraceWin* file is unaffected: its 162.5 MHz header sets
+    `bunch_frequency` correctly.
+
+    **Why this is not simply "fixed"**: writing the bunch rate while
+    leaving the phase column in local degrees would produce a file
+    whose label and data disagree — a worse failure, because it looks
+    standard-compliant.  Whether TraceWin converts its phases on export
+    is unresolved and needs one round-trip through real TraceWin to
+    settle; the σ_z test cannot separate the two hypotheses because
+    both give physically plausible millimetre-scale answers.  Until
+    then HELIX stays self-consistent and says so loudly.
+
+!!! info "Deferred fix — what it will take, and what is safe meanwhile"
+    **Two halves, together**: `frequency_MHz = beam.bunch_frequency`
+    **and** the phase column rescaled by `f_bunch / f_local`.  Changing
+    only the header would fix the macrocharge and simultaneously break
+    the clock, because `write_dst` performs no frequency conversion.
+    Blocked on an external anchor: a round-trip test cannot validate
+    this, since scaling on write and unscaling on read agrees with
+    itself either way.
+
+    **Also planned**: `BeamConfig.bunch_frequency_MHz`.  A loaded
+    `.dst` is authoritative for the RF clock, but it cannot be
+    authoritative for the bunch repetition rate — the format has no
+    such field.  Today nothing can state it: the file's frequency
+    overrides the project's, and `bunch_frequency` derives from that,
+    so a Beam-tab value is silently ignored.  Needed before any
+    segmented workflow (export mid-linac, restart downstream).
+
+    **Safe today**: this needs a frequency jump *and* a `.dst`
+    round-trip.  A through-and-through run is unaffected —
+    `bunch_frequency` stays pinned at the true rate from launch to the
+    end of the line, so space charge is correct through every jump, and
+    the openPMD and partran exports take the bunch rate from the beam
+    configuration rather than the live clock.  If you do export across
+    a jump and re-import, set `beam.bunch_frequency` back by hand.
+
 Total file size = 31 + 48·Np bytes.  There is no charge-state field;
 the species is not stored in the file.
 

@@ -145,6 +145,20 @@ def run(args) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
+    # A .dst written by a run that used periodic phase coordinates holds
+    # FOLDED phases: which bunch of the train each particle landed in
+    # has been discarded, so no backward walk can put it back.  The
+    # library guard keys on ``bunch_train``, which a freshly loaded beam
+    # does not carry — the file source is only visible here.
+    if args.dst is not None and getattr(beam_cfg, "periodic_phase", False):
+        print("error: --dst with periodic_phase enabled — a distribution "
+              "written by a folded run cannot be backtracked (the fold "
+              "discards which bunch of the train each particle landed "
+              "in, so the reconstruction would be wrong by whole bunch "
+              "spacings).  Clear periodic_phase in the project if this "
+              ".dst came from an unfolded run.", file=sys.stderr)
+        return 2
+
     end = args.end if args.end is not None else len(lattice.elements) - 1
     if not (0 <= args.start <= end < len(lattice.elements)):
         print(f"error: invalid range [--from-element {args.start}, "
@@ -246,6 +260,14 @@ def _validate(args, lattice, beam_cfg, recorder, beam, end) -> int:
     vbeam.particles[:] = beam.particles
     vbeam.lost[:] = beam.lost
     vbeam.continuous = beam.continuous
+    # The forward replay must NOT fold, whatever the project says.  It
+    # is compared against the SUPPLIED exit statistics, and every exit
+    # distribution that can reach this point is unfolded — a folded one
+    # is refused upstream (a tracked beam by backtrack_distribution, a
+    # .dst by the --dst guard in run()).  Folding only one side of the
+    # comparison would invent a σ_φ mismatch of one bunch spacing.
+    vbeam.bunch_train = False
+    vbeam.periodic_phase = False
     sc = None
     if args.sc_on:
         conv: dict = {}
