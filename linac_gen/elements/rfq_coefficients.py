@@ -220,6 +220,83 @@ def modulation_consistency(r0_mm: float, A10: float, m: float,
     return float(a10_th), float(dev)
 
 
+def synchronous_phase_from_lengths(lengths_mm, A10s, voltages_V,
+                                   mass_MeV: float, charge: float,
+                                   wavelength_mm: float):
+    """Per-cell θs implied by the deck's OWN cell lengths.  No free params.
+
+    An RFQ cell is synchronous when ``L = β·λ/2``, so the deck's cell
+    LENGTHS already encode the design velocity profile, and therefore the
+    per-cell energy gain the design intends::
+
+        β(n)  = 2·L(n)/λ            γ(n) = (1-β²)^(-1/2)
+        ΔW(n) = W(n+1) − W(n)
+
+    Integrating the two-term on-axis field over one cell with the phase
+    cursor running 0→180° gives the closed form
+    ``ΔW = |q|·(π/4)·A10·V·cos θs`` (the sin·sin integral over a half
+    period), hence::
+
+        cos θs(n) = 4·ΔW(n) / (π·|q|·A10(n)·V(n))
+
+    This is a *derivation*, not a fit: every input is a card operand.
+    Validated on the PXIE deck — over the 131 cells with A10 > 0.02 the
+    derived value tracks the card's θs to **+1.8 ± 1.8°** (the small
+    positive bias is the transit-time factor the closed form drops).
+
+    Its purpose is to make the θs operand LIVE, the same way
+    :func:`modulation_consistency` makes ``m`` live.  On the PXIE deck it
+    exposes five cells (195–199) whose card θs is −90° — i.e. "do not
+    accelerate" — while A10, m, L, dP *and* the ``.vane`` geometry all
+    continue their smooth ramp; the derived value there is ≈ −24°.
+
+    SIGN.  ``cos`` is even, so this determines only **|θs|**.  The value
+    returned uses the conventional below-crest sign (θs ≤ 0), which every
+    phase-stable RFQ design uses; callers that must tolerate an
+    above-crest deck should compare magnitudes (as
+    :mod:`linac_gen.io.rfq_phase_repair` does) rather than assume it.
+
+    Returns
+    -------
+    (phi_deg, valid) : two ``(N,)`` arrays.  ``phi_deg`` is NaN wherever
+    ``valid`` is False — the last cell (no successor to give ΔW), cells
+    with A10 ≤ 0 (no accelerating field to solve for), and cells whose
+    implied |cos θs| > 1 (the deck's lengths cannot be delivered by this
+    cell's A10·V, e.g. across an exit matcher).
+    """
+    L = np.asarray(lengths_mm, dtype=float)
+    A = np.asarray(A10s, dtype=float)
+    V = np.asarray(voltages_V, dtype=float)
+    n = L.size
+    phi = np.full(n, np.nan)
+    valid = np.zeros(n, dtype=bool)
+    if n < 2 or wavelength_mm <= 0 or mass_MeV <= 0:
+        return phi, valid
+    beta = 2.0 * L / wavelength_mm
+    ok_beta = (beta > 0.0) & (beta < 1.0)
+    gamma = np.where(ok_beta, 1.0 / np.sqrt(1.0 - np.clip(beta, 0.0,
+                                                          0.999999) ** 2),
+                     np.nan)
+    W_MeV = (gamma - 1.0) * mass_MeV
+    dW_eV = np.diff(W_MeV) * 1e6                      # across cell n
+    denom = np.pi * abs(charge) * A[:-1] * V[:-1]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cos_phi = np.where(denom > 0, 4.0 * dW_eV / denom, np.nan)
+    # The SUCCESSOR's length only encodes a design velocity if it is
+    # itself an accelerating cell.  A matcher (A10 = 0) is length-set by
+    # geometry, not synchronism, so ΔW across the cell before it is
+    # meaningless — on the synthetic demo deck that boundary otherwise
+    # manufactures a spurious θs = −90 for a perfectly good −28 card.
+    good = (np.isfinite(cos_phi) & (np.abs(cos_phi) <= 1.0)
+            & ok_beta[:-1] & ok_beta[1:] & (A[:-1] > 0.0) & (A[1:] > 0.0))
+    # TraceWin's sign convention: below-crest, i.e. theta_s <= 0.
+    phi[:-1] = np.where(good, -np.degrees(np.arccos(np.clip(cos_phi,
+                                                            -1.0, 1.0))),
+                        np.nan)
+    valid[:-1] = good
+    return phi, valid
+
+
 # TW-matrix-calibrated smooth corrections (2026-07-30, vane-field
 # campaign).  Fitting per-cell effective (quad, accel) scales to ALL
 # 203 PXIE ground-truth matrices shows small, SMOOTH residual trends

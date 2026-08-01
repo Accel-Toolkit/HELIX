@@ -45,6 +45,70 @@ where r₀ is the average radius, k = π/L (cell wavenumber), I₀ is
 the modified Bessel function, A₀₁ ≈ 1 (transverse focusing),
 A₁₀ encodes modulation strength (longitudinal acceleration).
 
+### The θs operand, and when a deck lies about it
+
+`RFQ_CELL`'s sixth operand θs drives the whole longitudinal channel:
+integrating the on-axis field over one cell with the phase cursor
+running 0 → 180° gives the closed form
+
+$$\Delta W = |q|\,\frac{\pi}{4}\,A_{10}\,V\,\cos\theta_s$$
+
+so θs = −90° means **"do not accelerate here"**, whatever the vane
+geometry says. HELIX takes the card at face value, and so does
+TraceWin's own *envelope* model — the two agree to 1.955717 MeV on
+PXIE. **Toutatis does not.** It builds the field from the vane
+geometry; the TraceWin manual says so outright when defining the card's
+`dP` operand, which exists to *"reset the output phases of Toutatis who
+does not own phase reference"*. A wrong θs is therefore invisible to
+Toutatis and fatal to the card model.
+
+The PXIE deck contains exactly that. Cells 195–199 carry θs = −90°
+while A₁₀, m, L, dP **and** `pxie-rfq.vane` all continue their smooth
+ramp — the geometry there is fully modulated, carrying the same on-axis
+E_z as its neighbours to ~1 %/cell. The card model gains 0.4–1.8 keV in
+those five cells where Toutatis gains 27–42, which is **92 % of the
+137.6 keV (7 %) gap** between them.
+
+Because a cell is synchronous when `L = βλ/2`, the deck's cell
+*lengths* already encode the design velocity profile, hence the
+intended per-cell ΔW, hence θs:
+
+$$\cos\theta_s(n) = \frac{4\,\Delta W(n)}{\pi\,|q|\,A_{10}(n)\,V(n)},
+\qquad \beta(n) = \frac{2L(n)}{\lambda}$$
+
+[`synchronous_phase_from_lengths`](#api-reference) evaluates this with
+**no free parameters** — every input is a card operand. It makes θs
+live the same way `modulation_consistency` makes `m` live. On the
+synthetic [rfq_demo](../11_examples/10_rfq_demo.md) deck, built by an
+unrelated generator, it reproduces that deck's own −90 → −28 ramp to
+**+3.0 ± 1.0°** and flags nothing.
+
+```python
+from linac_gen.io.rfq_phase_repair import (inconsistent_phase_cells,
+                                           repair_rfq_phases)
+# read-only: which cards disagree with their own cell lengths?
+for f in inconsistent_phase_cells(lattice, mass_MeV, charge, freq_MHz):
+    print(f.index, f.phi_card_deg, "->", f.phi_derived_deg)
+
+repair_rfq_phases(lattice, mass_MeV, charge, freq_MHz)   # opt-in, in place
+```
+
+`repair_rfq_phases` replaces θs only on cards that disagree by more than
+25°, anchoring out the derivation's ~2° systematic (the dropped
+transit-time factor) using the deck's own nearest consistent cards. It
+warns loudly, and `dry_run=True` reports without touching anything.
+Nothing is automatic — parsing is unchanged unless you call it, exactly
+like [`replace_rfq_cells_with_vane`](10_vanerfq.md).
+
+!!! warning "A repaired deck is a different deck"
+    On PXIE this moves the RFQ exit energy from 1.9557 to 2.0986 MeV
+    against Toutatis's 2.0933 (**+0.25 %**), and collapses the losses in
+    the last 13 cells from 2184 to **37** against Toutatis's **36**.
+    Transmission goes 39.7 % → 67.3 %; the remaining gap to Toutatis's
+    80.4 % sits in the gentle buncher (cells 60–140) and is a separate,
+    open problem. Say that you repaired the deck in anything you publish
+    from it, and keep the original alongside.
+
 ### Transfer matrix and per-substep integration
 
 Like a FieldMap, an RFQ cell has **no closed-form 6×6 transfer
@@ -145,8 +209,19 @@ cards as in TW's own decks), the transmission–voltage S-curve has its
 shoulder just below nominal voltage as measured at PIP2IT, and the
 captured beam exits at ε = 0.133/0.167 π·mm·mrad vs the PIP2IT
 measurement 0.17/0.16.  Known gap: RFQ transmission of LEBT survivors
-is ~82 % vs TW/Toutatis ~97 %, concentrated in the last tight-bore
-(3.1 mm) cells — see the vane-coefficient plan below.
+is ~82 %, concentrated in the last tight-bore (3.1 mm) cells — see the
+vane-coefficient plan below.
+
+!!! note "The old ~97 % figure was unsourced — corrected 2026-07-31"
+    Measured directly from `calculations/toutatis.out` on the same 203
+    cards and the same input distribution, **Toutatis transmits
+    80.40 %**, not ~97 %.  Its losses sit overwhelmingly in the gentle
+    buncher (cells 60–140), with only **36** particles lost in the last
+    13 cells.  HELIX loses **2184** there — but that is the θs = −90
+    problem above, not a bore/aperture problem: with the deck repaired
+    the count drops to **37**.  What remains is a genuine buncher gap
+    (HELIX 2074 vs Toutatis 1288), which is where the vane-coefficient
+    work should point.
 
 **Reading RFQ output: the bunch train (2026-07-30)**.  An RFQ turns a
 DC beam into a *train* of bunches one RF period apart.  HELIX seeds one

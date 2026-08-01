@@ -135,7 +135,15 @@ def kick_continuous_2d(beam, ds_mm: float) -> None:
     gamma = float(ref.gamma)
     mass_MeV = float(ref.species.mass)
     q_abs = abs(ref.species.charge) * E_CHARGE
-    I_A = abs(beam.current) * 1e-3  # mA → A
+    # Loss-scaled current — the macrocharge convention (pic/macrocharge.py):
+    # every LAUNCHED macroparticle carries a fixed share of the configured
+    # current, so the transported current decays with transmission.  The
+    # bunched 3-D PIC always did this; the DC kernels used the configured
+    # current outright, overdriving the field by 1/transmission after
+    # scraping (PXIE LEBT at 77 % transmission: σ_x +16 % at the SOL2 exit
+    # vs TW partran; loss-scaled it agrees to ~1 %, 2026-08-01).  For a
+    # lossless beam the fraction is exactly 1.0 → bit-identical.
+    I_A = (abs(beam.current) * 1e-3) * (beam.n_alive / beam.n_particles)
     # Generalised perveance K = 2·q·I / (4πε₀·m₀c³·β³γ³) — SI (N/m per mm⁻¹).
     # Using 4πε₀ implicitly: E_x = (2/4πε₀) · I / (v·a·(a+b)) · x
     # where v = β·c.  Simpler: use constant K in terms of (E/r) per unit r.
@@ -271,7 +279,8 @@ def kick_continuous_2d_gauss(beam, ds_mm: float) -> None:
     gamma = float(ref.gamma)
     mass_MeV = float(ref.species.mass)
     q_abs = abs(ref.species.charge) * E_CHARGE
-    I_A = abs(beam.current) * 1e-3
+    # Loss-scaled current — macrocharge convention; see kick_continuous_2d.
+    I_A = (abs(beam.current) * 1e-3) * (beam.n_alive / beam.n_particles)
     v_m_s = beta * C_LIGHT
     if v_m_s <= 0:
         return
@@ -347,9 +356,13 @@ def kick_continuous_2d_pic(beam, ds_mm: float, *,
     if v_m_s <= 0:
         return
     # Charge-per-macroparticle, expressed as charge per unit beam-length.
-    # A continuous beam carries λ = I/v [C/m]; spread over n macros gives
-    # q_macro = λ/n [C/m of beam, per macro].
-    q_macro = (I_A / v_m_s) / n
+    # A continuous beam carries λ = I/v [C/m] spread over the LAUNCHED
+    # macro count (macrocharge convention — see kick_continuous_2d):
+    # dividing by the alive count instead pinned the deposited total at
+    # the configured current no matter how many particles were scraped.
+    # Only alive particles are deposited, so the transported charge now
+    # decays with transmission.  Lossless: n_particles == n → identical.
+    q_macro = (I_A / v_m_s) / beam.n_particles
 
     # CIC deposit into rho [C / (m of beam · m² of (x,y))]
     fx = (xs - x_lo) / dx

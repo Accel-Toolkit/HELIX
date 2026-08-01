@@ -109,6 +109,18 @@ def _is_rf_bunching_element(element) -> bool:
     if RfqCell is not None and isinstance(element, RfqCell) \
             and abs(getattr(element, "voltage_V", 0.0) or 0.0) > 0:
         return True
+    # VaneRFQ is a WHOLE RFQ in one element — same physics as the RfqCell
+    # chain it replaces, but it carries its voltage per CellSpan rather
+    # than on the element, so the getattr above finds nothing.  Without
+    # this branch a DC beam tracked through a VaneRFQ never flips to
+    # bunched and the longitudinal dynamics never engage.
+    try:
+        from linac_gen.elements.vane_rfq import VaneRFQ
+    except Exception:
+        VaneRFQ = None
+    if VaneRFQ is not None and isinstance(element, VaneRFQ) \
+            and any(abs(c.voltage_V or 0.0) > 0 for c in element.cells):
+        return True
     # NCELLS multi-gap cavities are buncher-accelerators (non-zero EoT).
     # Like RfqCell they subclass FieldMapElement but not FieldMap/FieldMap3D,
     # so the channel-based detection below skips them — treat explicitly.
@@ -242,8 +254,14 @@ def field_map_step_counts(lattice, element):
         if min_int > n_int:
             n_int = min_int
 
+    # RFQ: honour the element's own substep count.  VaneRFQ sizes itself
+    # at ~2× the .vane slice resolution (~0.13 mm on PXIE); left to a
+    # coarse PARTRAN_STEP it gets ~10 mm slices, the RK4 push goes
+    # unstable and drives the reference energy negative ("math domain
+    # error" out of sqrt).  Same floor as the RfqCell chain it replaces.
     from linac_gen.elements.rfq_cell import RfqCell
-    if isinstance(element, RfqCell) and element.n_steps > n_int:
+    from linac_gen.elements.vane_rfq import VaneRFQ
+    if isinstance(element, (RfqCell, VaneRFQ)) and element.n_steps > n_int:
         n_int = element.n_steps
 
     # NCELLS: honour the element's own ~2-per-cell floor so the SC-kick cadence

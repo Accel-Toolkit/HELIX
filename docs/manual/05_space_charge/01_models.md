@@ -107,6 +107,16 @@ Three DC-kernel choices via `SpaceChargeConfig.dc_kernel`:
 | `"gaussian"` | Bassetti-Erskine field of a 2-D Gaussian (rigid σ; per-particle non-linear) |
 | `"pic2d"` | 2-D Hockney FFT PIC over the actual particle distribution (most accurate) |
 
+All three scale the field with the **surviving** current,
+`I · n_alive / n_launched` — the same macrocharge convention as the
+bunched 3-D PIC (each launched macroparticle carries a fixed share of
+the configured current, so the transported current decays with
+transmission).  Before 2026-08-01 the DC kernels drove the field from
+the configured current outright; on the PXIE LEBT (77 % transmission)
+that overdrove σ_x by 16 % at the SOL2 exit against TraceWin partran —
+loss-scaled, the agreement is ~1 %.  Lossless beams are unaffected
+(the factor is exactly 1).
+
 For details see [DC mode](04_dc_mode.md).
 
 ## Coherent synchrotron radiation (CSR)
