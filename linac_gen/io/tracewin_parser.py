@@ -1153,6 +1153,14 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                                  "RFQ_GEOM", "RFQ_GAP_RMS_FFS"):
                     # TraceWin fit hints / RFQ vane setup: no transport
                     # effect in HELIX.  Reported once per deck (below).
+                    # RFQ_GEOM's vane filename IS recorded — multiparticle
+                    # runs use it for the TW/Toutatis-faithful geometry
+                    # profile when the file exists (core/simulation.py).
+                    if keyword == "RFQ_GEOM" and len(params) >= 2:
+                        raw_vane = params[-1].strip("\'\"")
+                        lattice.rfq_geom_file = os.path.abspath(
+                            raw_vane if os.path.isabs(raw_vane)
+                            else os.path.join(base_dir, raw_vane))
                     noop_hint_counts[keyword] = (
                         noop_hint_counts.get(keyword, 0) + 1)
                     lattice.add(Marker(next_name(keyword), snapshot=False))

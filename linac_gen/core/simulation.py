@@ -1,7 +1,12 @@
 """Simulation facade: wires lattice + beam + config into a single run API."""
+import logging
+import os
+
 from linac_gen.core.lattice import Lattice
 from linac_gen.core.beam import Beam
 from linac_gen.core.config import SpaceChargeConfig
+
+_log = logging.getLogger(__name__)
 
 class Simulation:
     """Top-level simulation controller."""
@@ -17,9 +22,31 @@ class Simulation:
                  density_extent: dict | None = None,
                  tail_fractions: tuple = (),
                  progress_callback=None, should_abort=None,
-                 phase_probe: bool = False):
+                 phase_probe: bool = False,
+                 rfq_geometry: str = "auto"):
         self.lattice = lattice
         self.beam = beam
+        # RFQ vane-geometry policy for MULTIPARTICLE runs (run()):
+        #   "auto"      — use the RFQ_GEOM vane file when it exists,
+        #                 mirroring TraceWin (whose Partran mode hands
+        #                 the RFQ to Toutatis when the card is present);
+        #   "off"       — card kick for THIS run (an explicitly
+        #                 attached profile is suspended for the run and
+        #                 restored afterwards);
+        #   "antisym" / "per_plane" — force that profile mode.
+        # Envelope/matrix runs (run_envelope()) stay on the cards —
+        # TraceWin's envelope-mode semantics — unless the user armed the
+        # lattice EXPLICITLY via apply_rfq_geometry(), which is a
+        # persistent, deliberate choice and applies everywhere.
+        if rfq_geometry is True:
+            rfq_geometry = "auto"
+        if rfq_geometry in (False, None):
+            rfq_geometry = "off"
+        if rfq_geometry not in ("auto", "off", "antisym", "per_plane"):
+            raise ValueError(
+                f"rfq_geometry={rfq_geometry!r}: expected \"auto\", "
+                f"\"off\", \"antisym\" or \"per_plane\"")
+        self.rfq_geometry = rfq_geometry
         # ``space_charge="off"`` is the explicit no-SC sentinel: same
         # physics as None but declares intent (suppresses the tracker's
         # NoSpaceChargeWarning for current-carrying bunched beams).
@@ -58,7 +85,94 @@ class Simulation:
         # reuses it so a fixed-grid solver undoes its own kicks exactly.
         self._pic_solver = None
 
+    def _suspend_rfq_geometry(self) -> list:
+        """rfq_geometry="off": stash any armed profile for this run."""
+        from linac_gen.elements.rfq_cell import RfqCell
+        stash = []
+        for c in self.lattice.elements:
+            if isinstance(c, RfqCell) and c._geom_z is not None:
+                stash.append((c, c._geom_z, c._geom_gx, c._geom_gy,
+                              c._geom_boundary, c._wall_mm))
+                c._geom_z = c._geom_gx = c._geom_gy = None
+                c._geom_boundary = False
+                c._wall_mm = 0.0
+        return stash
+
+    def _arm_rfq_geometry(self) -> list:
+        """TW-faithful RFQ_GEOM handling for multiparticle runs.
+
+        Returns the cells THIS call armed (for scoped disarm after the
+        run); an empty list when nothing was done.  Cells the user armed
+        explicitly via apply_rfq_geometry() are never touched.
+        """
+        if self.rfq_geometry == "off":
+            return []
+        vane = getattr(self.lattice, "rfq_geom_file", None)
+        if not vane:
+            if self.rfq_geometry != "auto":
+                raise ValueError(
+                    f"rfq_geometry={self.rfq_geometry!r} requested but "
+                    "the lattice has no RFQ_GEOM vane file recorded")
+            return []
+        from linac_gen.elements.rfq_cell import RfqCell
+        cells = [el for el in self.lattice.elements
+                 if isinstance(el, RfqCell)]
+        if not cells:
+            return []
+        if any(c._geom_z is not None for c in cells):
+            return []                    # user already armed explicitly
+        if not os.path.isfile(vane):
+            if self.rfq_geometry != "auto":
+                raise FileNotFoundError(
+                    f"rfq_geometry={self.rfq_geometry!r}: vane file not "
+                    f"found: {vane}")
+            # WARNING once per lattice -- an INFO here let users believe
+            # they were getting geometry-faithful physics when the file
+            # was simply missing (adversarial review 2026-08-02, f.8)
+            if not getattr(self.lattice, "_rfq_geom_warned", False):
+                self.lattice._rfq_geom_warned = True
+                _log.warning(
+                    "RFQ_GEOM vane file %s not found -- card-model RFQ "
+                    "(matches TraceWin behaviour without the geometry "
+                    "file)", vane)
+            return []
+        mode = ("antisym" if self.rfq_geometry == "auto"
+                else self.rfq_geometry)
+        from linac_gen.io.rfq_geometry_helper import apply_rfq_geometry
+        try:
+            n = apply_rfq_geometry(self.lattice, vane, mode=mode)
+        except Exception:
+            if self.rfq_geometry != "auto":
+                raise
+            _log.exception(
+                "RFQ_GEOM vane file %s could not be used -- falling "
+                "back to the card-model RFQ", vane)
+            return []
+        _log.warning(
+            "RFQ_GEOM: this multiparticle run uses the vane-geometry "
+            "profile from %s (%d cells, mode=%s) -- TraceWin/Toutatis-"
+            "faithful.  Pass rfq_geometry=\"off\" to Simulation for the "
+            "classic card model.", os.path.basename(str(vane)), n, mode)
+        return [c for c in cells if c._geom_z is not None]
+
     def run(self):
+        suspended = (self._suspend_rfq_geometry()
+                     if self.rfq_geometry == "off" else [])
+        armed = self._arm_rfq_geometry()
+        try:
+            return self._run_mp()
+        finally:
+            # scoped: a later run_envelope() on this lattice stays on
+            # the cards, mirroring TraceWin's envelope-mode semantics
+            for c in armed:
+                c._geom_z = c._geom_gx = c._geom_gy = None
+                c._geom_boundary = False
+                c._wall_mm = 0.0
+            for c, gz, gx, gy, gb, wm in suspended:
+                c._geom_z, c._geom_gx, c._geom_gy = gz, gx, gy
+                c._geom_boundary, c._wall_mm = gb, wm
+
+    def _run_mp(self):
         from linac_gen.tracking.tracker import Tracker
         pic = None
         csr = None

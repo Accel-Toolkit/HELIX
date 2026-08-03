@@ -51,6 +51,20 @@ class TorchPicSolver:
 
     def kick(self, beam, ds: float) -> None:
         """Apply one space-charge kick over step ``ds`` (mm); beam in-place."""
+        # numpy/torch parity note: the torch PIC has NO bunch-train
+        # image path.  Warn once instead of silently diverging from the
+        # numpy backend on DC-injected bunch-train beams
+        # (adversarial review 2026-08-02, finding 2).
+        if getattr(beam, "bunch_train", False) \
+                and getattr(self.config, "train_images", None) is not False \
+                and not getattr(self, "_train_warned", False):
+            self._train_warned = True
+            import logging
+            logging.getLogger(__name__).warning(
+                "TorchPicSolver: bunch-train neighbour images are not "
+                "implemented on the torch backend -- SC treats the beam "
+                "as an isolated bunch (numpy backend applies images; "
+                "set train_images=False to silence).")
         if beam.current <= 0 or beam.n_alive < 2:
             return
         alive_idx = np.where(beam.alive_mask)[0]

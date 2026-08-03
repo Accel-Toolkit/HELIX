@@ -189,6 +189,19 @@ class RfqCell(FieldMapElement):
         self.dP_deg = float(dP_deg)
         self.type_prev = int(type_prev) if type_prev is not None else self.cell_type
         self.type_next = int(type_next) if type_next is not None else self.cell_type
+        # Optional vane-geometry gradient profile (cell-local z in mm),
+        # attached by linac_gen.io.rfq_geometry_helper.apply_rfq_geometry.
+        # None ⇒ the classic card kick path, bit-identical to before.
+        self._geom_z: np.ndarray | None = None
+        self._geom_gx: np.ndarray | None = None
+        self._geom_gy: np.ndarray | None = None
+        # Optional real-boundary loss model (same helper): kill on the
+        # vane-tip ARCS (transverse tip radius Tc), the electrode BODIES
+        # behind them, and the chamber wall — NOT on the two-term box,
+        # whose corners are open in the real quadrant geometry.  False ⇒
+        # the classic box test, bit-identical to before.
+        self._geom_boundary: bool = False
+        self._wall_mm: float = 0.0
         # DC quadrupole coefficient.  TraceWin computes this internally
         # from m, R₀ via the standard 2-term Bessel-function approximation;
         # in the small-modulation limit (m → 1) this collapses to
@@ -597,9 +610,14 @@ class RfqCell(FieldMapElement):
         C1, C2, S, C3 = type_coeffs(self.cell_type, self.type_prev,
                                     self.type_next,
                                     z_local_mm / self.length)
+        gx = gy = None
+        if self._geom_z is not None:
+            gx = float(np.interp(z_local_mm, self._geom_z, self._geom_gx))
+            gy = float(np.interp(z_local_mm, self._geom_z, self._geom_gy))
         kx1, ky1, _K1, _K2 = step_kicks(
             self.voltage_V, self.r0_mm, self.A10, self.length,
-            phi_part, gamma_s, beta_s, ds, C1, C2, S, C3, mass)
+            phi_part, gamma_s, beta_s, ds, C1, C2, S, C3, mass,
+            gx=gx, gy=gy)
         xs_mm = P[alive, 0]
         ys_mm = P[alive, 2]
         P[alive, 1] += kx1 * xs_mm * 1e3          # rad → mrad
@@ -642,8 +660,42 @@ class RfqCell(FieldMapElement):
                 x_lim, y_lim = vane_apertures(self.r0_mm, self.A10,
                                               self.length, self.cell_type,
                                               z_exit)
-                bad |= (np.abs(P[alive_idx, 0]) > x_lim) \
-                    | (np.abs(P[alive_idx, 2]) > y_lim)
+                if self._geom_boundary:
+                    # Real quadrant boundary: circular tip arcs of
+                    # radius Tc centred at (x_lim+Tc, 0)/(0, y_lim+Tc),
+                    # solid electrode bodies behind them — and OPEN
+                    # corners between the vanes, where the two-term box
+                    # wrongly kills (Toutatis keeps those particles;
+                    # worth ~+1 pt on the PXIE 5 mA benchmark).
+                    Tc = self.Tc_mm if self.Tc_mm > 0 \
+                        else 0.75 * self.r0_mm
+                    ax_ = np.abs(P[alive_idx, 0])
+                    ay_ = np.abs(P[alive_idx, 2])
+                    bad |= ((ax_ - (x_lim + Tc)) ** 2 + ay_ ** 2
+                            <= Tc * Tc)
+                    bad |= ((ay_ - (y_lim + Tc)) ** 2 + ax_ ** 2
+                            <= Tc * Tc)
+                    bad |= (ax_ >= x_lim + Tc) & (ay_ <= Tc)
+                    bad |= (ay_ >= y_lim + Tc) & (ax_ <= Tc)
+                else:
+                    bad |= (np.abs(P[alive_idx, 0]) > x_lim) \
+                        | (np.abs(P[alive_idx, 2]) > y_lim)
+            if self._geom_boundary and self._wall_mm > 0:
+                # chamber wall (TW project "Wall radius aperture"):
+                # physical strips in the 45-degree CORNER corridors
+                # between the vanes — NOT a full circle.  Along the vane
+                # axes the boundary is the vane itself (arc/body tests
+                # above), and a modulated vane legitimately opens beyond
+                # the wall radius there (adversarial review 2026-08-02:
+                # a full-circle wall killed genuine vacuum at
+                # x_lim > wall).  Applies in EVERY cell type incl. the
+                # ±3 flares, whose tips also sit in the vane corridors.
+                Tc_w = self.Tc_mm if self.Tc_mm > 0                     else 0.75 * self.r0_mm
+                wx = np.abs(P[alive_idx, 0])
+                wy = np.abs(P[alive_idx, 2])
+                bad |= ((wx * wx + wy * wy
+                         >= self._wall_mm * self._wall_mm)
+                        & (wx > Tc_w) & (wy > Tc_w))
             for pid in alive_idx[bad]:
                 beam.record_loss(int(pid), ref.s, self.name)
 
@@ -699,9 +751,16 @@ class RfqCell(FieldMapElement):
                                         self.type_prev,
                                         self.type_next,
                                         z_local / self.length)
+            gx = gy = None
+            if self._geom_z is not None:
+                gx = float(np.interp(z_local, self._geom_z,
+                                     self._geom_gx))
+                gy = float(np.interp(z_local, self._geom_z,
+                                     self._geom_gy))
             kx1, ky1, K1, K2 = step_kicks(
                 self.voltage_V, self.r0_mm, self.A10, self.length,
-                float(ph), gamma_s, beta_s, dz, C1, C2, S, C3, mass)
+                float(ph), gamma_s, beta_s, dz, C1, C2, S, C3, mass,
+                gx=gx, gy=gy)
 
             dh = dz * 0.5e-3                 # mm per mrad (≡ m per rad)
             Dh = np.array([[1.0, dh], [0.0, 1.0]])

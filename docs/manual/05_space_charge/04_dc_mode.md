@@ -110,6 +110,41 @@ solver = SachererSolver(lattice, ref, initial_twiss, current=5.0)
 res = solver.run()
 ```
 
+## The envelope through an RFQ: bunched vs TraceWin-compatible DC
+
+`EnvelopeSolver` with `initial["continuous"]=True` flips a DC beam to
+**bunched** at the first RF bunching element: it seeds a uniform bunch
+(σφ = 180°/√3 ≈ 103.9°), evolves the longitudinal envelope and switches
+to bunched space charge.  That is the more physical picture — but it is
+**not what TraceWin's envelope mode computes**.  TraceWin-env keeps the
+beam DC through the RFQ: its genuine ENV+SC export carries *no*
+longitudinal envelope at all (σφ ≡ σ_dp/p ≡ σ_W ≡ 0 in every RFQ row).
+
+With space charge on, the two models therefore diverge inside an RFQ —
+this is a model-class difference, not an error in either code.
+Measured on the PXIE 2-solenoid LEBT+RFQ line at 5 mA against the
+TraceWin ENV+SC export:
+
+| HELIX envelope mode | RFQ σ deviation | full line |
+|---|---|---|
+| bunched (default) | 27–64 % | 27–32 % |
+| `rfq_dc_envelope=True` | 5–11 % | **4.3 % (x) / 3.7 % (y)** |
+
+LEBT-only agreement is 0.2 % either way, and the energy ramp is
+identical in both modes (exit 1955.72 vs TW 1955.77 keV).
+
+```python
+res = EnvelopeSolver(lat, ref, init, current=5.0,
+                     rfq_dc_envelope=True).run()   # TW-comparable
+```
+
+Use `rfq_dc_envelope=True` **only** for validating against a TraceWin
+envelope export; leave the default for physics work.  Neither envelope
+model is the truth channel for an RFQ — that is multiparticle
+tracking.  Pinned by `tests/rfq/test_env_rfq_dc.py`, including a guard
+asserting the *default* mode does **not** match a TW export (if it ever
+starts to, the default's physics changed).
+
 ## Cross-references
 
 * [Models](01_models.md) — model decision tree.

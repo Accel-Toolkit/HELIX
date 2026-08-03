@@ -342,7 +342,8 @@ def tw_calibration(A10: float) -> tuple[float, float]:
 def step_kicks(voltage_V: float, r0_mm: float, A10: float, length_mm: float,
                phase_rad, gamma_s: float, beta_s: float, dz_mm: float,
                C1: float, C2: float, S: float, C3: float,
-               mass_MeV: float):
+               mass_MeV: float, gx: float | None = None,
+               gy: float | None = None):
     """Per-substep kick factors in HELIX units.
 
     Returns ``(kx1, ky1, K1, K2)``:
@@ -354,6 +355,15 @@ def step_kicks(voltage_V: float, r0_mm: float, A10: float, length_mm: float,
     ``phase_rad`` may be a scalar (matrix path, synchronous phase) or an
     ndarray (multiparticle path, per-particle phases) — outputs
     broadcast accordingly.
+
+    ``gx``/``gy`` — optional vane-geometry gradient profile (normalised
+    per-plane linear gradients at this z, see rfq_geometry_profile.py).
+    When given, they replace the card's constant quad strength AND the
+    analytic RF-defocus term: the measured profile's in-cell structure
+    already carries the defocusing field, and its product with the RF
+    clock reproduces the synchronous defocus average through the
+    substep integration (identical-beam benchmark vs Toutatis,
+    2026-08-02).  The longitudinal channel (K1, K2) stays on the card.
     """
     L_m = length_mm * 1e-3
     r0_m = r0_mm * 1e-3
@@ -369,12 +379,20 @@ def step_kicks(voltage_V: float, r0_mm: float, A10: float, length_mm: float,
     # which already reproduces TW exactly (ramp to all digits, z-blocks
     # to 1.2 %).  That is precisely the split the per-cell fit measured.
     quad_c, accel_c = tw_calibration(A10)
-    quad = (2.0 * quad_c * S * (voltage_V / (r0_m * r0_m))
-            * C1 * sin_ph)                                      # V/m²
-    defoc = ((np.pi / L_m) ** 2 * (accel_c * A10 * voltage_V / 2.0)
-             * cos_ph * C2)                                     # V/m²
-    kx1_per_m = -pref * (quad - defoc)                          # 1/m
-    ky1_per_m = -pref * (-quad - defoc)                         # 1/m
+    if gx is not None:
+        # Geometry-profile mode: the measured per-plane gradients carry
+        # the C1 ramp, the intra-cell breathing AND the defocus field.
+        base = (2.0 * quad_c * S * (voltage_V / (r0_m * r0_m))
+                * sin_ph)                                       # V/m²
+        kx1_per_m = -pref * (base * gx)                         # 1/m
+        ky1_per_m = -pref * (base * gy)                         # 1/m
+    else:
+        quad = (2.0 * quad_c * S * (voltage_V / (r0_m * r0_m))
+                * C1 * sin_ph)                                  # V/m²
+        defoc = ((np.pi / L_m) ** 2 * (accel_c * A10 * voltage_V / 2.0)
+                 * cos_ph * C2)                                 # V/m²
+        kx1_per_m = -pref * (quad - defoc)                      # 1/m
+        ky1_per_m = -pref * (-quad - defoc)                     # 1/m
     K1 = -pref * (np.pi / L_m) ** 2 * A10 * voltage_V * C3 * cos_ph
     # K2 is the per-step momentum ratio p_in/p_out linearised — it must
     # follow the ENERGY GAIN phase (E_z ∝ sin φ), not K1's gradient

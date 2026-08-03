@@ -449,6 +449,10 @@ class PicSolver:
 
     def __init__(self, config: SpaceChargeConfig):
         self.config = config
+        # Lazily-built companion solver for bunch-train neighbour images
+        # (3× nz grid, train_images forced off — see _kick_bunch_train).
+        self._train_solver: "PicSolver | None" = None
+        self._train_engaged: bool = False
         self._solver: PoissonSolverFFT | None = None
         self._grid_min: np.ndarray | None = None
         self._grid_max: np.ndarray | None = None
@@ -475,6 +479,61 @@ class PicSolver:
         self._extent_dirty = True
 
     # ------------------------------------------------------------------
+    def _kick_bunch_train(self, beam, ds: float) -> None:
+        """One SC kick with ±1 bunch-train neighbour images.
+
+        Deposits the alive beam three times (centre and copies shifted
+        ±360° in phase), solves on a 3×-long grid (nz tripled so the
+        per-bunch resolution is unchanged), and applies the gathered
+        kicks to the centre copy only.  Charge bookkeeping is exact:
+        current ×3 with launched-count ×3 leaves the macro-charge and
+        the loss-scaled current untouched.  ±1 image suffices — the ±2
+        shell scales as (σ_z/2βλ)³ (measured inert on the PXIE RFQ).
+        Validated against the TW/Toutatis 5 mA identical-beam benchmark
+        (2026-08-02): isolated 78.5 % → train 80.7 % vs Toutatis 80.3.
+        """
+        import dataclasses as _dc
+
+        from linac_gen.core.beam import Beam as _Beam
+        from linac_gen.core.reference import ReferenceParticle as _Ref
+
+        if self._train_solver is None:
+            self._train_solver = PicSolver(_dc.replace(
+                self.config, nz=3 * self.config.nz, train_images=False))
+        # deck HELIX_SC_GRID extent overrides must reach the companion
+        self._train_solver._extent_override = self._extent_override
+        al = beam.alive_mask
+        idx = np.where(al)[0]
+        q = beam.particles[al]
+        ncen = len(q)
+        # neighbour spacing in LOCAL RF degrees: one bunch period =
+        # 360 * (f_local / f_train) -- for a sub-harmonic train the
+        # images sit h periods away, not one (adversarial review
+        # 2026-08-02, finding 6)
+        f_train = getattr(beam, "bunch_train_frequency", 0.0) or 0.0
+        h = max(1, int(round(beam.ref.frequency / f_train))) \
+            if f_train > 0 else 1
+        shift = 360.0 * h
+        qp = q.copy()
+        qp[:, 4] += shift
+        qm = q.copy()
+        qm[:, 4] -= shift
+        aug = _Beam(ref=_Ref(species=beam.ref.species,
+                             w_kin=beam.ref.w_kin,
+                             frequency=beam.ref.frequency),
+                    n_particles=3 * beam.n_particles,
+                    current=3.0 * beam.current)
+        aug.particles[:3 * ncen] = np.vstack([q, qp, qm])
+        aug.lost[3 * ncen:] = True
+        aug.bunch_frequency = beam.bunch_frequency
+        aug.continuous = False
+        aug.bunch_train = False              # recursion guard
+        before = aug.particles[:ncen, [1, 3, 5]].copy()
+        self._train_solver.kick(aug, ds)
+        d = aug.particles[:ncen, [1, 3, 5]] - before
+        for col_j, col_b in ((0, 1), (1, 3), (2, 5)):
+            beam.particles[idx, col_b] += d[:, col_j]
+
     def kick(self, beam, ds: float) -> None:
         """Apply one space-charge kick over step *ds* (mm).
 
@@ -487,6 +546,37 @@ class PicSolver:
         """
         if beam.current <= 0 or beam.n_alive < 2:
             return
+
+        # Bunch-train neighbour images (config.train_images; None = on
+        # exactly when the beam was injected DC and bunched in flight).
+        # Only while the bunch is LONG (σφ ≥ 30°): there the charge
+        # still overlaps the neighbouring periods and the images are
+        # real physics.  Once bunched, the neighbours (a full βλ away)
+        # are negligible while the 3×-span train grid would degrade the
+        # self-field resolution — so short bunches use the isolated
+        # solve, which is also TraceWin's downstream semantics.
+        use_train = self.config.train_images
+        if use_train is None:
+            use_train = bool(getattr(beam, "bunch_train", False))
+        if use_train:
+            # CORE phase spread, not np.std: out-of-bucket slippers can
+            # drag a plain std to hundreds of degrees forever, so a
+            # bunched core downstream would never leave the train path
+            # (adversarial review 2026-08-02).  Half the 16-84 percentile
+            # span equals sigma for a Gaussian and ignores the tails.
+            phis = beam.particles[beam.alive_mask, 4]
+            p16, p84 = np.percentile(phis, (16.0, 84.0))
+            core = 0.5 * float(p84 - p16)
+            # Hysteresis (engage >=35 deg, release <=25 deg): the train
+            # and isolated solves differ at the few-percent level, so a
+            # loss-driven drift across one fixed threshold must not
+            # toggle the solver back and forth.
+            if self._train_engaged:
+                self._train_engaged = core > 25.0
+            else:
+                self._train_engaged = core >= 35.0
+            if self._train_engaged:
+                return self._kick_bunch_train(beam, ds)
 
         alive_mask = beam.alive_mask
 

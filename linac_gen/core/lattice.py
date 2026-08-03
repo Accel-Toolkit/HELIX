@@ -15,6 +15,12 @@ class Lattice:
         # alongside any user-added ``add_error`` calls.  Empty by default —
         # a lattice with no error directives runs deterministically.
         self.errors: list = []
+        # Vane file named by an RFQ_GEOM card (deck-relative resolution
+        # done by the parser).  Multiparticle runs use it for the
+        # TW/Toutatis-faithful RFQ geometry profile when the file exists
+        # (Simulation(rfq_geometry=...)); envelope/matrix runs stay on
+        # the cards, mirroring TraceWin's own mode split.
+        self.rfq_geom_file: str | None = None
         # Beam-error specs from ``ERROR_BEAM_STAT`` — perturbation sigmas /
         # half-widths on BeamConfig per seed.  See linac_gen.errors for shape.
         self.beam_errors: list = []

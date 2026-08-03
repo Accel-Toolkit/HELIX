@@ -452,6 +452,98 @@ linac_gen.elements.rfq_cell.RfqCell(
 
 * `linac_gen/elements/rfq_cell.py:135` (constructor)
 
+## Vane-geometry gradient profile (opt-in)
+
+The card kick applies a constant electric-quadrupole strength `V/R₀²`
+per cell.  The real vane geometry deviates from that in ways no card
+operand can express — the radial-matcher entrance ramp, the intra-cell
+gradient breathing of modulated cells, the exit flare, and a small x/y
+asymmetry.  On the PXIE LEBT+RFQ benchmark those differences are worth
+about 20 % in transverse phase advance and 10+ points of transmission
+at 5 mA (identical-beam comparison against TraceWin/Toutatis;
+TraceWin's own card-based envelope mode shows the same deficit — this
+is a limitation of the card model class, not of one implementation).
+
+When a TraceWin `.vane` file is available, HELIX measures the real
+per-plane gradient profile once (windowed 3-D Laplace solves of the
+vane potential, about a minute for a 200-cell RFQ, cached on disk next
+to the vane file) and feeds it into the existing card tracker.
+
+**TW-faithful automatic behaviour.**  TraceWin's Partran mode hands
+the RFQ to Toutatis (vane geometry) whenever `RFQ_GEOM` names an
+existing file, while its envelope mode ignores the card.  HELIX
+mirrors that split: a **multiparticle** `Simulation.run()`
+automatically uses the vane profile when the deck's `RFQ_GEOM` file
+exists (deck-relative path, loud log line), and **envelope/matrix**
+runs always stay on the cards.  Control it per run:
+
+```python
+Simulation(lat, beam)                          # "auto" (default)
+Simulation(lat, beam, rfq_geometry="off")      # classic card model
+Simulation(lat, beam, rfq_geometry="per_plane")  # force a mode
+```
+
+When the vane file is absent (or `rfq_geometry="off"`), every run is
+bit-identical to previous releases.  Explicit arming is also
+available and then applies to **all** subsequent runs on that lattice,
+including envelope:
+
+```python
+from linac_gen.io.rfq_geometry_helper import apply_rfq_geometry
+
+lat, meta = parse_tracewin("linac.dat")
+apply_rfq_geometry(lat, "pxie-rfq.vane")
+Simulation(lat, beam).run()
+```
+
+With the profile active, the transverse quad
+strength follows the measured profile and the analytic RF-defocus term
+is dropped (the measured profile's in-cell structure carries the
+defocusing field; its product with the RF clock reproduces the
+synchronous defocus through the substep integration).  The
+longitudinal channel stays on the card, so the validated energy ramp
+is untouched.
+
+`mode="antisym"` (default) applies the x-plane profile
+antisymmetrically to both planes — best envelope fidelity and the most
+Toutatis-like loss profile on the PXIE benchmark.  `mode="per_plane"`
+uses the independently solved y-plane gradient — best total
+transmission on that benchmark, at the cost of σ_y running ≈ 10 % low.
+The two bracket the Toutatis reference.
+
+The solver prefers [pyamg](https://github.com/pyamg/pyamg) (optional
+dependency) and falls back to SciPy `spsolve` on a coarser grid with a
+warning when pyamg is not installed.
+
+**Real-boundary losses.**  Arming the geometry also switches the
+cells' loss model (`boundary_losses=True`, default) from the two-term
+box to the real quadrant boundary: circular vane-tip arcs (transverse
+tip radius = the card's `Tc` operand), the electrode bodies behind
+them, and the chamber wall (`wall_mm`, default 6.0 — TraceWin keeps
+this "Wall radius aperture" in the project settings, not the deck).
+The corners between the vanes are **open** in the real geometry; the
+two-term box wrongly kills there (worth ~1 point of transmission on
+the PXIE benchmark).
+
+**Bunch-train space charge.**  A beam injected DC and bunched inside
+the RFQ is one period of an infinite train: through the shaper and
+gentle buncher the charge still fills the whole RF period and each
+slice feels its ±1 neighbours — physics Toutatis gets for free from
+its periodic solve.  `SpaceChargeConfig.train_images` (default
+`None` = automatic) makes the 3-D PIC deposit the neighbouring
+periods whenever the beam carries the `bunch_train` marker **and** is
+still long (σφ ≥ 30°); once bunched, the isolated solve is both more
+accurate on the grid and TraceWin's own downstream semantics.  Beams
+born bunched are never affected.
+
+With all three refinements the PXIE identical-beam benchmark closes:
+5 mA RFQ transmission 80.9 % vs Toutatis 80.3 % (the two-term card
+model alone gives 65.9 %).
+
+* `linac_gen/elements/rfq_geometry_profile.py` (profile builder)
+* `linac_gen/io/rfq_geometry_helper.py` (lattice wiring)
+* `linac_gen/pic/pic_solver.py` (`_kick_bunch_train`)
+
 ## See also
 
 * [VaneRFQ](10_vanerfq.md) — `.vane` file wrapper.

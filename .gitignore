@@ -106,3 +106,6 @@ linac_gen/csrc/build_mac/
 Fields/
 Tracewin_code/
 TraceWIn_Tools/
+
+# RFQ vane-geometry profile disk caches
+*.geomprofile.npz

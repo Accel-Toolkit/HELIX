@@ -475,10 +475,24 @@ class EnvelopeSolver:
                  phase_probe: bool = False,
                  initial_sigma=None,
                  bunch_frequency: float | None = None,
-                 sc_factor: float = 1.0):
+                 sc_factor: float = 1.0,
+                 rfq_dc_envelope: bool = False):
         self.lattice = lattice
         self.initial = initial
         self.current = current
+        # TraceWin-compatible DC envelope: when True, a continuous beam
+        # is NEVER flipped to bunched at an RF bunching element — the
+        # 2-D DC space charge is kept through the RFQ, exactly as
+        # TraceWin's envelope mode does (its ENV+SC export carries no
+        # longitudinal envelope at all: σφ ≡ σ_dp/p ≡ σ_W ≡ 0 through
+        # the RFQ).  Default False = HELIX's own model: seed a uniform
+        # 103.9° bunch at the first RF element and evolve it — more
+        # physical, but NOT comparable to a TraceWin ENV+SC export
+        # (measured on the PXIE 2-solenoid LEBT+RFQ line at 5 mA:
+        # bunched 27-64 % σ deviation inside the RFQ vs the TW export,
+        # DC-through-RFQ 4-6 % full-line — see the manual).  Only
+        # meaningful together with ``initial["continuous"]=True``.
+        self._rfq_dc_envelope = bool(rfq_dc_envelope)
         # Phase probe: when True, every matrix the solver applies to Σ
         # is also accumulated into per-element composite maps (SC-
         # inclusive AND bare) plus a per-slice history — the exact
@@ -607,7 +621,7 @@ class EnvelopeSolver:
             # whatever the DC energy spread was, encoded via the
             # ``dc_energy_spread_keV`` → initial["dc_energy_spread_MeV"]
             # conversion below).
-            if self._continuous:
+            if self._continuous and not self._rfq_dc_envelope:
                 from linac_gen.tracking.tracker import _is_rf_bunching_element
                 if _is_rf_bunching_element(element):
                     self._continuous = False

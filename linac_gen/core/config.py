@@ -212,6 +212,17 @@ class SpaceChargeConfig:
     #                distribution (open-BC, full per-particle non-linearity,
     #                analogue of TraceWin's PICNIC_2D).
     dc_kernel: str = "uniform"
+    # Bunch-train neighbour images in the 3-D PIC.  A beam injected DC
+    # and bunched in flight (an RFQ front end) is one period of an
+    # infinite train: through the buncher the charge still fills the
+    # whole RF period and each slice feels its ±1 neighbours — physics
+    # Toutatis gets for free from its periodic time-domain solve, and
+    # an isolated-bunch solve misses (+2-3 pts transmission on the PXIE
+    # RFQ at 5 mA, 2026-08-02).  None (default) = automatic: images on
+    # exactly when ``Beam.bunch_train`` is set (DC-injected beams),
+    # off for beams born bunched — mirroring TraceWin, whose Partran
+    # treats downstream bunches as isolated.  True/False force it.
+    train_images: bool | None = None
     # Coherent Synchrotron Radiation (CSR) inside bends.  When enabled,
     # the multi-particle tracker applies a 1-D steady-state CSR energy
     # kick (Saldin-Schnizer) inside every Dipole element.  CSR needs the

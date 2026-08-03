@@ -266,12 +266,20 @@ def _validate(args, lattice, beam_cfg, recorder, beam, end) -> int:
     # is refused upstream (a tracked beam by backtrack_distribution, a
     # .dst by the --dst guard in run()).  Folding only one side of the
     # comparison would invent a σ_φ mismatch of one bunch spacing.
+    _fwd_was_train = bool(getattr(vbeam, "bunch_train", False))
     vbeam.bunch_train = False
     vbeam.periodic_phase = False
     sc = None
     if args.sc_on:
         conv: dict = {}
         sc_cfg = common.make_sc_config(beam_cfg, conv, _cli_overrides(args))
+        # clearing bunch_train above suppresses PHASE FOLDING only; the
+        # forward run's SC included bunch-train images, so the replay
+        # must too or the comparison is against different physics
+        # (adversarial review 2026-08-02, finding 2)
+        if _fwd_was_train and sc_cfg is not None \
+                and sc_cfg.train_images is None:
+            sc_cfg.train_images = True
         sc = PicSolver(sc_cfg) if sc_cfg else None
     tracker = Tracker(lattice, vbeam, pic_solver=sc)
     # Forward sub-range replay: element loop with the table's entrance
