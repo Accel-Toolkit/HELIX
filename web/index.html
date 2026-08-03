@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HELIX — Hybrid Envelope-multiparticle LInac eXplorer</title>
+<meta name="description" content="HELIX is an open-source Python toolkit for end-to-end linac simulation: an envelope Σ-matrix solver, a multi-particle 3-D PIC space-charge tracker, a matching engine, a PyQt6 workbench, and an offline AI copilot. Built at Fermilab for PIP-II.">
+<meta property="og:title" content="HELIX — Hybrid Envelope-multiparticle LInac eXplorer">
+<meta property="og:description" content="End-to-end linac simulation: envelope + multi-particle 3-D PIC space charge, matching, a PyQt6 workbench, and an offline AI copilot. Built at Fermilab for PIP-II.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="assets/img/social-preview.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="assets/img/helix-logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/css/helix.css">
+</head>
+<body>
+
+<!-- ===================== HEADER ===================== -->
+<header class="site-header">
+  <div class="wrap nav">
+    <a class="brand" href="index.html">
+      <img src="assets/img/helix-logo.png" alt="">
+      <b>HELIX</b><span>v1.4</span>
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="index.html" class="is-active">Home</a>
+      <a href="features.html">Features</a>
+      <a href="workbench.html">Workbench</a>
+      <a href="ai-copilot.html">AI Copilot</a>
+      <a href="get-started.html">Get started</a>
+      <a href="about.html">About</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn--ghost btn--sm btn-manual" href="../">Manual</a>
+      <a class="btn btn--primary btn--sm" href="https://github.com/Accel-Toolkit/HELIX">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </div>
+    <button class="nav-toggle" aria-label="Menu" aria-expanded="false">≡</button>
+  </div>
+</header>
+
+<main>
+
+<!-- ===================== HERO ===================== -->
+<section class="hero section">
+  <div class="wrap hero-grid">
+    <div class="hero-copy">
+      <p class="eyebrow">Fermilab · PIP-II · beam dynamics</p>
+      <h1>Simulate a linac,<br><em>end to end.</em></h1>
+      <p class="lead"><b>HELIX</b> — <i>Hybrid Envelope-multiparticle LInac eXplorer</i> — is one open-source toolkit for charged-particle linear accelerators: fast envelope optics, high-fidelity 3-D PIC space charge, matching, a full workbench, and a scriptable CLI.</p>
+
+      <div class="ticker" data-ticker aria-hidden="true">
+        <span class="prompt">helix ›</span><span class="line">envelope Σ-matrix solver</span><span class="cursor"></span>
+      </div>
+
+      <div class="hero-cta">
+        <a class="btn btn--primary" href="get-started.html">Get started</a>
+        <a class="btn btn--ghost" href="../">Read the manual</a>
+        <a class="btn btn--ghost" href="features.html">Explore features</a>
+      </div>
+
+      <div class="chips">
+        <span class="chip"><span class="dot"></span>Three solver modes</span>
+        <span class="chip"><b>3,600+</b> tests passing</span>
+        <span class="chip"><b>46-tool</b> AI copilot</span>
+        <span class="chip">Python <b>3.10+</b></span>
+        <span class="chip">GPL-3.0</span>
+      </div>
+    </div>
+
+    <figure class="scope hero-scope">
+      <img src="assets/img/envelope-hero.svg" alt="Animated beam envelope: horizontal RMS size sigma-x as a function of position s along a 60-cell FODO channel, computed by the HELIX envelope solver.">
+      <figcaption><span class="tag">σx(s)</span> bundled 60-cell FODO showcase · 20 mA space charge · envelope solver — real output, drawing itself.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<div class="wrap"><div class="rail"><span class="bead"></span></div></div>
+
+<!-- ===================== WHAT IS HELIX ===================== -->
+<section class="section">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">What it is</p>
+      <h2>One tool, from lattice file to diagnostics.</h2>
+      <p class="lead">Point HELIX at a TraceWin-compatible <code class="mono">.dat</code> lattice and it takes the beam the whole way — parse, track, and read out emittances, transmission, halo and Twiss — in whichever fidelity the question needs.</p>
+    </div>
+
+    <div class="grid grid-4">
+      <div class="card"><div class="glyph">.dat →</div><div class="k">Lattice language</div><p>TraceWin-compatible, plus MAD-X and MAD8 import and field-map I/O.</p></div>
+      <div class="card"><div class="glyph">Σ</div><div class="k">Envelope solver</div><p>RMS Σ-matrix tracking with linear space charge for fast design sweeps.</p></div>
+      <div class="card"><div class="glyph">▚▚▚</div><div class="k">3-D PIC space charge</div><p>Macroparticle tracking with a particle-in-cell Poisson solver, GPU-capable.</p></div>
+      <div class="card"><div class="glyph">◎</div><div class="k">Matching engine</div><p>Periodic and transfer-line matched Twiss, multi-algorithm optimiser.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== SOLVER MODES ===================== -->
+<section class="section" style="background:linear-gradient(180deg,transparent,rgba(14,21,36,.5),transparent)">
+  <div class="wrap">
+    <div class="section-head center">
+      <p class="eyebrow eyebrow--plain">The fidelity ladder</p>
+      <h2>Three solver modes, one lattice.</h2>
+      <p class="lead" style="margin-inline:auto">Trade speed for physics without leaving the tool. The same deck runs in all three — start fast, escalate when it matters.</p>
+    </div>
+
+    <div class="solvers">
+      <div class="solver">
+        <span class="num">Envelope</span>
+        <h3>RMS Σ-matrix</h3>
+        <p>Second-moment tracking with linear space charge. Milliseconds per pass — the workhorse for optics and matching.</p>
+        <span class="use">▸ design sweeps · matching · optics</span>
+      </div>
+      <div class="solver">
+        <span class="num">Multi-particle</span>
+        <h3>3-D PIC</h3>
+        <p>Macroparticles pushed through a 3-D particle-in-cell Poisson solve. C++ kernels, optional GPU FFTs.</p>
+        <span class="use">▸ halo · transmission · high fidelity</span>
+      </div>
+      <div class="solver">
+        <span class="num">Matrix</span>
+        <h3>Linear transport</h3>
+        <p>Pure 6×6 transfer-matrix transport — the exact linear map, no macroparticles.</p>
+        <span class="use">▸ periodic Twiss · input matching</span>
+      </div>
+    </div>
+
+    <figure class="scope center" style="margin-top:var(--gap); max-width:520px; margin-inline:auto">
+      <img src="assets/img/phasespace.gif" alt="A particle bunch tumbling in x–x′ phase space, station by station, tracked by the HELIX multiparticle tracker." style="max-width:420px;margin-inline:auto">
+      <figcaption style="justify-content:center"><span class="tag">x–x′</span> real output — the showcase bunch tumbling in phase space, from the multiparticle tracker.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ===================== WORKBENCH TEASER ===================== -->
+<section class="section">
+  <div class="wrap hero-grid">
+    <figure class="scope">
+      <img src="assets/img/gui-tour.gif" alt="Five-second tour of the HELIX workbench: Lattice editor, Beam designer, and Results dashboard running the bundled showcase deck.">
+      <figcaption><span class="tag">tour.gif</span> Lattice → Beam → Results, running the bundled showcase deck.</figcaption>
+    </figure>
+    <div>
+      <p class="eyebrow">The workbench</p>
+      <h2>Design, run, and read the beam.</h2>
+      <p class="lead">A complete PyQt6 workbench: an element-strip lattice editor, a 6-D beam designer, live convergence, matching, and a results dashboard of sparkline KPI cards — tap any card for the full plot.</p>
+      <div class="hero-cta">
+        <a class="btn btn--ghost" href="workbench.html">See the workbench →</a>
+      </div>
+      <div class="chips">
+        <span class="chip">Lattice editor</span>
+        <span class="chip">Beam designer</span>
+        <span class="chip">Convergence</span>
+        <span class="chip">Matching</span>
+        <span class="chip">Results dashboard</span>
+        <span class="chip">Error studies</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== AI COPILOT TEASER ===================== -->
+<section class="section">
+  <div class="wrap hero-grid">
+    <div>
+      <p class="eyebrow">Built-in AI copilot</p>
+      <h2>Talk to the simulator.</h2>
+      <p class="lead">HELIX ships an optional assistant that drives the <i>same audited tools</i> you use by hand. Reads run freely; compute and mutate actions echo the exact resolved call and wait for your confirmation — and every call is logged to a replayable ledger.</p>
+      <ul class="iconlist">
+        <li><span class="mk"><svg class="ic ic--sm" aria-hidden="true"><use href="assets/icons.svg#i-voice"/></svg></span><span><b>Fully offline voice</b> — say “HELIX” to wake it; no cloud audio, ever.</span></li>
+        <li><span class="mk"><svg class="ic ic--sm" aria-hidden="true"><use href="assets/icons.svg#i-tour"/></svg></span><span><b>Tour &amp; drills</b> — a 15-station walkthrough and hidden-fault training exercises.</span></li>
+        <li><span class="mk"><svg class="ic ic--sm" aria-hidden="true"><use href="assets/icons.svg#i-python"/></svg></span><span><b>Sandboxed Python</b> — analysis on your result arrays, plots inline.</span></li>
+        <li><span class="mk"><svg class="ic ic--sm" aria-hidden="true"><use href="assets/icons.svg#i-plug"/></svg></span><span><b>Three backends</b> — Claude subscription, any API key, or a fully local model. Also runs as an MCP server.</span></li>
+      </ul>
+      <div class="hero-cta"><a class="btn btn--ghost" href="ai-copilot.html">Meet the copilot →</a></div>
+    </div>
+    <figure class="scope">
+      <img src="assets/img/gui-assistant.png" alt="The HELIX AI assistant panel: rendered-markdown chat, a voice orb, and one-click Tour, Drill, and Python action chips.">
+      <figcaption><span class="tag">assistant</span> rendered-markdown chat · voice orb · one-click Tour / Drill / Python.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ===================== FEATURE STRIP ===================== -->
+<section class="section">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Under the hood</p>
+      <h2>The rest of the toolkit.</h2>
+    </div>
+    <div class="grid grid-3">
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-gradient"/></svg></span><h3>Differentiable</h3><p>PyTorch autograd transfer-matrix path — gradient-based matching and exact knob sensitivities.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-errors"/></svg></span><h3>Error studies</h3><p>Monte-Carlo misalignment and RF jitter, SVD orbit correction, failure studies.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-surrogate"/></svg></span><h3>Surrogates</h3><p>Train and serve neural-network surrogate models of lattice sections.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-backtrack"/></svg></span><h3>Backtracking</h3><p>Exact reverse tracking — reconstruct the input beam from the output.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-io"/></svg></span><h3>Interoperable</h3><p>HDF5, openPMD-beamphysics, and TraceWin <code class="mono">.dst</code> in and out.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-cli"/></svg></span><h3>Batch CLI</h3><p><code class="mono">run · scan · batch · twiss</code> — headless, parallel, scriptable.</p></div>
+    </div>
+    <div class="center" style="margin-top:2rem"><a class="btn btn--ghost" href="features.html">Full feature matrix →</a></div>
+  </div>
+</section>
+
+<!-- ===================== CTA ===================== -->
+<section class="section">
+  <div class="wrap">
+    <div class="cta-band">
+      <p class="eyebrow eyebrow--plain" style="justify-content:center;display:flex">Open source · GPL-3.0</p>
+      <h2>Clone it and run the showcase deck.</h2>
+      <p class="lead" style="margin-inline:auto">Core installs with one command; the C++ PIC kernels build automatically, and fall back to pure Python if there's no compiler.</p>
+      <div class="hero-cta">
+        <a class="btn btn--primary" href="get-started.html">Installation &amp; quick start</a>
+        <a class="btn btn--ghost" href="https://github.com/Accel-Toolkit/HELIX">View on GitHub</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- ===================== FOOTER ===================== -->
+<footer class="site-footer">
+  <div class="wrap foot-grid">
+    <div class="foot-brand">
+      <a class="brand" href="index.html"><img src="assets/img/helix-logo.png" alt=""><b>HELIX</b></a>
+      <p>Hybrid Envelope-multiparticle LInac eXplorer. Developed at Fermi National Accelerator Laboratory for the PIP-II superconducting linac.</p>
+    </div>
+    <div>
+      <h4>Explore</h4>
+      <a href="features.html">Features</a>
+      <a href="workbench.html">Workbench</a>
+      <a href="ai-copilot.html">AI Copilot</a>
+      <a href="get-started.html">Get started</a>
+    </div>
+    <div>
+      <h4>Resources</h4>
+      <a href="../">User manual</a>
+      <a href="https://github.com/Accel-Toolkit/HELIX">Source code</a>
+      <a href="about.html#cite">Cite HELIX</a>
+      <a href="https://github.com/Accel-Toolkit/HELIX/releases">Releases</a>
+    </div>
+    <div>
+      <h4>Project</h4>
+      <a href="about.html">About</a>
+      <a href="https://pip2.fnal.gov/">PIP-II at Fermilab</a>
+      <a href="about.html#license">License · GPL-3.0</a>
+    </div>
+  </div>
+  <div class="wrap foot-bottom">
+    <span>© 2026 HELIX · GNU GPL-3.0-or-later</span>
+    <span>Fermi National Accelerator Laboratory</span>
+  </div>
+</footer>
+
+<script src="assets/js/helix.js"></script>
+</body>
+</html>

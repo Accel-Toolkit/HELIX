@@ -1,14 +1,18 @@
 """Bottom 22-px status bar — live run state and reference-particle stats."""
 from __future__ import annotations
 
-from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel,
+                             QPushButton, QSizePolicy)
 
 from linac_gen_gui.interphase import theme
 from linac_gen_gui.interphase.state import AppState
 
 
 class StatusBar(QFrame):
+    #: the update-available pill was clicked (app opens the update flow)
+    update_clicked = pyqtSignal()
+
     def __init__(self, state: AppState):
         super().__init__()
         self.setObjectName("statusbar")
@@ -45,6 +49,16 @@ class StatusBar(QFrame):
         self._unsaved_seg.setVisible(False)
         lay.addWidget(self._unsaved_seg)
 
+        # Update-available pill — hidden until a newer public release is
+        # detected; persistent (no auto-clear) and clickable.
+        self._update_seg = QPushButton("")
+        self._update_seg.setFlat(True)
+        self._update_seg.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._update_seg.setVisible(False)
+        self._update_seg.clicked.connect(self.update_clicked.emit)
+        self._style_update_seg()
+        lay.addWidget(self._update_seg)
+
         # Transient status message (Saved →, Exported →, element edits, font
         # size, …).  Before this segment every status_message.emit had no
         # visible sink — the only listener repainted the bar and dropped the
@@ -70,7 +84,8 @@ class StatusBar(QFrame):
         self._msg_timer.timeout.connect(self._clear_message)
 
         lay.addStretch(1)
-        version = QLabel("HELIX 0.1")
+        from linac_gen import __version__ as _v
+        version = QLabel(f"HELIX {_v}")
         version.setStyleSheet(
             f"color:{theme.TEXT_2}; padding:0 10px; font-family:{theme.FONT_MONO};"
         )
@@ -196,3 +211,22 @@ class StatusBar(QFrame):
             f"color:{theme.TEXT_2}; padding:0 10px;"
             f" font-family:{theme.FONT_MONO}; font-size:{bs}px;"
         )
+        self._style_update_seg(bs)
+
+    # ------------------------------------------------------------------
+    # update notice
+    # ------------------------------------------------------------------
+    def _style_update_seg(self, size_px: int | None = None) -> None:
+        fs = f" font-size:{size_px}px;" if size_px else ""
+        self._update_seg.setStyleSheet(
+            f"color:{theme.ACCENT}; background:transparent; border:0;"
+            f" padding:0 10px; font-family:{theme.FONT_MONO};"
+            f" font-weight:600; text-align:left;{fs}"
+        )
+
+    def show_update_available(self, tag: str) -> None:
+        self._update_seg.setText(f"⭱ HELIX {tag} available — click to update")
+        self._update_seg.setVisible(True)
+
+    def clear_update_notice(self) -> None:
+        self._update_seg.setVisible(False)

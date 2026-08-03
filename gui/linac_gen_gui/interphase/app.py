@@ -21,7 +21,7 @@ os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QSettings, QTimer
+from PyQt6.QtCore import Qt, QSettings, QTimer, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QTabWidget, QFileDialog,
@@ -62,6 +62,7 @@ _SETTINGS_FONT_SIZE      = "fontSize"
 _SETTINGS_CALC_DIR       = "calcDir"
 _SETTINGS_RECENT_PROJECTS = "recentProjects"
 _SETTINGS_WINDOW_GEOMETRY = "windowGeometry"
+_SETTINGS_UPDATE_CHECK   = "updates/checkOnLaunch"
 _RECENT_PROJECTS_MAX     = 8
 
 # Suffixes handled by the non-TraceWin importers.  Files with these
@@ -385,6 +386,10 @@ def _tab_qss(base: int | None = None) -> str:
 
 
 class InterphaseWindow(QMainWindow):
+    # queued bridge for the update-check daemon thread (house pattern:
+    # background threads never touch widgets, they emit)
+    _update_check_done = pyqtSignal(object)
+
     def __init__(self):
         super().__init__()
         # A fresh window is a fresh session — clear the module-level
@@ -516,6 +521,21 @@ class InterphaseWindow(QMainWindow):
         self._toolbar.open_sigma_matrix_requested.connect(self._open_sigma_matrix)
         self._toolbar.open_docs_requested.connect(self._open_docs)
         self._toolbar.open_about_requested.connect(self._open_about)
+        self._toolbar.check_updates_requested.connect(
+            self._check_updates_manual)
+        self._toolbar.update_check_toggled.connect(
+            self._set_update_check_enabled)
+        self._statusbar.update_clicked.connect(self._open_update_flow)
+        self._update_check_done.connect(self._on_update_check_done)
+        # injectable seams (tests monkeypatch these; offscreen modal
+        # QMessageBox hangs forever — house rule)
+        from linac_gen_gui.interphase.services import update_check as _uc
+        self._release_fetcher = _uc.fetch_latest_release
+        self._pending_update = None
+        self._update_worker = None
+        self._update_dlg = None
+        self._toolbar.set_update_check_enabled(
+            _settings().value(_SETTINGS_UPDATE_CHECK, True, type=bool))
         self._toolbar.open_parameter_scan_requested.connect(self._open_parameter_scan)
         self._toolbar.stop_requested.connect(self._stop_active_worker)
         self._toolbar.font_size_changed.connect(self._apply_font_size)
@@ -583,6 +603,9 @@ class InterphaseWindow(QMainWindow):
         # which it does by the time __init__ runs (the launcher always
         # creates the app first), but defer one tick to be safe.
         QTimer.singleShot(0, self._install_quit_event_filter)
+        # Launch update check AFTER the 5-s splash hand-off; silent on
+        # every failure and inert in the dev clone / when opted out.
+        QTimer.singleShot(7000, self._launch_update_check)
 
     # ------------------------------------------------------------------
     # Itemized unsaved-changes details for the discard prompt ("Show
@@ -731,7 +754,8 @@ class InterphaseWindow(QMainWindow):
         if _SHUTTING_DOWN:
             ev.accept()
             return
-        if not self._confirm_discard("Quit"):
+        if not getattr(self, "_closing_for_restart", False) \
+                and not self._confirm_discard("Quit"):
             ev.ignore()
             return
         _SHUTTING_DOWN = True
@@ -801,6 +825,21 @@ class InterphaseWindow(QMainWindow):
             if aw is not None and hasattr(aw, "isRunning") \
                     and aw.isRunning():
                 workers.append(aw)
+        up_dlg = getattr(self, "_update_dlg", None)
+        if up_dlg is not None:
+            try:
+                up_dlg.cancel_cb = None       # dialog close != user cancel
+                up_dlg.close()
+            except Exception:
+                pass
+        upw = getattr(self, "_update_worker", None)
+        if upw is not None and hasattr(upw, "isRunning") \
+                and upw.isRunning():
+            try:
+                upw.request_stop()
+            except Exception:
+                pass
+            workers.append(upw)
         ps_dlg = getattr(self, "_param_scan_dlg", None)
         psw = getattr(ps_dlg, "_worker", None) if ps_dlg is not None else None
         if psw is not None and hasattr(psw, "isRunning") and psw.isRunning():
@@ -2131,6 +2170,203 @@ class InterphaseWindow(QMainWindow):
             self.state.status_message.emit(
                 f"could not open run results: {exc}")
 
+    # ------------------------------------------------------------------
+    # Check for Updates (services/update_check.py holds the logic)
+    # ------------------------------------------------------------------
+    def _set_update_check_enabled(self, on: bool) -> None:
+        _settings().setValue(_SETTINGS_UPDATE_CHECK, bool(on))
+
+    def _launch_update_check(self) -> None:
+        import os as _os
+        if _os.environ.get("PYTEST_CURRENT_TEST"):
+            return
+        if not _settings().value(_SETTINGS_UPDATE_CHECK, True,
+                                 type=bool):
+            return
+        self._start_update_check(manual=False)
+
+    def _check_updates_manual(self) -> None:
+        self._start_update_check(manual=True)
+
+    def _start_update_check(self, manual: bool) -> None:
+        if self._update_worker is not None \
+                and self._update_worker.isRunning():
+            return
+        import threading as _threading
+
+        from linac_gen_gui.interphase.services import update_check as uc
+
+        fetcher = self._release_fetcher
+
+        def _work() -> None:
+            try:
+                root = uc.find_repo_root()
+                state = (uc.classify_install(root) if root is not None
+                         else uc.InstallState.NOT_GIT)
+                res = {"state": state, "root": root, "manual": manual,
+                       "tag": None, "url": uc.RELEASES_PAGE}
+                if state is uc.InstallState.DEV and not manual:
+                    self._update_check_done.emit(res)
+                    return
+                latest = fetcher()
+                if latest is not None:
+                    res["tag"], res["url"] = latest
+                self._update_check_done.emit(res)
+            except Exception:
+                pass                       # launch path: total silence
+
+        _threading.Thread(target=_work, daemon=True,
+                          name="helix-update-check").start()
+
+    def _on_update_check_done(self, res: dict) -> None:
+        from linac_gen import __version__
+
+        from linac_gen_gui.interphase.services import update_check as uc
+        state, tag, manual = res["state"], res["tag"], res["manual"]
+        if state is uc.InstallState.DEV:
+            if manual:
+                self.state.status_message.emit(
+                    "development checkout — updates come from git")
+            return
+        if tag is None:
+            if manual:
+                self.state.status_message.emit(
+                    "Could not reach GitHub — try again later")
+            return
+        if uc.is_newer(tag, __version__):
+            self._pending_update = res
+            self._statusbar.show_update_available(tag)
+            self._toolbar.set_update_available(tag)
+            if manual:
+                self._open_update_flow()
+        elif manual:
+            self.state.status_message.emit(
+                f"HELIX {__version__} is up to date")
+
+    def _ask_yes_no(self, title: str, text: str) -> bool:
+        """Injectable confirm seam (tests monkeypatch this)."""
+        from PyQt6.QtWidgets import QMessageBox
+        return QMessageBox.question(
+            self, title, text,
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes
+
+    def _open_update_flow(self) -> None:
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
+
+        from linac_gen_gui.interphase.services import update_check as uc
+        res = self._pending_update
+        if res is None or res.get("tag") is None:
+            return
+        if self._update_worker is not None \
+                and self._update_worker.isRunning():
+            return
+        state = res["state"]
+        if state is not uc.InstallState.PUBLIC_CLEAN:
+            why = ("your copy has local changes"
+                   if state is uc.InstallState.PUBLIC_DIRTY
+                   else "this install is not a plain git clone")
+            self.state.status_message.emit(
+                f"Opening the release page — {why}, so HELIX won't "
+                "update it in place")
+            QDesktopServices.openUrl(QUrl(res["url"]))
+            return
+        if not self._ask_yes_no(
+                "Update HELIX",
+                f"Download and apply {res['tag']} now?\n\n"
+                "Your copy is a clean clone of the official repository; "
+                "the update is a fast-forward git pull."):
+            return
+        from linac_gen_gui.interphase.dialogs.update_dialog import (
+            GitUpdateWorker, UpdateProgressDialog)
+        self._update_dlg = UpdateProgressDialog(self)
+        self._update_worker = GitUpdateWorker(res["root"], parent=self)
+        w, d = self._update_worker, self._update_dlg
+        d.cancel_cb = w.request_stop
+        w.phase.connect(d.on_phase)
+        w.progress.connect(d.on_progress)
+        w.finished_ok.connect(self._on_update_success)
+        w.failed.connect(self._on_update_failed)
+        w.cancelled.connect(self._on_update_cancelled)
+        d.show()
+        w.start()
+
+    def _close_update_dialog(self) -> None:
+        d, self._update_dlg = self._update_dlg, None
+        if d is not None:
+            d.cancel_cb = None
+            d.close()
+
+    def _on_update_success(self, summary: str) -> None:
+        if self.sender() is not self._update_worker:
+            return
+        self._close_update_dialog()
+        self._statusbar.clear_update_notice()
+        tag = (self._pending_update or {}).get("tag", "")
+        if self._ask_yes_no(
+                "Update complete",
+                f"{summary}\n\nRestart HELIX to run {tag}?\n\n"
+                "Note: dependencies are never installed automatically. "
+                "If the next launch fails, check the release notes — "
+                "requirements in pyproject.toml may have changed."):
+            self._restart_for_update()
+        else:
+            self.state.status_message.emit(
+                f"{tag} applied — restart HELIX when convenient")
+
+    def _on_update_failed(self, msg: str) -> None:
+        if self.sender() is not self._update_worker:
+            return
+        self._close_update_dialog()
+        self.state.status_message.emit(f"update failed: {msg}")
+        res = self._pending_update
+        if res is not None:
+            from PyQt6.QtCore import QUrl
+            from PyQt6.QtGui import QDesktopServices
+            QDesktopServices.openUrl(QUrl(res["url"]))
+
+    def _on_update_cancelled(self) -> None:
+        if self.sender() is not self._update_worker:
+            return
+        self._close_update_dialog()
+        self.state.status_message.emit("update cancelled")
+
+    def _restart_for_update(self) -> None:
+        """Detached helper waits for THIS pid to die, then relaunches.
+
+        _shutdown_workers may end in os._exit(0), so nothing after
+        close() is guaranteed to run — the respawner must already
+        exist.  The single-instance QLockFile is released by process
+        death (stale-PID reclaim covers the os._exit path).
+        """
+        import subprocess as _subprocess
+
+        root = (self._pending_update or {}).get("root")
+        launcher = (Path(root) / "run_gui.sh") if root else None
+        if launcher is None or not launcher.exists():
+            self.state.status_message.emit(
+                "restart helper not found — please relaunch HELIX "
+                "manually")
+            return
+        try:
+            _subprocess.Popen(
+                ["/bin/sh", "-c",
+                 f'while kill -0 {os.getpid()} 2>/dev/null; '
+                 f'do sleep 0.3; done; sleep 0.5; '
+                 f'exec /bin/bash "{launcher}"'],
+                cwd=str(root), start_new_session=True,
+                stdin=_subprocess.DEVNULL, stdout=_subprocess.DEVNULL,
+                stderr=_subprocess.DEVNULL)
+        except Exception as exc:                        # noqa: BLE001
+            self.state.status_message.emit(
+                f"could not arm the restart helper ({exc}) — please "
+                "relaunch manually")
+            return
+        self._closing_for_restart = True
+        self.close()
+
     def _show_convergence_tab(self) -> None:
         # TABS-id lookup, not a hard-coded index — inserting a tab
         # before "Numerics" must never silently retarget this jump
@@ -2433,8 +2669,9 @@ class InterphaseWindow(QMainWindow):
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             ))
+        from linac_gen import __version__ as _v
         box.setText(
-            "HELIX 1.0\n"
+            f"HELIX {_v}\n"
             "Hybrid Envelope-multiparticle LInac eXplorer\n\n"
             "Beam dynamics studio for linear accelerators.\n"
             "Tabs: Beam · Lattice · Matching · Numerics · Results\n\n"

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 14" width="100%" role="presentation">
+  <line x1="20" y1="7" x2="1180" y2="7" stroke="#1e293b" stroke-width="1.5"/>
+  <circle r="3.5" fill="#38bdf8" opacity="0.9">
+    <animateMotion dur="5s" repeatCount="indefinite" path="M20,7 L1180,7"/>
+  </circle>
+  <circle r="7" fill="#38bdf8" opacity="0.25">
+    <animateMotion dur="5s" repeatCount="indefinite" path="M20,7 L1180,7"/>
+  </circle>
+</svg>

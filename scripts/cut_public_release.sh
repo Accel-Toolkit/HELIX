@@ -24,6 +24,26 @@ PUBLIC_URL="https://github.com/Accel-Toolkit/HELIX.git"
 DEV_ROOT=$(git rev-parse --show-toplevel)
 STAGE="$DEV_ROOT/../HELIX_public"
 
+echo "── 0/5 version check ──────────────────────────────────────────"
+# The tree's version strings ARE the release version (the in-app update
+# checker compares linac_gen.__version__ against the GitHub tag) — bump
+# them in a commit FIRST, then cut.  A mismatched cut is refused.
+VNUM="${VERSION#v}"
+SRC_V=$(grep -Eo '__version__ = "[^"]+"' "$DEV_ROOT/linac_gen/__init__.py" | cut -d'"' -f2)
+TOML_V=$(grep -Eo '^version = "[^"]+"' "$DEV_ROOT/pyproject.toml" | cut -d'"' -f2)
+CFF_V=$(grep -Eo '^version: "[^"]+"' "$DEV_ROOT/CITATION.cff" | cut -d'"' -f2)
+for v in "$SRC_V" "$TOML_V" "$CFF_V"; do
+  if [ "$v" != "$VNUM" ]; then
+    echo "REFUSED: VERSION $VERSION does not match the tree"
+    echo "  linac_gen/__init__.py : $SRC_V"
+    echo "  pyproject.toml        : $TOML_V"
+    echo "  CITATION.cff          : $CFF_V"
+    echo "Bump the version strings in a commit first, then cut."
+    exit 1
+  fi
+done
+echo "version strings match $VNUM"
+
 echo "── 1/5 export committed tree ──────────────────────────────────"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"

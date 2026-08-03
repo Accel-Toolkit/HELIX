@@ -181,6 +181,7 @@ nav:
       - Failure Study tab: 10_gui/06c_failures_tab.md
       - Results tab: 10_gui/07_results_tab.md
       - Workflows: 10_gui/08_workflows.md
+      - Updates: 10_gui/09_updates.md
   - Worked examples:
       - Basic FODO: 11_examples/01_basic_fodo.md
       - Envelope demo: 11_examples/02_envelope_demo.md

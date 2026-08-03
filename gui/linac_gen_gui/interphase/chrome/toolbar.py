@@ -41,6 +41,8 @@ class Toolbar(QFrame):
     open_parameter_scan_requested = pyqtSignal()
     open_docs_requested      = pyqtSignal()
     open_about_requested     = pyqtSignal()
+    check_updates_requested  = pyqtSignal()
+    update_check_toggled     = pyqtSignal(bool)
 
     # Stop a running simulation (app wires this to the active worker's
     # request_stop so the solver cancels at the next element boundary).
@@ -115,8 +117,21 @@ class Toolbar(QFrame):
             ("Show Sigma Matrix…",     self.open_sigma_matrix_requested.emit),
             ("Parameter Scan…",        self.open_parameter_scan_requested.emit),
         ]))
+        # Retained QActions so the app can retitle / sync them later
+        self._update_action = QAction("Check for Updates…", self)
+        self._update_action.triggered.connect(
+            self.check_updates_requested.emit)
+        self._update_toggle = QAction("Check for Updates at Startup",
+                                      self)
+        self._update_toggle.setCheckable(True)
+        self._update_toggle.setChecked(True)
+        self._update_toggle.toggled.connect(
+            self.update_check_toggled.emit)
         lay.addWidget(self._mk_menu("Help", [
             ("Documentation", self.open_docs_requested.emit),
+            ("---", None),
+            ("Check for Updates…", self._update_action),
+            ("Check for Updates at Startup", self._update_toggle),
             ("---", None),
             ("About HELIX", self.open_about_requested.emit),
         ]))
@@ -282,6 +297,19 @@ class Toolbar(QFrame):
             QMenu::separator {{ height:1px; background:{theme.BORDER_1}; margin:4px 0; }}
         """
 
+    def set_update_available(self, tag: str) -> None:
+        """Emphasise the Help entry when a newer release exists."""
+        self._update_action.setText(
+            f"Check for Updates…  ({tag} available)")
+        f = self._update_action.font()
+        f.setBold(True)
+        self._update_action.setFont(f)
+
+    def set_update_check_enabled(self, on: bool) -> None:
+        self._update_toggle.blockSignals(True)
+        self._update_toggle.setChecked(bool(on))
+        self._update_toggle.blockSignals(False)
+
     def _mk_menu(self, label: str, actions: list) -> QPushButton:
         btn = QPushButton(label)
         btn.setFlat(True)
@@ -301,6 +329,11 @@ class Toolbar(QFrame):
             if isinstance(cb, QMenu):
                 cb.setTitle(name)
                 menu.addMenu(cb)
+                continue
+            # A retained QAction (owned by the caller, e.g. so the app
+            # can retitle "Check for Updates…" when one is available)
+            if isinstance(cb, QAction):
+                menu.addAction(cb)
                 continue
             act = QAction(name, self)
             if cb is not None:

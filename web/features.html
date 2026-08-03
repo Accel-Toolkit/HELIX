@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Features — HELIX</title>
+<meta name="description" content="HELIX features: three solver modes, 3-D PIC space charge with GPU acceleration, TraceWin/MAD-X import, a matching engine, error studies, differentiable transfer maps, surrogate models, and full HDF5/openPMD interoperability.">
+<link rel="icon" href="assets/img/helix-logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/css/helix.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap nav">
+    <a class="brand" href="index.html"><img src="assets/img/helix-logo.png" alt=""><b>HELIX</b><span>v1.4</span></a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="index.html">Home</a>
+      <a href="features.html" class="is-active">Features</a>
+      <a href="workbench.html">Workbench</a>
+      <a href="ai-copilot.html">AI Copilot</a>
+      <a href="get-started.html">Get started</a>
+      <a href="about.html">About</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn--ghost btn--sm btn-manual" href="../">Manual</a>
+      <a class="btn btn--primary btn--sm" href="https://github.com/Accel-Toolkit/HELIX"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>GitHub</a>
+    </div>
+    <button class="nav-toggle" aria-label="Menu" aria-expanded="false">≡</button>
+  </div>
+</header>
+
+<main>
+
+<section class="section section--tight">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Capabilities</p>
+      <h2>Everything the beam needs, in one toolkit.</h2>
+      <p class="lead">HELIX pairs fast optics with high-fidelity space charge and wraps both in a workbench, a CLI, and a differentiable core. Here's the full surface.</p>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURE MATRIX -->
+<section class="section section--tight">
+  <div class="wrap">
+    <div class="grid grid-3">
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-solvers"/></svg></span><h3>Three solver modes</h3><p>Envelope Σ-matrix · multi-particle 3-D PIC · linear matrix tracking — the same lattice, three fidelities.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-spacecharge"/></svg></span><h3>Space charge</h3><p>3-D particle-in-cell Poisson solver, CIC / TSC deposition, C++ kernels, GPU-capable.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-tracewin"/></svg></span><h3>TraceWin-compatible</h3><p>Reads <code class="mono">.dat</code> lattices; MAD-X &amp; MAD8 import; <code class="mono">.dst</code> / partran / field-map I/O.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-matching"/></svg></span><h3>Matching</h3><p>Periodic &amp; transfer-line matched Twiss, multi-algorithm optimiser.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-workbench"/></svg></span><h3>GUI workbench</h3><p>PyQt6 — lattice, beam, convergence, matching, results, error studies.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-cli"/></svg></span><h3>Batch CLI</h3><p><code class="mono">run · scan · batch · twiss</code> — headless, parallel, scriptable.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-io"/></svg></span><h3>Interoperable</h3><p>HDF5 · openPMD-beamphysics · TraceWin <code class="mono">.dst</code>.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-diagnostics"/></svg></span><h3>Diagnostics</h3><p>Emittances · halo · transmission · dispersion · phase advance.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-errors"/></svg></span><h3>Error studies</h3><p>Monte-Carlo misalignment / RF jitter · SVD orbit correction · failure studies.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-copilot"/></svg></span><h3>AI copilot</h3><p>46-tool assistant with offline voice, guided tour, training drills, sandboxed Python.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-gradient"/></svg></span><h3>Differentiable</h3><p>PyTorch autograd transfer-matrix path · gradient-based matching · exact knob sensitivities.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-surrogate"/></svg></span><h3>Surrogates</h3><p>Train and serve neural-network surrogate models of lattice sections.</p></div>
+    </div>
+  </div>
+</section>
+
+<div class="wrap"><div class="rail"><span class="bead"></span></div></div>
+
+<!-- ARCHITECTURE -->
+<section class="section">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Architecture</p>
+      <h2>Parse once, solve three ways, read out everywhere.</h2>
+      <p class="lead">A lattice enters as text and leaves as diagnostics. The solver stage is a switch — the rest of the pipeline doesn't care which mode ran.</p>
+    </div>
+
+    <div class="scope scope--bare" style="padding:1.4rem">
+      <div class="arch">
+        <div class="arch-node in"><span class="k">input</span>.dat · .madx</div>
+        <span class="arch-arrow">→</span>
+        <div class="arch-node"><span class="k">parse</span>Parser</div>
+        <span class="arch-arrow">→</span>
+        <div class="arch-switch">
+          <span class="k">solver</span>
+          <div class="arch-branch"><b>Envelope</b> Σ-matrix</div>
+          <div class="arch-branch"><b>Multi-particle</b> 3-D PIC</div>
+          <div class="arch-branch"><b>Matrix</b> linear</div>
+        </div>
+        <span class="arch-arrow">→</span>
+        <div class="arch-node sig"><span class="k">read out</span>Diagnostics</div>
+        <span class="arch-arrow">→</span>
+        <div class="arch-outs">
+          <div class="arch-node out"><svg class="ic ic--sm" aria-hidden="true"><use href="assets/icons.svg#i-workbench"/></svg>GUI workbench</div>
+          <div class="arch-node out"><svg class="ic ic--sm" aria-hidden="true"><use href="assets/icons.svg#i-cli"/></svg>Batch CLI</div>
+          <div class="arch-node out"><svg class="ic ic--sm" aria-hidden="true"><use href="assets/icons.svg#i-io"/></svg>HDF5 / openPMD</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SPACE CHARGE / GPU -->
+<section class="section">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Space charge &amp; GPU</p>
+      <h2>A 3-D PIC Poisson solver that scales with your hardware.</h2>
+      <p class="lead">The solver ships C++ pybind11 kernels with an automatic pure-Python fallback. Its FFTs optionally run on an NVIDIA GPU via <code class="mono">cupy</code> — GPU results match the CPU reference to <span class="hl">~3×10⁻¹⁵</span> relative (FP64 on both paths).</p>
+    </div>
+
+    <div class="grid grid-2" style="align-items:start">
+      <div class="table-scroll">
+        <table class="data">
+          <thead><tr><th>Grid</th><th>CPU</th><th>GPU</th><th>Speed-up</th></tr></thead>
+          <tbody>
+            <tr><td>48³</td><td class="mono">7.6 ms</td><td class="mono">4.9 ms</td><td class="win">1.6×</td></tr>
+            <tr><td>64³</td><td class="mono">17.5 ms</td><td class="mono">11.7 ms</td><td class="win">1.5×</td></tr>
+            <tr><td>96³</td><td class="mono">41.7 ms</td><td class="mono">55.5 ms</td><td class="cpu">CPU wins</td></tr>
+            <tr><td>128³</td><td class="mono">100.6 ms</td><td class="mono">128.7 ms</td><td class="cpu">CPU wins</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="stack">
+        <p class="kicker-note">Hockney Poisson solve — RTX 2000 Ada Laptop GPU vs a 16-thread <code class="mono">scipy.fft</code> CPU path.</p>
+        <div class="callout">The crossover near <b>96³</b> is host↔device transfer cost, not the FFT. <code class="mono">SpaceChargeConfig(use_gpu="auto")</code> picks the GPU when it's the faster choice and leaves the decision to you otherwise — also switchable via <code class="mono">LINAC_GEN_USE_GPU</code> or the GUI's PIC-backend dropdown.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- I/O FORMATS -->
+<section class="section">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Input &amp; output</p>
+      <h2>Speaks the formats your workflow already uses.</h2>
+    </div>
+    <div class="grid grid-3">
+      <div class="card"><div class="k">Lattices in</div><p><b class="hl">TraceWin</b> <code class="mono">.dat</code> · <b class="hl">MAD-X</b> · <b class="hl">MAD8</b> flat-file <code class="mono">.lat</code></p></div>
+      <div class="card"><div class="k">Beams &amp; fields</div><p>TraceWin <code class="mono">.dst</code> distributions · <code class="mono">.edz</code> / <code class="mono">.csv</code> field maps · partran output</p></div>
+      <div class="card"><div class="k">Results out</div><p><b class="hl">HDF5</b> (native) · <b class="hl">openPMD-beamphysics</b> · TraceWin partran</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap"><div class="endcap">
+    <h2>See it running in the workbench.</h2>
+    <div class="hero-cta"><a class="btn btn--primary" href="workbench.html">Workbench tour</a><a class="btn btn--ghost" href="get-started.html">Install HELIX</a></div>
+  </div></div>
+</section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap foot-grid">
+    <div class="foot-brand">
+      <a class="brand" href="index.html"><img src="assets/img/helix-logo.png" alt=""><b>HELIX</b></a>
+      <p>Hybrid Envelope-multiparticle LInac eXplorer. Developed at Fermi National Accelerator Laboratory for the PIP-II superconducting linac.</p>
+    </div>
+    <div><h4>Explore</h4><a href="features.html">Features</a><a href="workbench.html">Workbench</a><a href="ai-copilot.html">AI Copilot</a><a href="get-started.html">Get started</a></div>
+    <div><h4>Resources</h4><a href="../">User manual</a><a href="https://github.com/Accel-Toolkit/HELIX">Source code</a><a href="about.html#cite">Cite HELIX</a><a href="https://github.com/Accel-Toolkit/HELIX/releases">Releases</a></div>
+    <div><h4>Project</h4><a href="about.html">About</a><a href="https://pip2.fnal.gov/">PIP-II at Fermilab</a><a href="about.html#license">License · GPL-3.0</a></div>
+  </div>
+  <div class="wrap foot-bottom"><span>© 2026 HELIX · GNU GPL-3.0-or-later</span><span>Fermi National Accelerator Laboratory</span></div>
+</footer>
+
+<script src="assets/js/helix.js"></script>
+</body>
+</html>

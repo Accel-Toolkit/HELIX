@@ -5,6 +5,7 @@ on:
     branches: [main, master]
     paths:
       - "docs/**"
+      - "web/**"
       - "linac_gen/**"
       - "examples/**"
       - "pyproject.toml"
@@ -12,6 +13,7 @@ on:
   pull_request:
     paths:
       - "docs/**"
+      - "web/**"
       - "linac_gen/**"
       - "examples/**"
       - "pyproject.toml"
@@ -59,6 +61,11 @@ jobs:
         # incrementally; for now, surface failures without blocking CI.
         continue-on-error: true
         run: python docs/manual/_build/verify_snippets.py
+
+      - name: Add landing site at /home/
+        run: |
+          mkdir -p site/home
+          cp -R web/. site/home/
 
       - name: Upload site artifact
         uses: actions/upload-pages-artifact@v3

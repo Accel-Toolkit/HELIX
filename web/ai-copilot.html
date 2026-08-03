@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Copilot — HELIX</title>
+<meta name="description" content="HELIX ships an optional AI copilot that drives the same audited tools you use by hand: fully offline voice, guided tours and training drills, sandboxed Python, gradient sensitivities, vision, run watching, and three interchangeable backends. Also runs as an MCP server.">
+<link rel="icon" href="assets/img/helix-logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/css/helix.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap nav">
+    <a class="brand" href="index.html"><img src="assets/img/helix-logo.png" alt=""><b>HELIX</b><span>v1.4</span></a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="index.html">Home</a>
+      <a href="features.html">Features</a>
+      <a href="workbench.html">Workbench</a>
+      <a href="ai-copilot.html" class="is-active">AI Copilot</a>
+      <a href="get-started.html">Get started</a>
+      <a href="about.html">About</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn--ghost btn--sm btn-manual" href="../">Manual</a>
+      <a class="btn btn--primary btn--sm" href="https://github.com/Accel-Toolkit/HELIX"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>GitHub</a>
+    </div>
+    <button class="nav-toggle" aria-label="Menu" aria-expanded="false">≡</button>
+  </div>
+</header>
+
+<main>
+
+<!-- HERO -->
+<section class="hero section">
+  <div class="wrap hero-grid">
+    <div>
+      <p class="eyebrow">Built-in AI copilot</p>
+      <h1 style="font-size:clamp(2.1rem,4.6vw,3.2rem)">Talk to the simulator.</h1>
+      <p class="lead">HELIX ships an <b>optional</b> assistant that drives the <i>same audited tools</i> you use by hand — with a three-tier safety gate and a replayable ledger of every call.</p>
+      <div class="callout" style="margin-top:1.3rem">
+        <b>Three-tier safety.</b> Reads run freely. Compute and mutate actions <b>echo the exact resolved call and wait for your confirmation</b>. Every call is written to a JSONL ledger you can replay.
+      </div>
+      <div class="chips">
+        <span class="chip"><span class="dot"></span>46 tools</span>
+        <span class="chip">Offline voice</span>
+        <span class="chip">MCP server</span>
+        <span class="chip">Keyless via Claude</span>
+      </div>
+    </div>
+    <figure class="scope hero-scope">
+      <img src="assets/img/gui-assistant.png" alt="The HELIX AI assistant panel: rendered-markdown chat, a voice orb, and one-click Tour, Drill, and Python action chips above the input.">
+      <figcaption><span class="tag">assistant</span> rendered-markdown chat · voice orb · Tour / Drill / Python chips.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<div class="wrap"><div class="rail"><span class="bead"></span></div></div>
+
+<!-- CAPABILITIES -->
+<section class="section">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">What it can do</p>
+      <h2>A copilot that knows the machine.</h2>
+    </div>
+    <div class="grid grid-3">
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-voice"/></svg></span><h3>Fully offline voice</h3><p>Say “HELIX” to wake it (silero-VAD + faster-whisper, accent-tolerant). Talk over it to interrupt, keep talking as it answers — no cloud audio, ever.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-instant"/></svg></span><h3>Instant commands</h3><p>“status”, “show the RMS plot”, tour “next” — unambiguous read-only requests execute in milliseconds, no model round-trip.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-tour"/></svg></span><h3>Tour &amp; drills</h3><p>A 15-station walkthrough of the workbench, plus hidden-fault exercises where the assistant coaches you <i>without knowing the answer itself</i>.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-python"/></svg></span><h3>Sandboxed Python</h3><p>Analysis code runs in an isolated interpreter with your result arrays injected; plots come back inline.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-gradient"/></svg></span><h3>Gradient sensitivities</h3><p>One autograd pass ranks every quad, solenoid and dipole by exact d(σ<sub>exit</sub>)/d(knob).</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-vision"/></svg></span><h3>Vision</h3><p>It can <i>look at</i> your plots and describe what it sees.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-watch"/></svg></span><h3>Run watching</h3><p>Every finished run is inspected for transmission drops, σ blow-ups and baseline drift — it speaks up when something moved.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-audit"/></svg></span><h3>Audited &amp; replayable</h3><p>The three-tier gate resolves each call before it runs; the JSONL ledger records every one for replay.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- BACKENDS -->
+<section class="section">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Bring your own brain</p>
+      <h2>Three backends — including fully local.</h2>
+      <p class="lead">Pick the reasoning engine that fits your environment. No API key and no network? The assistant is still there, text-first, and the app is unaffected.</p>
+    </div>
+    <div class="solvers">
+      <div class="solver">
+        <span class="num">Claude subscription</span>
+        <h3>Keyless</h3>
+        <p>Reason via the Claude Agent SDK, reusing your existing Claude Code login. No API key.</p>
+        <span class="use">▸ zero-config for Claude users</span>
+      </div>
+      <div class="solver">
+        <span class="num">Any API key</span>
+        <h3>Bring a key</h3>
+        <p>Point it at a cloud model with your own credentials.</p>
+        <span class="use">▸ full-power cloud reasoning</span>
+      </div>
+      <div class="solver">
+        <span class="num">Fully local</span>
+        <h3>OpenAI-compatible</h3>
+        <p>Run entirely offline against ollama / vLLM or any OpenAI-compatible server.</p>
+        <span class="use">▸ air-gapped, no data leaves the box</span>
+      </div>
+    </div>
+
+    <div class="callout" style="margin-top:var(--gap)">
+      <b>Also an MCP server.</b> HELIX exposes its tool surface over the Model Context Protocol, so <b>Claude Code</b> and <b>Claude Desktop</b> can drive the simulator directly — HELIX is the tool provider, makes no network call, and needs no API key.
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <div class="callout" style="margin-bottom:2rem"><span class="lbl">OPTIONAL</span> The assistant is a set of <code class="mono">pip</code> extras — voice, local models, the MCP surface. Install what you want and leave the rest; without them, HELIX runs exactly the same.</div>
+    <div class="endcap">
+      <h2>Install the extras you need.</h2>
+      <div class="hero-cta"><a class="btn btn--primary" href="get-started.html">Installation options</a><a class="btn btn--ghost" href="../">Read the manual</a></div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap foot-grid">
+    <div class="foot-brand">
+      <a class="brand" href="index.html"><img src="assets/img/helix-logo.png" alt=""><b>HELIX</b></a>
+      <p>Hybrid Envelope-multiparticle LInac eXplorer. Developed at Fermi National Accelerator Laboratory for the PIP-II superconducting linac.</p>
+    </div>
+    <div><h4>Explore</h4><a href="features.html">Features</a><a href="workbench.html">Workbench</a><a href="ai-copilot.html">AI Copilot</a><a href="get-started.html">Get started</a></div>
+    <div><h4>Resources</h4><a href="../">User manual</a><a href="https://github.com/Accel-Toolkit/HELIX">Source code</a><a href="about.html#cite">Cite HELIX</a><a href="https://github.com/Accel-Toolkit/HELIX/releases">Releases</a></div>
+    <div><h4>Project</h4><a href="about.html">About</a><a href="https://pip2.fnal.gov/">PIP-II at Fermilab</a><a href="about.html#license">License · GPL-3.0</a></div>
+  </div>
+  <div class="wrap foot-bottom"><span>© 2026 HELIX · GNU GPL-3.0-or-later</span><span>Fermi National Accelerator Laboratory</span></div>
+</footer>
+
+<script src="assets/js/helix.js"></script>
+</body>
+</html>

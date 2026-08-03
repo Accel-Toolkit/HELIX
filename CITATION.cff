@@ -12,7 +12,7 @@ authors:
   - family-names: Pathak
     given-names: Abhishek
     affiliation: "Fermi National Accelerator Laboratory"
-version: "0.1.0"
+version: "1.5"
 date-released: 2026-05-21
 repository-code: "https://github.com/Accel-Toolkit/HELIX"
 url: "https://github.com/Accel-Toolkit/HELIX"

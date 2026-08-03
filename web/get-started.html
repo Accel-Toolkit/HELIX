@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Get started — HELIX</title>
+<meta name="description" content="Install HELIX and run your first simulation: core install, GUI and GPU extras, the headless CLI (run / scan), the Python API, and launching the PyQt6 workbench.">
+<link rel="icon" href="assets/img/helix-logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/css/helix.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap nav">
+    <a class="brand" href="index.html"><img src="assets/img/helix-logo.png" alt=""><b>HELIX</b><span>v1.4</span></a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="index.html">Home</a>
+      <a href="features.html">Features</a>
+      <a href="workbench.html">Workbench</a>
+      <a href="ai-copilot.html">AI Copilot</a>
+      <a href="get-started.html" class="is-active">Get started</a>
+      <a href="about.html">About</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn--ghost btn--sm btn-manual" href="../">Manual</a>
+      <a class="btn btn--primary btn--sm" href="https://github.com/Accel-Toolkit/HELIX"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>GitHub</a>
+    </div>
+    <button class="nav-toggle" aria-label="Menu" aria-expanded="false">≡</button>
+  </div>
+</header>
+
+<main>
+
+<section class="section section--tight">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="eyebrow">Quick start</p>
+      <h2>From clone to first run.</h2>
+      <p class="lead">HELIX needs Python <b>3.10+</b>. Core installs with one command; the C++ PIC kernels build automatically through pybind11, and fall back to pure Python if there's no compiler.</p>
+    </div>
+  </div>
+</section>
+
+<!-- INSTALL -->
+<section class="section section--tight">
+  <div class="wrap">
+    <p class="eyebrow">01 · Install</p>
+    <div class="grid grid-2" style="align-items:start">
+      <div class="term">
+        <div class="term-bar"><span class="dots"><i></i><i></i><i></i></span><span class="name">bash — core</span><button class="copy" type="button">copy</button></div>
+        <pre><code><span class="p">git</span> clone https://github.com/Accel-Toolkit/HELIX.git
+<span class="p">cd</span> HELIX
+<span class="p">pip</span> install <span class="s">-e</span> .            <span class="c"># core</span></code></pre>
+      </div>
+      <div class="stack">
+        <div class="term">
+          <div class="term-bar"><span class="dots"><i></i><i></i><i></i></span><span class="name">bash — optional extras</span><button class="copy" type="button">copy</button></div>
+          <pre><code><span class="c"># + GUI workbench & dev tooling</span>
+<span class="p">pip</span> install <span class="s">-e</span> <span class="s">".[gui,dev]"</span>
+
+<span class="c"># + optional CUDA GPU acceleration</span>
+<span class="p">pip</span> install <span class="s">-e</span> <span class="s">".[gpu]"</span></code></pre>
+        </div>
+        <div class="callout"><span class="lbl">TIP</span> If the C++ build fails (no compiler, etc.), HELIX still runs — it falls back to pure-Python PIC kernels: slower, but numerically equivalent.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CLI -->
+<section class="section section--tight">
+  <div class="wrap">
+    <p class="eyebrow">02 · Command line — headless, parallel, scriptable</p>
+    <div class="term">
+      <div class="term-bar"><span class="dots"><i></i><i></i><i></i></span><span class="name">bash</span><button class="copy" type="button">copy</button></div>
+      <pre><code><span class="c"># an envelope run</span>
+<span class="p">python</span> <span class="s">-m</span> linac_gen run examples/batch_mode/chicane.dat <span class="s">--mode</span> envelope <span class="s">--out</span> runs/
+
+<span class="c"># a parameter scan over beam current</span>
+<span class="p">python</span> <span class="s">-m</span> linac_gen scan examples/batch_mode/chicane.dat <span class="s">--vary</span> current=0:10:2 <span class="s">--out</span> scan.csv</code></pre>
+    </div>
+    <p class="kicker-note" style="margin-top:.9rem">Four subcommands: <code class="mono">run</code> · <code class="mono">scan</code> · <code class="mono">batch</code> · <code class="mono">twiss</code>.</p>
+  </div>
+</section>
+
+<!-- API -->
+<section class="section section--tight">
+  <div class="wrap">
+    <p class="eyebrow">03 · Python API</p>
+    <div class="term">
+      <div class="term-bar"><span class="dots"><i></i><i></i><i></i></span><span class="name">transfer_matrix.py</span><button class="copy" type="button">copy</button></div>
+      <pre><code><span class="k">from</span> linac_gen.io.tracewin_parser <span class="k">import</span> parse_tracewin
+<span class="k">from</span> linac_gen.core.particle <span class="k">import</span> PROTON
+<span class="k">from</span> linac_gen.core.reference <span class="k">import</span> ReferenceParticle
+<span class="k">from</span> linac_gen.tracking.matrix_tracking <span class="k">import</span> compute_transfer_matrix
+
+lattice, _ = parse_tracewin(<span class="s">"examples/batch_mode/chicane.dat"</span>)
+ref = ReferenceParticle(species=PROTON, w_kin=<span class="s">100.0</span>, frequency=<span class="s">325.0</span>)
+M = compute_transfer_matrix(lattice, ref)        <span class="c"># the 6×6 linear transfer matrix</span>
+<span class="p">print</span>(M.round(<span class="s">3</span>))</code></pre>
+    </div>
+  </div>
+</section>
+
+<!-- GUI + TEST -->
+<section class="section section--tight">
+  <div class="wrap">
+    <div class="grid grid-2" style="align-items:start">
+      <div>
+        <p class="eyebrow">04 · GUI workbench</p>
+        <div class="term">
+          <div class="term-bar"><span class="dots"><i></i><i></i><i></i></span><span class="name">bash</span><button class="copy" type="button">copy</button></div>
+          <pre><code><span class="p">./run_gui.sh</span>        <span class="c"># macOS / Linux</span>
+<span class="p">run_gui.bat</span>         <span class="c"># Windows</span></code></pre>
+        </div>
+        <p class="kicker-note" style="margin-top:.8rem">Equivalent to <code class="mono">PYTHONPATH=gui python -m linac_gen_gui.interphase</code> — the GUI package ships in the repository, not on PyPI.</p>
+      </div>
+      <div>
+        <p class="eyebrow">05 · Testing</p>
+        <div class="term">
+          <div class="term-bar"><span class="dots"><i></i><i></i><i></i></span><span class="name">bash</span><button class="copy" type="button">copy</button></div>
+          <pre><code><span class="p">pytest</span> <span class="s">-q</span></code></pre>
+        </div>
+        <p class="kicker-note" style="margin-top:.8rem">3,600+ tests cover lattice parsing, tracking, space charge, matching, the CLI and the GUI.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="wrap"><div class="rail"><span class="bead"></span></div></div>
+
+<!-- DOCS -->
+<section class="section">
+  <div class="wrap hero-grid">
+    <div>
+      <p class="eyebrow">Next</p>
+      <h2>Read the 95-page manual.</h2>
+      <p class="lead">Every element, every configuration knob, worked examples, and validated benchmarks — auto-deployed on every release. Build it locally too:</p>
+      <div class="term" style="margin-top:1rem">
+        <div class="term-bar"><span class="dots"><i></i><i></i><i></i></span><span class="name">bash</span><button class="copy" type="button">copy</button></div>
+        <pre><code><span class="p">pip</span> install <span class="s">-e</span> <span class="s">".[docs]"</span>
+<span class="p">mkdocs</span> serve <span class="s">--config-file</span> docs/mkdocs.yml</code></pre>
+      </div>
+      <div class="hero-cta"><a class="btn btn--primary" href="../">Open the manual</a></div>
+    </div>
+    <div class="stack">
+      <div class="card"><div class="k">Bundled examples</div><p>Runnable scripts and sample lattices live in <code class="mono">examples/</code> — including the showcase FODO deck this site's figures come from.</p></div>
+      <div class="card"><div class="k">Requirements</div><p>Python 3.10+, NumPy, SciPy, h5py, PyTorch. GUI adds PyQt6, pyqtgraph, matplotlib.</p></div>
+      <div class="card"><div class="k">Apple Silicon</div><p>No CUDA needed — GPU acceleration comes via the PyTorch MPS backend; <code class="mono">.[gpu]</code> is a safe no-op on macOS.</p></div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap foot-grid">
+    <div class="foot-brand">
+      <a class="brand" href="index.html"><img src="assets/img/helix-logo.png" alt=""><b>HELIX</b></a>
+      <p>Hybrid Envelope-multiparticle LInac eXplorer. Developed at Fermi National Accelerator Laboratory for the PIP-II superconducting linac.</p>
+    </div>
+    <div><h4>Explore</h4><a href="features.html">Features</a><a href="workbench.html">Workbench</a><a href="ai-copilot.html">AI Copilot</a><a href="get-started.html">Get started</a></div>
+    <div><h4>Resources</h4><a href="../">User manual</a><a href="https://github.com/Accel-Toolkit/HELIX">Source code</a><a href="about.html#cite">Cite HELIX</a><a href="https://github.com/Accel-Toolkit/HELIX/releases">Releases</a></div>
+    <div><h4>Project</h4><a href="about.html">About</a><a href="https://pip2.fnal.gov/">PIP-II at Fermilab</a><a href="about.html#license">License · GPL-3.0</a></div>
+  </div>
+  <div class="wrap foot-bottom"><span>© 2026 HELIX · GNU GPL-3.0-or-later</span><span>Fermi National Accelerator Laboratory</span></div>
+</footer>
+
+<script src="assets/js/helix.js"></script>
+</body>
+</html>
