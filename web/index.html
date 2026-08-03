@@ -23,7 +23,7 @@
   <div class="wrap nav">
     <a class="brand" href="index.html">
       <img src="assets/img/helix-logo.png" alt="">
-      <b>HELIX</b><span>v1.4</span>
+      <b>HELIX</b><span>v1.5.1</span>
     </a>
     <nav class="nav-links" aria-label="Primary">
       <a href="index.html" class="is-active">Home</a>
@@ -48,6 +48,7 @@
 
 <!-- ===================== HERO ===================== -->
 <section class="hero section">
+  <canvas class="hero-canvas" aria-hidden="true"></canvas>
   <div class="wrap hero-grid">
     <div class="hero-copy">
       <p class="eyebrow">Fermilab · PIP-II · beam dynamics</p>
@@ -101,7 +102,7 @@
 </section>
 
 <!-- ===================== SOLVER MODES ===================== -->
-<section class="section" style="background:linear-gradient(180deg,transparent,rgba(14,21,36,.5),transparent)">
+<section class="section band">
   <div class="wrap">
     <div class="section-head center">
       <p class="eyebrow eyebrow--plain">The fidelity ladder</p>
@@ -130,10 +131,22 @@
       </div>
     </div>
 
-    <figure class="scope center" style="margin-top:var(--gap); max-width:520px; margin-inline:auto">
-      <img src="assets/img/phasespace.gif" alt="A particle bunch tumbling in x–x′ phase space, station by station, tracked by the HELIX multiparticle tracker." style="max-width:420px;margin-inline:auto">
-      <figcaption style="justify-content:center"><span class="tag">x–x′</span> real output — the showcase bunch tumbling in phase space, from the multiparticle tracker.</figcaption>
-    </figure>
+    <div class="grid grid-2 spotlight">
+      <figure class="scope">
+        <img src="assets/img/phasespace.gif" alt="A particle bunch tumbling in x–x′ phase space, station by station, tracked by the HELIX multiparticle tracker.">
+        <figcaption><span class="tag">x–x′</span> the showcase bunch tumbling in phase space, from the multiparticle tracker.</figcaption>
+      </figure>
+      <div>
+        <p class="eyebrow">Real output, not an illustration</p>
+        <h3 style="font-size:clamp(1.4rem,2.6vw,2rem)">Every mode reads out the same beam.</h3>
+        <p class="lead">Switch solver and the diagnostics keep their shape — emittances, transmission, Twiss and halo come from all three. This is the multiparticle tracker's phase space, computed station by station.</p>
+        <div class="readout">
+          <div><b>6-D</b><span>phase space</span></div>
+          <div><b>Σ · PIC · M</b><span>one deck, 3 modes</span></div>
+          <div><b>~3&times;10⁻¹⁵</b><span>GPU vs CPU</span></div>
+        </div>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -164,7 +177,7 @@
 </section>
 
 <!-- ===================== AI COPILOT TEASER ===================== -->
-<section class="section">
+<section class="section band">
   <div class="wrap hero-grid">
     <div>
       <p class="eyebrow">Built-in AI copilot</p>
