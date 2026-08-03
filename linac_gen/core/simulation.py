@@ -23,7 +23,8 @@ class Simulation:
                  tail_fractions: tuple = (),
                  progress_callback=None, should_abort=None,
                  phase_probe: bool = False,
-                 rfq_geometry: str = "auto"):
+                 rfq_geometry: str = "auto",
+                 rfq_d_scale: float = 1.0):
         self.lattice = lattice
         self.beam = beam
         # RFQ vane-geometry policy for MULTIPARTICLE runs (run()):
@@ -33,7 +34,11 @@ class Simulation:
         #   "off"       — card kick for THIS run (an explicitly
         #                 attached profile is suspended for the run and
         #                 restored afterwards);
-        #   "antisym" / "per_plane" — force that profile mode.
+        #   "antisym" / "per_plane" / "per_plane_dflip" — force that
+        #                 profile mode ("per_plane_dflip" is the
+        #                 EXPERIMENTAL sign-corrected defocus channel;
+        #                 ``rfq_d_scale`` sets its D magnitude, see
+        #                 rfq_geometry_helper — PXIE: 1.23).
         # Envelope/matrix runs (run_envelope()) stay on the cards —
         # TraceWin's envelope-mode semantics — unless the user armed the
         # lattice EXPLICITLY via apply_rfq_geometry(), which is a
@@ -42,11 +47,14 @@ class Simulation:
             rfq_geometry = "auto"
         if rfq_geometry in (False, None):
             rfq_geometry = "off"
-        if rfq_geometry not in ("auto", "off", "antisym", "per_plane"):
+        if rfq_geometry not in ("auto", "off", "antisym", "per_plane",
+                                "per_plane_dflip"):
             raise ValueError(
                 f"rfq_geometry={rfq_geometry!r}: expected \"auto\", "
-                f"\"off\", \"antisym\" or \"per_plane\"")
+                f"\"off\", \"antisym\", \"per_plane\" or "
+                f"\"per_plane_dflip\"")
         self.rfq_geometry = rfq_geometry
+        self.rfq_d_scale = float(rfq_d_scale)
         # ``space_charge="off"`` is the explicit no-SC sentinel: same
         # physics as None but declares intent (suppresses the tracker's
         # NoSpaceChargeWarning for current-carrying bunched beams).
@@ -140,7 +148,10 @@ class Simulation:
                 else self.rfq_geometry)
         from linac_gen.io.rfq_geometry_helper import apply_rfq_geometry
         try:
-            n = apply_rfq_geometry(self.lattice, vane, mode=mode)
+            n = apply_rfq_geometry(
+                self.lattice, vane, mode=mode,
+                d_scale=(self.rfq_d_scale
+                         if mode == "per_plane_dflip" else 1.0))
         except Exception:
             if self.rfq_geometry != "auto":
                 raise

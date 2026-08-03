@@ -544,6 +544,48 @@ model alone gives 65.9 %).
 * `linac_gen/io/rfq_geometry_helper.py` (lattice wiring)
 * `linac_gen/pic/pic_solver.py` (`_kick_bunch_train`)
 
+### Known issues — the defocus channel (2026-08-03)
+
+A per-particle loss-location campaign against a genuine Toutatis run
+of the PXIE line found that the headline transmission agreement above
+is partly **compensatory**, and traced the mechanism:
+
+* **The armed profile's axisymmetric defocus channel is
+  sign-inverted.**  Splitting the fitted gradients into the quad
+  flutter G = (gx−gy)/2 and the axisymmetric part D = (gx+gy)/2, the
+  impulse the tracking clock accumulates from D opposes the analytic
+  RF defocus (the card model's cos-clocked C2 term) in **100 % of
+  scored PXIE cells, at 0.81× magnitude** — net RF *focusing* where
+  physics requires *defocusing*.  The quad channel is immune (it is
+  parity-degenerate, which is why phase advance always matched), and
+  `mode="antisym"` sidesteps the issue by carrying no net D at all.
+  Consequences measured with identical seeds: Toutatis expels the
+  doomed, transversely-large particles in one burst at the
+  gentle-buncher squeeze (z ≈ 0.8 m, loss centroid 1.115 m); the
+  inverted channel shelters them through the squeeze and the envelope
+  beat removes them gradually downstream instead (centroid 1.95 m) —
+  the right totals for the wrong reasons.
+* **`apply_rfq_geometry` now audits the first arming per lattice and
+  mode**, logging the measured sign agreement and impulse ratio at
+  INFO when the channel is clean or absent (`antisym` drops D by
+  construction), and emitting a loud KNOWN-ISSUE warning when the
+  inversion is detected.
+* **`mode="per_plane_dflip"` (EXPERIMENTAL)** carries the corrected
+  sign, with `d_scale` restoring the magnitude (the audit reports the
+  suggested value; PXIE: 1.23, at which the armed impulse verifies at
+  1.00× the analytic defocus).  With it, the 5 mA identical-beam loss
+  centroid lands exactly on Toutatis (1.115 m) and the σ_y offset
+  vanishes; the transmission total is then **honestly low**
+  (≈ 72 % vs 80.4 %) because two further physics gaps remain open:
+  the RFQ **entrance-gap lens** (the vane end faces act as a strong
+  RF-averaged focusing element that neither the cards, the vane file,
+  nor any 2-term model contains — measured from Toutatis per-particle
+  data: Δx′ ≈ −31·x, Δy′ ≈ −50·y mrad/mm across the radial matcher),
+  and the per-phase in-cell kick structure that a phase-correlated
+  post-RM beam probes.  Both are under active investigation; do not
+  treat any geometry mode as Toutatis-equivalent for loss *location*
+  studies until they land.
+
 ## See also
 
 * [VaneRFQ](10_vanerfq.md) — `.vane` file wrapper.
