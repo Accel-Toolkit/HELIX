@@ -228,8 +228,18 @@ def test_wake_event_driven_long_monologue_still_checked(monkeypatch):
                         vad=_Ctl())
     wl.start()
     try:
+        # STATE-driven: keep feeding speech until the listener has
+        # ACTUALLY accumulated the 2.5 s monologue cap (a starved CI
+        # runner may credit far less than wall-clock time), then give
+        # the trigger a moment to fire.
         t0 = time.time()
-        while not stt.calls and time.time() - t0 < 6.0:
+        while not stt.calls \
+                and getattr(wl, "_vad_speech_s", 0.0) < 2.6 \
+                and time.time() - t0 < 60.0:
+            mic.push(0.3, n=1)
+            time.sleep(0.01)
+        t0 = time.time()
+        while not stt.calls and time.time() - t0 < 30.0:
             mic.push(0.3, n=1)
             time.sleep(0.01)
         assert len(stt.calls) >= 1               # the 2.5 s cap fired

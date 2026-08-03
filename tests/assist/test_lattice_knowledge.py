@@ -23,6 +23,17 @@ def deck_ctx():
     ctx = WorkContext(calc_dir="runs")
     ctx.lattice, _ = parse_tracewin(_DECK)
     ctx.lattice_path = os.path.abspath(_DECK)
+    # The deck's cavities are FieldMaps whose field FILES live in the
+    # machine-local Fields/ directory (ANL/CEA data, never committed).
+    # A checkout without them parses fine but silently DROPS every
+    # cavity — these knowledge tests would then assert against a
+    # gutted lattice (CI failed exactly this way).  Skip like every
+    # other local-data-dependent test.
+    if not any(type(e).__name__ in ("FieldMap", "FieldMap3D",
+                                    "SuperposedFieldMap")
+               for e in ctx.lattice.elements):
+        pytest.skip("field-map data (Fields/) not present on this "
+                    "machine — cavity content unavailable")
     return ctx
 
 
