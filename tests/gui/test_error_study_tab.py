@@ -100,7 +100,8 @@ def test_app_loads_with_errors_tab(qapp):
     labels = [main._tabs.tabText(i) for i in range(main._tabs.count())]
     assert "Error Study" in labels
     # Error Study sits between Surrogates (M6) and Results.
-    assert labels[5] == "Error Study"
+    from linac_gen_gui.interphase.state import TABS
+    assert labels[[t for t, _ in TABS].index("errors")] == "Error Study"
     main.close()
 
 

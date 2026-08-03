@@ -54,6 +54,13 @@ class ScanPoint:
     env_solver: str = "matrix"      # "matrix" | "sacherer" (envelope mode)
     element_overrides: tuple = ()   # ((selector, value), …) applied post-parse
     sc_overrides: tuple = ()        # (("kernel", "cic"), …) extra SC kwargs
+    # --- study-manager extensions (additive; scan/batch/GUI callers
+    #     leave the defaults and the worker is bit-identical to before) ---
+    out_path: str | None = None     # when set: write full results here
+    out_format: str = "hdf5"        # hdf5 | openpmd | partran
+    capture_errors: bool = False    # True: a raised point returns an
+    #                                 {"error", "traceback"} row instead
+    #                                 of killing the whole pool
 
 
 def _parse_lattice_for_scan(path: str):
@@ -150,42 +157,72 @@ def _run_one_point_worker(point: ScanPoint) -> dict:
     os.environ.setdefault("LINAC_GEN_FFT_WORKERS", "1")
 
     import time
-    from linac_gen.core.config import BeamConfig, SpaceChargeConfig
-    from linac_gen.core.step_config import StepConfig
-    from linac_gen.core.simulation import Simulation
-    from linac_gen.distributions.factory import create_beam
-
-    lattice = _parse_lattice_for_scan(point.lattice_path)
-    lattice.step_config = StepConfig(
-        integration_steps_per_metre=float(point.step1),
-        sc_steps_per_metre=float(point.step2),
-    )
-    # Element-parameter overrides (a batch-mode scan over e.g. a quad
-    # gradient).  Empty for the GUI convergence-tab caller — no import then.
-    if point.element_overrides:
-        from linac_gen.cli.common import apply_element_override
-        for selector, value in point.element_overrides:
-            apply_element_override(lattice, selector, value)
-
-    cfg = BeamConfig(**point.beam_config)
-    beam = create_beam(cfg, seed=point.seed)
 
     t0 = time.time()
-    if point.mode == "envelope":
-        from linac_gen.cli.common import run_envelope_sim
-        res = run_envelope_sim(lattice, cfg, env_solver=point.env_solver)
-    else:
+    try:
+        from linac_gen.core.config import BeamConfig, SpaceChargeConfig
+        from linac_gen.core.step_config import StepConfig
+        from linac_gen.core.simulation import Simulation
+        from linac_gen.distributions.factory import create_beam
+
+        lattice = _parse_lattice_for_scan(point.lattice_path)
+        lattice.step_config = StepConfig(
+            integration_steps_per_metre=float(point.step1),
+            sc_steps_per_metre=float(point.step2),
+        )
+        # Element-parameter overrides (a batch-mode scan over e.g. a quad
+        # gradient).  Empty for the GUI convergence-tab caller — no import
+        # then.
+        if point.element_overrides:
+            from linac_gen.cli.common import apply_element_override
+            for selector, value in point.element_overrides:
+                apply_element_override(lattice, selector, value)
+
+        cfg = BeamConfig(**point.beam_config)
+        beam = create_beam(cfg, seed=point.seed)
+
+        t0 = time.time()
         sc = None
-        if cfg.current > 0:
-            sc = SpaceChargeConfig(
-                nx=int(point.nx), ny=int(point.nx), nz=int(point.nx),
-                grid_extent=float(point.grid_extent),
-                use_gpu=point.use_gpu,
-                **dict(point.sc_overrides),
-            )
-        res = Simulation(lattice, beam, space_charge=sc).run()
-    elapsed = time.time() - t0
-    return _scan_metrics(res, elapsed)
+        if point.mode == "envelope":
+            from linac_gen.cli.common import run_envelope_sim
+            res = run_envelope_sim(lattice, cfg,
+                                   env_solver=point.env_solver)
+        else:
+            if cfg.current > 0:
+                sc = SpaceChargeConfig(
+                    nx=int(point.nx), ny=int(point.nx), nz=int(point.nx),
+                    grid_extent=float(point.grid_extent),
+                    use_gpu=point.use_gpu,
+                    **dict(point.sc_overrides),
+                )
+            res = Simulation(lattice, beam, space_charge=sc).run()
+        elapsed = time.time() - t0
+
+        if point.out_path:
+            # atomic finalize: "out_path exists" is a sufficient
+            # completeness test for study resume — a crash mid-write can
+            # only ever leave a .part orphan, never a torn results file
+            from linac_gen.cli.common import write_results
+            tmp = str(point.out_path) + ".part"
+            write_results(res, tmp, point.out_format, cfg, lattice,
+                          lattice_path=point.lattice_path,
+                          seed=point.seed, sc_config=sc)
+            os.replace(tmp, point.out_path)
+
+        metrics = _scan_metrics(res, elapsed)
+        metrics["error"] = None
+        if point.out_path:
+            metrics["results_path"] = str(point.out_path)
+        return metrics
+    except Exception as exc:
+        if not point.capture_errors:
+            raise
+        import traceback
+        return {
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(),
+            "elapsed": time.time() - t0,
+        }
 
 
 def run_scan_points(

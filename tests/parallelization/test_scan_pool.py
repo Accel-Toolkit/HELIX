@@ -114,3 +114,47 @@ def test_pool_immediate_stop_returns_promptly():
     # Generous ceiling: spawn-context startup only. A broken kill path
     # (waiting for the running points) would take a couple of minutes.
     assert elapsed < 30.0
+
+
+# ----------------------------------------------------------------------
+# study-manager extensions (out_path / capture_errors) — additive fields;
+# the default-path bit-for-bit test above remains the regression guard.
+# ----------------------------------------------------------------------
+
+def test_out_path_writes_atomic_results(tmp_path):
+    from dataclasses import replace
+
+    from linac_gen.parallel.scan_pool import _run_one_point_worker
+
+    point = replace(_mini_scan_points()[0],
+                    out_path=str(tmp_path / "r" / "results.h5"))
+    row = _run_one_point_worker(point)
+    assert row["error"] is None
+    assert row["results_path"] == str(tmp_path / "r" / "results.h5")
+    assert (tmp_path / "r" / "results.h5").exists()
+    assert not (tmp_path / "r" / "results.h5.part").exists()
+    import h5py
+    with h5py.File(tmp_path / "r" / "results.h5", "r") as f:
+        assert "envelope" in f and "provenance" in f
+
+
+def test_capture_errors_returns_row_not_raise(tmp_path):
+    from dataclasses import replace
+
+    from linac_gen.parallel.scan_pool import (_run_one_point_worker,
+                                              run_scan_points_serial)
+
+    good = _mini_scan_points()[0]
+    poisoned = replace(good, lattice_path="does_not_exist.dat",
+                       capture_errors=True)
+    row = _run_one_point_worker(poisoned)
+    assert row["error"] and "traceback" in row
+
+    # without the flag the poison still raises (pre-change contract)
+    strict = replace(good, lattice_path="does_not_exist.dat")
+    with pytest.raises(Exception):
+        _run_one_point_worker(strict)
+
+    # and a poisoned point inside a sweep doesn't sink the others
+    rows = run_scan_points_serial([poisoned, good])
+    assert rows[0]["error"] and rows[1].get("error") is None

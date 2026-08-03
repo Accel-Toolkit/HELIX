@@ -142,6 +142,7 @@ nav:
       - 'CLI: run': 06_running/07_cli_run.md
       - 'CLI: scan': 06_running/08_cli_scan.md
       - 'CLI: batch': 06_running/09_cli_batch.md
+      - 'CLI: study': 06_running/12_cli_study.md
       - 'CLI: twiss': 06_running/10_cli_twiss.md
       - 'CLI: backtrack': 06_running/11_cli_backtrack.md
   - Matching:

@@ -69,7 +69,8 @@ def test_state_tabs_includes_surrogates():
     # Position: between convergence and errors.
     idx = ids.index("surrogates")
     assert ids[idx - 1] == "convergence"
-    assert ids[idx + 1] == "errors"
+    assert ids[idx + 1] == "study"      # Param Study sits between
+    assert ids[idx + 2] == "errors"     # Surrogates and Error Study
 
 
 # ---- auto-discovery + cache-aware Train ------------------------------------

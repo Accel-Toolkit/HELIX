@@ -41,6 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     from linac_gen.cli import backtrack as backtrack_cmd
     from linac_gen.cli import batch as batch_cmd
     from linac_gen.cli import run as run_cmd
+    from linac_gen.cli import study as study_cmd
     from linac_gen.cli import scan as scan_cmd
     from linac_gen.cli import twiss as twiss_cmd
     from linac_gen.cli import multiobjective as mo_cmd
@@ -52,6 +53,9 @@ def main(argv: list[str] | None = None) -> int:
         "scan", help="native parameter scan → CSV summary"))
     batch_cmd.add_arguments(sub.add_parser(
         "batch", help="multi-run campaign from a JSON job file"))
+    study_cmd.add_arguments(sub.add_parser(
+        "study", help="parameter study — per-run folders, resume, "
+                      "oat/zip/grid/random/lhs strategies"))
     twiss_cmd.add_arguments(sub.add_parser(
         "twiss", help="matched Twiss — whole-lattice or FODO-cell input match"))
     mo_cmd.add_arguments(sub.add_parser(
@@ -74,6 +78,8 @@ def main(argv: list[str] | None = None) -> int:
         return scan_cmd.run(args)
     if args.command == "batch":
         return batch_cmd.run(args)
+    if args.command == "study":
+        return study_cmd.run(args)
     if args.command == "twiss":
         return twiss_cmd.run(args)
     if args.command == "mo":

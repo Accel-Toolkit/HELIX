@@ -251,6 +251,7 @@ TABS: list[tuple[str, str]] = [
     ("matching",    "Matching"),
     ("convergence", "Numerics"),
     ("surrogates",  "Surrogates"),
+    ("study",       "Param Study"),
     ("errors",      "Error Study"),
     ("failures",    "Failure Study"),
     ("results",     "Results"),

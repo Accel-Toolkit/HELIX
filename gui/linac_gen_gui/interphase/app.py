@@ -331,7 +331,7 @@ from linac_gen_gui.interphase.state import AppState, TABS
 from linac_gen_gui.interphase.chrome import TitleBar, Toolbar, StatusBar
 from linac_gen_gui.interphase.tabs import (
     BeamTab, LatticeTab, MatchingTab, ConvergenceTab, SurrogatesTab,
-    ErrorStudyTab, FailureStudyTab, ResultsTab,
+    StudyTab, ErrorStudyTab, FailureStudyTab, ResultsTab,
 )
 from linac_gen_gui.interphase.workers import (
     BacktrackWorker, EnvelopeWorker, MultiparticleWorker,
@@ -448,13 +448,14 @@ class InterphaseWindow(QMainWindow):
         self.matching_tab    = MatchingTab(self.state, self.beam_tab)
         self.convergence_tab = ConvergenceTab(self.state)
         self.surrogates_tab  = SurrogatesTab(self.state)
+        self.study_tab       = StudyTab(self.state)
         self.errors_tab      = ErrorStudyTab(self.state)
         self.failures_tab    = FailureStudyTab(self.state)
         self.results_tab     = ResultsTab(
             self.state,
             open_sigma_cb=self._open_sigma_matrix,
             open_tmatrix_cb=self._open_transfer_matrix,
-            open_convergence_cb=lambda: self._tabs.setCurrentIndex(3),
+            open_convergence_cb=self._show_convergence_tab,
         )
         # Live match preview: stream the matcher's current iterate into
         # opted-in Results popups; restore them on match end.  Bound
@@ -476,8 +477,8 @@ class InterphaseWindow(QMainWindow):
         for (tid, label), widget in zip(
             TABS,
             [self.beam_tab, self.lattice_tab, self.matching_tab,
-             self.convergence_tab, self.surrogates_tab, self.errors_tab,
-             self.failures_tab, self.results_tab],
+             self.convergence_tab, self.surrogates_tab, self.study_tab,
+             self.errors_tab, self.failures_tab, self.results_tab],
         ):
             self._tabs.addTab(
                 scroll_wrap(widget) if tid in _WRAPPED else widget, label)
@@ -491,6 +492,11 @@ class InterphaseWindow(QMainWindow):
             lambda current, continuous=False:
                 self.convergence_tab.current_sc_config(
                     current, continuous=continuous))
+        self.study_tab.sc_config_provider = (
+            lambda current, continuous=False:
+                self.convergence_tab.current_sc_config(
+                    current, continuous=continuous))
+        self.study_tab.open_results_cb = self._open_study_run_results
 
         self._statusbar = StatusBar(self.state)
         v.addWidget(self._statusbar)
@@ -772,7 +778,7 @@ class InterphaseWindow(QMainWindow):
                     pass
                 workers.append(w)
         for tab in (self.matching_tab, self.convergence_tab,
-                    self.errors_tab, self.failures_tab,
+                    self.study_tab, self.errors_tab, self.failures_tab,
                     self.surrogates_tab, self.results_tab,
                     self.lattice_tab):
             begin = getattr(tab, "shutdown_begin", None)
@@ -2110,11 +2116,34 @@ class InterphaseWindow(QMainWindow):
 
     # ------------------------------------------------------------------
     # Tools (popups)
+    def _open_study_run_results(self, path: str) -> None:
+        """Load a study run's results.h5 into the Results tab."""
+        try:
+            from linac_gen.io.hdf5_output import load_results_hdf5
+            from linac_gen_gui.interphase.tabs.results_tab import (
+                _LoadedResults)
+            data = load_results_hdf5(path)
+            self.state.set_results(_LoadedResults(data, path))
+            from linac_gen_gui.interphase.state import TABS
+            self._tabs.setCurrentIndex(
+                [tid for tid, _ in TABS].index("results"))
+        except Exception as exc:                        # noqa: BLE001
+            self.state.status_message.emit(
+                f"could not open run results: {exc}")
+
+    def _show_convergence_tab(self) -> None:
+        # TABS-id lookup, not a hard-coded index — inserting a tab
+        # before "Numerics" must never silently retarget this jump
+        from linac_gen_gui.interphase.state import TABS
+        self._tabs.setCurrentIndex(
+            [tid for tid, _ in TABS].index("convergence"))
+
     # -- assistant navigation (called on the GUI thread only) -----------
     def _assistant_pages(self):
         # page widgets in TABS / tab-index order (the add loop zips these)
         return [self.beam_tab, self.lattice_tab, self.matching_tab,
-                self.convergence_tab, self.surrogates_tab, self.errors_tab,
+                self.convergence_tab, self.surrogates_tab,
+                self.study_tab, self.errors_tab,
                 self.failures_tab, self.results_tab]
 
     def _page_subtab_widget(self, page):

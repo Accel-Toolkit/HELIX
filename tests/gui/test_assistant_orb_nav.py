@@ -202,7 +202,8 @@ def test_gui_context_snapshot(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr(ap.AssistantPanel, "_settings", lambda self: store)
 
     st = _mini_state(qapp)
-    st.set_tab(7)                                     # Results
+    from linac_gen_gui.interphase.state import TABS
+    st.set_tab([t for t, _ in TABS].index("results"))  # Results
     st.set_selected(st.lattice.elements[1])
     st.set_s_cursor(123.0)
     panel = ap.AssistantPanel(None, st)
