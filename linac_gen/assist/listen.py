@@ -738,6 +738,13 @@ class WakeListener:
                     quiet_s = 0.0
                 elif in_speech:
                     quiet_s += dt
+            # Debug mirrors of the utterance state — read by the VAD
+            # tests so their phases key on ACTUAL accumulated state
+            # instead of wall-clock guesses (starved CI runners broke
+            # every timing assumption).  Never read by production code.
+            self._vad_in_speech = in_speech
+            self._vad_speech_s = speech_s
+            self._vad_quiet_s = quiet_s
             trigger = in_speech and (
                 (quiet_s >= 0.30 and speech_s >= 0.35) or speech_s >= 2.5)
             if trigger and self._clock() - last_stt < 0.5:

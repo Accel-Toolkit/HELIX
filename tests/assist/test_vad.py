@@ -187,16 +187,23 @@ def test_wake_event_driven_fires_on_utterance_end(monkeypatch):
     wl.BACKSTOP_S = 99.0     # event-trigger semantics, not the backstop
     wl.start()
     try:
+        # STATE-driven phases (not wall-clock): starved CI runners can
+        # stall the listener thread arbitrarily, so we push speech until
+        # the listener has ACTUALLY accumulated >=0.4 s of utterance
+        # (well under the 2.5 s monologue cap), then flip to silence.
         vad.value = 0.9                          # speaking …
         t0 = time.time()
-        while time.time() - t0 < 0.8:            # well under the 2.5 s cap
+        while getattr(wl, "_vad_speech_s", 0.0) < 0.4 \
+                and time.time() - t0 < 30.0:
             mic.push(0.3, n=1)
             time.sleep(0.01)
+        assert getattr(wl, "_vad_speech_s", 0.0) >= 0.4, \
+            "listener never registered the utterance"
         assert stt.calls == []                   # no STT mid-speech
         vad.value = 0.02                         # … utterance ends
         t0 = time.time()
-        while not stt.calls and time.time() - t0 < 15.0:
-            mic.push(0.01, n=1)                  # starved-runner budget
+        while not stt.calls and time.time() - t0 < 30.0:
+            mic.push(0.01, n=1)
             time.sleep(0.01)
         assert len(stt.calls) >= 1               # fired on the offset
     finally:
@@ -277,20 +284,27 @@ def test_wake_hysteresis_keeps_flappy_speech_in_one_utterance(monkeypatch):
                         vad=vad)
     wl.start()
     try:
+        # STATE-driven phases — see the event-driven test for why.
         vad.value = 0.6                       # onset (>0.45)
         t0 = time.time()
-        while time.time() - t0 < 0.5:
+        while getattr(wl, "_vad_speech_s", 0.0) < 0.35 \
+                and time.time() - t0 < 30.0:
             mic.push(0.3, n=1)
             time.sleep(0.01)
+        mark = getattr(wl, "_vad_speech_s", 0.0)
+        assert mark >= 0.35, "listener never registered the onset"
         vad.value = 0.35                      # flappy but >0.30: STAY
         t0 = time.time()
-        while time.time() - t0 < 0.6:
+        while getattr(wl, "_vad_speech_s", 0.0) < mark + 0.3 \
+                and time.time() - t0 < 30.0:
             mic.push(0.3, n=1)
             time.sleep(0.01)
+        assert getattr(wl, "_vad_in_speech", False), \
+            "hysteresis dropped the utterance at p=0.35"
         assert stt.calls == []                # still one utterance
         vad.value = 0.05                      # real offset
         t0 = time.time()
-        while not stt.calls and time.time() - t0 < 3.0:
+        while not stt.calls and time.time() - t0 < 30.0:
             mic.push(0.01, n=1)
             time.sleep(0.01)
         assert len(stt.calls) >= 1
@@ -489,8 +503,18 @@ def test_selftest_locked_marker_short_circuit(monkeypatch, tmp_path):
 
 
 def test_selftest_pass_writes_marker(monkeypatch, tmp_path):
-    from linac_gen.assist import vad as V
+    """The marker is only written on the PROVEN pass (the ``say``
+    branch) — on say-less machines self_test passes trustingly WITHOUT
+    a marker, so this test fakes ``say`` and its wav output to walk the
+    proof path deterministically on every platform (the old version
+    passed on macOS only by accident of ``say`` existing)."""
+    import shutil
+    import subprocess
+    import wave
+
     import numpy as np
+
+    from linac_gen.assist import vad as V
 
     model = tmp_path / "m.onnx"
     monkeypatch.setattr(V, "model_path", lambda: str(model))
@@ -501,5 +525,19 @@ def test_selftest_pass_writes_marker(monkeypatch, tmp_path):
             return 0.95                     # demonstrably hears
     monkeypatch.setattr(V, "SileroVAD", lambda *a, **k: _FakeVad())
     monkeypatch.setattr(V, "_SELFTEST", "pending")
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/say")
+
+    def _fake_say(args, check=False, timeout=None, **_kw):
+        out = args[args.index("-o") + 1]
+        with wave.open(out, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            rng = np.random.default_rng(0)
+            wf.writeframes((rng.normal(0, 0.1, 16000) * 32767)
+                           .astype(np.int16).tobytes())
+        return subprocess.CompletedProcess(args, 0)
+    monkeypatch.setattr(subprocess, "run", _fake_say)
+
     assert V.self_test() is True
     assert (tmp_path / "m.onnx.selftest_ok").exists()
