@@ -7,14 +7,14 @@
 </div>
 
 <div class="helix-grid" markdown>
-<a href="01_getting_started/03_quick_start/"><b>⚡ Quick start</b><small>load a deck, run, plot — 10 minutes</small></a>
-<a href="03_elements/01_overview/"><b>🧩 Elements</b><small>every card the lattice language knows</small></a>
-<a href="05_space_charge/01_overview/"><b>🌀 Space charge</b><small>3-D PIC, kernels, convergence</small></a>
-<a href="07_matching/01_overview/"><b>🎛️ Matching</b><small>seven optimisers, matched Twiss</small></a>
-<a href="10_gui/01_overview/"><b>🖥️ GUI workbench</b><small>tabs, plots, error studies</small></a>
-<a href="14_assistant/01_assistant/"><b>🤖 AI copilot</b><small>voice, tools, guided tour</small></a>
-<a href="12_validation/01_tracewin_parity/"><b>✅ Validation</b><small>benchmarks against TraceWin</small></a>
-<a href="08_errors/01_overview/"><b>🎲 Error studies</b><small>Monte-Carlo, correction</small></a>
+<a href="01_getting_started/03_quick_start.html"><b>⚡ Quick start</b><small>load a deck, run, plot — 10 minutes</small></a>
+<a href="03_elements/00_overview.html"><b>🧩 Elements</b><small>every card the lattice language knows</small></a>
+<a href="05_space_charge/01_models.html"><b>🌀 Space charge</b><small>3-D PIC, kernels, convergence</small></a>
+<a href="07_matching/01_overview.html"><b>🎛️ Matching</b><small>seven optimisers, matched Twiss</small></a>
+<a href="10_gui/01_overview.html"><b>🖥️ GUI workbench</b><small>tabs, plots, error studies</small></a>
+<a href="14_assistant/01_assistant.html"><b>🤖 AI copilot</b><small>voice, tools, guided tour</small></a>
+<a href="12_validation/01_tracewin_parity.html"><b>✅ Validation</b><small>benchmarks against TraceWin</small></a>
+<a href="08_errors/01_overview.html"><b>🎲 Error studies</b><small>Monte-Carlo, correction</small></a>
 </div>
 
 **HELIX** is an open-source Python toolkit for end-to-end simulation
