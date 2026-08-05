@@ -112,7 +112,7 @@ selected by the same `use_gpu` knob.
 | Backend | Hardware | Precision | Install |
 |---|---|---|---|
 | `cpu`  | any (scipy.fft via OpenBLAS / pocketfft, multi-threaded) | FP64 | bundled |
-| `cuda` | NVIDIA GPU (compute capability ≥ 7.0) | FP64 | `pip install cupy-cuda12x` |
+| `cuda` | NVIDIA GPU (compute capability ≥ 7.0) | FP64 | `pip install "cupy-cuda12x[ctk]"` |
 | `mps`  | Apple Silicon (M1/M2/M3/M4) | **FP32** (Metal hardware limit) | `pip install torch` |
 
 Or as a single extras group:
@@ -121,6 +121,22 @@ Or as a single extras group:
 pip install -e ".[gpu]"        # NVIDIA cupy (Linux/Windows; silent no-op on macOS)
 # Apple Silicon MPS is automatic -- torch is in the main install since v3.
 ```
+
+The `[gpu]` extra installs `cupy-cuda12x[ctk]`, which bundles the CUDA
+runtime libraries as pip wheels — a system CUDA Toolkit install is
+**not** required, only an NVIDIA driver.
+
+!!! note "Windows: CUDA torch is a separate install"
+    PyTorch wheels on PyPI are CPU-only on Windows.  For GPU torch
+    (differentiable tracking, surrogates) install a CUDA build first:
+
+    ```bat
+    pip install torch --index-url https://download.pytorch.org/whl/cu126
+    ```
+
+    Pascal-generation GPUs (GTX 10xx) need **cu126** — the cu128 wheels
+    dropped that architecture.  The CuPy PIC-FFT path via `.[gpu]` is
+    independent of the torch build.
 
 Enable per-run via:
 
@@ -162,9 +178,26 @@ You only need to install the runtime; everything else is automatic.
 | Linux | gcc / clang | shipped with the compiler (`-fopenmp`) |
 | macOS (Apple Silicon) | Apple clang | libomp.  Already present if you have torch *or* a conda env with numpy/scipy.  Otherwise `brew install libomp`. |
 | macOS (Intel) | Apple clang | libomp.  Same auto-detection; `brew install libomp` as fallback. |
-| Windows | MSVC 2019 v16.10+ | bundled with Visual Studio (`/openmp:llvm`) |
-| Windows | MSVC older | set `LINAC_GEN_OPENMP_FALLBACK=1` for `/openmp` (OpenMP 2.0, no `collapse(3)` parallelism) |
+| Windows | MSVC (any supported) | bundled with Visual Studio (`/openmp`, the `vcomp` runtime — default) |
 | Windows | MinGW-w64 / clang-cl | shipped with the compiler (`-fopenmp`) |
+
+!!! warning "Windows OpenMP runtimes: `vcomp` default, `llvm` opt-in"
+    MSVC builds default to `/openmp` (`vcomp`) because it coexists with
+    the Intel OpenMP runtime bundled inside PyTorch — and torch is a
+    core HELIX dependency, so it is loaded in essentially every
+    process.  The alternative `/openmp:llvm` runtime parallelises the
+    nested PIC loops better (`collapse(3)`), but **aborts the process
+    at the first space-charge kick when torch is also imported** (two
+    OpenMP runtimes in one image).  Opt in only for torch-free
+    deployments: `set LINAC_GEN_OPENMP_LLVM=1` before installing.
+    The old `LINAC_GEN_OPENMP_FALLBACK` switch is obsolete — its
+    behaviour is now the default.
+
+If Windows has no C++ compiler at all, `pip install -e .` still
+succeeds: the kernel build is optional, a warning is printed in the
+install log, and the runtime uses the pure-Python fallback (slower,
+numerically equivalent).  Set `LINAC_GEN_REQUIRE_CPP=1` to make a
+failed kernel build fatal instead.
 
 The build probes libomp in this order on macOS:
 

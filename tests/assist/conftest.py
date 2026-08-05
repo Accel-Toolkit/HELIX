@@ -18,8 +18,24 @@ def no_network(monkeypatch):
         raise AssertionError(
             "network access attempted inside tests/assist — the "
             "assistant suite must be fully offline")
+
+    # Loopback must stay allowed: Windows has no native socketpair(), so
+    # CPython emulates it with a 127.0.0.1 connect — merely creating an
+    # asyncio event loop tripped the blanket guard there (external
+    # Windows report, issue 6).  Non-loopback destinations still raise
+    # BEFORE any packet leaves, so the offline guarantee is unchanged.
+    _real_connect = socket.socket.connect
+
+    def _guarded_connect(self, address, *a, **k):
+        if isinstance(address, (str, bytes)):          # AF_UNIX — local
+            return _real_connect(self, address, *a, **k)
+        host = address[0] if isinstance(address, tuple) and address else None
+        if str(host) in ("127.0.0.1", "::1", "localhost"):
+            return _real_connect(self, address, *a, **k)
+        _blocked()
+
     monkeypatch.setattr(socket, "create_connection", _blocked)
-    monkeypatch.setattr(socket.socket, "connect", _blocked)
+    monkeypatch.setattr(socket.socket, "connect", _guarded_connect)
     monkeypatch.setattr(urllib.request, "urlopen", _blocked)
     yield
 

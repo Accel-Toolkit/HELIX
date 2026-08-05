@@ -128,11 +128,11 @@ def _filtered(cls, d: dict):
 
 def save_spec(spec: StudySpec, path) -> None:
     doc = {"__kind__": _KIND, "__version__": _VERSION, **asdict(spec)}
-    Path(path).write_text(json.dumps(doc, indent=2) + "\n")
+    Path(path).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 
 
 def load_spec(path) -> StudySpec:
-    data = json.loads(Path(path).read_text())
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
     if data.get("__kind__") != _KIND:
         raise ValueError(
             f"{path}: not a {_KIND} file (missing/wrong __kind__)")

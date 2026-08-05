@@ -417,3 +417,27 @@ def test_model_dropdown_suggestions_and_local_server_fetch(
         assert panel._model_edit.currentText() == "my/custom-alias"
     finally:
         panel.shutdown()
+
+
+def test_listen_failed_no_retry_stops_cleanly(qapp):
+    """retry=False (missing optional voice dep): no backoff loop, wake
+    button unchecks — the Windows report showed 6 stacked sounddevice
+    tracebacks from wake auto-enable + 5 futile retries."""
+    from linac_gen_gui.interphase.dialogs.assistant_panel import (
+        AssistantPanel,
+    )
+
+    st = _state_with_lattice(qapp)
+    panel = AssistantPanel(None, st)
+    try:
+        panel._wake_btn.blockSignals(True)
+        panel._wake_btn.setChecked(True)
+        panel._wake_btn.blockSignals(False)
+        before = getattr(panel, "_reopen_attempt", 0)
+        panel._listen_start_failed(
+            panel._listen_gen, "No module named 'sounddevice'", retry=False)
+        assert not panel._wake_btn.isChecked()
+        assert getattr(panel, "_reopen_attempt", 0) == before  # no backoff
+        assert "voice unavailable" in panel._prog.text()
+    finally:
+        panel.shutdown()

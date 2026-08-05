@@ -623,3 +623,214 @@ def _hofmann_stability(ctx, period_index=None, margin=False,
                 _f(margin_out["earliest_smooth_onset_eps"]),
         }
     return _ok(data, _ctx_provenance(ctx), warns)
+
+
+# ---------------------------------------------------------------------------
+# lebt_scc
+# ---------------------------------------------------------------------------
+@_tool("lebt_scc",
+       "LEBT space-charge-compensation analysis of a DC/continuous run: "
+       "residual-gas neutralisation (tau_scc, self-consistent "
+       "Poisson-Boltzmann steady state or assumed eta, exact f_c "
+       "build-up), on-axis beam potential, gas stripping/capture loss, "
+       "and suggested SPACE_CHARGE_COMP card factors.  Reports an "
+       "in-band data.reason on bunched sessions.  Runs its own DC "
+       "envelope when the session lacks continuous-beam results.  "
+       "Long-running: executes as a background job.",
+       {"type": "object",
+        "properties": {
+            "gas": {"type": "string", "default": "H2",
+                    "enum": ["H2", "He", "N2", "Ar", "Kr", "Xe"]},
+            "pressure_mbar": {"type": "number", "default": 8.0e-6},
+            "mode": {"type": "string", "default": "computed",
+                     "enum": ["computed", "assumed"]},
+            "eta_assumed": {"type": "number", "default": 0.92},
+            "trapped_temp_eV": {"type": "number", "default": 3.0},
+            "taper": {"type": "boolean", "default": True},
+            "build_up_us": {"type": "number",
+                            "description": "f_c build-up time; omit for "
+                            "steady state"},
+            "n_cards": {"type": "integer", "default": 8, "minimum": 1},
+            "cleared_regions": {
+                "type": "array",
+                "items": {"type": "array",
+                          "items": {"type": "integer"},
+                          "minItems": 2, "maxItems": 2},
+                "description": "element ranges [start, end] (inclusive) "
+                "where compensating ions are actively cleared (e.g. a "
+                "biased chopper — the PXIE un-neutralised section); f_c "
+                "is forced toward cleared_residual there"},
+            "cleared_residual": {"type": "number", "default": 0.0,
+                                 "minimum": 0.0, "maximum": 1.0},
+            "self_consistent": {
+                "type": "boolean", "default": False,
+                "description": "iterate envelope <-> cards on a working "
+                "copy until the factors stop moving (the one-shot "
+                "analysis uses beam sizes tracked at the run's own "
+                "space-charge state — a first iteration, not the fixed "
+                "point); the loaded lattice is not modified"}},
+        "required": []},
+       "compute")
+def _lebt_scc(ctx, gas="H2", pressure_mbar=8.0e-6, mode="computed",
+              eta_assumed=0.92, trapped_temp_eV=3.0, taper=True,
+              build_up_us=None, n_cards=8, cleared_regions=None,
+              cleared_residual=0.0, self_consistent=False,
+              progress_callback=None, should_abort=None, _assist_prov=None):
+    gate = _need(ctx, "lattice", "beam_config")
+    if gate:
+        return gate
+    import numpy as np
+
+    if cleared_regions is not None:
+        n_el = len(ctx.lattice.elements)
+        try:
+            pairs = [[float(r[0]), float(r[1])] for r in cleared_regions]
+            cleared_residual = float(cleared_residual)
+        except (TypeError, ValueError, IndexError, KeyError):
+            return _refused("cleared_regions must be [start, end] element "
+                            "pairs and cleared_residual a number")
+        if any(v != int(v) for pr in pairs for v in pr):
+            return _refused("cleared region bounds must be whole element "
+                            "indices (schema: integers)")
+        cleared_regions = [[int(a), int(b)] for a, b in pairs]
+        for e0, e1 in cleared_regions:
+            if not (0 <= e0 <= e1 < n_el):
+                return _refused(f"cleared region [{e0}, {e1}] outside the "
+                                f"lattice (0..{n_el - 1})")
+        if not (0.0 <= cleared_residual <= 1.0):
+            return _refused(f"cleared_residual must be in [0, 1], "
+                            f"got {cleared_residual!r}")
+
+    from linac_gen.analysis.scc.driver import (
+        scc_analysis, suggested_scc_deck_lines)
+
+    try:
+        pressure_mbar = float(pressure_mbar)
+        eta_assumed = float(eta_assumed)
+        trapped_temp_eV = float(trapped_temp_eV)
+        n_cards = max(1, min(int(n_cards), 64))
+        if build_up_us is not None:
+            build_up_us = float(build_up_us)
+            if not np.isfinite(build_up_us) or build_up_us < 0:
+                return _refused(f"build_up_us must be a non-negative "
+                                f"finite time, got {build_up_us!r}")
+    except (TypeError, ValueError):
+        return _refused("numeric parameters must be numbers")
+    if not (0.0 < pressure_mbar <= 1.0):
+        return _refused(f"pressure_mbar out of range (0, 1]: {pressure_mbar!r}")
+    if not (0.0 <= eta_assumed <= 1.0):
+        return _refused(f"eta_assumed must be in [0, 1]: {eta_assumed!r}")
+
+    from linac_gen.analysis.scc.driver import is_continuous_results
+
+    warns: list[str] = []
+    results = ctx.results
+    probe_src = "session results"
+    if not self_consistent and (results is None
+                                or not is_continuous_results(results)):
+        cfg = ctx.beam_config
+        # A fresh envelope is only useful if the CONFIG is DC — refuse
+        # in-band for bunched configs whether or not results exist.
+        if not bool(getattr(cfg, "continuous", False)):
+            return _ok({"reason": (
+                "bunched-beam session: the SCC gas-neutralisation "
+                "analysis applies to DC/continuous (LEBT) transport — "
+                "for bunched beams use hofmann_stability instead.")},
+                _ctx_provenance(ctx))
+        from linac_gen.cli.common import _envelope_initial, build_ref
+        from linac_gen.tracking.envelope import EnvelopeSolver
+        ref = build_ref(cfg)
+        results, refusal, w0 = _capture(
+            lambda: EnvelopeSolver(
+                ctx.lattice, ref, _envelope_initial(cfg, ref),
+                current=getattr(cfg, "current", 0.0),
+                progress_callback=progress_callback,
+                should_abort=should_abort).run())
+        if refusal:
+            return refusal
+        warns += w0
+        probe_src = "fresh DC envelope run"
+
+    species = str(getattr(ctx.beam_config, "species", "H-") or "H-")
+    if self_consistent:
+        # The iterator runs its own envelopes on a deepcopy — session
+        # results are irrelevant, and current comes from the config.
+        if not bool(getattr(ctx.beam_config, "continuous", False)):
+            return _ok({"reason": (
+                "bunched-beam session: the SCC gas-neutralisation "
+                "analysis applies to DC/continuous (LEBT) transport — "
+                "for bunched beams use hofmann_stability instead.")},
+                _ctx_provenance(ctx))
+        from linac_gen.analysis.scc.iterate import scc_self_consistent
+        prog = (None if progress_callback is None else
+                (lambda k, _d: progress_callback(min(0.95, k / 8.0))))
+        a, refusal, w1 = _capture(
+            scc_self_consistent, ctx.lattice, ctx.beam_config,
+            should_stop=should_abort, progress=prog, species=species,
+            gas=gas, pressure_mbar=pressure_mbar, mode=mode,
+            eta_assumed=eta_assumed, trapped_temp_eV=trapped_temp_eV,
+            taper=bool(taper), build_up_us=build_up_us, n_cards=n_cards,
+            cleared_regions=cleared_regions,
+            cleared_residual=cleared_residual)
+        probe_src = "self-consistent iterate"
+    else:
+        a, refusal, w1 = _capture(
+            scc_analysis, results, ctx.lattice, species=species, gas=gas,
+            current_mA=getattr(ctx.beam_config, "current", None),
+            pressure_mbar=pressure_mbar, mode=mode, eta_assumed=eta_assumed,
+            trapped_temp_eV=trapped_temp_eV, taper=bool(taper),
+            build_up_us=build_up_us, n_cards=n_cards,
+            cleared_regions=cleared_regions,
+            cleared_residual=cleared_residual,
+            should_stop=should_abort)
+    if refusal:
+        return refusal
+    warns += w1
+
+    def _f(x):
+        x = float(x)
+        return x if np.isfinite(x) else None
+
+    data = {"reason": a["reason"], "probe": probe_src}
+    if a["reason"] is None:
+        data.update({
+            "fc_source": a["fc_source"],
+            "species": a["species"],
+            "gas_mix_mbar": a["gas_mix_mbar"],
+            "tau_scc_global_us": _f(a["tau_scc_global_us"]),
+            "mean_fc": _f(a["mean_fc"]),
+            "phi_min_V": _f(a["phi_min_V"]),
+            "phi_max_V": _f(a["phi_max_V"]),
+            "strip_mfp_m": _f(a["strip_mfp_m"]),
+            "mean_ion_mass_amu": _f(a["mean_ion_mass_amu"]),
+            "transmission_gas_pct": _f(a["transmission_gas_pct"]),
+            "build_up_us": (None if a["build_up_us"] is None
+                            else _f(a["build_up_us"])),
+            "notes": a["notes"],
+            "n_slices_converged": int(a["slice_converged"].sum()),
+            "n_slices": int(a["slice_converged"].size),
+            "profiles": {
+                "z_m": [_f(v) for v in a["z_m"]],
+                "fc": [_f(v) for v in a["fc"]],
+                "eta_ss": [_f(v) for v in a["eta_ss"]],
+                "phi_V": [_f(v) for v in a["phi_V"]],
+                "survival_gas": [_f(v) for v in a["survival_gas"]],
+            },
+            "scc_cards": [{"z_m": _f(c["z_m"]), "factor": _f(c["factor"])}
+                          for c in a["scc_cards"]],
+            "deck_lines": suggested_scc_deck_lines(a),
+        })
+        if a.get("cleared_regions"):
+            data["cleared_regions"] = a["cleared_regions"]
+            data["cleared_residual"] = _f(a["cleared_residual"])
+        it = a.get("iterate")
+        if it:
+            data["iterate"] = {
+                "converged": bool(it["converged"]),
+                "n_iter": int(it["n_iter"]),
+                "omega": _f(it["omega"]), "tol": _f(it["tol"]),
+                "history": [{"max_delta": _f(h["max_delta"]),
+                             "mean_fc": _f(h["mean_fc"])}
+                            for h in it["history"]],
+            }
+    return _ok(data, _ctx_provenance(ctx), warns)

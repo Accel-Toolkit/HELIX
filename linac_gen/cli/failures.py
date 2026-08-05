@@ -143,7 +143,7 @@ def run(args) -> int:
     # write CSV
     rows = results.to_rows()
     extra = ["recovered", "compensators", "settings"] if args.compensate else []
-    with open(args.out, "w", newline="") as fh:
+    with open(args.out, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         header = list(rows[0].keys()) + extra if rows else []
         w.writerow(header)

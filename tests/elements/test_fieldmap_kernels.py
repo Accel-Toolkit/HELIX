@@ -167,3 +167,22 @@ def test_kernel_nan_inf_and_nonfinite_fields():
         rgi = RGI((gx, gy, gz), F[m], method="linear",
                   bounds_error=False, fill_value=0.0)
         np.testing.assert_array_equal(out[m], rgi(pts))
+
+
+def test_module_imports_torch_before_kernel():
+    """The torch-first guard in field_map_3d.py is load-bearing on macOS
+    pip installs (the kernel resolves its OpenMP symbols against torch's
+    already-loaded image) — prove in a fresh process that importing the
+    module pulls torch in."""
+    import subprocess
+    import sys
+    proc = subprocess.run(
+        [sys.executable, "-c",
+         "import sys\n"
+         "assert 'torch' not in sys.modules\n"
+         "import linac_gen.elements.field_map_3d\n"
+         "assert 'torch' in sys.modules, 'torch-first guard missing'\n"
+         "print('guard-ok')"],
+        capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert "guard-ok" in proc.stdout

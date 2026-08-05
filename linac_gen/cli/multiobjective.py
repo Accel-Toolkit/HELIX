@@ -131,7 +131,7 @@ def run(args) -> int:
     # width matches the pareto_x columns even when ADJUST cards are linked.
     import csv
     var_labels = res.column_variable_labels()
-    with open(args.out, "w", newline="") as fh:
+    with open(args.out, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(list(res.objective_names) + var_labels)
         for f_row, x_row in zip(res.pareto_F, res.pareto_x):

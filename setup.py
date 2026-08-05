@@ -18,13 +18,23 @@ deposit/interp.  ``collapse(3)`` requires OpenMP 3.0+.
   libomp that torch, a hard dependency, has already loaded.  Exactly one
   OpenMP runtime ever exists in the process.  Only ``omp.h`` is probed
   (env include dir, then Homebrew); without it the kernel builds serial.
-- **Windows / MSVC:** ``/openmp:llvm`` (Visual Studio 2019 v16.10+) for the
-  full OpenMP 3.0+ runtime that supports ``collapse(3)``.  The classic
-  ``/openmp`` is OpenMP 2.0 and silently ignores ``collapse(3)`` — building
-  with it would give a single-threaded outer-loop kernel and look like it
-  worked.  Set ``LINAC_GEN_OPENMP_FALLBACK=1`` to force ``/openmp`` for
-  older toolchains; you'll lose ``collapse(3)`` parallelism but it'll build.
-- **Windows / MinGW or clang-cl:** ``-fopenmp`` like Linux.
+- **Windows / MSVC:** ``/openmp`` (classic vcomp) BY DEFAULT.  ``/openmp:llvm``
+  would give the full OpenMP 3.0+ runtime with ``collapse(3)``, and was the
+  default until an external Windows install report proved it a guaranteed
+  abort: torch (a hard dependency) ships Intel's ``libiomp5md.dll``, and
+  ``pic_solver.py`` deliberately imports torch first, so an
+  ``/openmp:llvm``-linked kernel initialises a second (LLVM) OpenMP runtime
+  in the same process and the two ``abort()`` on the first PIC kick.
+  Microsoft's vcomp coexists with libiomp.  The cost is that vcomp is
+  OpenMP 2.0 and silently ignores ``collapse(3)`` (outer-loop-only
+  parallelism) — measured on the reporting user's machine the kernel was
+  still ~20x over pure Python.  Set ``LINAC_GEN_OPENMP_LLVM=1`` to opt back
+  into ``/openmp:llvm`` for torch-free embedding processes (or if you know
+  what ``KMP_DUPLICATE_LIB_OK`` does and accept the consequences).
+  ``LINAC_GEN_OPENMP_FALLBACK=1`` (the old escape hatch) is obsolete: it is
+  now the default and prints a notice.
+- **Windows / MinGW or clang-cl:** ``-fopenmp`` like Linux (GNU-flavour
+  runtime — shares the same dual-runtime caveat as ``:llvm`` next to torch).
 - Windows flags are injected at build-extension time (we don't know the
   compiler type until ``build_ext`` runs), so the static ``_openmp_flags``
   returns ``-O3`` only for Windows; the ``_WindowsOpenMP`` build_ext adds
@@ -38,6 +48,19 @@ import sys
 
 from pybind11.setup_helpers import Pybind11Extension, build_ext
 from setuptools import setup
+from setuptools.errors import (
+    CCompilerError,
+    CompileError,
+    ExecError,
+    LinkError,
+    PlatformError,
+)
+
+#: Set LINAC_GEN_REQUIRE_CPP=1 to make a failed C++ kernel build FATAL
+#: (CI / packagers).  Default: degrade to the pure-Python fallback that
+#: linac_gen/pic/pic_solver.py and elements/field_map_3d.py already
+#: implement at runtime — a machine with no compiler can still install.
+_require_cpp = os.environ.get("LINAC_GEN_REQUIRE_CPP") == "1"
 
 
 def _macos_omp_header_dir():
@@ -118,21 +141,63 @@ class _Pybind11WithOpenMP(build_ext):
     bit-identical to before this subclass existed.
     """
 
+    def run(self) -> None:
+        try:
+            super().run()
+        except PlatformError as exc:
+            # Compiler CONSTRUCTION failures ("Microsoft Visual C++ 14.0 or
+            # greater is required", missing cc) can surface before
+            # build_extensions(); degrade like a per-extension failure.
+            if _require_cpp:
+                raise
+            self._warn_fallback("the C++ toolchain", exc)
+
     def build_extensions(self) -> None:
         if sys.platform == "win32":
             self._inject_windows_openmp_flags()
         super().build_extensions()
 
+    def build_extension(self, ext) -> None:
+        try:
+            super().build_extension(ext)
+        except (CCompilerError, CompileError, ExecError, LinkError,
+                PlatformError) as exc:
+            if _require_cpp:
+                raise
+            self._warn_fallback(ext.name, exc)
+
+    @staticmethod
+    def _warn_fallback(what, exc) -> None:
+        bar = "=" * 70
+        print(
+            f"\n{bar}\n"
+            f"WARNING: building {what} failed:\n    {exc}\n"
+            "HELIX installs anyway and runs with the pure-Python fallback\n"
+            "(slower, numerically equivalent).  Install a C++ compiler and\n"
+            "reinstall to regain the fast kernels, or set\n"
+            "LINAC_GEN_REQUIRE_CPP=1 to make this failure fatal.\n"
+            f"{bar}\n",
+            file=sys.stderr,
+        )
+
     def _inject_windows_openmp_flags(self) -> None:
         ctype = getattr(self.compiler, "compiler_type", "")
         if ctype == "msvc":
-            # /openmp:llvm needs Visual Studio 2019 v16.10+.  Older MSVC
-            # rejects the colon-suffix form and the user can opt into the
-            # legacy /openmp at the cost of losing collapse(3) parallelism.
+            # Default: classic /openmp (vcomp).  It coexists with torch's
+            # bundled Intel libiomp5md.dll; /openmp:llvm guarantees an
+            # abort in any process that also imports torch (see the module
+            # docstring).  /openmp:llvm remains available for torch-free
+            # embedders via LINAC_GEN_OPENMP_LLVM=1.
             if os.environ.get("LINAC_GEN_OPENMP_FALLBACK") == "1":
-                flag = "/openmp"
-            else:
+                print(
+                    "setup.py: NOTE — LINAC_GEN_OPENMP_FALLBACK is obsolete: "
+                    "/openmp (vcomp) is now the Windows default.",
+                    file=sys.stderr,
+                )
+            if os.environ.get("LINAC_GEN_OPENMP_LLVM") == "1":
                 flag = "/openmp:llvm"
+            else:
+                flag = "/openmp"
             # ``/arch:AVX2`` is the MSVC equivalent of ``-march=native`` for
             # the common case (x86_64 desktops / Fermilab analysis machines
             # from the last decade).  Unset ``LINAC_GEN_NO_NATIVE_ARCH=1``
@@ -146,8 +211,22 @@ class _Pybind11WithOpenMP(build_ext):
                 ]
                 # MSVC links the OpenMP runtime automatically when the switch
                 # is set; no extra linker args needed.
+                if ext.name.endswith("_fieldmap_kernels"):
+                    # The field-map kernel's bit-identity contract with scipy
+                    # RGI (tests/elements/test_fieldmap_kernels.py) forbids FMA
+                    # contraction.  VS2022's /fp:precise emits no contractions
+                    # by default (/fp:contract is the explicit opt-in we never
+                    # pass); on older toolchains the bit-identity test fails
+                    # loudly rather than skipping, and the runtime kill-switch
+                    # is LINAC_GEN_FIELDMAP_KERNEL=0.
+                    ext.extra_compile_args.append("/fp:precise")
         elif ctype in ("mingw32", "cygwin"):
             for ext in self.extensions:
+                if ext.name.endswith("_fieldmap_kernels"):
+                    # GCC defaults to -ffp-contract=fast in C++ — the
+                    # same contraction ban as every other toolchain.
+                    ext.extra_compile_args = list(
+                        ext.extra_compile_args or []) + ["-ffp-contract=off"]
                 ext.extra_compile_args = list(ext.extra_compile_args or []) + [
                     "-fopenmp", "-march=native",
                 ]
@@ -157,6 +236,12 @@ class _Pybind11WithOpenMP(build_ext):
         # else: unknown Windows toolchain, leave the kernel single-threaded.
 
 
+#: Contraction control for _fieldmap_kernels (Unix toolchains): REQUIRED by
+#: its bit-identity contract with scipy RGI — mirrors csrc/CMakeLists.txt.
+#: The MSVC counterpart (/fp:precise) is injected at build-extension time.
+_fieldmap_compile = ([f for f in _compile] + ["-ffp-contract=off"]
+                     if sys.platform != "win32" else list(_compile))
+
 ext_modules = [
     Pybind11Extension(
         "linac_gen._pic_kernels",
@@ -165,6 +250,16 @@ ext_modules = [
         extra_link_args=_link,
         include_dirs=_includes,
         cxx_std=14,
+        optional=not _require_cpp,
+    ),
+    Pybind11Extension(
+        "linac_gen._fieldmap_kernels",
+        ["linac_gen/csrc/fieldmap_kernels.cpp"],
+        extra_compile_args=_fieldmap_compile,
+        extra_link_args=_link,
+        include_dirs=_includes,
+        cxx_std=14,
+        optional=not _require_cpp,
     ),
 ]
 

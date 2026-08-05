@@ -225,6 +225,14 @@ diagnostics built on the channel tunes (full theory:
   (S² > 10), amber ring = fold risk.  Optional toggles add per-cell
   Monte-Carlo `P(unstable)` and the *indicative* legacy m/n bands.
 
+* **LEBT compensation (SCC)** — for **DC/continuous** results only:
+  choose gas and pressure (log slider 10⁻⁷–10⁻⁴ mbar), solver mode
+  (Computed Poisson–Boltzmann balance / Assumed η), trapped-ion
+  temperature, end taper and build-up time, then **Compute** for
+  f_c(z), φ(z), τ_scc(z) and gas-survival profiles — plus suggested
+  `SPACE_CHARGE_COMP` factors with **Export cards** and a confirm-gated
+  **Apply to lattice…** (full theory:
+  [LEBT compensation](../05_space_charge/07_lebt_scc.md)).
 * **Tune footprint (frozen SC)** — press **Compute footprint** to re-track
   the selected cell **off-thread** with a frozen matched-beam field; the
   scatter shows each particle's (μ_x, μ_y) coloured by launch amplitude,

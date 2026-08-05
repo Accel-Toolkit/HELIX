@@ -11,7 +11,10 @@ jobs:
     name: Core suite (ubuntu)
     runs-on: ubuntu-latest
     env:
-      LINAC_GEN_DISABLE_CPP: "1"   # pure-Python kernels on CI
+      # fail-hard: a broken kernel build must FAIL CI, not degrade
+      # to the pure-Python fallback (the bit-identity test would
+      # importorskip and CI would stay green on a build regression).
+      LINAC_GEN_REQUIRE_CPP: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -37,7 +40,7 @@ jobs:
     # full-suite runs.
     if: github.event.repository.private == false
     env:
-      LINAC_GEN_DISABLE_CPP: "1"
+      LINAC_GEN_REQUIRE_CPP: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -526,3 +526,22 @@ def build_scan_point(input_path, *, beam_overrides=None, element_overrides=(),
         element_overrides=tuple(element_overrides),
         sc_overrides=tuple(sc_kw.items()),
     )
+
+
+def make_console_encoding_safe() -> None:
+    """Degrade non-encodable console characters instead of crashing.
+
+    CLI reports contain arrows/box glyphs outside cp1252; on a stock
+    Windows console (locale cp1252) printing them raised
+    UnicodeEncodeError (external Windows report, issue 3).  On utf-8
+    platforms the error handler is never consulted, so output is
+    unchanged there.
+    """
+    import sys as _sys
+    for stream in (_sys.stdout, _sys.stderr):
+        reconf = getattr(stream, "reconfigure", None)
+        if reconf is not None:
+            try:
+                reconf(errors="replace")
+            except Exception:                                # noqa: BLE001
+                pass

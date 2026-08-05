@@ -132,6 +132,7 @@ nav:
       - DC mode: 05_space_charge/04_dc_mode.md
       - Convergence guide: 05_space_charge/05_convergence.md
       - Differentiable PIC: 05_space_charge/06_differentiable.md
+      - LEBT compensation (SCC): 05_space_charge/07_lebt_scc.md
   - Running:
       - Python API: 06_running/01_python_api.md
       - TraceWin .dat: 06_running/02_tracewin_dat.md

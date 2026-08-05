@@ -103,5 +103,5 @@ def train_corrector(log_paths, out_dir, hidden=(64, 64), epochs=2000,
         "basis_width": float(basis_width), "n_train": int(len(ti)),
         "scale_normalized": bool(scale_normalized),
         "val_mse_normalized": float(best), "seed": int(seed),
-    }, indent=1))
+    }, indent=1), encoding="utf-8")
     return {"val_mse": best, "n_train": len(ti), "out": str(out)}

@@ -34,7 +34,7 @@ def add_arguments(p) -> None:
 
 
 def _load_jobs(path: Path) -> list:
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     jobs = data.get("jobs", data) if isinstance(data, dict) else data
     if not isinstance(jobs, list) or not jobs:
         raise ValueError("job file must contain a non-empty list of jobs")
@@ -105,7 +105,7 @@ def run(args) -> int:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     summary = out_dir / "batch_summary.csv"
-    with summary.open("w", newline="") as fh:
+    with summary.open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(["name", "input", "mode", *_METRICS])
         for name, inp, mode, res in zip(names, inputs, modes, results):

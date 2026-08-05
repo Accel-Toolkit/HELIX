@@ -219,6 +219,8 @@ def _make_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from linac_gen.cli.common import make_console_encoding_safe
+    make_console_encoding_safe()
     parser = _make_parser()
     args = parser.parse_args(argv)
 

@@ -166,7 +166,7 @@ def _run_matrix(args, lattice, beam_cfg, out_dir, stem) -> int:
         else:
             lines.append(f"# Twiss {plane}: alpha={tw['alpha']:.6f}  "
                          f"beta={tw['beta']:.6f}  mu={tw['mu']:.4f} deg")
-    out_path.write_text("\n".join(lines) + "\n")
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     if not args.quiet:
         print("\n".join(lines))
         print(f"\n[run] wrote {out_path}")

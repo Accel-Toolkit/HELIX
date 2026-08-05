@@ -108,7 +108,7 @@ class StudyManager:
                      "params": list(map(list, r.params)),
                      "seed": r.seed} for r in expand_runs(spec)]
         (mgr.summary_dir / "runs_manifest.json").write_text(
-            json.dumps(manifest, indent=1) + "\n")
+            json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
         return mgr
 
     @classmethod
@@ -126,7 +126,7 @@ class StudyManager:
                     "two different machines; refusing")
         mpath = mgr.summary_dir / "runs_manifest.json"
         if mpath.exists():
-            manifest = json.loads(mpath.read_text())
+            manifest = json.loads(mpath.read_text(encoding="utf-8"))
             fresh = [{"index": r.index, "dir": _run_dirname(r),
                       "params": list(map(list, r.params)),
                       "seed": r.seed} for r in expand_runs(spec)]
@@ -241,7 +241,7 @@ class StudyManager:
         if not sp.exists():
             return None
         try:
-            return json.loads(sp.read_text())
+            return json.loads(sp.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
 
@@ -344,7 +344,7 @@ class StudyManager:
                 "observables": obs,
             }
             spath = self._run_dir(run) / "status.json"
-            spath.write_text(json.dumps(status, indent=1) + "\n")
+            spath.write_text(json.dumps(status, indent=1) + "\n", encoding="utf-8")
             counters["done"] += 1
             if not ok:
                 counters["failed"] += 1
@@ -385,7 +385,7 @@ class StudyManager:
         cols = (["index", "tag", "status", "seed"] + param_cols
                 + list(METRIC_KEYS) + obs_cols
                 + ["error", "results_path"])
-        with open(out, "w", newline="") as f:
+        with open(out, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
             w.writeheader()
             for run in self.plan():

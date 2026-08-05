@@ -60,7 +60,7 @@ def load_project(path: str | Path) -> ProjectConfig:
         If the file is not a recognised linac_gen project file.
     """
     p = Path(path)
-    data = json.loads(p.read_text())
+    data = json.loads(p.read_text(encoding="utf-8"))
     if data.get("__kind__") != "linac_gen_project":
         raise ValueError(
             f"{p} is not a linac_gen project file "

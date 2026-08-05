@@ -20,6 +20,8 @@ import sys
 
 
 def main(argv: list[str] | None = None) -> int:
+    from linac_gen.cli.common import make_console_encoding_safe
+    make_console_encoding_safe()
     argv = list(sys.argv[1:] if argv is None else argv)
 
     # The matcher keeps its own argument parser — delegate to it verbatim

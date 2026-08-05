@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "linac_gen"
-version = "1.6"
+version = "1.7"
 description = "Particle tracking code with PIC space charge for proton/ion linacs"
 readme = "README.md"
 # Dict form (not bare SPDX string) so older setuptools still parses it.
@@ -32,7 +32,11 @@ moo = ["pymoo>=0.6"]
 # The marker lets `pip install .[gpu]` succeed (as a no-op) on macOS.
 # Apple Silicon users get GPU acceleration via the MPS backend that
 # ships with the torch dependency (declared in the main project deps).
-gpu = ["cupy-cuda12x>=13.0; platform_system != 'Darwin'"]
+# [ctk] bundles the CUDA runtime libraries via pip wheels, so a system
+# CUDA Toolkit install is not required (external Windows report, issue 5).
+# >=14: the [ctk] extra first exists in CuPy 14 — older wheels install
+# WITHOUT the bundled runtime and pip only warns.
+gpu = ["cupy-cuda12x[ctk]>=14.0; platform_system != 'Darwin'"]
 # The AI assistant is stdlib-only by design (urllib HTTP client, local
 # or cloud LLM backends) — the empty extra is a documentation marker:
 # `pip install linac_gen[assist]` succeeds and adds nothing, and the
@@ -75,8 +79,8 @@ docs = [
 testpaths = ["tests"]
 pythonpath = [".", "gui"]
 markers = [
-    "physics: standard physics benchmarks (drift expansion, focus quad, SC growth); opt-in via 'pytest -m physics'.",
-    "slow: long integration tests (PIP-II BTL alignment ensemble, etc.); opt-in via 'pytest -m slow'.",
+    "physics: standard physics benchmarks (drift expansion, focus quad, SC growth); runs by default — deselect with -m 'not physics'.",
+    "slow: long integration tests (real-deck ensembles, etc.); runs by default — deselect with -m 'not slow'.",
 ]
 
 [tool.setuptools.packages.find]

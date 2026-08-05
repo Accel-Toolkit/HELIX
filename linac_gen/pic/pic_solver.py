@@ -60,7 +60,8 @@ except ImportError:
     _log.warning(
         "PIC: C++ kernels unavailable (linac_gen._pic_kernels not importable); "
         "falling back to slower Python implementation. Rebuild the extension "
-        "with `pip install -e .` to regain C++ speed."
+        "with `pip install -e .` to regain C++ speed (a failed kernel build "
+        "prints a warning in the install log; a C++ compiler is required)."
     )
 
 # CIC: use C++ when available; TSC has no C++ kernel yet so always uses Python.

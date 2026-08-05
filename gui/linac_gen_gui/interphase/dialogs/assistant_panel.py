@@ -1132,7 +1132,7 @@ class AssistantPanel(QDialog):
             self._wake_btn.setEnabled(False)
             self._mic_btn.setToolTip(
                 "Voice input needs the optional audio stack: "
-                "pip install linac_gen[assist-voice]")
+                'pip install -e ".[assist-voice]"')
         else:
             # MIRAGE lesson the first port missed: warm Whisper the
             # moment the panel opens (background), not on first use —
@@ -1532,6 +1532,32 @@ class AssistantPanel(QDialog):
                 mic.on_overflow = self._on_mic_overflow
                 mic.open()                       # the blocking CoreAudio call
             except Exception as exc:             # noqa: BLE001
+                # missing/broken OPTIONAL voice deps — sounddevice not
+                # installed (ModuleNotFoundError), a broken wheel's "DLL
+                # load failed" (ImportError), or sounddevice present but
+                # libportaudio absent (OSError with "PortAudio" in it) —
+                # are configuration, not faults: one stderr line instead
+                # of a traceback, and no retry loop, because backoff
+                # can't install a package (wake auto-enable + 5 retries
+                # printed six stacked tracebacks on a voice-less
+                # install).  Other OSErrors (device busy, CoreAudio
+                # hiccups) keep the traceback + backoff below.
+                if isinstance(exc, ImportError) or (
+                        isinstance(exc, OSError) and "PortAudio" in str(exc)):
+                    import sys as _sys
+                    if not getattr(self, "_voice_dep_warned", False):
+                        self._voice_dep_warned = True
+                        print(f"[voice] voice dependencies unavailable "
+                              f"({exc}) — voice features disabled; install "
+                              'with: pip install -e ".[assist-voice]"',
+                              file=_sys.stderr)
+                    try:
+                        self.gui_call.emit(partial(
+                            self._listen_start_failed,
+                            gen, str(exc), retry=False))
+                    except RuntimeError:         # panel died while we built
+                        pass
+                    return
                 import traceback as _tb
                 _tb.print_exc()      # land the real error in the launch log
                 try:
@@ -1621,11 +1647,18 @@ class AssistantPanel(QDialog):
         except RuntimeError:
             pass
 
-    def _listen_start_failed(self, gen: int, err: str):
+    def _listen_start_failed(self, gen: int, err: str, retry: bool = True):
         if gen != self._listen_gen or self._closing:
             return
         self._append(f"[voice] wake listening unavailable: {err}")
         self._shutdown_listening()
+        if not retry:
+            # unrecoverable (missing optional dependency) — backoff can't
+            # fix it, so stop cleanly instead of retrying into more errors.
+            # Text AFTER uncheck: the toggled(False) handler clears _prog.
+            self._wake_btn.setChecked(False)
+            self._prog.setText("voice unavailable — optional deps missing")
+            return
         # RETRY with backoff (2→30 s) instead of giving up after one
         # attempt: a device mid-switch cured itself seconds later while
         # the assistant stayed permanently deaf

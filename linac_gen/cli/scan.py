@@ -173,7 +173,7 @@ def run(args) -> int:
     vary_names = [v for v, _ in varied]
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open("w", newline="") as fh:
+    with out.open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow([*vary_names, *_METRICS])
         for combo, res in zip(combos, results):

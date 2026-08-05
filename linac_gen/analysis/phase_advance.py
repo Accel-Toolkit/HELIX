@@ -1621,7 +1621,9 @@ def element_record_span(results, el_start: int, el_end_excl: int) -> tuple:
     one-record-per-element data (row 0 = INPUT, row i = exit of
     element i−1).
     """
-    exit_idx = getattr(results, "element_exit_idx", None) or []
+    exit_idx = getattr(results, "element_exit_idx", None)
+    if exit_idx is None:                    # `or []` broke on ndarrays:
+        exit_idx = []                       # truth value is ambiguous
     if len(exit_idx) >= el_end_excl >= 1:
         r0 = 0 if el_start <= 0 else int(exit_idx[el_start - 1])
         r1 = int(exit_idx[el_end_excl - 1])

@@ -425,7 +425,10 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
         r"^\s*;\s*HELIX_SC_GRID\s+([\d.eE+-]+)\s*(?:;.*)?$"
     )
 
-    with open(filepath) as fh:
+    # latin-1 is byte-transparent: real decks are cp1252/latin-1 and
+    # the locale default (cp1252 on Windows, utf-8 elsewhere) made
+    # parsing platform-dependent (external Windows report, issue 3).
+    with open(filepath, encoding="latin-1") as fh:
         line_num = 0                       # survives an empty file
         for line_num, raw_line in enumerate(fh, 1):
             # ``;@LG key=value`` directive — extract before stripping comments.

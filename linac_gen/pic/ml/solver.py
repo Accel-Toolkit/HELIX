@@ -122,7 +122,7 @@ class HaloPicSolver(PicSolver):
         import torch
         from linac_gen.surrogates.base import MlpHead
         d = Path(directory)
-        meta = json.loads((d / "metadata.json").read_text())
+        meta = json.loads((d / "metadata.json").read_text(encoding="utf-8"))
         net = MlpHead(meta["input_dim"], meta["output_dim"],
                       tuple(meta["hidden_dims"]))
         net.load_state_dict(torch.load(d / "weights.pt",

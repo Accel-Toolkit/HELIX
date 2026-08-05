@@ -51,6 +51,17 @@ _C_LIGHT_CONV = 299.792458
 # via LINAC_GEN_FIELDMAP_KERNEL=0.  Because both paths are bitwise
 # identical, the switch exists for verification/debugging, not physics.
 import os as _os
+# torch FIRST, same single-OpenMP-image discipline as pic_solver.py: the
+# pip-built kernel compiles with -fopenmp but links no libomp on macOS
+# (by design — exactly one OpenMP runtime per process), so its ___kmpc_*
+# symbols resolve against the image torch has already loaded.  Without
+# this guard the import below fails on macOS pip installs whenever field
+# maps are touched before anything imported torch, and the fused kernel
+# silently degrades to scipy RGI.
+try:  # noqa: SIM105
+    import torch  # type: ignore  # noqa: F401
+except Exception:                                     # pragma: no cover
+    pass
 try:
     from linac_gen._fieldmap_kernels import interp3_multi as _interp3_multi
     _KERNEL_AVAILABLE = True

@@ -421,7 +421,7 @@ def parse_madx(filepath: str) -> tuple[Lattice, dict]:
     ``"title"`` (str), ``"warnings"`` (list[str]) and ``"reference"``
     (the :class:`ReferenceParticle` built from the BEAM command).
     """
-    text = _strip_comments(Path(filepath).read_text())
+    text = _strip_comments(Path(filepath).read_text(encoding="latin-1"))
     statements = _split_statements(text)
 
     variables: dict = {}

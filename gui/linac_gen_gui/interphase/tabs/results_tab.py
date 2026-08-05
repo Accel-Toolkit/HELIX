@@ -4412,6 +4412,568 @@ class _FootprintPopup(_PopupPlot):
         self._info.setText(f"footprint failed: {msg}")
 
 
+class _SccWorker(
+        __import__("PyQt6.QtCore", fromlist=["QThread"]).QThread):
+    """Runs the LEBT gas-neutralisation analysis (and the optional pressure
+    scan) off the GUI thread — the computed-balance mode solves a nonlinear
+    Poisson-Boltzmann fixed point per slice."""
+
+    from PyQt6.QtCore import pyqtSignal as _Signal
+    finished_ok = _Signal(object)
+    failed = _Signal(str)
+
+    def __init__(self, results, lattice, kwargs, scan_pressures=None,
+                 mode="analysis", beam_config=None):
+        super().__init__()
+        # numpy on the 544 KB default macOS QThread stack -> SIGBUS
+        # (house pattern — see workers._MatchWorker).
+        self.setStackSize(16 * 1024 * 1024)
+        import threading
+        self._results = results
+        self._lattice = lattice
+        self._kwargs = dict(kwargs)
+        self._scan = list(scan_pressures) if scan_pressures else None
+        self._mode = mode
+        self._beam_config = beam_config
+        self._stop = threading.Event()
+
+    def request_stop(self):
+        self._stop.set()
+
+    def run(self):
+        try:
+            import warnings as _w
+
+            from linac_gen.analysis.scc.driver import scc_analysis
+        except Exception as exc:                              # noqa: BLE001
+            self.failed.emit(str(exc))
+            return
+        try:
+            with _w.catch_warnings(record=True) as wlist:
+                _w.simplefilter("always")
+                if self._mode == "iterate":
+                    from linac_gen.analysis.scc.iterate import (
+                        scc_self_consistent,
+                    )
+                    out = scc_self_consistent(
+                        self._lattice, self._beam_config,
+                        should_stop=self._stop.is_set, **self._kwargs)
+                    payload = {"kind": "iterate", "out": out}
+                elif self._scan is None:
+                    out = scc_analysis(self._results, self._lattice,
+                                       should_stop=self._stop.is_set,
+                                       **self._kwargs)
+                    payload = {"kind": "analysis", "out": out}
+                else:
+                    rows = []
+                    for p_mbar in self._scan:
+                        if self._stop.is_set():
+                            raise RuntimeError("aborted")
+                        kw = dict(self._kwargs, pressure_mbar=float(p_mbar))
+                        a = scc_analysis(self._results, self._lattice,
+                                         should_stop=self._stop.is_set,
+                                         **kw)
+                        if a["reason"] is not None:
+                            raise RuntimeError(a["reason"])
+                        rows.append({
+                            "pressure_mbar": float(p_mbar),
+                            "tau_scc_us": a["tau_scc_global_us"],
+                            "mean_fc": a["mean_fc"],
+                            "transmission_gas_pct":
+                                a["transmission_gas_pct"],
+                            "phi_min_V": a["phi_min_V"],
+                        })
+                    payload = {"kind": "scan", "rows": rows}
+            payload["warnings"] = [str(w.message) for w in wlist]
+            self.finished_ok.emit(payload)
+        except RuntimeError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:                              # noqa: BLE001
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+
+
+class _SccPopup(_PopupPlot):
+    """LEBT space-charge compensation (residual-gas neutralisation).
+
+    DC/continuous results only — the mirror of the Hofmann popup's
+    bunched-only guard.  Ports the author's standalone SCC tool's
+    analysis layer (linac_gen.analysis.scc): gas library + calibrated
+    cross sections, tau_scc, the self-consistent Poisson-Boltzmann
+    steady-state balance ("Computed" mode) or an assumed eta, exact f_c
+    build-up, on-axis beam potential, residual-gas stripping/capture
+    loss, and suggested SpaceChargeComp card factors with export and a
+    confirm-gated Apply.
+    """
+
+    _PMIN_EXP, _PMAX_EXP = -7.0, -4.0        # log10(mbar) slider range
+
+    def __init__(self, parent, state):
+        super().__init__(parent, "LEBT compensation (SCC)", size=(1060, 720))
+        from PyQt6.QtWidgets import QDoubleSpinBox, QSlider
+        self._state = state
+        self._worker = None
+        self._payload = None
+        v = QVBoxLayout(self); v.setContentsMargins(12, 12, 12, 12); v.setSpacing(8)
+
+        r1 = QHBoxLayout(); r1.setSpacing(8)
+        r1.addWidget(QLabel("Gas:"))
+        self._gas = QComboBox()
+        from linac_gen.analysis.scc.driver import GAS_CHOICES
+        for g in GAS_CHOICES:
+            self._gas.addItem(g)
+        r1.addWidget(self._gas)
+        r1.addWidget(QLabel("Pressure:"))
+        self._p_slider = QSlider(Qt.Orientation.Horizontal)
+        self._p_slider.setRange(0, 1000)
+        self._p_slider.setValue(self._pressure_to_slider(8.0e-6))
+        self._p_slider.setFixedWidth(180)
+        self._p_slider.valueChanged.connect(self._on_pressure_moved)
+        r1.addWidget(self._p_slider)
+        self._p_label = QLabel("")
+        self._p_label.setStyleSheet(
+            f"color:{theme.TEXT_2}; font-family:{theme.FONT_MONO}; font-size:10px;")
+        r1.addWidget(self._p_label)
+        self._on_pressure_moved()
+        r1.addWidget(QLabel("T:"))
+        self._temp = QDoubleSpinBox(); self._temp.setRange(100.0, 600.0)
+        self._temp.setValue(300.0); self._temp.setSuffix(" K")
+        r1.addWidget(self._temp)
+        r1.addStretch(1)
+        v.addLayout(r1)
+
+        r2 = QHBoxLayout(); r2.setSpacing(8)
+        r2.addWidget(QLabel("Mode:"))
+        self._mode = QComboBox()
+        self._mode.addItem("Computed — f_c from balance")
+        self._mode.addItem("Assumed — eta set below")
+        self._mode.currentIndexChanged.connect(self._on_mode_changed)
+        r2.addWidget(self._mode)
+        r2.addWidget(QLabel("eta steady:"))
+        self._eta = QDoubleSpinBox(); self._eta.setRange(0.0, 1.0)
+        self._eta.setSingleStep(0.01); self._eta.setValue(0.92)
+        self._eta.setEnabled(False)
+        self._eta.setToolTip("Used by Assumed mode only; the Computed "
+                             "balance derives eta from the gas physics.")
+        r2.addWidget(self._eta)
+        r2.addWidget(QLabel("T_trapped:"))
+        self._ttrap = QDoubleSpinBox(); self._ttrap.setRange(0.5, 20.0)
+        self._ttrap.setValue(3.0); self._ttrap.setSuffix(" eV")
+        r2.addWidget(self._ttrap)
+        self._chk_taper = QCheckBox("end taper")
+        self._chk_taper.setChecked(True)
+        self._chk_taper.setToolTip(
+            "Phenomenological extractor/RFQ-repeller axial-escape taper "
+            "(floor 0.25 over the first/last 15% of the line).")
+        r2.addWidget(self._chk_taper)
+        r2.addWidget(QLabel("t:"))
+        self._tbuild = QDoubleSpinBox(); self._tbuild.setRange(0.0, 10000.0)
+        self._tbuild.setValue(0.0); self._tbuild.setSuffix(" \u00b5s")
+        self._tbuild.setToolTip("f_c build-up time; 0 = steady state.")
+        r2.addWidget(self._tbuild)
+        self._btn = QPushButton("Compute")
+        self._btn.clicked.connect(self._compute)
+        r2.addWidget(self._btn)
+        self._btn_scan = QPushButton("Pressure scan")
+        self._btn_scan.clicked.connect(self._compute_scan)
+        r2.addWidget(self._btn_scan)
+        self._btn_iter = QPushButton("Iterate")
+        self._btn_iter.setToolTip(
+            "Self-consistent card factors: repeatedly re-run the ENVELOPE "
+            "on a working copy with damped SPACE_CHARGE_COMP cards until "
+            "f_c stops moving.  The one-shot Compute uses beam sizes "
+            "tracked at the run's own space-charge state — a first "
+            "iteration, not the fixed point.  Needs the Beam tab set to "
+            "a continuous (DC) beam; the loaded lattice is not modified.")
+        self._btn_iter.clicked.connect(self._start_iterate)
+        r2.addWidget(self._btn_iter)
+        self._btn_export = QPushButton("Export cards")
+        self._btn_export.clicked.connect(self._export_cards)
+        self._btn_export.setEnabled(False)
+        r2.addWidget(self._btn_export)
+        self._btn_apply = QPushButton("Apply to lattice\u2026")
+        self._btn_apply.clicked.connect(self._apply_cards)
+        self._btn_apply.setEnabled(False)
+        r2.addWidget(self._btn_apply)
+        r2.addStretch(1)
+        v.addLayout(r2)
+
+        r3 = QHBoxLayout(); r3.setSpacing(8)
+        self._chk_cleared = QCheckBox("cleared region — elements")
+        self._chk_cleared.setToolTip(
+            "Force f_c toward a residual value over an element range "
+            "(ion clearing: a biased chopper/kicker sweeps the "
+            "compensating ions out, as in the PXIE LEBT's un-neutralised "
+            "section downstream of solenoid 2).  Range is INCLUSIVE and "
+            "indexed against the loaded lattice.")
+        self._chk_cleared.toggled.connect(self._on_cleared_toggled)
+        r3.addWidget(self._chk_cleared)
+        from PyQt6.QtWidgets import QSpinBox
+        self._cl_from = QSpinBox(); self._cl_to = QSpinBox()
+        for sp in (self._cl_from, self._cl_to):
+            sp.setRange(0, 0)
+            sp.setEnabled(False)
+            r3.addWidget(sp)
+            if sp is self._cl_from:
+                r3.addWidget(QLabel("→"))
+        r3.addWidget(QLabel("residual f_c:"))
+        self._cl_resid = QDoubleSpinBox()
+        self._cl_resid.setRange(0.0, 1.0)
+        self._cl_resid.setSingleStep(0.05)
+        self._cl_resid.setValue(0.0)
+        self._cl_resid.setEnabled(False)
+        r3.addWidget(self._cl_resid)
+        r3.addStretch(1)
+        v.addLayout(r3)
+        self._sync_cleared_range()
+
+        self._info = QLabel("")
+        self._info.setStyleSheet(
+            f"color:{theme.TEXT_2}; font-family:{theme.FONT_MONO}; font-size:10px;")
+        self._info.setWordWrap(True)
+        v.addWidget(self._info)
+
+        grid = QGridLayout(); grid.setSpacing(6)
+        self._plot_fc = _mk_plot("neutralisation f_c(z)", "")
+        self._plot_fc.setLabel("bottom", "z", units="m")
+        self._plot_fc.setYRange(0.0, 1.05)
+        self._c_fc = self._plot_fc.plot(pen=curve_pen("#34d399", width=2.0),
+                                        name="f_c")
+        self._c_eta = self._plot_fc.plot(
+            pen=pg.mkPen("#fbbf24", width=1.2,
+                         style=Qt.PenStyle.DashLine), name="eta_ss")
+        self._plot_phi = _mk_plot("on-axis beam potential \u03c6(z)", "")
+        self._plot_phi.setLabel("bottom", "z", units="m")
+        self._plot_phi.setLabel("left", "\u03c6", units="V")
+        self._c_phi = self._plot_phi.plot(pen=curve_pen("#38bdf8", width=2.0))
+        self._plot_tau = _mk_plot("\u03c4_scc(z)", "")
+        self._plot_tau.setLabel("bottom", "z", units="m")
+        self._plot_tau.setLabel("left", "\u03c4_scc", units="\u00b5s")
+        self._c_tau = self._plot_tau.plot(pen=curve_pen("#f472b6", width=2.0))
+        self._plot_loss = _mk_plot("residual-gas beam survival", "")
+        self._plot_loss.setLabel("bottom", "z", units="m")
+        self._plot_loss.setLabel("left", "survival", units="%")
+        self._c_loss = self._plot_loss.plot(pen=curve_pen("#f87171", width=2.0))
+        grid.addWidget(self._plot_fc, 0, 0)
+        grid.addWidget(self._plot_phi, 0, 1)
+        grid.addWidget(self._plot_tau, 1, 0)
+        grid.addWidget(self._plot_loss, 1, 1)
+        v.addLayout(grid, stretch=1)
+
+        # Bound methods only on long-lived AppState signals (lambda rule).
+        state.results_changed.connect(self._on_results_changed)
+        state.lattice_changed.connect(self._on_lattice_changed)
+
+    # ------------------------------------------------------------------
+    def _pressure_to_slider(self, p_mbar: float) -> int:
+        import math as _m
+        x = (_m.log10(max(p_mbar, 1e-30)) - self._PMIN_EXP) / (
+            self._PMAX_EXP - self._PMIN_EXP)
+        return int(round(1000 * min(max(x, 0.0), 1.0)))
+
+    def _slider_to_pressure(self) -> float:
+        x = self._p_slider.value() / 1000.0
+        return 10.0 ** (self._PMIN_EXP
+                        + x * (self._PMAX_EXP - self._PMIN_EXP))
+
+    def _on_pressure_moved(self, *_a):
+        try:
+            self._p_label.setText(f"{self._slider_to_pressure():.1e} mbar")
+        except RuntimeError:                                 # C++ side gone
+            pass
+
+    def _on_mode_changed(self, *_a):
+        try:
+            self._eta.setEnabled(self._mode.currentIndex() == 1)
+        except RuntimeError:                                 # C++ side gone
+            pass
+
+    def _on_results_changed(self, results):
+        self._payload = None
+        try:
+            self._btn_export.setEnabled(False)
+            self._btn_apply.setEnabled(False)
+            for c in (self._c_fc, self._c_eta, self._c_phi, self._c_tau,
+                      self._c_loss):
+                c.setData([], [])
+            self.refresh(results)
+        except RuntimeError:                                 # C++ side gone
+            pass
+
+    def _on_lattice_changed(self, *_a):
+        self._payload = None
+        try:
+            self._btn_export.setEnabled(False)
+            self._btn_apply.setEnabled(False)
+            self._sync_cleared_range()
+        except RuntimeError:                                 # C++ side gone
+            pass
+
+    def _on_cleared_toggled(self, on):
+        try:
+            for w in (self._cl_from, self._cl_to, self._cl_resid):
+                w.setEnabled(bool(on))
+        except RuntimeError:                                 # C++ side gone
+            pass
+
+    def _sync_cleared_range(self):
+        lat = self._state.lattice if self._state else None
+        n_el = len(lat.elements) if lat is not None else 0
+        hi = max(0, n_el - 1)
+        for sp in (self._cl_from, self._cl_to):
+            sp.setMaximum(hi)
+        self._chk_cleared.setEnabled(n_el > 0)
+        if n_el == 0:
+            self._chk_cleared.setChecked(False)
+
+    # ------------------------------------------------------------------
+    def refresh(self, results):
+        """Popup contract: cheap; the analysis runs via Compute."""
+        from linac_gen.analysis.scc.driver import is_continuous_results
+        if results is None:
+            self._info.setText("Run a DC/continuous envelope or MP "
+                               "simulation of the LEBT first.")
+            return
+        if not is_continuous_results(results):
+            self._info.setText(
+                "Bunched-beam results: this analysis applies to "
+                "DC/continuous (LEBT) transport — for bunched beams use "
+                "the Hofmann stability chart instead.")
+            return
+        if self._payload is None:
+            self._info.setText(
+                "DC results loaded \u00b7 choose gas / pressure / mode and "
+                "press Compute for the neutralisation analysis")
+
+    def _beam_kwargs(self) -> dict:
+        cfg = self._state.beam_config if self._state else None
+        species = str(getattr(cfg, "species", "H-") or "H-")
+        cur = getattr(cfg, "current", None)
+        return dict(
+            species=species,
+            current_mA=(float(cur) if cur is not None else None),
+            gas=self._gas.currentText(),
+            pressure_mbar=self._slider_to_pressure(),
+            temperature_K=float(self._temp.value()),
+            mode=("computed" if self._mode.currentIndex() == 0
+                  else "assumed"),
+            eta_assumed=float(self._eta.value()),
+            trapped_temp_eV=float(self._ttrap.value()),
+            taper=self._chk_taper.isChecked(),
+            build_up_us=(float(self._tbuild.value())
+                         if self._tbuild.value() > 0 else None),
+        ) | ({"cleared_regions": [[min(self._cl_from.value(),
+                                      self._cl_to.value()),
+                                  max(self._cl_from.value(),
+                                      self._cl_to.value())]],
+              "cleared_residual": float(self._cl_resid.value())}
+             if self._chk_cleared.isChecked() else {})
+
+    def _start_worker(self, scan=None):
+        if self._worker is not None and self._worker.isRunning():
+            return
+        from linac_gen.analysis.scc.driver import is_continuous_results
+        results = self._state.results if self._state else None
+        if results is None or not is_continuous_results(results):
+            self.refresh(results)
+            return
+        lat = self._state.lattice if self._state else None
+        self._btn.setEnabled(False)
+        self._btn_scan.setEnabled(False)
+        self._btn_iter.setEnabled(False)
+        self._btn.setText("Computing\u2026")
+        self._worker = _SccWorker(results, lat, self._beam_kwargs(),
+                                  scan_pressures=scan)
+        self._worker.finished_ok.connect(self._on_done)
+        self._worker.failed.connect(self._on_failed)
+        self._worker.start()
+
+    def _compute(self):
+        self._start_worker()
+
+    def _compute_scan(self):
+        import numpy as _np
+        self._start_worker(scan=list(_np.logspace(self._PMIN_EXP,
+                                                  self._PMAX_EXP, 13)))
+
+    def _start_iterate(self):
+        # Deliberately NOT gated on session results: the iterator runs its
+        # own envelopes, and Apply nulls state.results \u2014 the button must
+        # survive that.  Gates on a DC beam config + a lattice instead.
+        if self._worker is not None and self._worker.isRunning():
+            return
+        state = self._state
+        cfg = getattr(state, "beam_config", None) if state else None
+        lat = state.lattice if state else None
+        if lat is None or cfg is None:
+            self._info.setText("self-consistent SCC needs a loaded lattice "
+                               "and a beam configuration")
+            return
+        if not getattr(cfg, "continuous", False):
+            self._info.setText(
+                "self-consistent SCC needs a DC beam \u2014 enable continuous "
+                "beam in the Beam tab")
+            return
+        kwargs = self._beam_kwargs()
+        # The iterator tracks at the Beam-tab current; the run-recorded
+        # value each iteration is identical by construction, so passing
+        # current_mA would be redundant at best.
+        kwargs.pop("current_mA", None)
+        self._btn.setEnabled(False)
+        self._btn_scan.setEnabled(False)
+        self._btn_iter.setEnabled(False)
+        self._btn_iter.setText("Iterating\u2026")
+        self._worker = _SccWorker(None, lat, kwargs, mode="iterate",
+                                  beam_config=cfg)
+        self._worker.finished_ok.connect(self._on_done)
+        self._worker.failed.connect(self._on_failed)
+        self._worker.start()
+
+    def _on_done(self, payload):
+        try:
+            if self.sender() is not self._worker:
+                return
+            self._btn.setEnabled(True)
+            self._btn_scan.setEnabled(True)
+            self._btn_iter.setEnabled(True)
+            self._btn.setText("Compute")
+            self._btn_iter.setText("Iterate")
+            if payload["kind"] in ("analysis", "iterate"):
+                self._payload = payload["out"]
+                self._render_analysis()
+                if (payload["kind"] == "iterate"
+                        and payload["out"].get("reason") is None):
+                    it = payload["out"].get("iterate") or {}
+                    line = (f"self-consistent in {it.get('n_iter', 0)} "
+                            "iterations"
+                            if it.get("converged") else
+                            f"NOT converged after {it.get('n_iter', 0)} "
+                            "iterations — factors are the last damped set")
+                    self._info.setText(self._info.text() + f" · {line}")
+            else:
+                self._render_scan(payload["rows"])
+        except RuntimeError:                                 # C++ side gone
+            pass
+
+    def _on_failed(self, msg):
+        try:
+            if self.sender() is not self._worker:
+                return
+            self._btn.setEnabled(True)
+            self._btn_scan.setEnabled(True)
+            self._btn_iter.setEnabled(True)
+            self._btn.setText("Compute")
+            self._btn_iter.setText("Iterate")
+            # substring, not equality: a stop landing mid-analysis raises
+            # "SCC analysis aborted" — still a user-initiated abort
+            if "aborted" not in msg:
+                self._info.setText(f"SCC analysis failed: {msg}")
+        except RuntimeError:                                 # C++ side gone
+            pass
+
+    def _render_analysis(self):
+        a = self._payload
+        if a is None:
+            return
+        if a["reason"] is not None:
+            self._info.setText(a["reason"])
+            return
+        # restore the z axes (a pressure scan relabels them)
+        for pl in (self._plot_fc, self._plot_phi, self._plot_tau,
+                   self._plot_loss):
+            pl.setLabel("bottom", "z", units="m")
+        z = a["z_m"]
+        self._c_fc.setData(z, a["fc"])
+        self._c_eta.setData(z, a["eta_ss"])
+        self._c_phi.setData(z, a["phi_V"])
+        tau = np.where(np.isfinite(a["tau_scc_us"]), a["tau_scc_us"], np.nan)
+        self._c_tau.setData(z, tau)
+        self._c_loss.setData(z, a["survival_gas"] * 100.0)
+        self._btn_export.setEnabled(bool(a["scc_cards"]))
+        self._btn_apply.setEnabled(bool(a["scc_cards"])
+                                   and self._state is not None
+                                   and self._state.lattice is not None)
+        tau_txt = ("\u221e" if not np.isfinite(a["tau_scc_global_us"])
+                   else f"{a['tau_scc_global_us']:.1f} \u00b5s")
+        t_txt = ("steady state" if a["build_up_us"] is None
+                 else f"t = {a['build_up_us']:g} \u00b5s")
+        cleared = ""
+        if a.get("cleared_regions"):
+            regs = ", ".join(f"{r[0]}\u2013{r[1]}"
+                             for r in a["cleared_regions"])
+            cleared = (f" \u00b7 cleared el {regs} \u2192 f_c\u2248"
+                       f"{a['cleared_residual']:g}")
+            if not a.get("cleared_resolved", True):
+                cleared += " (UNRESOLVED \u2014 enable record_substeps)"
+        notes = f" \u00b7 {a['notes'][0]}" if a["notes"] else ""
+        self._info.setText(
+            f"f_c source: {a['fc_source']} \u00b7 {t_txt} \u00b7 "
+            f"\u03c4_scc = {tau_txt} \u00b7 \u27e8f_c\u27e9 = "
+            f"{a['mean_fc']:.3f} \u00b7 \u03c6\u2080 = "
+            f"{a['phi_min_V']:.0f}\u2026{a['phi_max_V']:.0f} V \u00b7 "
+            f"gas transmission {a['transmission_gas_pct']:.2f}% \u00b7 "
+            f"ion mass {a['mean_ion_mass_amu']:.1f} u{cleared}{notes}")
+
+    def _render_scan(self, rows):
+        p = np.array([r["pressure_mbar"] for r in rows])
+        self._c_fc.setData(np.log10(p), np.array([r["mean_fc"]
+                                                  for r in rows]))
+        self._c_eta.setData([], [])
+        self._c_phi.setData(np.log10(p), np.array([r["phi_min_V"]
+                                                   for r in rows]))
+        self._c_tau.setData(np.log10(p), np.array([r["tau_scc_us"]
+                                                   for r in rows]))
+        self._c_loss.setData(np.log10(p),
+                             np.array([r["transmission_gas_pct"]
+                                       for r in rows]))
+        for pl in (self._plot_fc, self._plot_phi, self._plot_tau,
+                   self._plot_loss):
+            pl.setLabel("bottom", "log\u2081\u2080 pressure (mbar)")
+        self._info.setText(
+            f"pressure scan at current settings ({len(rows)} points, "
+            "x-axis: log\u2081\u2080 mbar) \u00b7 press Compute to return "
+            "to the z-profiles")
+
+    # ------------------------------------------------------------------
+    def _apply_cards(self):
+        a = self._payload
+        state = self._state
+        if not a or a.get("reason") or state is None or state.lattice is None:
+            return
+        cards = a["scc_cards"]
+        lat = state.lattice
+        from linac_gen.elements.space_charge_comp import SpaceChargeComp
+        n_old = sum(isinstance(e, SpaceChargeComp) for e in lat.elements)
+        resp = QMessageBox.question(
+            self, "Apply SCC factors",
+            f"Insert {len(cards)} SPACE_CHARGE_COMP cards into the loaded "
+            f"lattice (replacing {n_old} existing ones)?\n\n"
+            "Current results will be cleared — re-run the envelope/MP "
+            "simulation to track with the computed compensation, and save "
+            "the deck to persist the cards.",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+        if resp != QMessageBox.StandardButton.Ok:
+            return
+        from linac_gen.analysis.scc.apply import apply_scc_cards
+        apply_scc_cards(lat, cards)
+        state.set_lattice(lat, path=state.lattice_path)
+        self._info.setText(
+            f"applied {len(cards)} SPACE_CHARGE_COMP cards "
+            f"({a['fc_source']}) — re-run to use them; save the deck to "
+            "persist")
+
+    def _export_cards(self):
+        a = self._payload
+        if not a or a.get("reason"):
+            return
+        from PyQt6.QtWidgets import QApplication
+        from linac_gen.analysis.scc.driver import suggested_scc_deck_lines
+        text = "\n".join(suggested_scc_deck_lines(a)) + "\n"
+        QApplication.clipboard().setText(text)
+        self._info.setText(
+            f"{len(a['scc_cards'])} SPACE_CHARGE_COMP lines copied to the "
+            "clipboard")
+
+
 class _EnergyPopup(_PopupPlot):
     def __init__(self, parent):
         super().__init__(parent, "Energy · γ · Transmission", size=(1000, 620))
@@ -7222,6 +7784,8 @@ _SECTIONS: list[tuple[str, list[tuple]]] = [
             "k_z/k_x",  "{:.3f}", "#f472b6"),
         ("footprint",   "Tune footprint (frozen SC)", "scatter", None,
             "",         "",       "#38bdf8"),
+        ("scc",         "LEBT compensation (SCC)",   "gauge",   None,
+            "f_c",      "{:.2f}", "#34d399"),
         ("long_twiss",  "Longitudinal Twiss",        "sliders", None,
             "mm/mrad",  "{:.3g}", "#fbbf24"),
         ("divergence",  "Divergence σ_x' · σ_y'",    "wave",    None,
@@ -7575,6 +8139,7 @@ class ResultsTab(QWidget):
             elif key == "tune_depr": dlg = _TuneDepressionPopup(self, self.state)
             elif key == "hofmann":   dlg = _HofmannPopup(self, self.state)
             elif key == "footprint": dlg = _FootprintPopup(self, self.state)
+            elif key == "scc":       dlg = _SccPopup(self, self.state)
             elif key == "field_map": dlg = _FieldMapPopup(self, self.state)
             elif key == "ttf":     dlg = _TtfPopup(self, self.state)
             elif key == "energy":  dlg = _EnergyPopup(self)

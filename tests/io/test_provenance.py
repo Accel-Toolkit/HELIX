@@ -103,7 +103,7 @@ def test_hdf5_provenance_referenced_inputs(recorder, tmp_path, deck):
         prov = f["provenance"].attrs
         assert prov["fp_dtype"] == "float64"
         # C++ kernels report the OpenMP schedule; pure-Python CI
-        # builds (LINAC_GEN_DISABLE_CPP=1) honestly report n/a
+        # pure-Python builds honestly report n/a
         assert (prov["omp_schedule"] == "static"
                 or str(prov["omp_schedule"]).startswith("n/a"))
         assert prov["integration_steps_per_metre"] == 100.0

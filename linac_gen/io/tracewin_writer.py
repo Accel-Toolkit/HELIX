@@ -182,7 +182,10 @@ def write_tracewin(lattice, filepath, frequency=None):
         _emit_card(fh, "FIELD_MAP", required, optionals)
         return emitted_fmp
 
-    with open(filepath, "w") as fh:
+    # latin-1 keeps written decks byte-compatible with TraceWin and
+    # round-trips exactly through our latin-1 readers; a stray char
+    # outside latin-1 degrades to "?" instead of crashing the writer.
+    with open(filepath, "w", encoding="latin-1", errors="replace") as fh:
 
         # Optional header FREQ
         if frequency is not None:

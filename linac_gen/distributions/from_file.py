@@ -75,7 +75,7 @@ def load_distribution(
     header: dict = {}
     data_lines: list[str] = []
 
-    with open(filepath, "r") as fh:
+    with open(filepath, "r", encoding="latin-1") as fh:
         for line in fh:
             stripped = line.strip()
             if stripped.startswith("#"):

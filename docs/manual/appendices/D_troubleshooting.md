@@ -70,18 +70,26 @@ threads simultaneously; the error-15 path triggers when one detects
 the other first.  Same fix: `pip install -e .` with the current
 `setup.py`, which is libomp-aware.
 
-### `_pic_kernels` builds but `OMP_NUM_THREADS` has no effect on Windows
+### Windows: process aborts at the first space-charge kick
 
-Probably built with classic MSVC `/openmp` (OpenMP 2.0) which silently
-ignores `collapse(3)` and only parallelises the outermost loop — most
-of the speedup is lost.  Rebuild with Visual Studio 2019 v16.10+
-(or newer) which `setup.py` will detect and use `/openmp:llvm`
-automatically.  To verify, look for `/openmp:llvm` in the `cl.exe`
-invocation during build.
+`OMP: Error #15` or a silent hard exit the moment a PIC run starts is
+the two-OpenMP-runtimes clash: a kernel built with `/openmp:llvm`
+loads LLVM's `libomp` next to the Intel `libiomp5md` bundled inside
+PyTorch, and the two abort on contact.  MSVC builds now default to
+`/openmp` (the `vcomp` runtime), which coexists with torch's — rebuild
+with the current `setup.py` and the abort disappears.  Only set
+`LINAC_GEN_OPENMP_LLVM=1` (the `/openmp:llvm` opt-in) for processes
+that never import torch.
 
-If you must use an older MSVC, opt into the legacy switch with
-`LINAC_GEN_OPENMP_FALLBACK=1 pip install -e .` — single-loop
-parallelism only, but the build will succeed.
+### `_pic_kernels` OpenMP scaling is modest on Windows
+
+The default `vcomp` runtime implements OpenMP 2.0, which ignores
+`collapse(3)` and parallelises only the outermost loop of the PIC
+kernels — still a large speedup over pure Python, but less than LLVM
+OpenMP achieves.  Torch-free deployments can rebuild with
+`LINAC_GEN_OPENMP_LLVM=1` to get `collapse(3)` back (see the abort
+entry above before doing this).  The old `LINAC_GEN_OPENMP_FALLBACK`
+switch is obsolete — its behaviour is now the default.
 
 ### `use_gpu='mps'` requested but torch unavailable
 

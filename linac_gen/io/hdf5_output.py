@@ -276,6 +276,17 @@ def save_results_hdf5(recorder, filepath: str, beam_config=None,
         ):
             if hasattr(recorder, attr):
                 env.create_dataset(attr, data=np.array(getattr(recorder, attr)))
+        # DC/continuous markers + run current + element→record map: needed by
+        # analyses of RELOADED runs (the LEBT SCC popup gates on `continuous`
+        # and scales by `current_mA`; adversarial finding F2 — loaded DC runs
+        # were refused as "bunched" because none of this was persisted).
+        env.attrs["continuous"] = bool(getattr(recorder, "continuous", False))
+        env.attrs["current_mA"] = float(
+            getattr(recorder, "current_mA", 0.0) or 0.0)
+        _exit_idx = getattr(recorder, "element_exit_idx", None)
+        if _exit_idx is not None and len(_exit_idx):
+            env.create_dataset("element_exit_idx",
+                               data=np.asarray(_exit_idx, dtype=np.int64))
 
         # ── reference history ─────────────────────────────────────────────────
         ref_grp = f.create_group("reference")
@@ -338,6 +349,8 @@ def load_results_hdf5(filepath: str) -> dict:
         if "envelope" in f:
             for key in f["envelope"]:
                 results[key] = f["envelope"][key][:]
+            for key, val in f["envelope"].attrs.items():
+                results[key] = val.item() if hasattr(val, "item") else val
         if "reference" in f:
             for key in f["reference"]:
                 results[f"ref_{key}"] = f["reference"][key][:]

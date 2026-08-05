@@ -36,7 +36,7 @@ def load_diag_targets(path):
     unconstrained); the third column (weight) is optional per row.
     """
     rows = []
-    with open(path) as fh:
+    with open(path, encoding="latin-1") as fh:
         for ln, raw in enumerate(fh, start=1):
             line = raw.split("#")[0].strip()
             if not line:

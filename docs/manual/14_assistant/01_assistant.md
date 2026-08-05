@@ -400,7 +400,7 @@ here goes near the simulation core.
 The GUI panel has an optional **offline** voice mode — press-and-hold
 the 🎤 button to speak, release to transcribe (local faster-whisper);
 tick **Speak replies** to hear a concise spoken summary of each answer.
-Install the audio stack with `pip install linac_gen[assist-voice]`;
+Install the audio stack with `pip install -e ".[assist-voice]"`;
 speech synthesis uses macOS `say` out of the box, or install
 `piper-tts` for a higher-quality offline voice.  With the stack absent
 the mic/speak controls are simply disabled — the assistant stays
@@ -412,7 +412,7 @@ model files in `~/.helix/assistant_models/` (`kokoro*.onnx` +
 neural voice — **sentence by sentence as the reply streams**, with
 barge-in (pressing the mic cuts the speech).  Without kokoro the
 speaker falls back to macOS `say`.  Install:
-`pip install linac_gen[assist-voice-kokoro]`.  The mic level also
+`pip install -e ".[assist-voice-kokoro]"`.  The mic level also
 animates the orb's listening bars while you hold push-to-talk.
 
 Two deliberate design choices:

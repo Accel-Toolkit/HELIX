@@ -328,6 +328,8 @@ def _add_common_beam_args(p, defaults):
 
 
 def main(argv=None) -> int:
+    from linac_gen.cli.common import make_console_encoding_safe
+    make_console_encoding_safe()     # ∈ in scope strings kills cp1252 consoles
     parser = argparse.ArgumentParser(
         prog="linac_gen.surrogates",
         description="HELIX surrogate-element CLI (M5).")

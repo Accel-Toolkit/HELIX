@@ -484,7 +484,7 @@ def parse_mad8(filepath: str, strict: bool = False, brho=None,
     """
     path = Path(filepath)
     warnings: list[str] = []
-    f = _Mad8File(path.read_text(errors="replace"), warnings)
+    f = _Mad8File(path.read_text(encoding="latin-1", errors="replace"), warnings)
 
     # --- reference / rigidity -----------------------------------------
     if f.beam_attrs:

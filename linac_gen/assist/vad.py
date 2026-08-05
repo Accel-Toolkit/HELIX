@@ -112,7 +112,7 @@ def _self_test_locked() -> bool:
             try:                              # remember across launches
                 m = _marker_path()
                 if m:
-                    open(m, "w").close()
+                    open(m, "w", encoding="utf-8").close()
             except Exception:                 # noqa: BLE001
                 pass
         return _SELFTEST == "pass"

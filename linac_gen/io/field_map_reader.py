@@ -64,7 +64,7 @@ def read_edz_1d(filepath: str) -> "FieldMapData":
     """
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Field map file not found: {filepath}")
-    with open(filepath, "r") as fh:
+    with open(filepath, "r", encoding="latin-1") as fh:
         lines = [ln.strip() for ln in fh if ln.strip()]
     return _parse_edz_1d_auto(lines)
 
@@ -155,7 +155,7 @@ def read_edz_2d(filepath: str, fm_type: int = 2) -> "FieldMapData":
     """
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Field map file not found: {filepath}")
-    with open(filepath, "r") as fh:
+    with open(filepath, "r", encoding="latin-1") as fh:
         lines = [ln.strip() for ln in fh if ln.strip()]
     return _parse_edz_2d_auto(lines, fm_type)
 
@@ -255,7 +255,7 @@ def read_csv(filepath: str) -> "FieldMapData":
 
     # Auto-detect delimiter: if first non-comment line contains a comma, use it
     delimiter = None
-    with open(filepath, "r") as fh:
+    with open(filepath, "r", encoding="latin-1") as fh:
         for line in fh:
             stripped = line.strip()
             if stripped and not stripped.startswith("#"):
@@ -470,7 +470,7 @@ def _read_edz(filepath: str, fm_type: int) -> FieldMapData:
         [Bz values for fm_type=7]
         [Br values for fm_type=7]
     """
-    with open(filepath, "r") as f:
+    with open(filepath, "r", encoding="latin-1") as f:
         lines = [line.strip() for line in f if line.strip()]
 
     first_tokens = lines[0].split()
@@ -694,7 +694,7 @@ def _read_single_3d(filepath: str) -> tuple:
     """
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"3-D field map file not found: {filepath}")
-    with open(filepath, "r") as fh:
+    with open(filepath, "r", encoding="latin-1") as fh:
         # Comments/blank lines may appear between header rows in some
         # exporters; strip them preserving order.
         raw = [ln.strip() for ln in fh

@@ -77,7 +77,7 @@ def clear_field_map_cache() -> None:
 def _clean_lines(filepath: str) -> List[str]:
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Field-map file not found: {filepath}")
-    with open(filepath, "r") as fh:
+    with open(filepath, "r", encoding="latin-1") as fh:
         return [ln.strip() for ln in fh
                 if ln.strip() and not ln.lstrip().startswith(("#", "!"))]
 
@@ -394,7 +394,7 @@ def read_tracewin_fieldmap(geom: int, prefix: str,
         # Manual §"Current or space charge compensation map":
         #   Line 1:    <mode> <N>          mode 0=Scc(z), 1=I(z)
         #   Lines 2..: <Z_i> <Scc_i or I_i>   (Z in metres)
-        with open(scc_path, "r") as fh:
+        with open(scc_path, "r", encoding="latin-1") as fh:
             tokens = fh.readline().split()
             if len(tokens) >= 2:
                 mode = int(float(tokens[0]))
@@ -433,7 +433,7 @@ def read_tracewin_fieldmap(geom: int, prefix: str,
         # = 0`` is required by the manual.  We strip the header line and
         # read the rest with ``np.genfromtxt`` which tolerates trailing
         # whitespace and mixed 2/3 column counts.
-        with open(ouv_path, "r") as fh:
+        with open(ouv_path, "r", encoding="latin-1") as fh:
             raw_lines = [ln for ln in fh.readlines() if ln.strip()]
         # TraceWin emits a 1-integer header (``N``) as the first line.
         # Legacy / hand-authored files skip the header and start with data.

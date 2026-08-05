@@ -1,0 +1,10 @@
+; DC LEBT for the SCC (space-charge compensation) demo
+; 30 keV H-, two solenoids, 60 mm pipe — see manual: Space charge -> LEBT compensation (SCC)
+TITLE SCC demo LEBT (30 keV H-)
+FREQ 162.5
+DRIFT 300.0 60.0
+SOLENOID 250.0 0.16 60.0
+DRIFT 900.0 60.0
+SOLENOID 250.0 0.16 60.0
+DRIFT 300.0 60.0
+END

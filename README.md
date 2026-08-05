@@ -106,7 +106,26 @@ pip install -e ".[gui,dev]"    # + GUI workbench and developer tooling
 pip install -e ".[gpu]"        # + optional CUDA GPU acceleration
 ```
 
-> 💡 If the C++ build fails (no compiler, etc.), HELIX still runs — it falls back to pure-Python PIC kernels: slower, but numerically equivalent.
+> 💡 If the C++ build fails (no compiler, etc.), the install still succeeds and HELIX still runs — it falls back to pure-Python PIC kernels: slower, but numerically equivalent. The install log prints a clear warning when that happens; set `LINAC_GEN_REQUIRE_CPP=1` to make a failed kernel build fatal instead.
+
+### Windows notes
+
+- **No compiler needed.** Without Visual Studio Build Tools the C++ kernels
+  are skipped with a warning and HELIX uses the pure-Python fallback.
+- **OpenMP.** With MSVC, the kernels build against `vcomp` (`/openmp`) by
+  default so they coexist with PyTorch's bundled Intel OpenMP. Set
+  `LINAC_GEN_OPENMP_LLVM=1` before installing to opt into `/openmp:llvm`
+  (faster nested loops, but **aborts at the first space-charge kick in any
+  process that also imports torch** — only for torch-free deployments).
+- **Console encoding.** `set PYTHONUTF8=1` is recommended on stock
+  (cp1252) consoles; HELIX degrades gracefully without it.
+- **GPU.** PyTorch wheels on PyPI are CPU-only on Windows — install a CUDA
+  build first, e.g.
+  `pip install torch --index-url https://download.pytorch.org/whl/cu126`
+  (Pascal-generation GPUs need cu126; cu128 dropped them), then
+  `pip install -e ".[gpu]"` for the CuPy PIC-FFT path. The `[gpu]` extra
+  bundles the CUDA runtime via pip (`cupy-cuda12x[ctk]`), so no system
+  CUDA Toolkit install is required.
 
 ### Command line — headless, parallel, scriptable
 
@@ -263,7 +282,7 @@ worked examples, and validated benchmarks — is hosted at
 
 ```bash
 pip install -e ".[docs]"
-mkdocs serve --config-file docs/manual/mkdocs.yml
+mkdocs serve --config-file docs/mkdocs.yml
 ```
 
 <img src="docs/screenshots/divider.svg" width="100%" role="presentation"/>
@@ -302,6 +321,12 @@ pytest -q
 ```
 
 The suite covers lattice parsing, tracking, space charge, matching, the CLI, and the GUI.
+Long integration tests (`slow` marker) run by default. For a quicker first
+check — recommended on Windows — deselect them and skip the GUI suite:
+
+```bash
+pytest -q -m "not slow" --ignore=tests/gui
+```
 
 <img src="docs/screenshots/divider.svg" width="100%" role="presentation"/>
 
@@ -315,6 +340,10 @@ reads [`CITATION.cff`](CITATION.cff).
 ## 🙏 Acknowledgments
 
 Developed at **Fermi National Accelerator Laboratory** for the **PIP-II** project.
+
+Thanks to an external user whose detailed Windows 11 install report drove a
+round of portability fixes (build fallback, OpenMP coexistence with PyTorch,
+locale-independent I/O).
 
 ## License
 

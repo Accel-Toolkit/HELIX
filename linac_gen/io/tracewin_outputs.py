@@ -98,7 +98,7 @@ def read_partran_out(path: str | Path) -> dict:
     """
     rows: list[list[float]] = []
     mc2_MeV = 0.0
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+    with open(path, "r", encoding="latin-1") as fh:
         for line in fh:
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
@@ -226,7 +226,7 @@ def write_partran_out(
     s_arr     = list(getattr(results, "s", []))
     n         = len(s_arr)
     if n == 0:
-        path.write_text(_PARTRAN_HEADER)
+        path.write_text(_PARTRAN_HEADER, encoding="latin-1", errors="replace")
         return path
 
     sig_x   = list(getattr(results, "sigma_x",   []))
@@ -312,7 +312,7 @@ def write_partran_out(
                        getattr(results, "current_mA", 0.0))
     n_particles_total = int(getattr(beam_cfg, "n_particles", 0) or 0)
 
-    with path.open("w", encoding="utf-8") as fh:
+    with path.open("w", encoding="latin-1", errors="replace") as fh:
         fh.write(_PARTRAN_HEADER)
         # Genuine TW files carry a numeric parameter line after the
         # column header: mc² [MeV], RF frequency [MHz], charge sign,
@@ -573,7 +573,7 @@ def write_envelope_txt(
     freq_Hz = (float(getattr(beam_cfg, "frequency", 0.0)) * 1e6
                if beam_cfg is not None else 0.0)
 
-    with path.open("w", encoding="utf-8") as fh:
+    with path.open("w", encoding="latin-1", errors="replace") as fh:
         fh.write(_ENV_HEADER_TAB)
         fh.write("\n")  # blank line as in the reference fixtures
         for i in range(n):

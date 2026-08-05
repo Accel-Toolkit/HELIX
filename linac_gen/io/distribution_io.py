@@ -29,7 +29,7 @@ def export_distribution(beam, filepath: str) -> None:
     """
     ref = beam.ref
     alive = beam.alive_particles
-    with open(filepath, "w") as f:
+    with open(filepath, "w", encoding="latin-1", errors="replace") as f:
         f.write("# Linac_Gen distribution file\n")
         f.write(f"# species: {ref.species.name}\n")
         f.write(f"# w_kin_ref: {ref.w_kin:.6f} MeV\n")

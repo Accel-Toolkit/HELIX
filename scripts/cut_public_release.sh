@@ -55,6 +55,7 @@ rm -rf examples/pipii examples/MEBT_To_Foil examples/pipii_tunable \
        examples/pip2_misalignment_study examples/pipii_hwr_ssr1_match \
        examples/piplattice examples/emittance_min examples/lebt_pxie \
        examples/lebt_plus_rfq examples/hebt_diag
+rm -f  tests/analysis/test_scc_pxie_anchor.py
 rm -f  examples/mebt_plus_hwr*.dat examples/mebt_pipii.dat \
        examples/mebt_line.dat examples/mebt_pipii_demo.py \
        examples/test.lgproj mebt_pipii.dat \
