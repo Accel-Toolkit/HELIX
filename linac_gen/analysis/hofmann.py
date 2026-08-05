@@ -24,6 +24,11 @@ qualitative chart topology (bands grow toward strong space charge and
 disappear at η → 1).  For quantitative stop-band edges consult the
 published charts for the nearest ε_z/ε_x family (the ratio is
 reported so the right family can be picked).
+
+For SOLVED stop-band edges and per-cell growth rates, use the corrected
+anisotropic dispersion solver instead:
+:mod:`linac_gen.analysis.hofmann_dispersion` (branch functions + chart)
+and :mod:`linac_gen.analysis.hofmann_stability` (per-cell driver).
 """
 from __future__ import annotations
 

@@ -239,9 +239,10 @@ value in parentheses when they differ; `-q` output is unchanged.
 
 Two diagnostics build directly on the channel tunes:
 
-* **[Hofmann stability chart](07_hofmann_footprint.md#hofmann-stability-chart)** —
-  the per-cell (k_z/k_x, k_x/k_0x) trajectory overlaid on the
-  anisotropy-resonance chart.
+* **[Hofmann stability analysis](07_hofmann_footprint.md#hofmann-stability-analysis-corrected-anisotropic-solver)** —
+  per-cell growth rates from the corrected anisotropic l=2/3/4 KV
+  dispersion relations, with the trajectory overlaid on the solved
+  growth-rate chart.
 * **[Tune footprint](07_hofmann_footprint.md#frozen-sc-tune-footprint)** —
   the incoherent per-particle tune spread under a frozen space-charge
   field.

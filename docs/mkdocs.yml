@@ -169,7 +169,7 @@ nav:
       - Aperture profile: 09_diagnostics/04_aperture.md
       - H⁻ stripping: 09_diagnostics/05_stripping.md
       - Phase advance: 09_diagnostics/06_phase_advance.md
-      - Hofmann chart & tune footprint: 09_diagnostics/07_hofmann_footprint.md
+      - Hofmann stability & tune footprint: 09_diagnostics/07_hofmann_footprint.md
   - GUI:
       - Overview: 10_gui/01_overview.md
       - Lattice tab: 10_gui/02_lattice_tab.md

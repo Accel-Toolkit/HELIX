@@ -35,7 +35,7 @@ from linac_gen.assist.messages import (
 #: compute tools executed through the job manager (return a job_id
 #: immediately); other approved tools run inline.
 LONG_RUNNING = {"run_envelope", "run_mp", "run_match", "parameter_scan",
-                "run_campaign", "tuning_plan"}
+                "run_campaign", "tuning_plan", "hofmann_stability"}
 
 _MAX_TOOL_RESULT_CHARS = 20_000
 

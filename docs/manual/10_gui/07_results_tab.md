@@ -213,21 +213,27 @@ fields as the Dispersion popup, with the same fallback for
 
 Two tiles in **TWISS · DIVERGENCE · HALO** open the space-charge
 diagnostics built on the channel tunes (full theory:
-[Hofmann chart & tune footprint](../09_diagnostics/07_hofmann_footprint.md)):
+[Hofmann stability & tune footprint](../09_diagnostics/07_hofmann_footprint.md)):
 
-* **Hofmann stability chart** — the per-cell (k_z/k_x, k_x/k_0x)
-  trajectory over the anisotropy-resonance chart, with resonance lines at
-  k_z/k_x = m/n and *indicative* bands at the median depression.  It reads
-  the pre-computed phase-probe maps, so it refreshes instantly.
+* **Hofmann stability chart** — opens with the exact per-cell
+  (k_z/k_x, k_x/k_0x) trajectory (instant, from the pre-computed
+  phase-probe maps).  **Compute chart** then solves the corrected
+  anisotropic l=2/3/4 KV dispersion relations off-thread and renders the
+  γ/ν₀ₓ growth-rate heatmap at the trajectory's median ε_z/ε_x, with each
+  cell classified: green = valid + stable, red = flagged
+  (γ/ν₀ₓ > 0.01 inside the S² ≤ 10 gate), grey hollow = extrapolated
+  (S² > 10), amber ring = fold risk.  Optional toggles add per-cell
+  Monte-Carlo `P(unstable)` and the *indicative* legacy m/n bands.
+
+* **Tune footprint (frozen SC)** — press **Compute footprint** to re-track
+  the selected cell **off-thread** with a frozen matched-beam field; the
+  scatter shows each particle's (μ_x, μ_y) coloured by launch amplitude,
+  with the core tune and spread in the caption.
 
 For **multi-particle results** (no probe maps), the tune-depression popup
 offers a **Compute channel model** button — a companion envelope probe at
 the current Beam-tab config that fills the model curves next to the MP
 beam markers; the Hofmann chart reuses the same cached probe.
-* **Tune footprint (frozen SC)** — press **Compute footprint** to re-track
-  the selected cell **off-thread** with a frozen matched-beam field; the
-  scatter shows each particle's (μ_x, μ_y) coloured by launch amplitude,
-  with the core tune and spread in the caption.
 
 ## Lattice-parameter field plots {#lattice-params}
 

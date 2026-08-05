@@ -19,7 +19,7 @@ from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
     QDialog, QFileDialog, QMenu, QTableWidget, QTableWidgetItem,
-    QHeaderView, QMessageBox, QComboBox, QSpinBox,
+    QHeaderView, QMessageBox, QComboBox, QSpinBox, QCheckBox,
 )
 
 from linac_gen_gui.interphase.app_settings import make_settings
@@ -157,7 +157,10 @@ def _images_from_plotitem(item: pg.PlotItem, default_name: str) -> list[_Image]:
                 continue
             extent: tuple[float, float, float, float] | None = None
             try:
-                rect = it.boundingRect()
+                # Map through the item's transform: setRect-positioned
+                # heatmaps otherwise export a PIXEL-INDEX extent (0..nx,
+                # 0..ny) instead of their data coordinates.
+                rect = it.mapRectToParent(it.boundingRect())
                 extent = (float(rect.left()), float(rect.right()),
                           float(rect.top()),  float(rect.bottom()))
             except Exception:
@@ -3812,26 +3815,121 @@ class _TuneDepressionPopup(_PopupPlot):
         self._info.setText("  ·  ".join(notes))
 
 
-class _HofmannPopup(_PopupPlot):
-    """Channel-tune trajectory on the Hofmann stability chart.
+#: Single-slot cache of the last computed Hofmann growth chart, keyed by
+#: (solver_fingerprint, eps, steps, r_max).  The fingerprint keying is the
+#: lesson of the source manuscript's stale-cache incident: a chart is only
+#: valid for the physics that produced it.
+_HOFMANN_CHART_CACHE: dict = {}
 
-    Conventions pinned to Hofmann et al., PRST-AB 6, 024202 (2003):
-    abscissa k_z/k_x (depressed tune ratio), ordinate k_x/k_0x
-    (transverse tune depression), resonance families at k_z/k_x = m/n.
-    Band WIDTHS drawn here are indicative (see analysis.hofmann); the
-    ε_z/ε_x family selector is reported so the published chart for the
-    right family can be consulted for quantitative edges.
+
+class _HofmannChartWorker(
+        __import__("PyQt6.QtCore", fromlist=["QThread"]).QThread):
+    """Computes the per-cell stability table + growth-rate chart + optional
+    Monte-Carlo instability probabilities off the GUI thread (chart(steps=100)
+    ≈ 4 s, steps=200 ≈ 11 s of l=2,3,4 root scans)."""
+
+    from PyQt6.QtCore import pyqtSignal as _Signal
+    finished_ok = _Signal(object)
+    failed = _Signal(str)
+    progress_chunk = _Signal(int, int)         # (chunks done, total)
+
+    def __init__(self, results, period, steps: int = 100,
+                 want_prob: bool = False, n_mc: int = 200,
+                 r_max: float = 2.2):
+        super().__init__()
+        # numpy/BLAS on the 544 KB default macOS QThread stack → SIGBUS
+        # (house pattern — see workers._MatchWorker).
+        self.setStackSize(16 * 1024 * 1024)
+        import threading
+        self._results = results
+        self._period = period
+        self._steps = int(steps)
+        self._want_prob = bool(want_prob)
+        self._n_mc = int(n_mc)
+        self._r_max = float(r_max)
+        self._stop = threading.Event()
+
+    def request_stop(self):
+        self._stop.set()
+
+    def run(self):
+        try:
+            import warnings as _w
+
+            from linac_gen.analysis.hofmann_dispersion import (
+                ChartAborted, DispersionSolver, solver_fingerprint)
+            from linac_gen.analysis.hofmann_stability import hofmann_stability
+        except Exception as exc:                              # noqa: BLE001
+            self.failed.emit(str(exc))
+            return
+        try:
+            with _w.catch_warnings(record=True) as wlist:
+                _w.simplefilter("always")
+                tab = hofmann_stability(self._results, self._period,
+                                        should_stop=self._stop.is_set)
+            notes = [str(w.message) for w in wlist]
+            chart = None
+            eps_used = float("nan")
+            if tab["reason"] is None:
+                eps_fin = tab["eps_ratio"][np.isfinite(tab["eps_ratio"])]
+                eps_used = float(np.median(eps_fin)) if eps_fin.size else 1.0
+                if not eps_fin.size:
+                    notes.append("no finite per-cell eps_z/eps_x — chart "
+                                 "drawn at ASSUMED eps ratio 1.0")
+                key = (solver_fingerprint(), round(eps_used, 4),
+                       self._steps, self._r_max)
+                chart = _HOFMANN_CHART_CACHE.get(key)
+                if chart is None:
+                    if self._stop.is_set():
+                        raise ChartAborted("aborted")
+                    chart = DispersionSolver().chart(
+                        eps_used, r_max=self._r_max, steps=self._steps,
+                        should_stop=self._stop.is_set,
+                        progress=self.progress_chunk.emit)
+                    _HOFMANN_CHART_CACHE.clear()
+                    _HOFMANN_CHART_CACHE[key] = chart
+            prob = None
+            if self._want_prob and tab["reason"] is None:
+                from linac_gen.analysis.hofmann_probabilistic import (
+                    instability_probability)
+                prob = instability_probability(
+                    tab, N_mc=self._n_mc, should_stop=self._stop.is_set)
+            self.finished_ok.emit({"tab": tab, "chart": chart, "prob": prob,
+                                   "eps": eps_used, "notes": notes})
+        except ChartAborted:
+            self.failed.emit("aborted")
+        except Exception as exc:                              # noqa: BLE001
+            self.failed.emit(str(exc))
+
+
+class _HofmannPopup(_PopupPlot):
+    """Channel-tune trajectory on the corrected Hofmann growth-rate chart.
+
+    Axes as in Hofmann et al., PRST-AB 6, 024202 (2003): abscissa k_z/k_x
+    (depressed tune ratio), ordinate k_x/k_0x (transverse depression).
+    "Compute chart" solves the corrected anisotropic l=2/3/4 KV dispersion
+    relations (analysis.hofmann_dispersion, PRE 57, 4713 with the
+    manuscript's Eq. (24)/p. 4719/Eq. (41) corrections) on the (R, Y)
+    grid at the trajectory's median per-cell ε_z/ε_x and classifies each
+    cell: green = valid+stable, red = flagged (γ/ν₀ₓ > 0.01 inside the
+    S² ≤ 10 perturbative gate), grey hollow = outside the gate
+    (extrapolation), amber ring = fold-risk (bare μ near the 180° fold).
+    The optional "legacy bands" overlay draws the old indicative m/n
+    heuristic (qualitative only); "P(unstable)" adds per-cell Monte-Carlo
+    probabilities under the engineering jitter budget.
     """
 
     def __init__(self, parent, state):
-        super().__init__(parent, "Hofmann stability chart", size=(900, 640))
+        super().__init__(parent, "Hofmann stability chart", size=(900, 680))
         self._state = state
+        self._worker = None
+        self._payload = None
+        self._payload_period_idx = -1
         v = QVBoxLayout(self); v.setContentsMargins(12, 12, 12, 12); v.setSpacing(8)
         pr = QHBoxLayout(); pr.setSpacing(8)
         pr.addWidget(QLabel("Period:"))
         self._combo = QComboBox(); self._combo.setMinimumWidth(280)
-        self._combo.currentIndexChanged.connect(
-            lambda *_: self.refresh(self._state.results))
+        self._combo.currentIndexChanged.connect(self._on_period_changed)
         pr.addWidget(self._combo, stretch=1)
         self._info = QLabel("")
         self._info.setStyleSheet(
@@ -3840,28 +3938,90 @@ class _HofmannPopup(_PopupPlot):
         pr.addWidget(self._info, stretch=2)
         v.addLayout(pr)
 
+        cr = QHBoxLayout(); cr.setSpacing(8)
+        cr.addWidget(QLabel("Chart steps:"))
+        # chart() floors the grid at 100×70, so offering smaller values
+        # would only fragment the cache without changing the picture.
+        self._steps = QSpinBox(); self._steps.setRange(100, 300)
+        self._steps.setValue(100); self._steps.setSingleStep(20)
+        self._steps.setToolTip(
+            "R-axis resolution of the growth-rate chart.  100 ≈ 4 s, "
+            "200 ≈ 11 s (l=2,3,4 root scans, off the GUI thread).")
+        cr.addWidget(self._steps)
+        self._chk_prob = QCheckBox("P(unstable)")
+        self._chk_prob.setToolTip(
+            "Per-cell Monte-Carlo probability that γ/ν₀ₓ exceeds 0.01 "
+            "under the engineering jitter budget (σ_I=3%, mismatch 10%, "
+            "ε-ratio 5%, tunes 2%; N=200 draws, ~0.2 s/cell).")
+        cr.addWidget(self._chk_prob)
+        self._chk_bands = QCheckBox("legacy bands")
+        self._chk_bands.setToolTip(
+            "Indicative m/n resonance bands from the pre-solver width "
+            "heuristic — qualitative only, superseded by the computed "
+            "growth-rate chart.")
+        self._chk_bands.toggled.connect(self._on_bands_toggled)
+        cr.addWidget(self._chk_bands)
+        self._btn = QPushButton("Compute chart")
+        self._btn.clicked.connect(self._compute)
+        cr.addWidget(self._btn)
+        cr.addStretch(1)
+        v.addLayout(cr)
+
         self._plot = _mk_plot(
             "k_z/k_x  vs  k_x/k_0x   (trajectory: one point per cell)", "")
         self._plot.setLabel("bottom", "tune ratio k_z / k_x")
         self._plot.setLabel("left", "tune depression k_x / k_0x")
         self._plot.setXRange(0.0, 2.2)
         self._plot.setYRange(0.0, 1.05)
+        self._image = pg.ImageItem(axisOrder="row-major")
+        self._image.setZValue(-10)
+        self._plot.addItem(self._image)
+        cmap = pg.colormap.get("inferno")
+        self._image.setLookupTable(cmap.getLookupTable(0.0, 1.0, 256))
         self._band_items: list = []
         self._traj = self._plot.plot(
             pen=curve_pen("#f472b6", width=1.2), symbol="o", symbolSize=9,
             symbolBrush="#f472b6", symbolPen="w")
+        self._scatter = pg.ScatterPlotItem(size=11)
+        self._scatter.setZValue(5)
+        self._plot.addItem(self._scatter)
         v.addWidget(self._plot, stretch=1)
         self._periods: list = []
         self._populate_periods()
         # Bound methods only on the long-lived AppState signals — a
         # lambda here outlives the popup's C++ object and fires on a
         # deleted widget (see the PyQt6 lambda-connection rule).
-        state.results_changed.connect(self.refresh)
+        state.results_changed.connect(self._on_results_changed)
         state.lattice_changed.connect(self._on_lattice_changed)
 
+    def _on_results_changed(self, results):
+        # New run = new physics: a chart/table computed for the previous
+        # results must never be rendered as current (a chart is only
+        # valid for the physics that produced it).
+        self._payload = None
+        self._payload_period_idx = -1
+        try:
+            self.refresh(results)
+        except RuntimeError:                                 # C++ side gone
+            pass
+
     def _on_lattice_changed(self, *_a):
+        self._payload = None
+        self._payload_period_idx = -1
         try:
             self._populate_periods()
+        except RuntimeError:                                 # C++ side gone
+            pass
+
+    def _on_period_changed(self, *_a):
+        # A chart/table computed for another period is stale.
+        self._payload = None
+        self._payload_period_idx = -1
+        self.refresh(self._state.results if self._state else None)
+
+    def _on_bands_toggled(self, *_a):
+        try:
+            self.refresh(self._state.results if self._state else None)
         except RuntimeError:                                 # C++ side gone
             pass
 
@@ -3880,28 +4040,38 @@ class _HofmannPopup(_PopupPlot):
             self._combo.addItem(p.label)
         self._combo.blockSignals(False)
 
+    # ------------------------------------------------------------------
+    def _resolve_results(self):
+        """Probe-bearing results for the current session, or (None, note)."""
+        results = self._state.results if self._state else None
+        if results is not None and getattr(results, "element_maps_dep", None):
+            return results, ""
+        # MP results carry no probe maps — reuse the companion envelope
+        # probe (shared single-slot cache) when its signature matches.
+        lat = self._state.lattice if self._state else None
+        cfg = self._state.beam_config if self._state else None
+        companion = (_companion_probe_results(lat, cfg)
+                     if (lat is not None and cfg is not None) else None)
+        if companion is None:
+            return None, ""
+        return companion, " · companion envelope probe"
+
     def refresh(self, results):
+        """Cheap redraw: trajectory + any cached chart payload.  The
+        dispersion solve itself runs only via the Compute button."""
         for it in self._band_items:
             self._plot.removeItem(it)
         self._band_items = []
         self._traj.setData([], [])
         model_note = ""
         if results is None or not getattr(results, "element_maps_dep", None):
-            # MP results carry no probe maps — reuse the companion
-            # envelope probe computed from the tune-depression popup
-            # (shared single-slot cache) when its signature matches.
-            lat = self._state.lattice if self._state else None
-            cfg = self._state.beam_config if self._state else None
-            companion = (_companion_probe_results(lat, cfg)
-                         if (lat is not None and cfg is not None) else None)
-            if companion is None:
+            results, model_note = self._resolve_results()
+            if results is None:
                 self._info.setText(
                     "Needs a probe-bearing envelope run — re-run the "
                     "envelope, or press 'Compute channel model' in the "
                     "Tune-depression popup (the result is shared).")
                 return
-            results = companion
-            model_note = " · companion envelope probe"
         if not self._periods:
             self._info.setText("No periodic structure detected.")
             return
@@ -3921,34 +4091,141 @@ class _HofmannPopup(_PopupPlot):
         dep = np.asarray(tr["depression"], float)
         fin = np.isfinite(ratio) & np.isfinite(dep)
         med_dep = float(np.nanmedian(dep[fin])) if fin.any() else 1.0
-        # Resonance bands: center line + indicative shaded region at the
-        # trajectory's median depression.
-        for band in resonance_bands(tr["emit_ratio"]):
-            r0 = band["ratio"]
-            w = band["width"](med_dep)
-            region = pg.LinearRegionItem(
-                values=(r0 - w, r0 + w), orientation="vertical",
-                movable=False,
-                brush=pg.mkBrush(244, 114, 182, 28),
-                pen=pg.mkPen(244, 114, 182, 60))
-            self._plot.addItem(region)
-            line = pg.InfiniteLine(
-                r0, angle=90,
-                pen=pg.mkPen("#f472b6", width=1,
-                             style=Qt.PenStyle.DashLine),
-                label=band["label"],
-                labelOpts={"position": 0.95, "color": "#f472b6"})
-            self._plot.addItem(line)
-            self._band_items += [region, line]
+        if self._chk_bands.isChecked():
+            # Legacy indicative bands (pre-solver heuristic), drawn at the
+            # trajectory's median depression.
+            for band in resonance_bands(tr["emit_ratio"]):
+                r0 = band["ratio"]
+                w = band["width"](med_dep)
+                region = pg.LinearRegionItem(
+                    values=(r0 - w, r0 + w), orientation="vertical",
+                    movable=False,
+                    brush=pg.mkBrush(244, 114, 182, 28),
+                    pen=pg.mkPen(244, 114, 182, 60))
+                self._plot.addItem(region)
+                line = pg.InfiniteLine(
+                    r0, angle=90,
+                    pen=pg.mkPen("#f472b6", width=1,
+                                 style=Qt.PenStyle.DashLine),
+                    label=band["label"],
+                    labelOpts={"position": 0.95, "color": "#f472b6"})
+                self._plot.addItem(line)
+                self._band_items += [region, line]
         if fin.any():
             self._traj.setData(ratio[fin], dep[fin])
         er = tr["emit_ratio"]
         er_txt = f"{er:.2f}" if np.isfinite(er) else "n/a"
+        base_info = (f"transverse = {tr['transverse_label']} · "
+                     f"ε_z/ε_x(entrance) = {er_txt}{model_note}")
+        if self._payload is not None and self._payload_period_idx == idx:
+            self._apply_payload(base_info)
+        else:
+            self._scatter.setData([])
+            self._image.clear()
+            self._info.setText(
+                base_info + " · press 'Compute chart' for the corrected "
+                "l=2/3/4 growth-rate chart + per-cell flags")
+
+    # ------------------------------------------------------------------
+    def _compute(self):
+        if self._worker is not None and self._worker.isRunning():
+            return
+        results, _ = self._resolve_results()
+        if results is None:
+            self._info.setText(
+                "Needs a probe-bearing envelope run — re-run the envelope, "
+                "or press 'Compute channel model' in the Tune-depression "
+                "popup (the result is shared).")
+            return
+        if not self._periods:
+            self._info.setText("No periodic structure detected.")
+            return
+        idx = max(0, min(self._combo.currentIndex(), len(self._periods) - 1))
+        self._payload = None
+        self._payload_period_idx = idx
+        self._btn.setEnabled(False)
+        self._btn.setText("Computing…")
+        self._worker = _HofmannChartWorker(
+            results, self._periods[idx],
+            steps=self._steps.value(),
+            want_prob=self._chk_prob.isChecked())
+        self._worker.finished_ok.connect(self._on_chart_done)
+        self._worker.failed.connect(self._on_chart_failed)
+        self._worker.progress_chunk.connect(self._on_chart_progress)
+        self._worker.start()
+
+    def _on_chart_progress(self, done, total):
+        try:
+            self._btn.setText(f"Computing… {done}/{total}")
+        except RuntimeError:                                 # C++ side gone
+            pass
+
+    def _on_chart_done(self, payload):
+        try:
+            if self.sender() is not self._worker:
+                return           # stale delivery from a superseded worker
+            self._btn.setEnabled(True)
+            self._btn.setText("Compute chart")
+            self._payload = payload
+            self.refresh(self._state.results if self._state else None)
+        except RuntimeError:                                 # C++ side gone
+            pass
+
+    def _on_chart_failed(self, msg):
+        try:
+            if self.sender() is not self._worker:
+                return           # stale delivery from a superseded worker
+            self._btn.setEnabled(True)
+            self._btn.setText("Compute chart")
+            if msg != "aborted":
+                self._info.setText(f"chart failed: {msg}")
+        except RuntimeError:                                 # C++ side gone
+            pass
+
+    def _apply_payload(self, base_info: str):
+        """Render the worker payload: heatmap + classified cells."""
+        p = self._payload
+        tab = p["tab"]
+        if tab["reason"] is not None:
+            self._scatter.setData([])
+            self._image.clear()
+            self._info.setText(f"{base_info} · {tab['reason']}")
+            return
+        if p["chart"] is not None:
+            r_arr, y_arr, G = p["chart"]
+            g_hi = float(np.nanmax(G)) if np.isfinite(G).any() else 0.0
+            self._image.setImage(G, autoLevels=False,
+                                 levels=(0.0, max(g_hi, 1e-3)))
+            self._image.setRect(pg.QtCore.QRectF(
+                float(r_arr[0]), float(y_arr[0]),
+                float(r_arr[-1] - r_arr[0]), float(y_arr[-1] - y_arr[0])))
+        spots = []
+        R, Y = tab["R"], tab["Y"]
+        for k in range(len(tab["cells"])):
+            if not (np.isfinite(R[k]) and np.isfinite(Y[k])):
+                continue
+            if tab["flagged"][k]:
+                brush = pg.mkBrush("#ef4444")
+            elif tab["valid"][k]:
+                brush = pg.mkBrush("#22c55e")
+            else:
+                brush = pg.mkBrush(0, 0, 0, 0)               # hollow: S²>gate
+            pen = (pg.mkPen("#f59e0b", width=2) if tab["fold_risk"][k]
+                   else pg.mkPen("w", width=0.6))
+            spots.append({"pos": (float(R[k]), float(Y[k])), "brush": brush,
+                          "pen": pen, "symbol": "o", "size": 11})
+        self._scatter.setData(spots)
+        eps_txt = (f"{p['eps']:.2f}" if np.isfinite(p["eps"]) else "n/a")
+        prob_txt = ""
+        if p["prob"] is not None and np.isfinite(p["prob"]).any():
+            prob_txt = f" · max P(unstable) = {np.nanmax(p['prob']):.2f}"
+        note_txt = f" · {p['notes'][0]}" if p["notes"] else ""
         self._info.setText(
-            f"transverse = {tr['transverse_label']} · ε_z/ε_x = {er_txt} "
-            f"(pick this family on the published charts) · shaded widths "
-            f"are INDICATIVE, drawn at the median depression "
-            f"{med_dep:.2f}{model_note}")
+            f"{base_info} · chart at ε_z/ε_x = {eps_txt} · flags "
+            f"{tab['n_flagged']}/{tab['n_valid']} valid cells "
+            f"(γ/ν₀ₓ > {tab['threshold']:g}, S² ≤ {tab['s2_gate']:g}; grey "
+            f"hollow = extrapolated, amber ring = fold risk){prob_txt} · "
+            f"solver {tab['solver_fingerprint']}{note_txt}")
 
 
 class _FootprintWorker(

@@ -18,7 +18,8 @@ import os as _os
 import time as _time
 
 from linac_gen.assist.tools import (
-    _ctx_provenance, _err, _need, _ok, _refused, _save_capture, _tool,
+    _capture, _ctx_provenance, _err, _need, _ok, _refused, _save_capture,
+    _tool,
 )
 
 #: results columns run_python may request via ``include``
@@ -445,3 +446,180 @@ def _anomaly_check(ctx):
                 "baseline_created": base.get("created"),
                 "baseline_age_s": round(age_s, 0)},
                _ctx_provenance(ctx))
+
+
+# ---------------------------------------------------------------------------
+# hofmann_stability
+# ---------------------------------------------------------------------------
+@_tool("hofmann_stability",
+       "Corrected anisotropic Hofmann (PRE 57, 4713) coherent-instability "
+       "screen per lattice-period cell: per-branch growth rates "
+       "gamma/nu_0x for l=2, 3(even/odd), 4(even) from the depressed-tune "
+       "chart coordinates (R = nu_z/nu_x, Y = eta_x, geometric "
+       "eps_z/eps_x), the S^2<=10 perturbative-validity gate, instability "
+       "flags, optional anisotropy margins to higher-order onset, and "
+       "optional Monte-Carlo instability probabilities under the "
+       "engineering jitter budget.  Reports an in-band data.reason on x-y "
+       "coupled or DC lattices.  Runs its own probe-bearing envelope when "
+       "the session results lack phase-probe maps.  Long-running: "
+       "executes as a background job.",
+       {"type": "object",
+        "properties": {
+            "period_index": {"type": "integer", "minimum": 0,
+                             "description": "index into detected periods "
+                             "(default: non-fallback period with >= 2 "
+                             "repeats and the most repeats)"},
+            "margin": {"type": "boolean", "default": False},
+            "probability": {"type": "boolean", "default": False},
+            "n_mc": {"type": "integer", "default": 200},
+            "threshold": {"type": "number", "default": 0.01}},
+        "required": []},
+       "compute")
+def _hofmann_stability(ctx, period_index=None, margin=False,
+                       probability=False, n_mc=200, threshold=0.01,
+                       progress_callback=None, should_abort=None,
+                       _assist_prov=None):
+    gate = _need(ctx, "lattice", "beam_config")
+    if gate:
+        return gate
+    import numpy as np
+
+    from linac_gen.analysis import hofmann_stability as _hs
+    from linac_gen.analysis.period_detect import detect_periods
+
+    try:
+        n_mc = max(10, min(int(n_mc), 1000))
+        threshold = float(threshold)
+    except (TypeError, ValueError):
+        return _refused(f"n_mc/threshold must be numeric, got "
+                        f"{n_mc!r} / {threshold!r}")
+    if not np.isfinite(threshold) or threshold <= 0.0:
+        return _refused(f"threshold must be a positive finite growth rate "
+                        f"(gamma/nu_0x), got {threshold!r}")
+    warns: list[str] = []
+
+    results = ctx.results
+    probe_src = "session results (phase-probe maps present)"
+    maps = getattr(results, "element_maps_dep", None) if results else None
+    if maps and len(maps) != len(ctx.lattice.elements):
+        # Probe maps are one-per-element: a length mismatch means the
+        # results came from a different lattice — run a fresh probe
+        # rather than silently combining the two.
+        results = None
+    if results is None or not getattr(results, "element_maps_dep", None):
+        from linac_gen.analysis.phase_advance import run_phase_probe
+        from linac_gen.cli.common import _envelope_initial, build_ref
+        ref = build_ref(ctx.beam_config)
+        results, refusal, w0 = _capture(
+            run_phase_probe, ctx.lattice, ref,
+            _envelope_initial(ctx.beam_config, ref),
+            current=getattr(ctx.beam_config, "current", 0.0),
+            progress_callback=progress_callback,
+            should_abort=should_abort)
+        if refusal:
+            return refusal
+        warns += w0
+        probe_src = "fresh envelope phase probe"
+
+    periods = detect_periods(ctx.lattice)
+    if not periods:
+        return _refused("no periodic structure detected in the session "
+                        "lattice")
+    if period_index is not None:
+        if not 0 <= int(period_index) < len(periods):
+            return _refused(
+                f"period_index out of range 0..{len(periods) - 1}: "
+                + "; ".join(f"{i}: {p.label}"
+                            for i, p in enumerate(periods)))
+        period = periods[int(period_index)]
+    else:
+        cands = [p for p in periods
+                 if p.source != "fallback" and p.n_repeats >= 2]
+        period = (max(cands, key=lambda p: p.n_repeats) if cands
+                  else periods[0])
+
+    tab, refusal, w1 = _capture(
+        _hs.hofmann_stability, results, period, threshold=float(threshold),
+        should_stop=should_abort)
+    if refusal:
+        return refusal
+    warns += w1
+
+    margin_out = None
+    if margin and tab["reason"] is None:
+        margin_out, refusal, w2 = _capture(
+            _hs.anisotropy_margin, None, None, coords=tab,
+            gamma_th=float(threshold))
+        if refusal:
+            return refusal
+        warns += w2
+
+    prob = None
+    if probability and tab["reason"] is None:
+        from linac_gen.analysis.hofmann_probabilistic import (
+            instability_probability,
+        )
+        prob, refusal, w3 = _capture(
+            instability_probability, tab, N_mc=n_mc,
+            threshold=float(threshold),
+            should_stop=should_abort)
+        if refusal:
+            return refusal
+        warns += w3
+
+    def _f(x):
+        x = float(x)
+        return x if np.isfinite(x) else None
+
+    rows = []
+    for k in range(int(tab["n_cells"])):
+        row = {
+            "cell": int(tab["cells"][k]),
+            "R": _f(tab["R"][k]), "Y": _f(tab["Y"][k]),
+            "eps_ratio": _f(tab["eps_ratio"][k]),
+            "S2": _f(tab["S2"][k]),
+            "g_l2": _f(tab["g_l2"][k]),
+            "g_l3_even": _f(tab["g_l3_even"][k]),
+            "g_l3_odd": _f(tab["g_l3_odd"][k]),
+            "g_l4_even": _f(tab["g_l4_even"][k]),
+            "g_combined": _f(tab["g_combined"][k]),
+            "valid": bool(tab["valid"][k]),
+            "flagged": bool(tab["flagged"][k]),
+            "flagged_extrap": bool(tab["flagged_extrap"][k]),
+            "fold_risk": bool(tab["fold_risk"][k]),
+        }
+        if margin_out is not None:
+            row["onset_eps"] = _f(margin_out["onset_eps"][k])
+            row["margin"] = _f(margin_out["margin"][k])
+            row["is_seam"] = bool(margin_out["is_seam"][k])
+        if prob is not None:
+            row["p_unstable"] = _f(prob[k])
+        rows.append(row)
+
+    data = {
+        "period": period.label,
+        "probe": probe_src,
+        "reason": tab["reason"],
+        "n_cells": int(tab["n_cells"]),
+        "n_valid": int(tab["n_valid"]),
+        "n_flagged": int(tab["n_flagged"]),
+        "worst_cell": _f(tab["worst_cell"]),
+        "worst_growth": _f(tab["worst_growth"]),
+        "threshold": _f(tab["threshold"]),
+        "s2_gate": _f(tab["s2_gate"]),
+        "solver_fingerprint": tab["solver_fingerprint"],
+        "cells": rows,
+    }
+    if margin_out is not None:
+        data["margin_summary"] = {
+            "n_onsets": int(margin_out["n_onsets"]),
+            "n_smooth": int(margin_out["n_smooth"]),
+            "n_seam": int(margin_out["n_seam"]),
+            "smallest_smooth_margin":
+                _f(margin_out["smallest_smooth_margin"]),
+            "smallest_smooth_margin_cell":
+                _f(margin_out["smallest_smooth_margin_cell"]),
+            "earliest_smooth_onset_eps":
+                _f(margin_out["earliest_smooth_onset_eps"]),
+        }
+    return _ok(data, _ctx_provenance(ctx), warns)
