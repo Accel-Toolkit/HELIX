@@ -44,6 +44,26 @@ for v in "$SRC_V" "$TOML_V" "$CFF_V"; do
 done
 echo "version strings match $VNUM"
 
+# The landing pages carry human-facing version strings the update
+# checker never sees — v1.7 shipped with v1.6 badges because nothing
+# gated them.  Every vX.Y token in web/*.html must equal v$VNUM, and
+# every version-context line in about.html (excluding the literal
+# cff-version key) must carry $VNUM.
+WEB_BAD=$(grep -RhoE "v[0-9]+\.[0-9]+(\.[0-9]+)?" "$DEV_ROOT"/web/*.html \
+          | sort -u | grep -vx "v$VNUM" || true)
+ABOUT_BAD=$(grep -iE "version" "$DEV_ROOT/web/about.html" \
+            | grep -v "cff-version" \
+            | grep -oE "[0-9]+\.[0-9]+(\.[0-9]+)?" \
+            | sort -u | grep -vx "$VNUM" || true)
+if [ -n "$WEB_BAD$ABOUT_BAD" ]; then
+  echo "REFUSED: web/ landing pages carry stale version strings"
+  echo "  badges: ${WEB_BAD:-ok}"
+  echo "  about.html: ${ABOUT_BAD:-ok}"
+  echo "Update web/ (brand badges + about.html card/CFF/BibTeX), then cut."
+  exit 1
+fi
+echo "web/ version strings match $VNUM"
+
 echo "── 1/5 export committed tree ──────────────────────────────────"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"

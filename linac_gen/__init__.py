@@ -11,4 +11,4 @@ import os as _os
 # linac_gen.
 _os.environ.setdefault("OMP_DYNAMIC", "FALSE")
 
-__version__ = "1.7"
+__version__ = "1.7.1"
