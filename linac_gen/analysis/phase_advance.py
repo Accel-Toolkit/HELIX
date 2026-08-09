@@ -486,6 +486,7 @@ def coupled_beam_phase_advance_per_cell_via_M(
     from linac_gen.elements.base import FieldMapElement, ThinKickElement
     from linac_gen.tracking.envelope import (
         _sc_kick_matrix_3d, _sc_kick_matrix_2d_dc,
+        SC_TILT_REL_EPS as _SC_TILT_EPS,
     )
 
     # --- Preferred: exact probe-based monodromies -----------------------
@@ -583,6 +584,9 @@ def coupled_beam_phase_advance_per_cell_via_M(
             if current > 0.0 and ds > 0.0 and sigma_i.shape == (6, 6):
                 sx = math.sqrt(max(sigma_i[0, 0], 0.0))
                 sy = math.sqrt(max(sigma_i[2, 2], 0.0))
+                sxy = float(sigma_i[0, 2])   # mirror the solver's tilt path
+                if abs(sxy) <= _SC_TILT_EPS * sx * sy:
+                    sxy = 0.0
                 if continuous:
                     M_sc = _sc_kick_matrix_2d_dc(
                         current_mA=current,
@@ -590,6 +594,7 @@ def coupled_beam_phase_advance_per_cell_via_M(
                         mass_MeV=rc.species.mass,
                         beta=rc.beta, gamma=rc.gamma,
                         sigma_x_mm=sx, sigma_y_mm=sy, ds_mm=ds,
+                        sigma_xy_mm2=sxy,
                     )
                 else:
                     sphi = math.sqrt(max(sigma_i[4, 4], 0.0))
@@ -601,6 +606,7 @@ def coupled_beam_phase_advance_per_cell_via_M(
                         frequency_MHz=rc.frequency,
                         sigma_x_mm=sx, sigma_y_mm=sy,
                         sigma_phi_deg=sphi, ds_mm=ds,
+                        sigma_xy_mm2=sxy,
                     )
             else:
                 M_sc = np.eye(6)

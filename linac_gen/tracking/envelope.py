@@ -252,6 +252,7 @@ def _sc_kick_matrix_3d(
     sigma_x_mm: float, sigma_y_mm: float, sigma_phi_deg: float,
     ds_mm: float,
     bunch_frequency_MHz: float | None = None,
+    sigma_xy_mm2: float = 0.0,
 ) -> np.ndarray:
     """Thin-lens SC kick matrix for a bunched, uniform-density 3D ellipsoid.
 
@@ -262,6 +263,14 @@ def _sc_kick_matrix_3d(
           convert to σ_z_lab [mm] via z = -Δφ · β · λ_mm / 360 and then
           elongate by γ to reach the rest-frame length scale (σ_z_rest =
           γ · σ_z_lab).
+        - ``sigma_xy_mm2`` = spatial cross moment ⟨xy⟩ [mm²].  Nonzero →
+          the transverse plane is diagonalized, the ellipsoid evaluated
+          on its TRUE principal axes, and the transverse gradient tensor
+          rotated back (see ``_sc_kick_matrix_2d_dc``); the longitudinal
+          kick then also uses the principal semi-axes.  Default 0.0 =
+          historical upright path, bit-identical.  Cross moments with
+          the longitudinal plane (⟨xφ⟩, ⟨yφ⟩) remain neglected, as they
+          always were.
 
     Physics (rest-frame uniform ellipsoid, semi-axes a = √5·σ_x_rest etc):
         E_i_rest(r_i) = (3Q / 4πε₀·abc) · M_i · r_i_rest
@@ -283,6 +292,29 @@ def _sc_kick_matrix_3d(
     if (current_mA == 0.0 or frequency_MHz <= 0.0
             or beta <= 0.0 or gamma <= 0.0 or mass_MeV <= 0.0
             or sigma_x_mm <= 0.0 or sigma_y_mm <= 0.0 or sigma_phi_deg <= 0.0):
+        return M_sc
+
+    if sigma_xy_mm2 != 0.0:
+        sxx = sigma_x_mm * sigma_x_mm
+        syy = sigma_y_mm * sigma_y_mm
+        th = 0.5 * math.atan2(2.0 * sigma_xy_mm2, sxx - syy)
+        c, s = math.cos(th), math.sin(th)
+        v1 = c * c * sxx + 2.0 * c * s * sigma_xy_mm2 + s * s * syy
+        v2 = s * s * sxx - 2.0 * c * s * sigma_xy_mm2 + c * c * syy
+        if v1 <= 0.0 or v2 <= 0.0:      # not a positive-definite ellipse
+            return M_sc
+        M_p = _sc_kick_matrix_3d(
+            current_mA=current_mA, charge_state=charge_state,
+            mass_MeV=mass_MeV, beta=beta, gamma=gamma,
+            frequency_MHz=frequency_MHz,
+            sigma_x_mm=math.sqrt(v1), sigma_y_mm=math.sqrt(v2),
+            sigma_phi_deg=sigma_phi_deg, ds_mm=ds_mm,
+            bunch_frequency_MHz=bunch_frequency_MHz)
+        kx, ky = M_p[1, 0], M_p[3, 2]
+        M_sc[1, 0] = c * c * kx + s * s * ky
+        M_sc[3, 2] = s * s * kx + c * c * ky
+        M_sc[1, 2] = M_sc[3, 0] = c * s * (kx - ky)
+        M_sc[5, 4] = M_p[5, 4]          # true-principal-axes ellipsoid
         return M_sc
 
     # Bunch charge [C].  Q is the charge in ONE bunch — at a FREQ jump
@@ -331,17 +363,38 @@ def _sc_kick_matrix_3d(
     return M_sc
 
 
+#: Relative |⟨xy⟩| below which a Σ is treated as upright by the SOLVER
+#: (the kernels themselves stay exact).  The matched-Σ iteration's
+#: eigen-renormalization deposits ~1e-11-relative cross-moment dust even
+#: in strictly uncoupled lattices; firing the tilt path on it changes
+#: float-op ordering only, yet a 0.3% tune shift survived through the
+#: footprint's short-signal FFT (2026-08-07).  Genuine coupled-lattice
+#: tilt (solenoids) sits at ρ ~ 0.01–0.2 — orders above this gate.
+SC_TILT_REL_EPS = 1e-8
+
+
 def _sc_kick_matrix_2d_dc(
     current_mA: float, charge_state: int, mass_MeV: float,
     beta: float, gamma: float,
     sigma_x_mm: float, sigma_y_mm: float,
     ds_mm: float,
+    sigma_xy_mm2: float = 0.0,
 ) -> np.ndarray:
     """Thin-lens 2-D analytic SC kick matrix for a continuous (DC) beam.
 
     Longitudinal block is identity (no SC force along s for an
     unbunched beam).  Transverse kick uses the TraceWin continuous-beam
     formula E_x = I · x / (2πε₀·β·c·a·(a+b)) with semi-axes a, b = 2σ.
+
+    ``sigma_xy_mm2`` is the spatial cross moment ⟨xy⟩ [mm²].  A TILTED
+    ellipse's linear field has a cross term (the 45° quadrupole
+    component); it is handled exactly by kicking along the principal
+    axes and rotating the gradient tensor back (G = Rᵀ·diag(kx,ky)·R).
+    The default 0.0 takes the historical upright code path unchanged —
+    bit-identical for every upright beam.  (Tilt-blindness was found by
+    the Struckmeier-Reiser 1984 anchor, 2026-08-07: it fabricated an
+    even⊗odd Krein instability in solenoid channels at σ₀ where the
+    exact K-V theory proves stability.)
 
     Returns a 6×6 thin-lens matrix.  Matches the per-particle kick that
     ``pic_solver.kick_continuous_2d`` applies to a multi-particle beam
@@ -351,6 +404,26 @@ def _sc_kick_matrix_2d_dc(
     if current_mA == 0.0 or beta <= 0.0 or gamma <= 0.0 or mass_MeV <= 0.0:
         return M_sc
     if sigma_x_mm <= 0.0 or sigma_y_mm <= 0.0 or ds_mm <= 0.0:
+        return M_sc
+
+    if sigma_xy_mm2 != 0.0:
+        sxx = sigma_x_mm * sigma_x_mm
+        syy = sigma_y_mm * sigma_y_mm
+        th = 0.5 * math.atan2(2.0 * sigma_xy_mm2, sxx - syy)
+        c, s = math.cos(th), math.sin(th)
+        v1 = c * c * sxx + 2.0 * c * s * sigma_xy_mm2 + s * s * syy
+        v2 = s * s * sxx - 2.0 * c * s * sigma_xy_mm2 + c * c * syy
+        if v1 <= 0.0 or v2 <= 0.0:      # not a positive-definite ellipse
+            return M_sc
+        M_p = _sc_kick_matrix_2d_dc(
+            current_mA=current_mA, charge_state=charge_state,
+            mass_MeV=mass_MeV, beta=beta, gamma=gamma,
+            sigma_x_mm=math.sqrt(v1), sigma_y_mm=math.sqrt(v2),
+            ds_mm=ds_mm)
+        kx, ky = M_p[1, 0], M_p[3, 2]
+        M_sc[1, 0] = c * c * kx + s * s * ky
+        M_sc[3, 2] = s * s * kx + c * c * ky
+        M_sc[1, 2] = M_sc[3, 0] = c * s * (kx - ky)
         return M_sc
 
     I_A = abs(current_mA) * 1e-3
@@ -1149,6 +1222,9 @@ class EnvelopeSolver:
         """
         sx = math.sqrt(max(sigma[0, 0], 0.0))
         sy = math.sqrt(max(sigma[2, 2], 0.0))
+        sxy = float(sigma[0, 2])        # tilted spatial ellipse support
+        if abs(sxy) <= SC_TILT_REL_EPS * sx * sy:
+            sxy = 0.0                   # matcher dust, not physics
         I_eff = self.current * self._sc_factor
         if I_eff == 0.0:
             return np.eye(6)
@@ -1159,6 +1235,7 @@ class EnvelopeSolver:
                 mass_MeV=self._ref.species.mass,
                 beta=self._ref.beta, gamma=self._ref.gamma,
                 sigma_x_mm=sx, sigma_y_mm=sy, ds_mm=ds_mm,
+                sigma_xy_mm2=sxy,
             )
         sphi = math.sqrt(max(sigma[4, 4], 0.0))
         return _sc_kick_matrix_3d(
@@ -1170,6 +1247,7 @@ class EnvelopeSolver:
             sigma_x_mm=sx, sigma_y_mm=sy, sigma_phi_deg=sphi,
             ds_mm=ds_mm,
             bunch_frequency_MHz=self._bunch_freq,
+            sigma_xy_mm2=sxy,
         )
 
     def _propagate_with_sc(self, element,

@@ -76,6 +76,17 @@ rm -rf examples/pipii examples/MEBT_To_Foil examples/pipii_tunable \
        examples/piplattice examples/emittance_min examples/lebt_pxie \
        examples/lebt_plus_rfq examples/hebt_diag
 rm -f  tests/analysis/test_scc_pxie_anchor.py
+# Instability-paper machinery: HELD from public releases until the PRAB
+# paper is submitted (user decision 2026-08-06) — remove these lines to
+# ship the tools alongside the paper.
+rm -rf examples/instability_atlas
+rm -f  linac_gen/analysis/envelope_floquet.py \
+       linac_gen/analysis/mode_growth.py \
+       linac_gen/analysis/floquet_uq.py \
+       linac_gen/analysis/smooth_baseline.py \
+       tests/analysis/test_envelope_floquet.py \
+       tests/analysis/test_mode_growth.py \
+       tests/analysis/test_floquet_uq.py
 rm -f  examples/mebt_plus_hwr*.dat examples/mebt_pipii.dat \
        examples/mebt_line.dat examples/mebt_pipii_demo.py \
        examples/test.lgproj mebt_pipii.dat \

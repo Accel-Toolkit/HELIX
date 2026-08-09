@@ -122,6 +122,23 @@ def kick_continuous_2d(beam, ds_mm: float) -> None:
     # kernel was always centred (beam-centred grid); these two now match.
     cx = float(np.mean(xs))
     cy = float(np.mean(ys))
+    # Tilted spatial ellipse (⟨xy⟩ ≠ 0): kick along the principal axes
+    # and rotate back — mirrors _sc_kick_matrix_2d_dc's tilt path so
+    # envelope and MP stay in agreement for coupled (solenoid) lines.
+    # Gate at 4× the sampling-noise floor of the covariance estimator
+    # (std ≈ √(σx²σy²/N) for an uncorrelated beam): a finite ensemble
+    # ALWAYS has |cov| ~ σxσy/√N, and reacting to that noise would
+    # break bit-identity for every upright beam.
+    var_x = float(np.var(xs))
+    var_y = float(np.var(ys))
+    cov_xy = float(np.mean((xs - cx) * (ys - cy)))
+    n_alive = xs.size
+    noise_floor = 4.0 * float(np.sqrt(max(var_x * var_y, 0.0)
+                                      / max(n_alive, 1)))
+    if abs(cov_xy) > noise_floor:
+        _kick_continuous_2d_tilted(beam, ds_mm, xs, ys, cx, cy,
+                                   var_x, var_y, cov_xy)
+        return
     # RMS sizes in metres.  Uniform-density equivalent semi-axes a, b = 2σ.
     sigma_x_m = float(np.std(xs)) * 1e-3
     sigma_y_m = float(np.std(ys)) * 1e-3
@@ -243,6 +260,66 @@ def _gauss_field_2d(xs_m, ys_m, sigma_x_m: float, sigma_y_m: float,
         else:
             Ex, Ey = Ex_eff, Ey_eff
     return Ex, Ey
+
+
+def _kick_continuous_2d_tilted(beam, ds_mm: float, xs, ys,
+                               cx: float, cy: float,
+                               var_x: float, var_y: float,
+                               cov_xy: float) -> None:
+    """Tilted-ellipse branch of :func:`kick_continuous_2d`.
+
+    Same uniform-elliptic-cylinder physics and loss-scaled current, but
+    evaluated in the spatial principal frame: rotate centroid-relative
+    coordinates by the principal-axes angle, kick with the upright
+    formula there, rotate the kick back.  Mirrors the envelope kernel's
+    ``sigma_xy_mm2`` path, so envelope↔MP parity holds for tilted (e.g.
+    solenoid-coupled) DC beams ABOVE the caller's 4/√N sampling-noise
+    gate; below it (tilt indistinguishable from ensemble noise — e.g.
+    ρ = 0.1 needs N > 1600 to fire) the beam keeps the historical
+    upright kick, whose neglected cross term is then ≲ (2/3)·ρ of the
+    main gradient, at or under MP shot noise (adversarial review
+    2026-08-07).
+    """
+    th = 0.5 * float(np.arctan2(2.0 * cov_xy, var_x - var_y))
+    c, s = float(np.cos(th)), float(np.sin(th))
+    v1 = c * c * var_x + 2.0 * c * s * cov_xy + s * s * var_y
+    v2 = s * s * var_x - 2.0 * c * s * cov_xy + c * c * var_y
+    if v1 <= 0:
+        return
+    # Degenerate (line-like) cloud: v2 is float dust of either sign —
+    # clamp to a deterministic flat-beam floor instead of letting the
+    # dust sign decide kick-vs-no-kick (adversarial review, edge case).
+    v2 = max(v2, 1e-12 * v1)
+    a_m = 2.0 * float(np.sqrt(v1)) * 1e-3
+    b_m = 2.0 * float(np.sqrt(v2)) * 1e-3
+    ab_sum = a_m + b_m
+
+    ref = beam.ref
+    beta = float(ref.beta)
+    gamma = float(ref.gamma)
+    mass_MeV = float(ref.species.mass)
+    q_abs = abs(ref.species.charge) * E_CHARGE
+    I_A = (abs(beam.current) * 1e-3) * (beam.n_alive / beam.n_particles)
+    EPS0 = 8.8541878128e-12
+    v_m_s = beta * C_LIGHT
+    if v_m_s <= 0:
+        return
+    factor = I_A / (np.pi * EPS0 * v_m_s * ab_sum)
+    k_u = factor / a_m
+    k_v = factor / b_m
+    mc2_J = mass_MeV * 1e6 * E_CHARGE
+    ds_m = ds_mm * 1e-3
+    pre = q_abs * ds_m / (beta * beta * gamma * mc2_J)
+
+    xr = xs - cx
+    yr = ys - cy
+    u_m = (c * xr + s * yr) * 1e-3       # principal-frame coords [m]
+    v_m = (-s * xr + c * yr) * 1e-3
+    du = (pre * k_u * u_m) * 1e3         # principal-frame kicks [mrad]
+    dv = (pre * k_v * v_m) * 1e3
+    alive_idx = np.where(beam.alive_mask)[0]
+    beam.particles[alive_idx, 1] += c * du - s * dv
+    beam.particles[alive_idx, 3] += s * du + c * dv
 
 
 def kick_continuous_2d_gauss(beam, ds_mm: float) -> None:

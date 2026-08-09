@@ -779,6 +779,81 @@ def _renormalize_eigenemittances(Sigma, target_modes):
     return out
 
 
+def make_period_sigma_map(lattice, ref, period, current: float,
+                          base_initial: dict):
+    """Build the DISCRETE one-period Σ-map of a periodic cell, with the
+    delicate prefix-state capture done once and preserved.
+
+    Returns ``(sigma_map, state)`` where ``sigma_map(Σ_entry) -> Σ_exit``
+    performs one REAL envelope pass over the FIRST repeat of ``period``
+    (so the map is the solver's exact discrete dynamics, self-consistent
+    SC included), and ``state`` carries ``ref_entry`` (ReferenceParticle
+    at the period entry), ``sc_factor``, ``bunch_frequency`` (the
+    ORIGINAL repetition frequency — a post-FREQ-jump slice must not
+    re-derive it locally), ``continuous`` and ``sigma_seed`` (the
+    physical Σ delivered to the period entry by ``base_initial``).
+
+    Shared by :func:`find_matched_period_sigma` (fixed-point iteration)
+    and the envelope Floquet analyzer
+    (:mod:`linac_gen.analysis.envelope_floquet`), which differentiates
+    this map by finite differences — one implementation of the
+    prefix-state rules, two consumers.
+    """
+    import numpy as np
+    from linac_gen.core.lattice import Lattice
+    from linac_gen.elements.lattice_commands import LatticeCommand
+    from linac_gen.tracking.envelope import EnvelopeSolver
+
+    spans = period.spans()
+    a0, b0 = spans[0]
+
+    # --- ONE prefix pass: capture exact state at the period entry. ----
+    prefix = Lattice()
+    for e in lattice.elements[:a0]:
+        prefix.add(e)
+    step_cfg = getattr(lattice, "step_config", None)
+    if step_cfg is not None:
+        prefix.step_config = step_cfg
+    env_pre = EnvelopeSolver(prefix, ref.copy(), base_initial,
+                             current=current)
+    res_pre = env_pre.run()
+    ref_entry = env_pre._ref            # post-run == at period entry
+    sc_factor = float(env_pre._sc_factor)
+    bunch_freq = float(env_pre._bunch_freq)
+    continuous = bool(env_pre._continuous)
+    sigma_seed = np.asarray(res_pre.sigma_matrix[-1], float).copy()
+
+    prefix_cmds = [e for e in lattice.elements[:a0]
+                   if isinstance(e, LatticeCommand)]
+
+    # --- Cell sub-lattice (first repeat). ------------------------------
+    cell_lat = Lattice()
+    for e in lattice.elements[a0:b0]:
+        cell_lat.add(e)
+    if step_cfg is not None:
+        cell_lat.step_config = step_cfg
+
+    def sigma_map(Sigma_n):
+        init = dict(base_initial)
+        init["continuous"] = continuous
+        env = EnvelopeSolver(cell_lat, ref_entry.copy(), init,
+                             current=current, initial_sigma=Sigma_n,
+                             bunch_frequency=bunch_freq,
+                             sc_factor=sc_factor)
+        for cmd in prefix_cmds:
+            try:
+                cmd.apply_command(env.track_state)
+            except Exception:                                # noqa: BLE001
+                pass
+        r = env.run()
+        return np.asarray(r.sigma_matrix[-1], float)
+
+    state = {"ref_entry": ref_entry, "sc_factor": sc_factor,
+             "bunch_frequency": bunch_freq, "continuous": continuous,
+             "sigma_seed": sigma_seed}
+    return sigma_map, state
+
+
 def find_matched_period_sigma(lattice, ref, period, current: float,
                               base_initial: dict, *,
                               max_iter: int = 40, tol: float = 1e-6,
@@ -820,56 +895,17 @@ def find_matched_period_sigma(lattice, ref, period, current: float,
         ``sigma_model_approx`` (None | "frozen-longitudinal").
     """
     import numpy as np
-    from linac_gen.core.lattice import Lattice
-    from linac_gen.tracking.envelope import EnvelopeSolver
-    from linac_gen.elements.lattice_commands import LatticeCommand
 
-    spans = period.spans()
-    a0, b0 = spans[0]
-
-    # --- ONE prefix pass: capture exact state at the period entry. ----
-    prefix = Lattice()
-    for e in lattice.elements[:a0]:
-        prefix.add(e)
-    step_cfg = getattr(lattice, "step_config", None)
-    if step_cfg is not None:
-        prefix.step_config = step_cfg
-    env_pre = EnvelopeSolver(prefix, ref.copy(), base_initial,
-                             current=current)
-    res_pre = env_pre.run()
-    ref_entry = env_pre._ref            # post-run == at period entry
-    sc_factor = float(env_pre._sc_factor)
-    bunch_freq = float(env_pre._bunch_freq)
-    continuous = bool(env_pre._continuous)
-    sigma_seed = np.asarray(res_pre.sigma_matrix[-1], float).copy()
-
-    prefix_cmds = [e for e in lattice.elements[:a0]
-                   if isinstance(e, LatticeCommand)]
-
-    # --- Cell sub-lattice (first repeat). ------------------------------
-    cell_lat = Lattice()
-    for e in lattice.elements[a0:b0]:
-        cell_lat.add(e)
-    if step_cfg is not None:
-        cell_lat.step_config = step_cfg
+    _pass, state = make_period_sigma_map(lattice, ref, period, current,
+                                         base_initial)
+    ref_entry = state["ref_entry"]
+    sc_factor = state["sc_factor"]
+    bunch_freq = state["bunch_frequency"]
+    continuous = state["continuous"]
+    sigma_seed = state["sigma_seed"]
 
     target_modes = _sigma_modes(sigma_seed)
     zblk_seed = sigma_seed[4:6, :].copy(), sigma_seed[:, 4:6].copy()
-
-    def _pass(Sigma_n):
-        init = dict(base_initial)
-        init["continuous"] = continuous
-        env = EnvelopeSolver(cell_lat, ref_entry.copy(), init,
-                             current=current, initial_sigma=Sigma_n,
-                             bunch_frequency=bunch_freq,
-                             sc_factor=sc_factor)
-        for cmd in prefix_cmds:
-            try:
-                cmd.apply_command(env.track_state)
-            except Exception:                                # noqa: BLE001
-                pass
-        r = env.run()
-        return np.asarray(r.sigma_matrix[-1], float)
 
     def _step(Sigma):
         """One renormalized period map application R(M·Σ·Mᵀ)."""
