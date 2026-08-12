@@ -138,6 +138,14 @@ class FieldMap(FieldMapBase, Misalignment, FieldError):
         "ke", "kb", "ki", "ka", "voltage_rel", "n_steps", "p_flag",
     )
 
+    # Multibunch hybrid-replay channel (linac_gen/train/replay.py):
+    # static transverse HOM kick [mrad] consumed once at element ENTRY
+    # by the Tracker, applied to every alive particle.  Class-level
+    # default 0.0 = inert (normal runs bit-identical); set only by the
+    # M6 replay override transport and cleared by its teardown.
+    hom_kick_x: float = 0.0
+    hom_kick_y: float = 0.0
+
     def __init__(self, name: str, length: float, field_data: FieldMapData,
                  scale: float = 1.0,
                  kb: float = 1.0, ke: float = 1.0,
@@ -180,6 +188,8 @@ class FieldMap(FieldMapBase, Misalignment, FieldError):
                                 pitch_deg=pitch_deg, yaw_deg=yaw_deg)
         # Cavity-style errors: voltage_rel multiplies ke/kb (E and B amplitudes),
         # phase_offset adds to phase, frequency_offset adds to frequency.
+        # Multibunch train mode: design-pass SET_SYNC_PHASE pin (see _calibrate_sync_phase); None = normal lazy calibration.
+        self.sync_phase_pin = None
         self._init_field_error(voltage_rel=voltage_rel,
                                phase_offset=phase_offset,
                                frequency_offset=frequency_offset)
@@ -337,6 +347,14 @@ class FieldMap(FieldMapBase, Misalignment, FieldError):
         the actual operating point.  See the matching docstring on
         ``FieldMap3D._calibrate_sync_phase``."""
         if self.p_flag != 1 or getattr(self, "_sync_offset_deg", None) is not None:
+            return
+        pin = getattr(self, "sync_phase_pin", None)
+        if pin is not None:
+            # Multibunch/train mode: the LLRF fixes the operating point
+            # from the DESIGN pass; later passes must not re-fit psi
+            # against a loaded (perturbed) voltage.  reset_run_state()
+            # clears _sync_offset_deg but never the pin.
+            self._sync_offset_deg = float(pin)
             return
         theta_s = float(self.effective_phase)
         psi = 0.0

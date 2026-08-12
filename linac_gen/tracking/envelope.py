@@ -12,6 +12,7 @@ R_D, and applies linear kicks in all three planes — including
 longitudinal, which the earlier 2D Sacherer formulation lacked.
 """
 import math
+import warnings
 from dataclasses import dataclass, field
 from typing import List
 
@@ -1204,6 +1205,8 @@ class EnvelopeSolver:
         # carry their frequency over.  Magnetic-only maps (solenoids) hold
         # the parser default frequency as inert metadata; clobbering ref
         # would silently change downstream wavelength.
+        if getattr(element, "frequency_offset", 0.0):
+            warnings.warn(f"envelope ignores frequency_offset in the exit frequency carry-over at '{getattr(element, 'name', element)}' (carries element.frequency; MP carries the effective frequency)", stacklevel=2)
         if (getattr(element, "frequency", 0.0) > 0
                 and element.frequency != self._ref.frequency
                 and getattr(element, "_has_electric_channel", lambda: True)()):
@@ -1436,6 +1439,8 @@ class EnvelopeSolver:
             # Frequency carry-over (mirrors the last line of advance_ref so
             # downstream ref.phi_s maths stays consistent).  Magnetic-only
             # maps must NOT update ref.frequency (see _has_electric_channel).
+            if getattr(element, "frequency_offset", 0.0):
+                warnings.warn(f"envelope ignores frequency_offset in the exit frequency carry-over at '{getattr(element, 'name', element)}' (carries element.frequency; MP carries the effective frequency)", stacklevel=2)
             if (getattr(element, "frequency", 0.0) > 0
                     and element.frequency != self._ref.frequency
                     and getattr(element, "_has_electric_channel", lambda: True)()):

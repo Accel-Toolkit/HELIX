@@ -32,6 +32,8 @@ class Toolbar(QFrame):
     run_envelope_requested   = pyqtSignal()
     run_mp_requested         = pyqtSignal()
     run_backtrack_requested  = pyqtSignal()
+    # Opt-in multibunch / pulse study (Simulate menu → TrainConfigDialog)
+    open_train_requested     = pyqtSignal()
 
     # Tools
     open_assistant_requested = pyqtSignal()
@@ -109,6 +111,7 @@ class Toolbar(QFrame):
             ("Run Multi-particle", self.run_mp_requested.emit),
             ("---", None),
             ("Backtrack Distribution…", self.run_backtrack_requested.emit),
+            ("Multibunch / Pulse Study…", self.open_train_requested.emit),
         ]))
         lay.addWidget(self._mk_menu("Tools", [
             ("Assistant…  (AI, optional)", self.open_assistant_requested.emit),

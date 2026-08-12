@@ -74,7 +74,8 @@ cd "$STAGE"
 rm -rf examples/pipii examples/MEBT_To_Foil examples/pipii_tunable \
        examples/pip2_misalignment_study examples/pipii_hwr_ssr1_match \
        examples/piplattice examples/emittance_min examples/lebt_pxie \
-       examples/lebt_plus_rfq examples/hebt_diag
+       examples/lebt_plus_rfq examples/hebt_diag \
+       examples/pipii_multibunch
 rm -f  tests/analysis/test_scc_pxie_anchor.py
 # Instability-paper machinery: HELD from public releases until the PRAB
 # paper is submitted (user decision 2026-08-06) — remove these lines to
@@ -98,7 +99,8 @@ rm -f  tests/errors/test_pip2_study_defs.py \
 rm -f  docs/manual/11_examples/04_lebt_rfq.md \
        docs/manual/11_examples/05_pipii_mebt.md \
        docs/manual/11_examples/06_pipii_full.md \
-       docs/manual/12_validation/02_pipii_validation.md
+       docs/manual/12_validation/02_pipii_validation.md \
+       docs/manual/15_multibunch/02_pipii_pulse.md
 
 echo "── 3/5 heal the manual ────────────────────────────────────────"
 python3 - <<'PY'
@@ -109,7 +111,8 @@ s = open("docs/mkdocs.yml").read()
 for line in ("      - LEBT + RFQ: 11_examples/04_lebt_rfq.md\n",
              "      - PIP-II MEBT: 11_examples/05_pipii_mebt.md\n",
              "      - Full PIP-II: 11_examples/06_pipii_full.md\n",
-             "      - PIP-II validation: 12_validation/02_pipii_validation.md\n"):
+             "      - PIP-II validation: 12_validation/02_pipii_validation.md\n",
+             "      - PIP-II pulse walkthrough: 15_multibunch/02_pipii_pulse.md\n"):
     s = s.replace(line, "")
 open("docs/mkdocs.yml", "w").write(s)
 
@@ -130,6 +133,10 @@ for root, _, files in os.walk("docs/manual"):
         t = re.sub(r"^\* \[PIP-II validation\][^\n]*\n", "", t, flags=re.M)
         t = re.sub(r"← \[Full PIP-II\][^\n]*\n?", "", t)
         t = re.sub(r"\[Continue to PIP-II[^\]]*\][^\n]*", "", t)
+        # multibunch page: drop the whole worked-example pointer section
+        # (the walkthrough page + example dir are removed above)
+        t = re.sub(r"## Worked example\n\n\[Continue to the PIP-II "
+                   r"pulse walkthrough\][^\n]*\n?", "", t)
         if t != orig:
             open(p, "w").write(t)
 print("manual healed")

@@ -278,7 +278,9 @@ def save_results_openpmd(results, filepath: str | Path,
     # Bunch frequency (MHz) — best-effort retrieval.
     bunch_freq_MHz = 0.0
     if beam_config is not None:
-        bunch_freq_MHz = float(getattr(beam_config, "frequency", 0.0) or 0.0)
+        bunch_freq_MHz = float(
+            getattr(beam_config, "bunch_frequency_MHz", 0.0) or 0.0) \
+            or float(getattr(beam_config, "frequency", 0.0) or 0.0)
     if bunch_freq_MHz <= 0.0 and iterations:
         # Use the first snapshot's reference frequency as a fallback.
         bunch_freq_MHz = float(getattr(iterations[0][2], "frequency", 0.0) or 0.0)

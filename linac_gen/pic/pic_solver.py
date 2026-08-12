@@ -541,6 +541,47 @@ class PicSolver:
         # would leak this run's override into the next one.
         self._extent_override: float | None = None
         self._extent_dirty: bool = False
+        # ------------------------------------------------------------------
+        # Bunch-train image controls (multibunch M5) — ALL opt-in, set by
+        # the train driver (or directly for API use); defaults leave every
+        # existing path bit-identical.
+        #
+        # ``train_image_factors = (f_lead, f_trail)``, each in [0, 1]:
+        # per-image charge factors from the pulse pattern.  ``f_lead``
+        # scales the image AHEAD of this bunch — the neighbour injected
+        # one filled slot EARLIER (dphi −360·h → z > 0, since
+        # z = −dphi·βλ/360); ``f_trail`` the image BEHIND (injected one
+        # slot LATER, dphi +360·h → z < 0).  None (default) ≡ (1, 1) and
+        # takes the historical exact-copy path unchanged (the
+        # TW/Toutatis-validated benchmark).  (0, 0) routes to the
+        # isolated solve — a lone bunch has no neighbours and the
+        # isolated grid is the finer one.
+        self.train_image_factors: tuple | None = None
+        # Force the σφ engagement gate ON: an explicit train study must
+        # not be silently disengaged downstream when the core bunches
+        # below the 25°/35° hysteresis (or because the beam was born
+        # bunched).  Costs self-field resolution for short bunches (the
+        # 3×-span grid) — strictly opt-in; never set implicitly.
+        self.train_force_engage: bool = False
+        # Distinct-neighbour seam (M5b, opt-in): ``train_snapshot_recorder``
+        # is called at engaged-SC-kick cadence as recorder(ordinal, beam)
+        # to record THIS bunch for the next one; ``train_neighbor_provider``
+        # is provider(ordinal) -> snapshot-dict | None giving the PREVIOUS
+        # bunch's subsampled state for the leading image (keys: "xyphi"
+        # (n, 3) [x mm, y mm, dphi deg], "n_alive", "ref_phi_s",
+        # "ref_w_kin").  Managed per-pass by the train driver.
+        self.train_snapshot_recorder = None
+        self.train_neighbor_provider = None
+        # Per-pass SC-kick ordinal: incremented on EVERY kick() call so
+        # consecutive bunches of a train align snapshots by call sequence
+        # (the tracker's SC cadence is lattice-driven, not state-driven).
+        self._train_kick_ordinal: int = -1
+        # True once the train images engaged at least once this pass —
+        # the driver reads it to refuse silent inertness loudly.
+        self._train_ever_engaged: bool = False
+        # Per-kick particle deposit weights (set by the train image
+        # machinery on the COMPANION solver only; cleared in a finally).
+        self._deposit_weights: np.ndarray | None = None
 
     # ------------------------------------------------------------------
     def set_grid_extent(self, extent_sigma: float) -> None:
@@ -569,6 +610,28 @@ class PicSolver:
         shell scales as (σ_z/2βλ)³ (measured inert on the PXIE RFQ).
         Validated against the TW/Toutatis 5 mA identical-beam benchmark
         (2026-08-02): isolated 78.5 % → train 80.7 % vs Toutatis 80.3.
+
+        Pattern-aware factors (multibunch M5a): ``train_image_factors``
+        = (f_lead, f_trail) scales each image's deposited charge (the
+        pulse pattern's chopped gaps).  A factor-0 image is OMITTED
+        entirely — no phantom particles widening the adaptive grid —
+        and the launched-count/current bookkeeping scales with the
+        number of stacked copies, so the macro-charge is invariant.
+        None/(1, 1) reproduces the historical exact-copy construction
+        BIT-identically (weights never built, same stack, same solve).
+
+        Distinct neighbours (M5b, opt-in): ``train_neighbor_provider``
+        replaces the LEADING image (the previously tracked bunch, one
+        train period ahead) with its recorded subsampled snapshot,
+        re-framed by −360·h plus the ref-phase difference between the
+        two passes; each snapshot particle carries the neighbour's
+        loss-scaled charge share n_alive/n_sub (per-particle weights →
+        deposition).  The TRAILING image stays a self-copy: that bunch
+        has not been tracked yet (causal approximation).  Both bunches
+        share THIS beam's Lorentz boost — first order in the
+        neighbour's energy offset; the image's deposit reads only
+        (x, y, dphi), so a neighbour dW cannot enter at all (the
+        shared-boost approximation, documented by test).
         """
         import dataclasses as _dc
 
@@ -592,22 +655,68 @@ class PicSolver:
         h = max(1, int(round(beam.ref.frequency / f_train))) \
             if f_train > 0 else 1
         shift = 360.0 * h
-        qp = q.copy()
-        qp[:, 4] += shift
-        qm = q.copy()
-        qm[:, 4] -= shift
+        fac = self.train_image_factors
+        f_lead, f_trail = ((1.0, 1.0) if fac is None
+                           else (float(fac[0]), float(fac[1])))
+        # Record BEFORE the kick: the snapshot is this bunch as the NEXT
+        # bunch's leading neighbour will see it here (deposit reads only
+        # positions, which this kick does not change).
+        if self.train_snapshot_recorder is not None:
+            self.train_snapshot_recorder(self._train_kick_ordinal, beam)
+        snap = None
+        if self.train_neighbor_provider is not None and f_lead > 0.0:
+            snap = self.train_neighbor_provider(self._train_kick_ordinal)
+        # Stack order [centre, trailing(+shift), leading(−shift)] is the
+        # historical one — preserved for bit-identity at (1, 1).
+        blocks = [(q, 1.0)]
+        if f_trail > 0.0:
+            qp = q.copy()
+            qp[:, 4] += shift
+            blocks.append((qp, f_trail))
+        if f_lead > 0.0:
+            if snap is None:
+                qm = q.copy()
+                qm[:, 4] -= shift
+                blocks.append((qm, f_lead))
+            else:
+                xyphi = snap["xyphi"]
+                n_lead = int(xyphi.shape[0])
+                qm = np.zeros((n_lead, q.shape[1]))
+                qm[:, 0] = xyphi[:, 0]
+                qm[:, 2] = xyphi[:, 1]
+                # Phase re-frame: the snapshot dphi is relative to the
+                # PREVIOUS bunch's ref clock at this location; shift one
+                # train period ahead and absorb any ref-phase difference
+                # (e.g. beam-loading-shifted later refs).  Image momenta
+                # and dW stay zero — the deposit never reads them.
+                qm[:, 4] = (xyphi[:, 2] - shift
+                            + (float(snap["ref_phi_s"])
+                               - float(beam.ref.phi_s)))
+                # Loss-scaled neighbour charge, subsample-invariant:
+                # n_sub particles carry n_alive_prev macro shares.
+                blocks.append(
+                    (qm, f_lead * (float(snap["n_alive"]) / n_lead)))
+        m = len(blocks)
         aug = _Beam(ref=_Ref(species=beam.ref.species,
                              w_kin=beam.ref.w_kin,
                              frequency=beam.ref.frequency),
-                    n_particles=3 * beam.n_particles,
-                    current=3.0 * beam.current)
-        aug.particles[:3 * ncen] = np.vstack([q, qp, qm])
-        aug.lost[3 * ncen:] = True
+                    n_particles=m * beam.n_particles,
+                    current=m * beam.current)
+        rows = np.vstack([b for b, _w in blocks])
+        n_rows = rows.shape[0]
+        aug.particles[:n_rows] = rows
+        aug.lost[n_rows:] = True
         aug.bunch_frequency = beam.bunch_frequency
         aug.continuous = False
         aug.bunch_train = False              # recursion guard
         before = aug.particles[:ncen, [1, 3, 5]].copy()
-        self._train_solver.kick(aug, ds)
+        if any(w != 1.0 for _b, w in blocks):
+            self._train_solver._deposit_weights = np.concatenate(
+                [np.full(b.shape[0], w) for b, w in blocks])
+        try:
+            self._train_solver.kick(aug, ds)
+        finally:
+            self._train_solver._deposit_weights = None
         d = aug.particles[:ncen, [1, 3, 5]] - before
         for col_j, col_b in ((0, 1), (1, 3), (2, 5)):
             beam.particles[idx, col_b] += d[:, col_j]
@@ -622,6 +731,10 @@ class PicSolver:
         ds : float
             Step length in mm.
         """
+        # Per-pass SC-kick ordinal — pure bookkeeping (int), no numerics.
+        # Counted on every call so train-driver snapshots align across
+        # consecutive bunches by call sequence.
+        self._train_kick_ordinal += 1
         if beam.current <= 0 or beam.n_alive < 2:
             return
 
@@ -635,26 +748,48 @@ class PicSolver:
         # solve, which is also TraceWin's downstream semantics.
         use_train = self.config.train_images
         if use_train is None:
-            use_train = bool(getattr(beam, "bunch_train", False))
+            # train_force_engage (multibunch M5) also declares the beam
+            # part of a real train — e.g. a born-bunched pulse whose
+            # neighbours the driver wants modelled; an EXPLICIT
+            # train_images=False still wins (the driver refuses that
+            # combination loudly instead of overriding it here).
+            use_train = (bool(getattr(beam, "bunch_train", False))
+                         or self.train_force_engage)
         if use_train:
-            # CORE phase spread, not np.std: out-of-bucket slippers can
-            # drag a plain std to hundreds of degrees forever, so a
-            # bunched core downstream would never leave the train path
-            # (adversarial review 2026-08-02).  Half the 16-84 percentile
-            # span equals sigma for a Gaussian and ignores the tails.
-            phis = beam.particles[beam.alive_mask, 4]
-            p16, p84 = np.percentile(phis, (16.0, 84.0))
-            core = 0.5 * float(p84 - p16)
-            # Hysteresis (engage >=35 deg, release <=25 deg): the train
-            # and isolated solves differ at the few-percent level, so a
-            # loss-driven drift across one fixed threshold must not
-            # toggle the solver back and forth.
-            if self._train_engaged:
-                self._train_engaged = core > 25.0
+            if self.train_force_engage:
+                # Multibunch M5 override: the train driver has declared
+                # this bunch part of a real train — engage regardless of
+                # σφ so the study's physics cannot be silently switched
+                # off downstream (at the documented cost of self-field
+                # resolution for short bunches).
+                self._train_engaged = True
             else:
-                self._train_engaged = core >= 35.0
+                # CORE phase spread, not np.std: out-of-bucket slippers
+                # can drag a plain std to hundreds of degrees forever,
+                # so a bunched core downstream would never leave the
+                # train path (adversarial review 2026-08-02).  Half the
+                # 16-84 percentile span equals sigma for a Gaussian and
+                # ignores the tails.
+                phis = beam.particles[beam.alive_mask, 4]
+                p16, p84 = np.percentile(phis, (16.0, 84.0))
+                core = 0.5 * float(p84 - p16)
+                # Hysteresis (engage >=35 deg, release <=25 deg): the
+                # train and isolated solves differ at the few-percent
+                # level, so a loss-driven drift across one fixed
+                # threshold must not toggle the solver back and forth.
+                if self._train_engaged:
+                    self._train_engaged = core > 25.0
+                else:
+                    self._train_engaged = core >= 35.0
             if self._train_engaged:
-                return self._kick_bunch_train(beam, ds)
+                self._train_ever_engaged = True
+                fac = self.train_image_factors
+                if (fac is None
+                        or float(fac[0]) != 0.0 or float(fac[1]) != 0.0):
+                    return self._kick_bunch_train(beam, ds)
+                # (0, 0): both neighbours chopped away — the isolated
+                # solve IS the zero-image train solve, on the finer
+                # single-bunch grid (falls through bit-identically).
 
         alive_mask = beam.alive_mask
 
@@ -685,7 +820,19 @@ class PicSolver:
         n_alive = beam.n_alive
         from linac_gen.pic.macrocharge import macro_charge_for
         macro_charge = macro_charge_for(beam)   # shared convention
-        charges = np.full(n_alive, macro_charge)
+        if self._deposit_weights is None:
+            charges = np.full(n_alive, macro_charge)
+        else:
+            # Bunch-train image factors / neighbour snapshots (multibunch
+            # M5) — the only per-particle-charge consumer; every other
+            # path stays on the scalar convention above.
+            from linac_gen.pic.macrocharge import macro_charges_weighted
+            if len(self._deposit_weights) != n_alive:
+                raise ValueError(
+                    f"_deposit_weights length {len(self._deposit_weights)}"
+                    f" != n_alive {n_alive} — the train image machinery "
+                    "must build weights for exactly the alive stack")
+            charges = macro_charges_weighted(beam, self._deposit_weights)
 
         # 5. Charge deposition (CIC or TSC, selected by config)
         deposit_fn, interpolate_fn = _select_kernel(

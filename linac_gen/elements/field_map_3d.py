@@ -183,6 +183,14 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
         "ke", "kb", "voltage_rel", "ki", "n_steps", "p_flag",
     )
 
+    # Multibunch hybrid-replay channel (linac_gen/train/replay.py):
+    # static transverse HOM kick [mrad] consumed once at element ENTRY
+    # by the Tracker, applied to every alive particle.  Class-level
+    # default 0.0 = inert (normal runs bit-identical); set only by the
+    # M6 replay override transport and cleared by its teardown.
+    hom_kick_x: float = 0.0
+    hom_kick_y: float = 0.0
+
     def __init__(self, name: str, length: float, field_data: FieldMapData,
                  scale: float = 1.0, phase: float = 0.0,
                  frequency: float = 0.0, aperture: float = 0.0,
@@ -208,6 +216,8 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
         self.kb = kb
         self._init_misalignment(dx=dx, dy=dy, dz=dz, tilt_deg=tilt_deg,
                                 pitch_deg=pitch_deg, yaw_deg=yaw_deg)
+        # Multibunch train mode: design-pass SET_SYNC_PHASE pin (see _calibrate_sync_phase); None = normal lazy calibration.
+        self.sync_phase_pin = None
         self._init_field_error(voltage_rel=voltage_rel,
                                phase_offset=phase_offset,
                                frequency_offset=frequency_offset)
@@ -351,6 +361,10 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
         evaluated at operating conditions.
         """
         if self.p_flag != 1 or self._sync_offset_deg is not None:
+            return
+        pin = getattr(self, "sync_phase_pin", None)
+        if pin is not None:
+            self._sync_offset_deg = float(pin)   # train mode: design-pass pin
             return
         theta_s = float(self.effective_phase)
         psi = 0.0

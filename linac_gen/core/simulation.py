@@ -22,6 +22,8 @@ class Simulation:
                  density_extent: dict | None = None,
                  tail_fractions: tuple = (),
                  progress_callback=None, should_abort=None,
+                 element_entry_hook=None, element_exit_hook=None,
+                 pic_setup_hook=None,
                  phase_probe: bool = False,
                  rfq_geometry: str = "auto",
                  rfq_d_scale: float = 1.0):
@@ -84,6 +86,13 @@ class Simulation:
         self.tail_fractions = tuple(tail_fractions or ())
         self.progress_callback = progress_callback
         self.should_abort = should_abort
+        self.element_entry_hook = element_entry_hook
+        self.element_exit_hook = element_exit_hook
+        # Multibunch M5 seam: called once with the freshly built SC
+        # solver before tracking starts (TrainRunner configures per-bunch
+        # image factors / snapshot hooks through it).  None (default) =
+        # zero behavior change; never called when no solver is built.
+        self.pic_setup_hook = pic_setup_hook
         self._results = None
         # Design entrance reference, captured before any tracking mutates
         # beam.ref — run_backtrack() defaults to it for the forward
@@ -211,6 +220,8 @@ class Simulation:
                     model=str(getattr(self.sc_config, "csr_model",
                                       "1d_steady")),
                 )
+        if pic is not None and self.pic_setup_hook is not None:
+            self.pic_setup_hook(pic)
         tracker = Tracker(
             self.lattice, self.beam,
             pic_solver=("off" if self._sc_explicitly_off else pic),
@@ -221,6 +232,8 @@ class Simulation:
             progress_callback=self.progress_callback,
             should_abort=self.should_abort,
             csr_kicker=csr,
+            element_entry_hook=self.element_entry_hook,
+            element_exit_hook=self.element_exit_hook,
         )
         if self.density_axes:
             tracker.recorder.configure_density(

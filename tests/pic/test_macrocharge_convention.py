@@ -42,3 +42,22 @@ def test_bunch_frequency_frozen_across_freq_jump():
     ref.frequency = 325.0                    # the 162.5 -> 325 jump
     assert beam.bunch_frequency == 162.5     # frozen snapshot
     assert macro_charge_for(beam) == q_before
+
+
+def test_weighted_variant_scales_the_scalar_convention():
+    """macro_charges_weighted (multibunch M5 — the ONLY per-particle
+    consumer): exactly the scalar convention times the weights; all-ones
+    weights reproduce the scalar bit-for-bit."""
+    import numpy as np
+
+    from linac_gen.pic.macrocharge import macro_charges_weighted
+
+    ref = ReferenceParticle(species=PROTON, w_kin=5.0, frequency=162.5)
+    beam = Beam(ref=ref, n_particles=100, current=5.0)
+    q = macro_charge_for(beam)
+    w = np.array([1.0, 0.5, 0.0, 2.5])
+    got = macro_charges_weighted(beam, w)
+    assert got.shape == (4,)
+    assert np.array_equal(got, q * w)
+    ones = macro_charges_weighted(beam, np.ones(7))
+    assert np.array_equal(ones, np.full(7, q))

@@ -375,7 +375,9 @@ def build_torch_residual_sc(lattice, beam_cfg, ref, variables, constraints,
     # freezes at creation.  Never read ref.frequency after tracking
     # starts: FREQ cards advance the RF clock, the bunch rate is fixed.
     from linac_gen.pic.macrocharge import macro_charge_coulombs
-    bunch_frequency_mhz = float(ref.frequency)
+    bunch_frequency_mhz = float(
+        getattr(beam_cfg, "bunch_frequency_MHz", 0.0) or 0.0) \
+        or float(ref.frequency)
     macro_charge = macro_charge_coulombs(
         float(beam_cfg.current), bunch_frequency_mhz, bunch_size)
     var_target_ids = [id(v.target) for v in variables]

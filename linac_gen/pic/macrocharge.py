@@ -38,3 +38,21 @@ def macro_charge_for(beam) -> float:
     """Convenience: the convention applied to a :class:`Beam`."""
     return macro_charge_coulombs(beam.current, beam.bunch_frequency,
                                  beam.n_particles)
+
+
+def macro_charges_weighted(beam, weights):
+    """Per-particle charge ARRAY: the scalar convention x per-particle
+    weights (multibunch M5 — bunch-train image factors and distinct-
+    neighbour snapshots are the ONLY consumers).
+
+    ``macro_charge_for`` stays the single scalar source of truth; this
+    variant multiplies it by a weight per deposited particle (image
+    factor in [0, 1], or the subsample charge share of a neighbour
+    snapshot).  All-ones weights reproduce the scalar convention exactly
+    (q * 1.0 == q in IEEE-754).  Every other consumer must keep using
+    the scalar function so the paths cannot drift.
+    """
+    import numpy as np
+
+    w = np.asarray(weights, dtype=np.float64)
+    return macro_charge_for(beam) * w

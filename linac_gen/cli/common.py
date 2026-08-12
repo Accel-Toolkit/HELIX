@@ -120,6 +120,12 @@ def apply_element_override(lattice, selector: str, value) -> None:
     Selector forms:
       * ``NAME.attr`` — the element whose ``.name`` equals ``NAME``;
       * ``@N.attr``   — the N-th element (1-based, over ``lattice.elements``).
+
+    The new value is coerced to the type of the CURRENT value.  A
+    None-valued attribute (an unarmed optional slot, e.g. the multibunch
+    ``sync_phase_pin``) carries no type to coerce to: it is parsed as a
+    float when the string is numeric, else kept as a string — the M6
+    hybrid replay transports float pins through exactly this path.
     """
     if "." not in selector:
         raise ValueError(
@@ -148,7 +154,15 @@ def apply_element_override(lattice, selector: str, value) -> None:
     if not hasattr(elem, attr):
         raise ValueError(
             f"--set: element '{target}' has no attribute '{attr}'")
-    setattr(elem, attr, coerce_like(getattr(elem, attr), str(value)))
+    current = getattr(elem, attr)
+    if current is None:
+        try:
+            new = float(str(value))
+        except ValueError:
+            new = str(value)
+        setattr(elem, attr, new)
+        return
+    setattr(elem, attr, coerce_like(current, str(value)))
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +298,9 @@ def run_envelope_sim(lattice, cfg, env_solver: str = "matrix"):
         return SachererSolver(lattice, ref, initial,
                               current=cfg.current).run()
     from linac_gen.tracking.envelope import EnvelopeSolver
-    return EnvelopeSolver(lattice, ref, initial, current=cfg.current).run()
+    f_bunch = float(getattr(cfg, "bunch_frequency_MHz", 0.0) or 0.0) or None
+    return EnvelopeSolver(lattice, ref, initial, current=cfg.current,
+                          bunch_frequency=f_bunch).run()
 
 
 def run_mp_sim(lattice, cfg, sc_config, step_config, *, seed: int = 42,

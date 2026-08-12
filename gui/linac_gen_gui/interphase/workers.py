@@ -184,6 +184,80 @@ class MultiparticleWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class TrainWorker(QThread):
+    """Multibunch / pulse-study worker (Simulate → Multibunch / Pulse
+    Study…).
+
+    Runs :func:`linac_gen.train.run_train` (mode-dispatched: tracked /
+    envelope / fast / hybrid) off the GUI thread.  Same signal contract
+    as the other run workers plus:
+
+    * ``progress_bunch(done, total)`` — per-bunch progress (the train
+      axis, not s along the lattice).
+    * ``aborted(object)`` — carries the PARTIAL :class:`TrainResults`:
+      a mid-train Stop leaves a loadable result (the runners stop
+      cooperatively between bunches and mark ``truncated``), and the
+      app still auto-dumps it.
+    """
+
+    finished_ok = pyqtSignal(object)
+    failed = pyqtSignal(str)
+    progress = pyqtSignal(int)
+    progress_bunch = pyqtSignal(int, int)
+    aborted = pyqtSignal(object)                  # partial TrainResults
+
+    def __init__(self, lattice, beam_config, train_config, space_charge,
+                 lattice_path: Optional[str] = None):
+        super().__init__()
+        # macOS default QThread stack (~544 KB) SIGBUSes numpy/OpenBLAS
+        # workspace allocations — same failure mode documented on
+        # BacktrackWorker/_MatchWorker.  16 MB matches the main thread.
+        self.setStackSize(16 * 1024 * 1024)
+        self.lattice = lattice
+        self.beam_config = beam_config
+        self.train_config = train_config
+        self.sc = space_charge
+        self.lattice_path = lattice_path
+        self._stop_event = threading.Event()
+
+    def request_stop(self) -> None:
+        """Thread-safe cancel — the train drivers check between bunches
+        and return partial results (``truncated=True``)."""
+        self._stop_event.set()
+
+    def _should_abort(self) -> bool:
+        return self._stop_event.is_set()
+
+    def _on_progress(self, done: int, total: int) -> None:
+        # Called from this QThread by the runners: tracked/hybrid per
+        # bunch, fast mode every few thousand slots.
+        self.progress_bunch.emit(int(done), int(total))
+        self.progress.emit(min(int(round(100.0 * done / max(total, 1))),
+                               100))
+
+    def run(self) -> None:
+        try:
+            from linac_gen.train import run_train
+            results = run_train(
+                self.lattice, self.beam_config, self.train_config,
+                sc_config=self.sc, lattice_path=self.lattice_path,
+                progress_callback=self._on_progress,
+                should_abort=self._should_abort,
+            )
+            fast = getattr(results, "fast", None)
+            truncated = bool(
+                getattr(results, "truncated", False)
+                or (fast is not None and getattr(fast, "truncated",
+                                                 False)))
+            if self._stop_event.is_set() or truncated:
+                self.aborted.emit(results)
+                return
+            self.progress.emit(100)
+            self.finished_ok.emit(results)
+        except Exception as exc:                            # noqa: BLE001
+            self.failed.emit(str(exc))
+
+
 class BacktrackWorker(QThread):
     """Backward-tracking worker (Simulate → Backtrack Distribution…).
 

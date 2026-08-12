@@ -39,6 +39,14 @@ class RFGap(ThinKickElement, Misalignment, FieldError):
         "frequency", "frequency_offset", "ttf", "p_flag",
     )
 
+    # Multibunch hybrid-replay channel (linac_gen/train/replay.py):
+    # static transverse HOM kick [mrad] consumed once at element ENTRY
+    # by the Tracker, applied to every alive particle.  Class-level
+    # default 0.0 = inert (normal runs bit-identical); set only by the
+    # M6 replay override transport and cleared by its teardown.
+    hom_kick_x: float = 0.0
+    hom_kick_y: float = 0.0
+
     def __init__(self, name: str, voltage: float, phase: float, frequency: float,
                  ttf: float = 1.0, aperture: float = 0.0,
                  p_flag: int = 0,

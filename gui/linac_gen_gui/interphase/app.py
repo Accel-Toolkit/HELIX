@@ -335,7 +335,7 @@ from linac_gen_gui.interphase.tabs import (
     StudyTab, ErrorStudyTab, FailureStudyTab, ResultsTab,
 )
 from linac_gen_gui.interphase.workers import (
-    BacktrackWorker, EnvelopeWorker, MultiparticleWorker,
+    BacktrackWorker, EnvelopeWorker, MultiparticleWorker, TrainWorker,
 )
 
 
@@ -515,6 +515,7 @@ class InterphaseWindow(QMainWindow):
         self._toolbar.run_envelope_requested.connect(self._run_envelope)
         self._toolbar.run_mp_requested.connect(self._run_mp)
         self._toolbar.run_backtrack_requested.connect(self._run_backtrack)
+        self._toolbar.open_train_requested.connect(self._open_train_study)
         self._toolbar.open_assistant_requested.connect(self._open_assistant)
         self._toolbar.open_console_requested.connect(self._open_console)
         self._toolbar.open_transfer_matrix_requested.connect(self._open_transfer_matrix)
@@ -582,6 +583,9 @@ class InterphaseWindow(QMainWindow):
         self._envelope_worker: EnvelopeWorker | None = None
         self._mp_worker: MultiparticleWorker | None = None
         self._backtrack_worker: BacktrackWorker | None = None
+        self._train_worker: TrainWorker | None = None
+        # Modeless multibunch summary popup (created lazily, reused).
+        self._train_summary_dlg = None
         # Background cache warmer disabled — was competing for CPU on
         # project / lattice load.  The on-demand cache path (Phase
         # Advance / Tune Depression popups passing ``cache=``) still
@@ -794,7 +798,7 @@ class InterphaseWindow(QMainWindow):
 
         workers: list = []
         for w in (self._envelope_worker, self._mp_worker,
-                  self._backtrack_worker):
+                  self._backtrack_worker, self._train_worker):
             if w is not None and w.isRunning():
                 try:
                     w.request_stop()
@@ -1793,7 +1797,8 @@ class InterphaseWindow(QMainWindow):
     def _env_fail(self, msg: str) -> None:
         # Shared by the envelope AND the MP worker (see _run_mp wiring).
         if self.sender() not in (self._envelope_worker, self._mp_worker,
-                                 self._backtrack_worker):
+                                 self._backtrack_worker,
+                                 self._train_worker):
             return
         self.state.set_running(False)
         self._toolbar.set_progress(0)
@@ -1827,7 +1832,7 @@ class InterphaseWindow(QMainWindow):
         all workers are idle this is a no-op.
         """
         for w in (self._envelope_worker, self._mp_worker,
-                  self._backtrack_worker):
+                  self._backtrack_worker, self._train_worker):
             if w is not None and w.isRunning():
                 w.request_stop()
         mw = getattr(self.matching_tab, "_aa_worker", None)
@@ -1862,7 +1867,8 @@ class InterphaseWindow(QMainWindow):
         except Exception:
             pass
         for signal_name in (
-            "progress", "progress_s", "finished_ok", "failed", "aborted",
+            "progress", "progress_s", "progress_bunch",
+            "finished_ok", "failed", "aborted",
         ):
             sig = getattr(worker, signal_name, None)
             if sig is None:
@@ -1893,7 +1899,7 @@ class InterphaseWindow(QMainWindow):
         path, so nulling the reference here is safe.
         """
         for attr in ("_envelope_worker", "_mp_worker",
-                     "_backtrack_worker"):
+                     "_backtrack_worker", "_train_worker"):
             w = getattr(self, attr)
             if w is not None:
                 self._retire_worker(w, timeout_ms=250)
@@ -2152,6 +2158,179 @@ class InterphaseWindow(QMainWindow):
         self.state.set_running(False)
         self._toolbar.set_progress(0)
         self.state.status_message.emit("Backtrack stopped by user.")
+
+    # ------------------------------------------------------------------
+    # Multibunch / pulse study (Simulate → Multibunch / Pulse Study…)
+    def _open_train_study(self) -> None:
+        """Open the opt-in TrainConfigDialog; on OK run the study in a
+        TrainWorker.  Strictly opt-in — nothing here runs unless the
+        dialog's enable switch was checked and the config validated."""
+        if self.state.running:
+            self.state.status_message.emit(
+                "A run is already in progress — Stop it first.")
+            return
+        if self.state.lattice is None:
+            QMessageBox.warning(self, "No lattice", "Load a lattice first.")
+            return
+        if not self._ensure_beam_config():
+            return
+        from linac_gen_gui.interphase.dialogs.train_dialog import (
+            TrainConfigDialog,
+        )
+        cfg = self.state.beam_config
+        dlg = TrainConfigDialog(
+            default_freq_MHz=float(getattr(cfg, "frequency", 162.5)
+                                   or 162.5),
+            parent=self)
+        if not dlg.exec():
+            return
+        tc = dlg.train_config
+        if tc is None:                      # defensive: never run unvalidated
+            return
+        try:
+            from linac_gen.core.step_config import StepConfig
+            step1 = self.convergence_tab._fixed_step1.value()
+            step2 = self.convergence_tab._fixed_step2.value()
+            self.state.lattice.step_config = StepConfig(
+                integration_steps_per_metre=float(step1),
+                sc_steps_per_metre=float(step2),
+            )
+            # Same numerics the Run button applies (class-level FieldMap3D
+            # toggles + sampling kernel; idempotent setters).
+            from linac_gen.elements import field_map_3d
+            field_map_3d.set_fieldmap_numerics(
+                integrator=self.convergence_tab._fixed_integ.currentText(),
+                interp=self.convergence_tab._fixed_interp.currentText())
+            _fused = (self.convergence_tab._fieldmap_sampling.currentText()
+                      == "kernel")
+            field_map_3d.use_fused_kernel(_fused)
+            os.environ["LINAC_GEN_FIELDMAP_KERNEL"] = "1" if _fused else "0"
+            if dlg.space_charge_enabled:
+                # Canonical Numerics-tab SC config, like the MP run
+                # (honour the beam's continuous flag rather than
+                # assuming bunched — the runner rejects nonsensical
+                # combinations downstream).
+                sc = self.convergence_tab.current_sc_config(
+                    cfg.current,
+                    continuous=bool(getattr(cfg, "continuous", False)))
+            else:
+                # Explicit off — silences the per-bunch no-SC warning.
+                sc = "off"
+        except Exception as exc:                            # noqa: BLE001
+            QMessageBox.critical(self, "Setup error", str(exc))
+            return
+        self.state.set_running(True)
+        self._toolbar.set_progress(0)
+        self.state.status_message.emit(
+            f"Multibunch study: {tc.pattern.n_bunches} bunches over "
+            f"{tc.pattern.n_slots} slots (mode {tc.mode}) — design pass "
+            "first…")
+        self._retire_worker(self._train_worker, timeout_ms=300)
+        self._train_worker = TrainWorker(
+            self.state.lattice, cfg, tc, sc,
+            lattice_path=self.state.lattice_path,
+        )
+        self._train_worker.progress.connect(self._toolbar.set_progress)
+        self._train_worker.progress_bunch.connect(self._train_progress)
+        self._train_worker.finished_ok.connect(self._train_done)
+        self._train_worker.failed.connect(self._train_failed_ui)
+        self._train_worker.failed.connect(self._env_fail)
+        self._train_worker.aborted.connect(self._train_aborted)
+        self._train_worker.start()
+        self._begin_train_summary(tc)
+
+    def _train_progress(self, done: int, total: int) -> None:
+        if self.sender() is not self._train_worker:
+            return
+        self.state.status_message.emit(
+            f"Multibunch study: bunch {done}/{total} complete")
+        dlg = self._train_summary_dlg
+        if dlg is not None:
+            try:
+                dlg.on_progress(done, total)
+            except RuntimeError:                 # C++ side already gone
+                self._train_summary_dlg = None
+
+    def _begin_train_summary(self, tc) -> None:
+        """Open the modeless summary popup in live-progress mode the
+        moment the study starts — the config dialog closes on OK, and
+        without this the only run feedback was the status bar."""
+        try:
+            from linac_gen_gui.interphase.dialogs.train_dialog import (
+                TrainSummaryDialog,
+            )
+            if self._train_summary_dlg is None:
+                self._train_summary_dlg = TrainSummaryDialog(self)
+            self._train_summary_dlg.begin_run(
+                tc.mode, tc.pattern.n_bunches, tc.pattern.n_slots)
+            self._train_summary_dlg.show()
+            self._train_summary_dlg.raise_()
+            # macOS: raise_() alone can leave the popup behind the busy
+            # main window (observed on the first live run).
+            self._train_summary_dlg.activateWindow()
+        except RuntimeError:                     # C++ side already gone
+            self._train_summary_dlg = None
+
+    def _train_failed_ui(self, msg: str) -> None:
+        """Reflect a failed study in the live summary popup (state and
+        the error box belong to the shared _env_fail handler)."""
+        if self.sender() is not self._train_worker:
+            return
+        dlg = self._train_summary_dlg
+        if dlg is not None:
+            try:
+                dlg.run_failed(msg)
+            except RuntimeError:
+                self._train_summary_dlg = None
+
+    def _show_train_summary(self, results) -> None:
+        """Show (or refresh) the modeless per-bunch summary popup."""
+        try:
+            from linac_gen_gui.interphase.dialogs.train_dialog import (
+                TrainSummaryDialog,
+            )
+            if self._train_summary_dlg is None:
+                self._train_summary_dlg = TrainSummaryDialog(self)
+            self._train_summary_dlg.set_results(results)
+            self._train_summary_dlg.show()
+            self._train_summary_dlg.raise_()
+            self._train_summary_dlg.activateWindow()
+        except RuntimeError:                     # C++ side already gone
+            self._train_summary_dlg = None
+
+    def _train_done(self, results) -> None:
+        if self.sender() is not self._train_worker:
+            return
+        self.state.set_running(False)
+        self._toolbar.set_progress(100)
+        # NOT state.set_results: TrainResults is a per-bunch container,
+        # not a recorder — the Results-tab cards would render nothing
+        # meaningful from it.  v1 surfaces the run through the summary
+        # popup + the auto-dumped train HDF5 (run_type "train").
+        saved_path = self._auto_dump_results(results, "train")
+        n = len(results.slots) or (
+            len(results.fast.slot) if results.fast is not None else 0)
+        msg = f"Multibunch study complete — {n} bunches"
+        if saved_path is not None:
+            msg += f"  ·  saved {saved_path.name}"
+        self.state.status_message.emit(msg)
+        self._show_train_summary(results)
+
+    def _train_aborted(self, results) -> None:
+        """Mid-train Stop: the runners halt cooperatively BETWEEN
+        bunches, so ``results`` is a loadable partial TrainResults
+        (truncated=True) — still auto-dumped, still summarised."""
+        if self.sender() is not self._train_worker:
+            return
+        self.state.set_running(False)
+        self._toolbar.set_progress(0)
+        saved_path = self._auto_dump_results(results, "train")
+        msg = (f"Multibunch study stopped by user after "
+               f"{len(results.slots)} bunch(es) — partial results")
+        if saved_path is not None:
+            msg += f" saved to {saved_path.name}"
+        self.state.status_message.emit(msg)
+        self._show_train_summary(results)
 
     # ------------------------------------------------------------------
     # Tools (popups)
@@ -2761,6 +2940,23 @@ class InterphaseWindow(QMainWindow):
             return None
         ts = _dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         hdf5_path = calc_dir / f"{ts}_{run_type}.h5"
+        # Multibunch TrainResults carry their own writer (train schema,
+        # provenance run_type="train"); openPMD has no train mapping, so
+        # only the HELIX-native file is written for those runs.
+        from linac_gen.train.results import TrainResults
+        if isinstance(results, TrainResults):
+            try:
+                results.save_hdf5(
+                    str(hdf5_path),
+                    beam_config=self.state.beam_config,
+                    lattice=self.state.lattice,
+                    lattice_path=self.state.lattice_path,
+                )
+            except Exception as exc:                        # noqa: BLE001
+                self.state.status_message.emit(
+                    f"Auto-save (HDF5) failed: {exc}")
+                return None
+            return hdf5_path
         try:
             _bc = self.state.beam_config
             save_results_hdf5(

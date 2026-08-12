@@ -277,6 +277,13 @@ def create_beam(config: BeamConfig, seed: int = None) -> Beam:
     beam.particles[:] = particles_array
     beam.continuous = bool(getattr(config, "continuous", False))
     beam.periodic_phase = bool(getattr(config, "periodic_phase", False))
+    # Explicit bunch-repetition frequency (macrocharge denominator).
+    # 0.0 keeps the historical "RF clock at creation" default set by
+    # Beam.__init__; nonzero overrides it (sub-harmonic trains,
+    # segmented workflows, multibunch studies).
+    _f_bunch = float(getattr(config, "bunch_frequency_MHz", 0.0) or 0.0)
+    if _f_bunch > 0.0:
+        beam.bunch_frequency = _f_bunch
 
     # Input dispersion shear (generate path only — a loaded file is
     # authoritative as-is): x += disp_x·ΔW etc., applied BEFORE the

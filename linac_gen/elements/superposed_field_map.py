@@ -77,6 +77,14 @@ class SuperposedFieldMap(FieldMapElement, Misalignment, FieldError):
     # auto-disables for containers (matrix_tracking._element_fingerprint
     # returns None), which is the safe default.
 
+    # Multibunch hybrid-replay channel (linac_gen/train/replay.py):
+    # static transverse HOM kick [mrad] consumed once at element ENTRY
+    # by the Tracker, applied to every alive particle.  Class-level
+    # default 0.0 = inert (normal runs bit-identical); set only by the
+    # M6 replay override transport and cleared by its teardown.
+    hom_kick_x: float = 0.0
+    hom_kick_y: float = 0.0
+
     def __init__(self, name: str,
                  children: list,
                  *, aperture: float | None = None,
@@ -603,6 +611,10 @@ class SuperposedFieldMap(FieldMapElement, Misalignment, FieldError):
         with the probe walking the WHOLE cluster."""
         if child.p_flag != 1 or getattr(child, "_sync_offset_deg",
                                         None) is not None:
+            return
+        pin = getattr(child, "sync_phase_pin", None)
+        if pin is not None:
+            child._sync_offset_deg = float(pin)   # train design-pass pin
             return
         saved = {id(c): c._phi_s_at_entrance for _z, c in self.children}
         try:

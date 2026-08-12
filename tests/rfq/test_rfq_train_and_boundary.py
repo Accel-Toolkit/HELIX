@@ -84,6 +84,46 @@ class TestTrainImages:
         assert s._train_solver.config.train_images is False
 
 
+class TestTrainImageFactors:
+    """Multibunch M5 seams pinned NEXT to the machinery they extend:
+    the Toutatis-validated exact-copy train path must be reproduced
+    exactly at factors (1, 1)/None, and (0, 0) must be the isolated
+    solve.  Full anchor set in tests/train/test_direct_sc.py."""
+    CFG = TestTrainImages.CFG
+
+    @pytest.fixture(autouse=True)
+    def _deterministic_fft(self, monkeypatch):
+        monkeypatch.setenv("LINAC_GEN_FFT_WORKERS", "1")
+
+    def _kick(self, beam, factors, force=False, **cfg_over):
+        cfg = SpaceChargeConfig(**{**self.CFG, **cfg_over})
+        s = PicSolver(cfg)
+        s.train_image_factors = factors
+        s.train_force_engage = force
+        s.kick(beam, 1.0)
+        return beam.particles[:, [1, 3, 5]].copy()
+
+    def test_factors_none_and_one_one_identical(self):
+        k_none = self._kick(_bunch(sig_phi_deg=100.0, train=True), None)
+        k_11 = self._kick(_bunch(sig_phi_deg=100.0, train=True),
+                          (1.0, 1.0))
+        assert TestTrainImages._same(k_none, k_11)
+
+    def test_factors_zero_zero_is_isolated(self):
+        k_00 = self._kick(_bunch(sig_phi_deg=100.0, train=True),
+                          (0.0, 0.0))
+        k_iso = self._kick(_bunch(sig_phi_deg=100.0, train=True), None,
+                           train_images=False)
+        assert TestTrainImages._same(k_00, k_iso)
+
+    def test_force_engage_overrides_short_bunch_gate(self):
+        k_forced = self._kick(_bunch(sig_phi_deg=5.0, train=True), None,
+                              force=True)
+        k_iso = self._kick(_bunch(sig_phi_deg=5.0, train=True), None,
+                           train_images=False)
+        assert not TestTrainImages._same(k_forced, k_iso)
+
+
 class TestBoundaryLosses:
     """Loss model on a symmetric cell: r0=5, A10=0 (x_lim=y_lim=5),
     Tc=3.75, wall 6 mm.  Voltage 0 isolates the loss logic."""

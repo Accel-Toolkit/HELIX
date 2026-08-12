@@ -336,6 +336,66 @@ def plot_basic_fodo():
     return fig
 
 
+# Multibunch ----------------------------------------------------------------
+
+@figure("fig_15_01_pip2_pulse_droop")
+def plot_pip2_pulse_droop():
+    """Figure 15.1 — PIP-II MEBT chopped pulse: beam-loading droop/recovery
+    (fast multibunch mode).  Skipped gracefully when the PIP-II deck is
+    absent (public cuts strip it together with the page that embeds this)."""
+    import os
+    import sys
+
+    import numpy as np
+    root = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    sys.path.insert(0, root)
+    deck = os.path.join(root, "examples", "pipii", "mebt", "mebt.dat")
+    sidecar = os.path.join(root, "examples", "pipii_multibunch",
+                           "cavity_params_mebt.yaml")
+    if not (os.path.isfile(deck) and os.path.isfile(sidecar)):
+        print("    -> PIP-II deck/sidecar not in this tree (public cut?)")
+        return None
+    import dataclasses
+
+    from linac_gen.io.project import load_project
+    from linac_gen.io.tracewin_parser import parse_tracewin
+    from linac_gen.train import (PulsePattern, TrainConfig, TrainPhysics,
+                                 run_train)
+    try:
+        lattice, _meta = parse_tracewin(deck)
+    except Exception as exc:                                # noqa: BLE001
+        print(f"    -> deck not parseable here ({exc}); skipped")
+        return None
+    proj = load_project(os.path.join(root, "examples", "pipii", "mebt",
+                                     "mebt.lgproj"))
+    cfg = dataclasses.replace(proj.beam, n_particles=1000)
+    idx = np.arange(int(round(0.55e-3 * 162.5e6)))
+    pattern = PulsePattern.from_array((idx % 3 == 0) & (idx % 360 < 320))
+    tc = TrainConfig(bunch_frequency_MHz=162.5, pattern=pattern,
+                     mode="fast",
+                     physics=TrainPhysics(beam_loading=True),
+                     cavity_params=sidecar)
+    res = run_train(lattice, cfg, tc, sc_config="off", history_stride=8)
+    fast = res.fast
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
+    wd = fast.w_design_exit_MeV
+    ax1.plot(fast.slot, 1e3 * (fast.w_exit_MeV - wd), lw=0.6,
+             color="#0e7490")
+    ax1.set_ylabel("W_exit − W_design [keV]")
+    ax1.set_title("PIP-II MEBT chopped pulse — beam-loading droop / "
+                  "recovery (fast mode)")
+    cav = fast.cavities[0]
+    ax2.plot(fast.history_slot, cav.phase_offset_deg, lw=0.6,
+             color="#b45309")
+    ax2.set_ylabel(f"{cav.name} phase offset [deg]")
+    ax2.set_xlabel("bunch slot (162.5 MHz)")
+    for ax in (ax1, ax2):
+        ax.grid(alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
 # ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------

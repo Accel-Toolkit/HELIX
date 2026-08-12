@@ -8047,6 +8047,35 @@ class ResultsTab(QWidget):
         if not path:
             return
         try:
+            # Multibunch train files carry none of the single-bunch
+            # groups — loading one here would silently show "empty".
+            # Open them in their own consumer: the per-bunch summary
+            # window, fed by the train loader (live-use feedback
+            # 2026-08-11: a finished study's file was unreachable from
+            # the GUI once the summary window moved on to a later run).
+            import h5py as _h5
+            with _h5.File(path, "r") as _f:
+                is_train = "train" in _f
+            if is_train:
+                from linac_gen.train import load_train_results
+                from linac_gen_gui.interphase.dialogs.train_dialog import (
+                    TrainSummaryDialog,
+                )
+                loaded = load_train_results(path)
+                dlg = TrainSummaryDialog(self.window())
+                dlg.setWindowTitle(
+                    f"Multibunch summary — {Path(path).name}")
+                dlg.set_results(loaded)
+                dlg.show()
+                dlg.raise_()
+                dlg.activateWindow()
+                # Keep a reference: a purely local dialog would be
+                # garbage-collected (and vanish) when this method
+                # returns.
+                self._train_summary_popups = getattr(
+                    self, "_train_summary_popups", [])
+                self._train_summary_popups.append(dlg)
+                return
             # Auto-detect format: openPMD files carry a root-level
             # ``openPMD`` attribute we can sniff cheaply.
             if is_openpmd_file(path):

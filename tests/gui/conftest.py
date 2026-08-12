@@ -66,6 +66,24 @@ def _no_stt_prewarm(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _sandbox_calc_dir(tmp_path):
+    """Point the auto-dump calc dir at a per-test tmp for EVERY GUI
+    test.  The QSettings sandbox (HELIX_QSETTINGS_DIR) leaves calcDir
+    unset, and the fallback is cwd-relative (``cwd/runs``) — so any
+    e2e test that completes a run auto-dumped into the developer's
+    REAL runs/ directory (observed 2026-08-11: a backtrack e2e mp file
+    landed next to the user's own results).  Whole-family hardening,
+    not per-test opt-in; tests that need to *inspect* the dump keep
+    using the explicit ``calc_dir`` fixture, which overrides this one."""
+    from linac_gen_gui.interphase.app import _SETTINGS_CALC_DIR, _settings
+    s = _settings()
+    old = s.value(_SETTINGS_CALC_DIR, "")
+    s.setValue(_SETTINGS_CALC_DIR, str(tmp_path))
+    yield
+    s.setValue(_SETTINGS_CALC_DIR, old)
+
+
 @pytest.fixture(scope="session")
 def qapp():
     """One QApplication for the whole test session."""

@@ -25,6 +25,15 @@ class BeamConfig:
     frequency: float = 352.21
     current: float = 0.0
     duty_cycle: float = 100.0          # %; <100 => pulsed operation
+    # Physical bunch-repetition frequency (MHz).  0.0 (default) means
+    # "same as ``frequency``" — the historical behaviour, where the RF
+    # clock doubles as the macrocharge denominator Q = I/f.  Set it
+    # explicitly when the bunch rate differs from the local RF clock
+    # (sub-harmonic trains, segmented workflows started mid-linac at a
+    # higher-frequency section, multibunch/pulse studies).  Design
+    # note anticipated in io/tracewin_dst.py (segmented-workflow
+    # caveat) — this field is that fix.
+    bunch_frequency_MHz: float = 0.0
     n_particles: int = 10000
     distribution: str = "waterbag"
     cutoff: float = 3.0
@@ -121,6 +130,10 @@ class BeamConfig:
             raise ValueError(f"frequency must be > 0 MHz, got {self.frequency}")
         if self.current < 0:
             raise ValueError(f"current must be >= 0 mA, got {self.current}")
+        if self.bunch_frequency_MHz < 0:
+            raise ValueError(
+                f"bunch_frequency_MHz must be >= 0 (0 = same as the RF "
+                f"clock), got {self.bunch_frequency_MHz}")
         if not 0.0 < self.duty_cycle <= 100.0:
             raise ValueError(
                 f"duty_cycle must be in (0, 100] %, got {self.duty_cycle}"

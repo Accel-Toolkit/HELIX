@@ -152,6 +152,17 @@ class HaloPicSolver(PicSolver):
 
     # -- the corrected kick --------------------------------------------------
     def kick(self, beam, ds: float) -> None:                     # noqa: C901
+        # Multibunch M5: this override re-implements the kick without
+        # the bunch-train image machinery, so armed train controls
+        # (inherited attributes) would be silently inert — refuse loudly
+        # instead (the train driver refuses the halo backend up front;
+        # this guards the direct API).
+        if self.train_image_factors is not None or self.train_force_engage:
+            raise NotImplementedError(
+                "bunch-train image factors / forced train engagement are "
+                "not implemented on the halo (ML-corrected) PIC backend; "
+                "use the plain numpy backend for direct bunch-to-bunch "
+                "space charge")
         if beam.current <= 0 or beam.n_alive < 2:
             # NOTE: counters (_kick_index/_s_mm) intentionally do not
             # advance on skipped kicks — mirrors PicSolver's no-op; the

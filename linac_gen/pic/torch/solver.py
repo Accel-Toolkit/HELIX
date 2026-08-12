@@ -39,6 +39,12 @@ class TorchPicSolver:
 
     def __init__(self, config):
         self.config = config
+        # Multibunch M5 interface parity: the numpy PicSolver's opt-in
+        # bunch-train controls exist here so setting them is possible —
+        # but kick() raises NotImplementedError when they are armed (no
+        # torch train path; the train driver refuses this backend).
+        self.train_image_factors = None
+        self.train_force_engage = False
         if getattr(config, "grid_mode", "fixed") == "fixed":
             warnings.warn(
                 "sc_backend='torch' is ADAPTIVE-ONLY: the grid is "
@@ -65,6 +71,15 @@ class TorchPicSolver:
                 "implemented on the torch backend -- SC treats the beam "
                 "as an isolated bunch (numpy backend applies images; "
                 "set train_images=False to silence).")
+        # Multibunch M5: pattern image factors / forced engagement are a
+        # numpy-backend feature.  Armed controls must fail loudly, not
+        # silently run isolated physics under a train study.
+        if self.train_image_factors is not None or self.train_force_engage:
+            raise NotImplementedError(
+                "bunch-train image factors / forced train engagement are "
+                "not implemented on the torch PIC backend; use the numpy "
+                "backend (SpaceChargeConfig.sc_backend='numpy') for "
+                "direct bunch-to-bunch space charge")
         if beam.current <= 0 or beam.n_alive < 2:
             return
         alive_idx = np.where(beam.alive_mask)[0]

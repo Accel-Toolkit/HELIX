@@ -426,13 +426,20 @@ def _read_file(ctx, path: str = "", start_line: int = 1,
 
 @_tool("result_summary",
        "Compact scalar summary of the session results (final sigmas, "
-       "emittances, transmission, output energy).",
+       "emittances, transmission, output energy).  Multibunch train "
+       "results get the per-bunch train summary (bunch counts, W_exit "
+       "droop numbers) instead.",
        {"type": "object", "properties": {}, "required": []},
        "read")
 def _result_summary(ctx):
     gate = _need(ctx, "results")
     if gate:
         return gate
+    if _is_train_results(ctx.results):
+        out, refusal, warns = _capture(_train_summary_data, ctx.results)
+        if refusal:
+            return refusal
+        return _ok(out, _ctx_provenance(ctx), warns)
     from linac_gen.cli.common import result_summary
     out, refusal, warns = _capture(result_summary, ctx.results)
     if refusal:
@@ -1408,6 +1415,340 @@ def _run_mp(ctx, n_particles: int | None = None, seed: int = 42,
                _ctx_provenance(ctx), warns)
 
 
+# ---------------------------------------------------------------------------
+# multibunch / pulse study (opt-in; linac_gen.train)
+# ---------------------------------------------------------------------------
+def _is_train_results(res) -> bool:
+    """True for the multibunch containers (TrainResults or the loader's
+    namespace) — the routing predicate for train-aware summaries."""
+    try:
+        from linac_gen.train.results import (LoadedTrainResults,
+                                             TrainResults)
+    except ImportError:                     # pragma: no cover - core pkg
+        return False
+    return isinstance(res, (TrainResults, LoadedTrainResults))
+
+
+def _train_summary_data(res) -> dict:
+    """Compact per-run summary of a train result (live or loaded):
+    bunch counts, W_exit statistics and signed loading droop numbers."""
+    import numpy as np
+
+    live = hasattr(res, "config")            # TrainResults vs loaded ns
+    cfg = res.config if live else res
+    pattern = cfg.pattern
+    fast = res.fast
+    # A fine-chopped full pulse RLE-encodes to hundreds of kB — cap the
+    # summary copy (the full pattern lives in the HDF5 file).
+    rle = pattern.to_rle()
+    if len(rle) > 200:
+        rle = rle[:200] + f" ...(+{len(rle) - 200} more chars)"
+    data = {
+        "run_type": "train",
+        "mode": str(res.mode),
+        "bunch_frequency_MHz": float(cfg.bunch_frequency_MHz),
+        "n_slots": int(pattern.n_slots),
+        "n_bunches_pattern": int(pattern.n_bunches),
+        "n_bunches_tracked": len(res.slots),
+        "n_bunches_replayed": len(getattr(res, "replay_bunches", {}) or {}),
+        "pattern_rle": rle,
+        "pulse_length_us": float(
+            pattern.pulse_length_us(cfg.bunch_frequency_MHz)),
+        "physics": {"beam_loading": bool(cfg.physics.beam_loading),
+                    "hom": bool(cfg.physics.hom),
+                    "direct_sc": bool(cfg.physics.direct_sc)},
+        "truncated": bool(getattr(res, "truncated", False)
+                          or (fast is not None
+                              and getattr(fast, "truncated", False))),
+    }
+
+    def _w_stats(w, w_design):
+        w = np.asarray(w, float)
+        w = w[np.isfinite(w)]
+        if not w.size:
+            return None
+        out = {"first": float(w[0]), "last": float(w[-1]),
+               "min": float(w.min()), "max": float(w.max())}
+        if w_design is not None:
+            # Signed dW = W_exit - W_design (loading droop is negative).
+            out["w_design_MeV"] = float(w_design)
+            out["dw_min_keV"] = float((w.min() - w_design) * 1e3)
+            out["dw_max_keV"] = float((w.max() - w_design) * 1e3)
+            out["dw_last_keV"] = float((w[-1] - w_design) * 1e3)
+        return out
+
+    if fast is not None and len(getattr(fast, "w_exit_MeV", ())):
+        data["fast_w_exit_MeV"] = _w_stats(fast.w_exit_MeV,
+                                           float(fast.w_design_exit_MeV))
+        data["fast_n_bunches"] = int(np.asarray(fast.slot).size)
+    summ = res.summary() if callable(getattr(res, "summary", None)) \
+        else (res.summary or {})
+    wk = summ.get("ref_w_kin")
+    if wk is not None and len(wk):
+        w_design = None
+        dr = getattr(res, "design_result", None)
+        if dr is not None and len(getattr(dr, "ref_w_kin", ())):
+            w_design = float(dr.ref_w_kin[-1])
+        elif getattr(res, "w_design_exit_MeV", None) is not None:
+            w_design = float(res.w_design_exit_MeV)
+        data["tracked_w_exit_MeV"] = _w_stats(wk, w_design)
+        tr = summ.get("transmission")
+        if tr is not None and len(tr):
+            t = np.asarray(tr, float)
+            t = t[np.isfinite(t)]
+            if t.size:
+                data["transmission_pct"] = {"min": float(t.min()),
+                                            "mean": float(t.mean())}
+    return data
+
+
+#: constructor knobs accepted per train mode beyond the shared set —
+#: TrainRunner forwards unknown kwargs to Simulation, so mode-foreign
+#: knobs must never reach it.
+_TRAIN_MODE_KWARGS = {"fast": ("history_stride",),
+                      "hybrid": ("history_stride", "replay_parallel")}
+
+
+@_tool("run_train",
+       "Run the OPT-IN multibunch / pulse study (linac_gen.train): a "
+       "train of bunches at the bunch frequency with a chopped fill "
+       "pattern, sequentially coupled through cavity beam loading, "
+       "dipole-HOM wakes and/or direct bunch-to-bunch space charge.  "
+       "Strictly opt-in: all physics flags default OFF (an all-off "
+       "train is bit-identical to independent single-bunch runs), and "
+       "missing physics inputs (e.g. the cavity_params sidecar) are "
+       "refused loudly, never defaulted.  Modes: 'mp' (tracked, one "
+       "full pass per bunch), 'envelope', 'fast' (per-slot phasor "
+       "recursion over the full ~10^5-slot pulse in seconds), 'hybrid' "
+       "(fast pass + full-MP replay of selected bunches).  Saves the "
+       "train HDF5 (schema: linac_gen/train/results.py) and returns a "
+       "compact summary with W_exit droop numbers.  Long-running "
+       "background job.",
+       {"type": "object",
+        "properties": {
+            "mode": {"type": "string", "default": "mp",
+                     "enum": ["mp", "envelope", "fast", "hybrid"]},
+            "bunch_frequency_MHz": {"type": "number",
+                                    "description": "bunch-slot rate "
+                                    "(the RF bunch frequency)"},
+            "pattern": {"type": "string",
+                        "description": "RLE fill pattern over the slot "
+                        "axis, e.g. '1*10 0*54 1*26' (1=bunch, "
+                        "0=chopped)"},
+            "n_bunches": {"type": "integer",
+                          "description": "alternative to 'pattern': "
+                          "uniform train of this many bunches; with "
+                          "duty_keep/duty_period it is the total SLOT "
+                          "count of a periodically chopped pulse"},
+            "duty_keep": {"type": "integer",
+                          "description": "periodic chopping: keep the "
+                          "first duty_keep of every duty_period slots "
+                          "(requires n_bunches as the slot count)"},
+            "duty_period": {"type": "integer"},
+            "beam_loading": {"type": "boolean", "default": False,
+                             "description": "fundamental-mode cavity "
+                             "beam loading (needs cavity_params)"},
+            "hom": {"type": "boolean", "default": False,
+                    "description": "dipole-HOM long-range wakes / "
+                    "cumulative BBU (needs cavity_params with "
+                    "hom_modes)"},
+            "direct_sc": {"type": "boolean", "default": False,
+                          "description": "direct bunch-to-bunch space "
+                          "charge via the PIC bunch-train images "
+                          "(mode='mp'/'hybrid', numpy PIC)"},
+            "cavity_params": {"type": "string",
+                              "description": "sidecar JSON/YAML path "
+                              "with per-cavity R/Q, Q_L, detuning, "
+                              "hom_modes (matched to elements by name "
+                              "pattern)"},
+            "select_bunches": {"type": "array",
+                               "items": {"type": "integer"},
+                               "description": "hybrid only: absolute "
+                               "slot indices to replay full-MP "
+                               "(default: auto edge/probe selection)"},
+            "replay_parallel": {"type": "boolean", "default": False,
+                                "description": "hybrid only: replay "
+                                "selected bunches in parallel worker "
+                                "processes"},
+            "history_stride": {"type": "integer", "default": 1,
+                               "description": "fast/hybrid: record "
+                               "per-cavity phasor histories every Nth "
+                               "bunch"},
+            "keep_full_results": {"type": "boolean", "default": True,
+                                  "description": "False: summary-only "
+                                  "per bunch (big tracked trains)"},
+            "seed": {"type": "integer", "default": 42},
+            "n_particles": {"type": "integer",
+                            "description": "override macroparticle "
+                            "count (tracked passes)"},
+            "space_charge": {"type": "boolean", "default": True,
+                             "description": "in-bunch space charge for "
+                             "tracked passes (False = explicit off)"},
+            "grid": {"type": "integer", "default": 32},
+            "grid_extent": {"type": "number", "default": 5.0},
+            "lattice_path": {"type": "string",
+                             "description": "deck to run (default: the "
+                             "session lattice)"},
+            "out_path": {"type": "string",
+                         "description": "output train HDF5 (default: "
+                         "<calc_dir>/train_<timestamp>.h5)"}},
+        "required": ["bunch_frequency_MHz"]},
+       "compute")
+def _run_train(ctx, bunch_frequency_MHz: float, mode: str = "mp",
+               pattern: str = "", n_bunches: int | None = None,
+               duty_keep: int | None = None, duty_period: int | None = None,
+               beam_loading: bool = False, hom: bool = False,
+               direct_sc: bool = False, cavity_params: str = "",
+               select_bunches=None, replay_parallel: bool = False,
+               history_stride: int = 1, keep_full_results: bool = True,
+               seed: int = 42, n_particles: int | None = None,
+               space_charge: bool = True, grid: int = 32,
+               grid_extent: float = 5.0, lattice_path: str = "",
+               out_path: str = "",
+               progress_callback=None, should_abort=None,
+               _assist_prov=None):
+    import copy
+    import datetime as _dt
+    import os as _os
+
+    gate = _need(ctx, "beam_config") if lattice_path \
+        else _need(ctx, "lattice", "beam_config")
+    if gate:
+        return gate
+    # ---- lattice -----------------------------------------------------
+    if lattice_path:
+        try:
+            lattice_path = _local_path(lattice_path)
+        except ValueError as exc:
+            return _refused(exc)
+        if not _os.path.isfile(lattice_path):
+            return _err(f"lattice file not found: {lattice_path}")
+        from linac_gen.cli.common import load_lattice
+        lat, refusal, warns0 = _capture(load_lattice, lattice_path)
+        if refusal:
+            return refusal
+        lat_path = lattice_path
+    else:
+        lat, warns0 = ctx.lattice, []
+        lat_path = ctx.lattice_path or None
+    # ---- pattern -----------------------------------------------------
+    if pattern and n_bunches is not None:
+        return _refused("give either 'pattern' (RLE) or 'n_bunches', "
+                        "not both")
+    if (duty_keep is None) != (duty_period is None):
+        return _refused("duty_keep and duty_period must be given "
+                        "together")
+    if duty_keep is not None and pattern:
+        return _refused("duty chopping composes with 'n_bunches' (the "
+                        "slot count), not with an explicit 'pattern'")
+    from linac_gen.train import PulsePattern, TrainConfig, TrainPhysics
+
+    def _build_pattern():
+        if pattern:
+            return PulsePattern.from_rle(pattern)
+        if n_bunches is None:
+            raise ValueError(
+                "no fill pattern: give 'pattern' (RLE string, e.g. "
+                "'1*10 0*54 1*26') or 'n_bunches' (uniform train / "
+                "slot count for duty chopping)")
+        if duty_keep is not None:
+            return PulsePattern.from_duty(int(n_bunches), int(duty_keep),
+                                          int(duty_period))
+        return PulsePattern.uniform(int(n_bunches))
+
+    pat, refusal, _ = _capture(_build_pattern)
+    if refusal:
+        return refusal
+    # ---- TrainConfig (its own loud validation surfaces verbatim) -----
+    if cavity_params and not (beam_loading or hom):
+        return _refused(
+            "cavity_params given but neither beam_loading nor hom is "
+            "enabled — the sidecar would be silently unused; enable a "
+            "channel or drop it")
+    if cavity_params:
+        try:
+            cavity_params = _local_path(cavity_params)
+        except ValueError as exc:
+            return _refused(exc)
+    tc_kwargs = dict(
+        bunch_frequency_MHz=float(bunch_frequency_MHz), pattern=pat,
+        mode=str(mode),
+        physics=TrainPhysics(direct_sc=bool(direct_sc),
+                             beam_loading=bool(beam_loading),
+                             hom=bool(hom)),
+        cavity_params=(cavity_params or None), seed=int(seed),
+        keep_full_results=bool(keep_full_results))
+    if select_bunches is not None:
+        tc_kwargs["select_bunches"] = list(select_bunches)
+    tc, refusal, _ = _capture(lambda: TrainConfig(**tc_kwargs))
+    if refusal:
+        return refusal
+    # ---- beam + space charge ----------------------------------------
+    cfg = ctx.beam_config
+    if n_particles:
+        cfg = copy.deepcopy(cfg)
+        cfg.n_particles = int(n_particles)
+    # "off" (explicit opt-out) instead of None: a current-carrying train
+    # would otherwise warn once per bunch.
+    sc = _sc_config_from({"space_charge": space_charge, "grid": grid,
+                          "grid_extent": grid_extent}) \
+        if space_charge else "off"
+    # ---- run ---------------------------------------------------------
+    from linac_gen.train import run_train as _run
+
+    def _cb(done, total):
+        if progress_callback is not None:
+            try:
+                progress_callback(float(done), int(done), int(total))
+            except Exception:                               # noqa: BLE001
+                pass
+
+    # Mode-foreign knobs are refused, not dropped: TrainRunner forwards
+    # unknown kwargs to Simulation (TypeError), and silently ignoring a
+    # caller's input is the failure mode this study bans.
+    allowed = _TRAIN_MODE_KWARGS.get(tc.mode, ())
+    if replay_parallel and "replay_parallel" not in allowed:
+        return _refused(f"replay_parallel applies to mode='hybrid' only "
+                        f"(got mode={tc.mode!r})")
+    if int(history_stride) != 1 and "history_stride" not in allowed:
+        return _refused(f"history_stride applies to the fast/hybrid "
+                        f"modes only (got mode={tc.mode!r})")
+    mode_kwargs = {}
+    if "history_stride" in allowed:
+        mode_kwargs["history_stride"] = max(1, int(history_stride))
+    if "replay_parallel" in allowed and replay_parallel:
+        mode_kwargs["replay_parallel"] = True
+    out, refusal, warns = _capture(
+        _run, lat, cfg, tc, sc_config=sc, lattice_path=lat_path,
+        progress_callback=_cb, should_abort=should_abort, **mode_kwargs)
+    if refusal:
+        return refusal
+    warns = list(warns0) + warns
+    # ---- save + summarize -------------------------------------------
+    if out_path:
+        try:
+            out_path = _local_path(out_path)
+        except ValueError as exc:
+            return _refused(exc)
+    else:
+        ts = _dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        calc = getattr(ctx, "calc_dir", ".") or "."
+        _os.makedirs(calc, exist_ok=True)
+        out_path = _os.path.join(calc, f"train_{ts}.h5")
+    try:
+        out.save_hdf5(str(out_path))
+    except Exception as exc:                                # noqa: BLE001
+        return _err(f"train ran but saving {out_path} failed: "
+                    f"{type(exc).__name__}: {exc}", warns)
+    ctx.set_results(out, str(out_path))
+    data = _train_summary_data(out)
+    data["output_path"] = str(out_path)
+    prov = {"results_path": str(out_path)}
+    if lat_path:
+        prov["lattice_path"] = str(lat_path)
+    return _ok(data, prov, warns)
+
+
 @_tool("run_match",
        "Run the card-driven matcher (ADJUST/SET_* cards in the loaded "
        "lattice) on the session beam.  MUTATES the loaded lattice in "
@@ -1538,7 +1879,10 @@ def _load_lattice(ctx, path: str):
 
 @_tool("load_results",
        "Load a previously saved results HDF5 into the session (as a "
-       "plain arrays object for querying).",
+       "plain arrays object for querying).  Multibunch train files "
+       "(provenance run_type='train') are auto-detected and loaded "
+       "through the train loader; result_summary then reports the "
+       "per-bunch train summary.",
        {"type": "object",
         "properties": {"path": {"type": "string"}},
         "required": ["path"]},
@@ -1550,6 +1894,27 @@ def _load_results(ctx, path: str):
         path = _local_path(path)
     except ValueError as exc:
         return _refused(exc)
+    # Train files carry none of the single-bunch envelope/reference
+    # groups — load_results_hdf5 would return an EMPTY namespace
+    # (silent uselessness).  Route on the train/ group instead.
+    def _is_train_file(p):
+        import h5py
+        with h5py.File(p, "r") as f:
+            return "train" in f
+    is_train, refusal, _ = _capture(_is_train_file, path)
+    if refusal:
+        return refusal
+    if is_train:
+        from linac_gen.train.results import load_train_results
+        out, refusal, warns = _capture(load_train_results, path)
+        if refusal:
+            return refusal
+        ctx.set_results(out, str(path))
+        data = _train_summary_data(out)
+        data["note"] = ("multibunch train results loaded (per-bunch "
+                        "summary via result_summary; python API: "
+                        "linac_gen.train.load_train_results)")
+        return _ok(data, {"results_path": str(path)}, warns)
     out, refusal, warns = _capture(load_results_hdf5, path)
     if refusal:
         return refusal

@@ -180,3 +180,56 @@ def test_solver_uncoupled_matches_longitudinal_only_run():
     finally:
         E._rescale_sigma_for_freq_jump = orig
     assert np.array_equal(out_full, out_long)
+
+
+# ---------------------------------------------------------------------------
+# frequency_offset asymmetry warning (multibunch M3): the envelope field-map
+# carry-over uses element.frequency while MP's advance_ref carries the
+# EFFECTIVE frequency — warn the user on both envelope paths (SC on and the
+# no-SC substep path — dual-regime rule).
+# ---------------------------------------------------------------------------
+
+def _rf_fieldmap3d(L_mm=100.0, freq=162.5):
+    from linac_gen.elements.field_map_3d import FieldMap3D
+    from linac_gen.io.field_map_data import FieldMapData, FieldChannel
+    from linac_gen.io.tracewin_geom import Channel
+    n, nz = 3, 11
+    x = np.linspace(-20.0, 20.0, n)
+    y = np.linspace(-20.0, 20.0, n)
+    z = np.linspace(0.0, L_mm, nz)
+    fd = FieldMapData(z=z, frequency=freq)
+    fd.channels[Channel.RF_E] = FieldChannel(
+        geometry=7, x=x, y=y, z=z,
+        Fx=np.zeros((n, n, nz)), Fy=np.zeros((n, n, nz)),
+        Fz=np.full((n, n, nz), 1.0e5))
+    return FieldMap3D(name="RFM", length=L_mm, field_data=fd,
+                      scale=1.0, n_steps=10)
+
+
+def _rf_map_solver(fm, current, **kw):
+    lat = Lattice()
+    lat.add(fm)
+    ref = ReferenceParticle(species=PROTON, w_kin=3.0, frequency=162.5)
+    twiss = dict(alpha_x=0.0, beta_x=2.0, emit_x=0.25,
+                 alpha_y=0.0, beta_y=2.0, emit_y=0.25,
+                 alpha_z=0.0, beta_z=3.0, emit_z=0.30)
+    return EnvelopeSolver(lat, ref, twiss, current=current, **kw)
+
+
+@pytest.mark.parametrize("current,record_substeps",
+                         [(5.0, False), (0.0, True)])
+def test_envelope_warns_frequency_offset_ignored(current, record_substeps):
+    fm = _rf_fieldmap3d()
+    fm.frequency_offset = 1.0
+    solver = _rf_map_solver(fm, current, record_substeps=record_substeps)
+    with pytest.warns(UserWarning, match="frequency_offset"):
+        solver.run()
+
+
+def test_envelope_no_offset_no_frequency_warning():
+    import warnings as _w
+    solver = _rf_map_solver(_rf_fieldmap3d(), current=5.0)
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter("always")
+        solver.run()
+    assert not [r for r in rec if "frequency_offset" in str(r.message)]

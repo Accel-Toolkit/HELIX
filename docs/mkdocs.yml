@@ -203,6 +203,8 @@ nav:
       - Training guide: 13_surrogates/05_training_guide.md
   - AI Assistant (optional):
       - Overview: 14_assistant/01_assistant.md
+  - Multibunch:
+      - Pulse & bunch-train studies: 15_multibunch/01_multibunch.md
   - Appendices:
       - A. Physics references: appendices/A_physics_references.md
       - B. Keyword cheatsheet: appendices/B_keyword_cheatsheet.md

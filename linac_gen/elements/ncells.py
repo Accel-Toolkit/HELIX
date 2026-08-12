@@ -200,6 +200,14 @@ class NCells(FieldMapElement):
     # is coarser for βg≤0 (flagged); reference/envelope (advance_ref) is exact.
     _PROVISIONAL_BETA = 0.9
 
+    # Multibunch hybrid-replay channel (linac_gen/train/replay.py):
+    # static transverse HOM kick [mrad] consumed once at element ENTRY
+    # by the Tracker, applied to every alive particle.  Class-level
+    # default 0.0 = inert (normal runs bit-identical); set only by the
+    # M6 replay override transport and cleared by its teardown.
+    hom_kick_x: float = 0.0
+    hom_kick_y: float = 0.0
+
     def __init__(self, name: str, *,
                  mode: int, n_cells: int, beta_g: float,
                  eot_v_per_m: float, theta_s_deg: float,
@@ -221,6 +229,9 @@ class NCells(FieldMapElement):
         self.dz_o_mm = float(dz_o_mm)
         self.frequency_mhz = float(frequency_mhz)
         self.sync_phase = bool(sync_phase)
+        # Multibunch train mode: design-pass SET_SYNC_PHASE pin — survives
+        # reset_run_state (which clears only per-pass integrator state).
+        self.sync_phase_pin = None
         # ERROR_CAV hooks (TraceWin cavity tolerance errors), mutated by
         # ErrorStudy on lattice copies.  Consumed at USE time — every gap
         # kick/matrix/probe amplitude scales by (1 + voltage_rel) and the
@@ -462,6 +473,10 @@ class NCells(FieldMapElement):
         β-evolving voltage integral as :meth:`FieldMap._calibrate_sync_phase`.
         """
         if not self.sync_phase or self._sync_offset_deg is not None:
+            return
+        pin = getattr(self, "sync_phase_pin", None)
+        if pin is not None:
+            self._sync_offset_deg = float(pin)   # train mode: design-pass pin
             return
         theta = self.theta_s_deg
         psi = 0.0

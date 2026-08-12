@@ -293,7 +293,8 @@ class Tracker:
                  snapshot_elements=None,
                  record_substeps=False,
                  progress_callback=None, should_abort=None,
-                 csr_kicker=None):
+                 csr_kicker=None,
+                 element_entry_hook=None, element_exit_hook=None):
         self.lattice = lattice
         self.beam = beam
         # ``pic_solver="off"`` is the explicit no-space-charge sentinel:
@@ -321,6 +322,20 @@ class Tracker:
         # inside long drifts and field maps — produces TraceWin-like
         # fine-resolution σ(s) curves at the cost of ~50× more records.
         self._record_substeps = record_substeps
+        # Multibunch train hooks (opt-in; default None = zero-cost).
+        # ``element_entry_hook(element, index, beam)`` fires immediately
+        # before an element is tracked; ``element_exit_hook`` immediately
+        # after its physics (before the exit-plane aperture check, so the
+        # hook sees the charge that actually traversed the element).
+        # Used by linac_gen.train to couple bunches through cavity state.
+        self._element_entry_hook = element_entry_hook
+        self._element_exit_hook = element_exit_hook
+        # Multibunch M6 hybrid replay: per-element static HOM kick
+        # attributes (``hom_kick_x``/``hom_kick_y``, mrad — see
+        # linac_gen/train/replay.py).  Populated once per run() by a
+        # lattice scan; None (every normal run — the attributes default
+        # to 0.0) costs one is-None check per element in the loop.
+        self._hom_kick_map = None
         # Progress / cancellation hooks.  ``progress_callback`` (if given)
         # is invoked with ``(s_mm, element_index, n_elements)`` after each
         # element so the GUI can update a progress bar using the real
@@ -374,6 +389,21 @@ class Tracker:
             "current to 0) if tracking without space charge is intended.",
             NoSpaceChargeWarning, stacklevel=3)
 
+    def _apply_train_hom_kick(self, kx: float, ky: float) -> None:
+        """Consume the M6-replay ``hom_kick_x``/``hom_kick_y`` element
+        attributes: one static transverse kick (mrad) to every alive
+        particle at element entry — the replay image of
+        ``HomManager.entry_hook``'s live kick, using the SAME guarded
+        array ops so a replayed bunch stays bit-identical to the tracked
+        bunch it reconstructs."""
+        beam = self.beam
+        alive = beam.alive_mask
+        p = beam.particles
+        if kx != 0.0:
+            p[alive, 1] += kx
+        if ky != 0.0:
+            p[alive, 3] += ky
+
     def run(self) -> DiagnosticRecorder:
         """Track beam through entire lattice."""
         if self.pic_solver is None \
@@ -382,6 +412,17 @@ class Tracker:
         # Record initial state
         self.recorder.record(self.beam, self.beam.ref.s, element_name="INPUT")
         n_el = len(self.lattice.elements)
+
+        # M6 hybrid replay: collect nonzero static HOM-kick attributes
+        # (one O(n_elements) getattr scan; zero float work for normal
+        # runs, whose attributes are all at the 0.0 class default).
+        _hk = {}
+        for _i, _el in enumerate(self.lattice.elements):
+            _kx = float(getattr(_el, "hom_kick_x", 0.0) or 0.0)
+            _ky = float(getattr(_el, "hom_kick_y", 0.0) or 0.0)
+            if _kx != 0.0 or _ky != 0.0:
+                _hk[_i] = (_kx, _ky)
+        self._hom_kick_map = _hk or None
 
         for i, element in enumerate(self.lattice.elements):
             if self._should_abort is not None and self._should_abort():
@@ -417,7 +458,15 @@ class Tracker:
                     self._warn_if_sc_missing(
                         f"after the DC-to-bunched transition at "
                         f"'{getattr(element, 'name', element)}'")
+            if self._element_entry_hook is not None:
+                self._element_entry_hook(element, i, self.beam)
+            if self._hom_kick_map is not None:
+                _kk = self._hom_kick_map.get(i)
+                if _kk is not None:
+                    self._apply_train_hom_kick(*_kk)
             self._track_element(element)
+            if self._element_exit_hook is not None:
+                self._element_exit_hook(element, i, self.beam)
             if self._pending_bunch_train:
                 # The bunching element has now run, so ``ref.frequency``
                 # holds ITS clock — that, not the beam-config frequency,
