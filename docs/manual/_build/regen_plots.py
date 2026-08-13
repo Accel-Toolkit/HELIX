@@ -364,19 +364,25 @@ def plot_pip2_pulse_droop():
                                  run_train)
     try:
         lattice, _meta = parse_tracewin(deck)
+        proj = load_project(os.path.join(root, "examples", "pipii", "mebt",
+                                         "mebt.lgproj"))
+        cfg = dataclasses.replace(proj.beam, n_particles=1000)
+        idx = np.arange(int(round(0.55e-3 * 162.5e6)))
+        pattern = PulsePattern.from_array((idx % 3 == 0) & (idx % 360 < 320))
+        tc = TrainConfig(bunch_frequency_MHz=162.5, pattern=pattern,
+                         mode="fast",
+                         physics=TrainPhysics(beam_loading=True),
+                         cavity_params=sidecar)
+        res = run_train(lattice, cfg, tc, sc_config="off", history_stride=8)
     except Exception as exc:                                # noqa: BLE001
-        print(f"    -> deck not parseable here ({exc}); skipped")
+        # The MEBT bunchers are FieldMap cavities whose maps live in the
+        # untracked Fields/ tree; on any CI runner (dev or public) that
+        # tree is absent, so the FMAP_* cavities never materialise and
+        # beam loading refuses.  This figure can only be regenerated where
+        # Fields/ is present; the committed PNG is used everywhere else.
+        print(f"    -> PIP-II field maps not available here ({exc}); "
+              "keeping committed figure")
         return None
-    proj = load_project(os.path.join(root, "examples", "pipii", "mebt",
-                                     "mebt.lgproj"))
-    cfg = dataclasses.replace(proj.beam, n_particles=1000)
-    idx = np.arange(int(round(0.55e-3 * 162.5e6)))
-    pattern = PulsePattern.from_array((idx % 3 == 0) & (idx % 360 < 320))
-    tc = TrainConfig(bunch_frequency_MHz=162.5, pattern=pattern,
-                     mode="fast",
-                     physics=TrainPhysics(beam_loading=True),
-                     cavity_params=sidecar)
-    res = run_train(lattice, cfg, tc, sc_config="off", history_stride=8)
     fast = res.fast
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 6), sharex=True)
     wd = fast.w_design_exit_MeV

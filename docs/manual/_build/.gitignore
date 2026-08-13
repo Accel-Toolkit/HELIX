@@ -5,3 +5,6 @@ __pycache__/
 # GUI screenshots are NOT regenerable in CI (need a display + the GUI
 # event loop) — track them as source-of-truth for the manual.
 !figures/gui/
+
+# fig_15_01 needs Fields/ (untracked) — cannot regen in CI, so track it
+!figures/fig_15_01_pip2_pulse_droop.png

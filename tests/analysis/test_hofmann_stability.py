@@ -237,7 +237,8 @@ def test_per_branch_growth_golden():
     assert s2 == pytest.approx(13.229640462580972, rel=1e-12)
     assert g["l2"] == pytest.approx(0.08743661105884878, rel=1e-9)
     assert g["l3_odd"] == pytest.approx(0.15551342538352686, rel=1e-9)
-    assert g["l3_even"] == 0.0 and g["l4_even"] == 0.0
+    assert g["l3_even"] == 0.0
+    assert g["l4_even"] == pytest.approx(0.2613287904801357, rel=1e-9)  # -sp^4: now active
 
 
 # =============================================================================

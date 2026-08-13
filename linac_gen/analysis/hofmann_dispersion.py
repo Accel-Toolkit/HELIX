@@ -24,8 +24,13 @@ three corrections to the printed 1998 equations:
 2. **Odd-branch interchange** (p. 4719): interchanging ``nu_x <-> nu_y`` in
    Eqs. (24)/(25) rescales the ``nu_x``-normalised quantities as well:
    ``l3_odd_D(s, a, e, sp2) = l3_even_D(s/a^2, 1/a, 1/e, sp2/a^2)``.
-3. **Eq. (41) sign**: the ``sp^4`` block prefactor is ``+sp^4`` (required by
-   the isotropic-limit reduction to Eq. (42)).
+3. **Eq. (41)/(42) sign**: the ``l=4`` even ``sp^4`` block prefactor is
+   ``-sp^4``, exactly as Eq. (41) prints it.  The journal also prints
+   Eq. (42) with the opposite sign, so one is misprinted; Eq. (43)'s five
+   closed-form isotropic roots are the independent arbiter and are
+   satisfied only by Eq. (41)'s ``-sp^4`` (Eq. (42) carries the typo).
+   [Corrected.] An earlier version adopted ``+sp^4`` because it reduced to
+   the *printed* Eq. (42) — validating against the misprinted equation.
 
 Public API
 ----------
@@ -276,11 +281,14 @@ def l4_even_D(s, alpha, eta, sp2):
 
     Leading (1+eta)^4; all of sp^2, sp^4, sp^6 blocks transcribed in their
     full anisotropic form from Hofmann's Eq. (41). The prefactor sign on
-    the sp^4 block is taken as +sp^4 (the printed equation appears to use
-    -sp^4, but the iso-limit reduction to Eq. (42) only succeeds with +;
-    we attribute the sign in the printed paper to a typesetting/typo
-    issue and adopt +sp^4 in accord with Eq. (42) and physical
-    consistency).
+    the sp^4 block is -sp^4, exactly as Eq. (41) prints it. The journal
+    also prints Eq. (42) with the opposite sp^4-block sign, so one of the
+    two is misprinted; Eq. (43)'s five closed-form isotropic roots are the
+    independent arbiter and are satisfied only by Eq. (41)'s -sp^4 (the
+    printed Eq. (42) carries the typo). An earlier version adopted +sp^4
+    because it reduced to the *printed* Eq. (42) — i.e. validated against
+    the misprinted equation; the resolution is pinned by
+    ``test_eq43_roots_fix_the_l4_even_sp4_sign``.
     """
     a = alpha
     e = eta
@@ -323,7 +331,11 @@ def l4_even_D(s, alpha, eta, sp2):
     M10 = -3.0 * (1.0 + a) * (1.0 + e2 / a_safe) * (1.0 + 4.0 * e) / 8.0 / (g_16 * g_4p)
     M11 = -3.0 * (1.0 - a) * (1.0 - e2 / a_safe) * (4.0 * e + e2) / 8.0 / (g_16a2 * g_4m)
     M12 = -3.0 * (1.0 + a) * (1.0 + e2 / a_safe) * (4.0 * e + e2) / 8.0 / (g_16a2 * g_4p)
-    D = D + sp4 * (M1 + M2 + M3 + M4 + M5 + M6 + M7 + M8 + M9 + M10 + M11 + M12)
+    # PRINTED sign: Eq. (41) carries -sp^4 on this block. Eq. (43)'s five
+    # isotropic roots (the independent arbiter) are satisfied only by this
+    # sign; the printed Eq. (42), not Eq. (41), is the misprint. See
+    # test_eq43_roots_fix_the_l4_even_sp4_sign.
+    D = D - sp4 * (M1 + M2 + M3 + M4 + M5 + M6 + M7 + M8 + M9 + M10 + M11 + M12)
 
     # sp^6 block — full anisotropic, 6 terms (Hofmann Eq. 41).
     K1 = -e / (g_4 * g_4 * g_16a2)

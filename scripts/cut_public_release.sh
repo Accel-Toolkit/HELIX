@@ -100,7 +100,8 @@ rm -f  docs/manual/11_examples/04_lebt_rfq.md \
        docs/manual/11_examples/05_pipii_mebt.md \
        docs/manual/11_examples/06_pipii_full.md \
        docs/manual/12_validation/02_pipii_validation.md \
-       docs/manual/15_multibunch/02_pipii_pulse.md
+       docs/manual/15_multibunch/02_pipii_pulse.md \
+       docs/manual/_build/figures/fig_15_01_pip2_pulse_droop.png
 
 echo "── 3/5 heal the manual ────────────────────────────────────────"
 python3 - <<'PY'
