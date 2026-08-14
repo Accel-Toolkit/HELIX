@@ -50,6 +50,7 @@ os.environ.setdefault("HELIX_QSETTINGS_DIR",
 
 import pytest
 
+from PyQt6.QtCore import QCoreApplication, QEvent
 from PyQt6.QtWidgets import QApplication
 
 from linac_gen.core.lattice import Lattice
@@ -64,6 +65,45 @@ def _no_stt_prewarm(monkeypatch):
     # panel construction must not load the real Whisper model
     monkeypatch.setenv("HELIX_ASSIST_NO_PREWARM", "1")
     yield
+
+
+@pytest.fixture(autouse=True)
+def _flush_deferred_deletes():
+    """Actually destroy widgets scheduled with deleteLater() after EVERY test.
+
+    deleteLater() only posts a DeferredDelete event, which needs a running
+    event loop to be processed — pytest never runs one, so every `win`
+    fixture's teardown (`w.close(); w.deleteLater()`) leaked the whole
+    window.  Windows accumulated for the entire session (+~464 top-level
+    widgets each), and because InterphaseWindow.__init__ applies an
+    app-wide stylesheet that re-polishes every live widget in the process,
+    construction cost grew superlinearly — the external Windows report
+    measured 3.65 s -> 34.4 s by the 6th window (7.6x), and on macOS we
+    measured 1.36 s -> 5.20 s (3.8x).  Flushing the posted DeferredDelete
+    events after each test frees them and flattens the cost.
+
+    Autouse fixtures are instantiated before a test's own fixtures, so this
+    finalizer runs AFTER their teardowns have posted the deletions.
+
+    Residual (measured, accepted): ~365 pyqtgraph context menus per window
+    (ViewBoxMenu + submenus) are created parentless by pyqtgraph and are
+    not covered by the window's deleteLater; they cost ~0.07 s/window of
+    re-polish versus 0.77 s/window when the whole window leaked.  The
+    external report's own "flushed" column shows the same residual slope.
+    """
+    yield
+    # sendPostedEvents processes the deletions synchronously; loop until no
+    # new deferred deletions were scheduled by the destructors themselves.
+    app = QCoreApplication.instance()
+    if app is not None:
+        # ONE pass only, deliberately: a second pass would also deliver
+        # the DeferredDeletes scheduled BY the first pass's destructors
+        # (pyqtgraph ViewBox -> menu chains), and forcing that deep
+        # cascade segfaulted the full suite deterministically
+        # (assistant_chat._content_bottom, 3/3 at the same site; clean
+        # without it).  One pass frees the window trees, which is the
+        # entire measured cost.
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 @pytest.fixture(autouse=True)

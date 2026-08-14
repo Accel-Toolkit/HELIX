@@ -138,6 +138,15 @@ runtime libraries as pip wheels — a system CUDA Toolkit install is
     dropped that architecture.  The CuPy PIC-FFT path via `.[gpu]` is
     independent of the torch build.
 
+!!! note "Windows: long paths can break the torch install"
+    PyTorch's `dist-info` licence tree is deep enough to exceed Windows'
+    260-character `MAX_PATH` limit: installing into a venv under a long
+    directory fails with `WinError 206 (The filename or extension is too
+    long)` — during the *torch* step, before HELIX itself is involved.
+    Either install from a short path (e.g. `C:\hx\`) or enable long
+    paths (`HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\
+    LongPathsEnabled = 1`).
+
 Enable per-run via:
 
 * `SpaceChargeConfig(use_gpu="auto" | "cpu" | "gpu" | "cuda" | "mps")`, or

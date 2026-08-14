@@ -559,6 +559,18 @@ class InterphaseWindow(QMainWindow):
         # (The old hook here dropped the text and force-repainted the whole
         # bar on every emit, so no message was ever visible.)
 
+        # Surface a silently-degraded install ONCE (external Windows
+        # report, issue 18): a no-compiler pip install skips the C++ PIC
+        # kernels without any notice, and runs are ~20x slower with no
+        # hint why.  find_spec-based probe — imports neither torch nor
+        # the kernels, so startup cost is nil.
+        from linac_gen.cli.common import cpp_kernels_built
+        if not cpp_kernels_built():
+            self.state.status_message.emit(
+                "C++ PIC kernels not built — pure-Python space charge "
+                "(~20x slower); rebuild with pip install -e . "
+                "(needs a C++ compiler)")
+
         # Keyboard shortcuts
         QShortcut(QKeySequence("Ctrl+O"), self, activated=self._open_lattice)
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self._save_lattice)

@@ -36,6 +36,7 @@ import importlib.util
 import json
 import os
 import shutil
+import sys
 import threading
 import time
 
@@ -56,8 +57,17 @@ def _ensure_claude_cli() -> str | None:
     found = shutil.which("claude")
     if found:
         return found
-    for cand in (os.path.expanduser("~/.local/bin/claude"),
-                 "/opt/homebrew/bin/claude", "/usr/local/bin/claude"):
+    cands = [os.path.expanduser("~/.local/bin/claude"),
+             "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]
+    if sys.platform.startswith("win"):
+        # shutil.which honours PATHEXT only for entries ON PATH; the
+        # off-PATH fallbacks need the explicit Windows names (external
+        # Windows report, issue 17: the binary is claude.EXE and
+        # ~/.local/bin/claude never matched).
+        cands = [os.path.expanduser(p) for p in
+                 (r"~\.local\bin\claude.exe", r"~\.local\bin\claude.cmd",
+                  r"~\AppData\Local\Programs\claude\claude.exe")] + cands
+    for cand in cands:
         if os.path.exists(cand):
             os.environ["PATH"] = (os.path.dirname(cand) + os.pathsep
                                   + os.environ.get("PATH", ""))

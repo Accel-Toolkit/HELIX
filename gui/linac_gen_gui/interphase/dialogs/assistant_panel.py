@@ -612,9 +612,14 @@ class AssistantPanel(QDialog):
         self._provider.addItem("Local / OpenAI-compatible", "openai")
         self._provider.addItem(
             "Claude (subscription login — no API key)", "claude_sdk")
+        self._provider.setToolTip(
+            "A Claude subscription can be used WITHOUT an API key: pick "
+            "'Claude (subscription login)' — it needs the claude CLI + "
+            'pip install -e ".[assist-sdk]"')
         self._key_edit = QLineEdit()
         self._key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self._key_edit.setPlaceholderText("Anthropic API key (sk-…)")
+        self._key_edit.setPlaceholderText(
+            "Anthropic API key (sk-…) — not needed for subscription login")
         self._model_edit = QComboBox()
         self._model_edit.setEditable(True)
         self._model_edit.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
@@ -1126,6 +1131,9 @@ class AssistantPanel(QDialog):
             self._mic_btn.setEnabled(False)
             self._wake_btn.setEnabled(False)
             self._speak.setEnabled(False)
+            self._speak.setToolTip(
+                "Speech output needs the optional voice stack: "
+                'pip install -e ".[assist-voice]"')
             return
         if not voice.stt_available():
             self._mic_btn.setEnabled(False)
@@ -1142,7 +1150,14 @@ class AssistantPanel(QDialog):
             if _os.environ.get("HELIX_ASSIST_NO_PREWARM") != "1":
                 self._ensure_stt_warm()
         if not voice.tts_available():
+            # Mirror the mic button's self-explanation (external Windows
+            # report, issue 15: the greyed checkbox gave no reason).
             self._speak.setEnabled(False)
+            self._speak.setToolTip(
+                "Speech output needs an offline TTS engine — "
+                'pip install -e ".[assist-voice]" '
+                "(on Windows this includes pyttsx3/SAPI; kokoro models "
+                "in ~/.helix/assistant_models/ give the natural voice)")
         else:
             self._speak.toggled.connect(self._on_speak_toggled)
             # pre-warm the Speaker at PANEL BUILD (off-thread — kokoro
@@ -1217,6 +1232,30 @@ class AssistantPanel(QDialog):
             self._append(f"[voice] microphone unavailable: {exc}")
             self._recorder = None
 
+    @staticmethod
+    def _mic_permission_hint(err: str = "") -> str:
+        """Platform-appropriate one-line hint for a dead microphone.
+
+        The macOS wording used to be shown unconditionally (external
+        Windows report, issue 16).  Also pre-flight the opaque PortAudio
+        "Error querying device -1": it means NO default input device
+        exists (seen e.g. under RDP with mic redirection off).
+        """
+        import sys as _sys
+        if "device -1" in err:
+            return ("  · no default input device found — check the "
+                    "system's default recording device (Sound settings).")
+        if _sys.platform == "darwin":
+            return ("  · if macOS never asked for permission: "
+                    "System Settings → Privacy & Security → "
+                    "Microphone → allow this app, then relaunch.")
+        if _sys.platform.startswith("win"):
+            return ("  · check Settings → Privacy & security → "
+                    "Microphone → allow desktop apps, and the default "
+                    "recording device, then relaunch.")
+        return ("  · check microphone permissions and the default "
+                "input device, then relaunch.")
+
     def _ptt_start_failed(self, rec, err: str):
         if self._recorder is not rec:
             return                               # already released/replaced
@@ -1224,9 +1263,7 @@ class AssistantPanel(QDialog):
         self._mic_btn.setText("🎤 Hold")
         self._set_state("idle")
         self._append(f"[voice] microphone unavailable: {err}")
-        self._append("  · if macOS never asked for permission: "
-                     "System Settings → Privacy & Security → "
-                     "Microphone → allow this app, then relaunch.")
+        self._append(self._mic_permission_hint(err))
 
     def _mic_released(self):
         self._mic_btn.setText("🎤 Hold")
@@ -1668,10 +1705,7 @@ class AssistantPanel(QDialog):
             self._prog.setText(f"mic unavailable — retrying in {delay} s")
             QTimer.singleShot(delay * 1000, self._retry_listen_start)
         else:
-            self._append("  · if macOS never asked for permission: "
-                         "System Settings → Privacy & Security → "
-                         "Microphone → allow this app, then "
-                         "relaunch.")
+            self._append(self._mic_permission_hint())
             self._wake_btn.setChecked(False)
 
     def _retry_listen_start(self):

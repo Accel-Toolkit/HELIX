@@ -253,6 +253,12 @@ class ChatView(QScrollArea):
         self._col.setContentsMargins(12, 12, 12, 12)
         self._col.setSpacing(10)
         self._col.addStretch(1)              # cards pack from the top
+        #: Python-side card registry — _content_bottom measures THESE, not
+        #: QLayoutItems: a QLayoutItem is not a QObject, so a stale item is
+        #: an unguardable dangling pointer (deterministic full-suite
+        #: segfault, 2026-08-14), while a dead QWidget wrapper raises a
+        #: catchable RuntimeError via sip.
+        self._cards: list = []
         self.setWidget(self._host)
 
         self._body_px = DEFAULT_BODY_PX
@@ -310,6 +316,7 @@ class ChatView(QScrollArea):
                 w.hide()                     # no zombie frame until the
                 w.deleteLater()              # deferred delete lands
         self._thinking = None
+        self._cards = []                     # re-render re-registers
         self._stream_timer.stop()
         self._stream_dirty = False
         self._stream_card = None
@@ -338,6 +345,7 @@ class ChatView(QScrollArea):
     def _add_widget(self, w: QWidget, at_index: int | None = None) -> None:
         self._col.insertWidget(self._col.count() - 1
                                if at_index is None else at_index, w)
+        self._cards.append(w)
         # follow only while pinned — a reader who scrolled up must not
         # be yanked down by every new card
         QTimer.singleShot(0, self._maybe_scroll_bottom)
@@ -350,14 +358,27 @@ class ChatView(QScrollArea):
             pass
 
     def _content_bottom(self) -> int:
-        """Bottom edge of the REAL content (max over visible layout
-        widgets) — the truth the pin targets; ``bar.maximum()`` lies
-        whenever size-hints overestimate (measured +77 px per turn)."""
+        """Bottom edge of the REAL content (max over visible cards) —
+        the truth the pin targets; ``bar.maximum()`` lies whenever
+        size-hints overestimate (measured +77 px per turn).
+
+        Iterates the Python-side card registry, NOT the layout items:
+        ``itemAt()`` hands back QLayoutItem pointers with no liveness
+        guard (not QObjects), and a stale one segfaulted the full test
+        suite deterministically once test teardown started actually
+        destroying widgets.  Dead cards raise RuntimeError here (sip
+        knows) and are pruned; hidden cards are skipped as before.
+        """
         b = 0
-        for i in range(self._col.count()):
-            w = self._col.itemAt(i).widget()
-            if w is not None and not w.isHidden():
-                b = max(b, w.y() + w.height())
+        live = []
+        for w in self._cards:
+            try:
+                if not w.isHidden():
+                    b = max(b, w.y() + w.height())
+                live.append(w)
+            except RuntimeError:             # C++ side gone — prune
+                continue
+        self._cards = live
         return b + self._col.contentsMargins().bottom()
 
     def _scroll_bottom(self) -> None:

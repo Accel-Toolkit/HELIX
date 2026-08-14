@@ -197,7 +197,8 @@ def test_save_lattice_routes_madx_to_save_as(qapp, mini_lattice, monkeypatch,
     win = InterphaseWindow()
     try:
         src = tmp_path / "line.madx"
-        src.write_text("! madx source — must survive Ctrl+S")
+        src.write_text("! madx source — must survive Ctrl+S",
+                       encoding="utf-8")
         win.state.set_lattice(mini_lattice, str(src))
 
         routed = []

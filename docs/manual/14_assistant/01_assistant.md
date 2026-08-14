@@ -232,6 +232,30 @@ always.
     mid-sentence.  Without the model, or with `HELIX_VAD=0`, the
     original RMS gates and polling cadence are used unchanged.
 
+!!! note "Getting the voice models (exact sources)"
+    Neither model ships with HELIX; both are dropped into
+    `~/.helix/assistant_models/` (create the directory if it does not
+    exist).  Sources validated on a clean install:
+
+    | file | source | size |
+    |---|---|---|
+    | `silero_vad.onnx` | [snakers4/silero-vad](https://github.com/snakers4/silero-vad), `src/silero_vad/data/` | ~2.2 MB |
+    | `kokoro-v1.0.onnx` | [thewh1teagle/kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx), release `model-files-v1.0` | ~310 MB |
+    | `voices-v1.0.bin` | same kokoro-onnx release | ~3 MB |
+
+    Without them the features degrade silently: wake detection falls
+    back to RMS loudness gates and the natural voice falls back to the
+    platform TTS chain.
+
+!!! note "Windows text-to-speech and barge-in"
+    On Windows the `assist-voice` extra includes **pyttsx3** (SAPI5), so
+    spoken replies work out of the box.  The stock SAPI engine cannot be
+    interrupted **mid-sentence** — "talk over it" then only cancels the
+    *queued* sentences.  Full barge-in (cutting audio within ~0.2 s)
+    needs the **kokoro** voice above, which plays through `sounddevice`
+    and is fully cross-platform: with the two kokoro files in place,
+    Windows barge-in behaves exactly as on macOS.
+
 !!! note "Sleep/wake resilience"
     If macOS sleeps while a microphone is open, CoreAudio can leave
     that stream permanently wedged.  HELIX detects this on teardown and

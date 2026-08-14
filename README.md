@@ -119,6 +119,10 @@ pip install -e ".[gpu]"        # + optional CUDA GPU acceleration
   process that also imports torch** — only for torch-free deployments).
 - **Console encoding.** `set PYTHONUTF8=1` is recommended on stock
   (cp1252) consoles; HELIX degrades gracefully without it.
+- **Long paths.** PyTorch's licence tree is deep enough to blow Windows'
+  260-character `MAX_PATH` limit — a venv under a long directory can fail
+  with `WinError 206` *while installing torch*. Use a short checkout path
+  (e.g. `C:\hx\`) or enable `LongPathsEnabled` in the registry.
 - **GPU.** PyTorch wheels on PyPI are CPU-only on Windows — install a CUDA
   build first, e.g.
   `pip install torch --index-url https://download.pytorch.org/whl/cu126`

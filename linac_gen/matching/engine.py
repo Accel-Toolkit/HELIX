@@ -163,7 +163,7 @@ class MatchResult:
             x = (self.x_final[col] if col < len(self.x_final)
                  else float("nan"))
             lines.append(
-                f"  {var.label:<32s}  {x0:>12.6g}  →  {x:<12.6g}  "
+                f"  {var.label:<32s}  {x0:>12.6g}  ->  {x:<12.6g}  "
                 f"[{var.vmin:>11.4g}, {var.vmax:<11.4g}]"
             )
         lines.append("")

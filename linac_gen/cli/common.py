@@ -561,3 +561,28 @@ def make_console_encoding_safe() -> None:
                 reconf(errors="replace")
             except Exception:                                # noqa: BLE001
                 pass
+
+
+def cpp_kernels_built() -> bool:
+    """Cheap probe: was the C++ PIC extension built for this install?
+
+    Uses find_spec so neither torch nor the kernels are imported — safe
+    at CLI/GUI startup.  A no-compiler install degrades to the pure-
+    Python PIC path silently (~20x slower; external Windows report,
+    issue 18): callers surface this ONCE so users learn why runs crawl.
+    """
+    import importlib.util
+    try:
+        return importlib.util.find_spec("linac_gen._pic_kernels") is not None
+    except (ImportError, ValueError):                        # broken pkg
+        return False
+
+
+def warn_if_no_cpp_kernels() -> None:
+    """One stderr line when the C++ PIC kernels are missing (CLI)."""
+    if not cpp_kernels_built():
+        import sys as _sys
+        print("[linac_gen] C++ PIC kernels not built — using the pure-"
+              "Python space-charge path (~20x slower). Rebuild with "
+              "`pip install -e .` (needs a C++ compiler) to regain speed.",
+              file=_sys.stderr)

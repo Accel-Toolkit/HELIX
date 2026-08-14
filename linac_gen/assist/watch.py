@@ -100,7 +100,7 @@ class RunWatch:
                                  if onset is not None else "")
                         self._fire("transmission",
                                    f"run watch: transmission fell "
-                                   f"{prev:.2f} % → {final:.2f} % "
+                                   f"{prev:.2f} % -> {final:.2f} % "
                                    f"({drop:.2f} pts vs the previous "
                                    "run)" + where, out)
                         self._alert_tr = final

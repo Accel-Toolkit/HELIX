@@ -294,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
     if result.baseline_cost is not None:
         print(f"[match] baseline cost (at x0) = {result.baseline_cost:.4e}")
 
-    print(f"[match] {'OK' if result.success else 'FAILED'} — "
+    print(f"[match] {'OK' if result.success else 'FAILED'} -- "
           f"{result.n_iter} iters, cost {result.cost:.4e}, "
           f"{result.elapsed_s:.2f}s")
     if not result.success and not result.variables:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "linac_gen"
-version = "1.8.1"
+version = "1.8.2"
 description = "Particle tracking code with PIC space charge for proton/ion linacs"
 readme = "README.md"
 # Dict form (not bare SPDX string) so older setuptools still parses it.
@@ -56,7 +56,11 @@ assist-sdk = ["claude-agent-sdk>=0.2.100"]
 # (local STT) + sounddevice (mic); TTS uses macOS `say` out of the box,
 # or install `piper-tts` for a higher-quality offline voice.  Never
 # required — the assistant is text-only without it.
-assist-voice = ["faster-whisper>=1.0", "sounddevice>=0.4"]
+assist-voice = ["faster-whisper>=1.0", "sounddevice>=0.4",
+                # Windows has no `say`; pyttsx3 drives SAPI5 and is the
+                # only stock TTS engine there (external Windows report,
+                # issue 12).  Never installed on macOS/Linux.
+                "pyttsx3>=2.90; platform_system == 'Windows'"]
 # Natural neural voice for the assistant (fully local ONNX).  Drop
 # kokoro*.onnx + voices*.bin into ~/.helix/assistant_models/; without
 # them (or this extra) the speaker falls back to macOS `say`.

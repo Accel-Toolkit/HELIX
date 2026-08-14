@@ -36,7 +36,7 @@ def _print_event(event: dict) -> None:
     elif t == "tool_start":
         print(f"  · {event['tool']} …", file=sys.stderr)
     elif t == "job_submitted":
-        print(f"  · {event['tool']} → {event['job_id']} (background)",
+        print(f"  - {event['tool']} -> {event['job_id']} (background)",
               file=sys.stderr)
     elif t == "event":
         print(f"  ‣ [event] {event.get('text')}", file=sys.stderr)

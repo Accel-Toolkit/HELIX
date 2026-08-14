@@ -406,7 +406,7 @@ def test_dat_round_trip_preserves_foil(tmp_path):
 
 def test_parser_accepts_trailing_comment_after_foil_marker(tmp_path):
     """Authors should be able to annotate the foil marker line, e.g.
-    ``; HELIX_FOIL STRIP C 600.0  ; PIP-II BTL→Booster stripper``.
+    ``; HELIX_FOIL STRIP C 600.0  ; PIP-II BTL->Booster stripper``.
 
     The trailing-comment branch was missing in the initial regex; this
     test pins it down so future edits don't regress."""
@@ -414,7 +414,7 @@ def test_parser_accepts_trailing_comment_after_foil_marker(tmp_path):
     dat = tmp_path / "annotated_foil.dat"
     dat.write_text(
         "DRIFT 100.0 10.0\n"
-        "; HELIX_FOIL STRIP C 600.0  ; PIP-II BTL→Booster charge-exchange foil\n"
+        "; HELIX_FOIL STRIP C 600.0  ; PIP-II BTL->Booster charge-exchange foil\n"
         "DRIFT 50.0 10.0\n"
         "END\n"
     )
