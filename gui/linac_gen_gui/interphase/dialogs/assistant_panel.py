@@ -108,6 +108,13 @@ def _make_context(state, calc_dir: str, nav=None):
         # writes go through AppState setters → tabs update via signals
         def set_lattice(self, lattice, path):
             self._state.set_lattice(lattice, path)
+            # A programmatic lattice load ends any project session,
+            # exactly like File → Open Lattice: otherwise a later plain
+            # Save Project would silently rewrite the old .lgproj
+            # around a lattice it never contained.
+            from linac_gen_gui.interphase.app import (
+                _settings, _SETTINGS_LAST_PROJECT)
+            _settings().remove(_SETTINGS_LAST_PROJECT)
 
         def set_beam_config(self, cfg):
             self._state.set_beam_config(cfg)

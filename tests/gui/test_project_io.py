@@ -54,6 +54,10 @@ def test_collect_reports_invalid_beam(win, monkeypatch):
 def test_save_project_cancels_on_missing_section(win, monkeypatch, tmp_path):
     from linac_gen_gui.interphase import app as app_mod
 
+    # Plain Save now writes silently to a known current project; this
+    # test exercises the prompt path, so make sure none is current.
+    app_mod._settings().remove(app_mod._SETTINGS_LAST_PROJECT)
+
     target = tmp_path / "broken.lgproj"
     monkeypatch.setattr(
         app_mod.QFileDialog, "getSaveFileName",

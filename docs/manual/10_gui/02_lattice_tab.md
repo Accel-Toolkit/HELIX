@@ -108,7 +108,7 @@ finishes so the spinbox shows the restored value.
 
 ## Adding / removing / reordering
 
-* **Add**: the **+ Add…** toolbar button (Ins / Ctrl+N), the
+* **Add**: the **+ Add…** toolbar button (Ins), the
   context-menu **Insert before/after** entries, or the **palette** —
   drag a type onto the timeline at the position you want, or
   double-click a palette entry to insert after the selection.

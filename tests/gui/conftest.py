@@ -107,6 +107,20 @@ def _flush_deferred_deletes():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_last_project():
+    """lastProjectPath now flips _save_project into silent-to-current-
+    path mode, and the sandbox QSettings store is process-wide — a key
+    left behind by one module would silently reroute saves in another.
+    Clear it around EVERY gui test (tests that need one set it
+    themselves)."""
+    from linac_gen_gui.interphase import app as app_mod
+    s = app_mod._settings()
+    s.remove(app_mod._SETTINGS_LAST_PROJECT)
+    yield
+    s.remove(app_mod._SETTINGS_LAST_PROJECT)
+
+
+@pytest.fixture(autouse=True)
 def _sandbox_calc_dir(tmp_path):
     """Point the auto-dump calc dir at a per-test tmp for EVERY GUI
     test.  The QSettings sandbox (HELIX_QSETTINGS_DIR) leaves calcDir

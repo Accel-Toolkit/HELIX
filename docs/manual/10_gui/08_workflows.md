@@ -51,11 +51,24 @@ them.  The realistic flow:
    Phase space (4-panel)** tile shows the full phase-space at the
    snapshot.
 
+## "I want to start a new project"
+
+1. **File → New Project…** (Ctrl+N, or the toolbar **New** button).
+2. Pick a name and a location — a folder `<name>/` is created there.
+3. Choose the starting point: a **blank lattice** (one editable
+   drift), **import** an existing `.dat` (copied into the folder by
+   default so the project stays portable), or a bundled **example**
+   (FODO cell, solenoid channel, DTL section).
+4. The project opens immediately; simulation outputs land in
+   `<name>/runs/`, so the whole folder can be moved, archived or
+   version-controlled as one unit.  **File → Save Project** updates
+   the same `.lgproj` from then on.
+
 ## "I want to compare two simulations"
 
-1. Run simulation 1 → File → Save Project as `sim1.lgproj`.
+1. Run simulation 1 → File → Save Project As… `sim1.lgproj`.
 2. Modify whatever you want changed → Run simulation 2 →
-   File → Save Project as `sim2.lgproj`.
+   File → Save Project As… `sim2.lgproj`.
 3. Open both projects in two HELIX windows side by side.
 4. Tile-by-tile visual comparison.
 

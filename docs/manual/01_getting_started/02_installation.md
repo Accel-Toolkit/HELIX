@@ -20,6 +20,31 @@ identically as a Python library or as a bundled `.exe` GUI.
 
 ## Install paths
 
+### 0. One-click setup
+
+The quickest path from a fresh clone to a running GUI is the bundled
+setup script for your platform, at the repository root:
+
+| Platform | Action |
+|---|---|
+| Windows | double-click `setup.bat` |
+| macOS | double-click `setup.command` (or run `./setup.sh`) |
+| Linux | `./setup.sh` |
+
+Each script finds a Python ≥ 3.10, creates an isolated `.venv` inside
+the repository (your system Python is never modified), installs HELIX
+with the GUI extra, prints whether the C++ kernels were built (a
+missing compiler is not fatal — HELIX falls back to the pure-Python
+kernels, ~20× slower for PIC), smoke-tests the install, and offers to
+launch the GUI.  The scripts are idempotent: re-running one after a
+`git pull` updates the existing environment.  On Windows the script
+also pre-checks for the `MAX_PATH` pitfall described below, and
+`LINAC_GEN_REQUIRE_CPP=1 ./setup.sh` makes a failed kernel build a
+hard error for users who require the compiled path.
+
+The remaining sections cover the same ground manually, for users who
+want control over the environment.
+
 ### 1. Python library (recommended)
 
 From a clone of the repository:

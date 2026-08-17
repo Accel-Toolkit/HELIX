@@ -108,6 +108,23 @@ pip install -e ".[gpu]"        # + optional CUDA GPU acceleration
 
 > 💡 If the C++ build fails (no compiler, etc.), the install still succeeds and HELIX still runs — it falls back to pure-Python PIC kernels: slower, but numerically equivalent. The install log prints a clear warning when that happens; set `LINAC_GEN_REQUIRE_CPP=1` to make a failed kernel build fatal instead.
 
+### One-click setup
+
+Prefer not to type any of that?  After cloning, run the setup file for
+your OS — it creates an isolated `.venv` next to the repo, installs
+HELIX with the GUI, smoke-tests the result, and offers to launch:
+
+| OS | Do this |
+|---|---|
+| Windows | double-click **`setup.bat`** |
+| macOS | double-click **`setup.command`** |
+| Linux | `./setup.sh` |
+
+Re-running the same file after a `git pull` updates the install in
+place.  The scripts never touch your system Python — everything lands
+in the repo's own `.venv`, which `run_gui.sh` / `run_gui.bat` pick up
+automatically.
+
 ### Windows notes
 
 - **No compiler needed.** Without Visual Studio Build Tools the C++ kernels
@@ -163,6 +180,10 @@ Run from the checkout with the bundled launcher:
 ./run_gui.sh          # macOS / Linux
 run_gui.bat           # Windows
 ```
+
+First time in? **File → New Project…** (Ctrl+N) creates a ready-to-run
+project — blank lattice, imported `.dat`, or a bundled example — with
+its own folder and `runs/` output directory.
 
 (Equivalent to `PYTHONPATH=gui python -m linac_gen_gui.interphase` —
 the GUI package lives in the repository, not on PyPI.)

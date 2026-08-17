@@ -88,10 +88,11 @@ Each tab gets its own chapter:
 
 | Goal | Where |
 |---|---|
+| Create a new project | File → New Project… (Ctrl+N) or toolbar **New** |
 | Open a `.dat` lattice | File → Open Lattice… (Ctrl+O) or Lattice tab → **Open…** |
 | Open a project (`.lgproj`) | File → Open Project… (no shortcut) |
 | Save the lattice `.dat` | File → Save Lattice (Ctrl+S) |
-| Save the project | File → Save Project… (no shortcut) |
+| Save the project | File → Save Project (writes the current `.lgproj`; Save Project As… picks a new file) |
 | Run tracking | toolbar **Run Envelope** (Ctrl+R) or **Run Multi-particle** (Ctrl+Shift+R) |
 | Cancel a long run | toolbar **Stop** |
 | Inspect an element | click it in the Lattice tab list |

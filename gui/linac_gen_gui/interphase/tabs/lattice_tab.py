@@ -112,7 +112,7 @@ class LatticeTab(QWidget):
         bl.addSpacing(6)
         # ---- Edit toolbar (Add / Duplicate / Delete / Undo / Redo) ---
         self._btn_add  = QPushButton("+ Add…")
-        self._btn_add.setToolTip("Add element  (Insert / Ctrl+N)")
+        self._btn_add.setToolTip("Add element  (Insert)")
         self._btn_add.clicked.connect(self._add_element)
         bl.addWidget(self._btn_add)
 
@@ -262,9 +262,10 @@ class LatticeTab(QWidget):
     # ------------------------------------------------------------------
     def _install_shortcuts(self) -> None:
         s = self.state
-        # Insert / Ctrl+N → add dialog
+        # Insert → add dialog.  (Ctrl+N belongs to File → New Project at
+        # the window level; a second window-context binding here would
+        # make Qt treat BOTH as ambiguous and fire neither.)
         QShortcut(QKeySequence("Ins"),    self, activated=self._add_element)
-        QShortcut(QKeySequence("Ctrl+N"), self, activated=self._add_element)
         # Delete → remove selected
         QShortcut(QKeySequence("Del"),    self, activated=self._delete_selected)
         # Ctrl+D → duplicate

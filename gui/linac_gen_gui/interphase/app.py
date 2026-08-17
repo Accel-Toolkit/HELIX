@@ -512,6 +512,8 @@ class InterphaseWindow(QMainWindow):
         self._toolbar.save_lattice_as_requested.connect(self._save_lattice_as)
         self._toolbar.open_project_requested.connect(self._open_project)
         self._toolbar.save_project_requested.connect(self._save_project)
+        self._toolbar.new_project_requested.connect(self._new_project)
+        self._toolbar.save_project_as_requested.connect(self._save_project_as)
         self._toolbar.run_envelope_requested.connect(self._run_envelope)
         self._toolbar.run_mp_requested.connect(self._run_mp)
         self._toolbar.run_backtrack_requested.connect(self._run_backtrack)
@@ -572,6 +574,7 @@ class InterphaseWindow(QMainWindow):
                 "(needs a C++ compiler)")
 
         # Keyboard shortcuts
+        QShortcut(QKeySequence("Ctrl+N"), self, activated=self._new_project)
         QShortcut(QKeySequence("Ctrl+O"), self, activated=self._open_lattice)
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self._save_lattice)
         QShortcut(QKeySequence("Ctrl+R"), self, activated=self._run_envelope)
@@ -1297,7 +1300,22 @@ class InterphaseWindow(QMainWindow):
         # directory).
         _raw_calc = _settings().value(_SETTINGS_CALC_DIR, "")
         if _raw_calc:
-            out["calc_dir"] = str(_raw_calc)
+            calc = str(_raw_calc)
+            # Keep projects portable: a calc dir INSIDE the project
+            # folder is stored relative (the New Project wizard's
+            # "runs" layout), so a later plain Save cannot bake the
+            # absolute path back in and break the move-the-folder-as-
+            # one-unit convention.  Dirs outside the project stay
+            # absolute, as before.
+            if project_path:
+                _proj_dir = os.path.dirname(os.path.abspath(project_path))
+                try:
+                    _rel = os.path.relpath(os.path.abspath(calc), _proj_dir)
+                    if not _rel.startswith(".."):
+                        calc = _rel
+                except ValueError:   # different drive (Windows)
+                    pass
+            out["calc_dir"] = calc
         # Numerics tab: integration / SC cadence, PIC grid, backend,
         # record-substeps flag.
         ct = self.convergence_tab
@@ -1539,13 +1557,32 @@ class InterphaseWindow(QMainWindow):
         return warnings
 
     def _save_project(self) -> None:
+        # Plain Save writes to the current project when one is known;
+        # otherwise it behaves like Save As (the only behaviour that
+        # existed before the New Project feature).
+        current = _settings().value(_SETTINGS_LAST_PROJECT, "")
+        if isinstance(current, str) and current and os.path.isfile(current):
+            self._write_project_file(current)
+        else:
+            self._save_project_as()
+
+    def _save_project_as(self) -> None:
         fp, _ = QFileDialog.getSaveFileName(
-            self, "Save Project",
+            self, "Save Project As",
             str(Path(_project_start_dir()) / "project.lgproj"),
             "HELIX Project (*.lgproj *.lgproj.json *.json);;All Files (*)"
         )
         if not fp:
             return
+        self._write_project_file(fp)
+
+    def _write_project_file(self, fp: str,
+                            extra: dict | None = None) -> bool:
+        """Serialize the session to ``fp``.  Shared by Save, Save As and
+        the New Project wizard; ``extra`` overrides top-level keys (the
+        wizard passes ``{"calc_dir": "runs"}`` so the JSON stays
+        portable instead of baking in the absolute QSettings value).
+        Returns True when the file was written."""
         try:
             import json
             warnings: list[str] = []
@@ -1564,7 +1601,9 @@ class InterphaseWindow(QMainWindow):
                 )
                 if choice != QMessageBox.StandardButton.Save:
                     self.state.status_message.emit("Project save cancelled.")
-                    return
+                    return False
+            if extra:
+                data.update(extra)
             with open(fp, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, indent=2)
             self._toolbar.set_recent_projects(_recent_projects_add(fp))
@@ -1573,8 +1612,10 @@ class InterphaseWindow(QMainWindow):
             # so the close prompt doesn't fire spuriously after Save.
             self.state.mark_project_clean()
             self.state.status_message.emit(f"Project saved → {os.path.basename(fp)}")
+            return True
         except Exception as exc:
             QMessageBox.critical(self, "Save project failed", str(exc))
+            return False
 
     # ------------------------------------------------------------------
     # TraceWin output export — emits partran1.out + envelope .txt for the
@@ -1681,6 +1722,81 @@ class InterphaseWindow(QMainWindow):
             )
         except Exception as exc:
             QMessageBox.critical(self, "Export failed", str(exc))
+
+    def _new_project(self) -> None:
+        """Guided project creation (File → New Project…, toolbar, Ctrl+N).
+
+        The dialog creates the project folder and materializes the
+        lattice file; this handler then loads it and writes the
+        ``.lgproj`` with a RELATIVE ``calc_dir`` of ``runs`` so the
+        project and its outputs travel together (the resolution
+        convention of ``_apply_project_dict``)."""
+        # Before the dialog, so a cancel never orphans a created folder.
+        if not self._confirm_discard("New Project"):
+            return
+        from linac_gen_gui.interphase.dialogs.new_project import (
+            NewProjectDialog,
+        )
+        ex_dir = Path(__file__).resolve().parents[3] / "examples"
+        candidates = [("FODO cell", "fodo_cell.dat"),
+                      ("Solenoid channel", "solenoid_channel.dat"),
+                      ("DTL section", "dtl_section.dat")]
+        examples = [(label, str(ex_dir / fn)) for label, fn in candidates
+                    if (ex_dir / fn).is_file()]
+        dlg = NewProjectDialog(self, start_dir=_project_start_dir(),
+                               examples=examples)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        res = dlg.project_result()
+        if not res:
+            return
+        try:
+            self._detach_workers_for_new_lattice()
+            lattice, meta = _parse_lattice_file(res["lattice_path"])
+            self.state.set_lattice(lattice, res["lattice_path"])
+            lat_warnings = (meta.get("warnings", [])
+                            if isinstance(meta, dict) else [])
+            for w in lat_warnings:
+                print(f"[lattice import] {w}")
+            s = _settings()
+            s.setValue(_SETTINGS_LAST_LATTICE, res["lattice_path"])
+            s.setValue(_SETTINGS_LAST_DIR, res["project_dir"])
+            # Adopting the new lattice ENDS any previous project session
+            # immediately (same semantics as a bare Open Lattice): if
+            # the .lgproj write below is cancelled or fails, plain Save
+            # must prompt rather than silently rewrite the old project
+            # around this new lattice.  Success re-sets the key.
+            s.remove(_SETTINGS_LAST_PROJECT)
+            # Runs land inside the project folder from the first run on.
+            s.setValue(_SETTINGS_CALC_DIR,
+                       str(Path(res["project_dir"]) / "runs"))
+        except Exception as exc:
+            # Best-effort cleanup: a corrupt import must not orphan the
+            # just-created folder (which would also block a retry under
+            # the same name).  Only artifacts the wizard itself created
+            # are removed; an imported-in-place lattice is untouched.
+            try:
+                lat = Path(res["lattice_path"])
+                proj = Path(res["project_dir"])
+                if lat.parent == proj and lat.is_file():
+                    lat.unlink()
+                if proj.is_dir() and not any(proj.iterdir()):
+                    proj.rmdir()
+            except OSError:
+                pass
+            QMessageBox.critical(self, "New Project",
+                                 f"Could not load the new lattice:\n{exc}")
+            return
+        fp = os.path.join(res["project_dir"], res["name"] + ".lgproj")
+        # The relative "runs" (not the absolute QSettings value) keeps
+        # the written project portable; _write_project_file also sets
+        # lastProjectPath + recents and clears the dirty flags.
+        if self._write_project_file(fp, extra={"calc_dir": "runs"}):
+            msg = f"Project “{res['name']}” created → {res['project_dir']}"
+            if lat_warnings:
+                msg += (f"  ·  {len(lat_warnings)} lattice warning(s)"
+                        " — see console")
+            self.state.status_message.emit(msg)
 
     def _open_project(self) -> None:
         if not self._confirm_discard("Open Project"):

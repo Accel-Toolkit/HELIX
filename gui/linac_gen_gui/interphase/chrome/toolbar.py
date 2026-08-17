@@ -27,6 +27,11 @@ class Toolbar(QFrame):
     # self-describing JSON.
     open_project_requested   = pyqtSignal()
     save_project_requested   = pyqtSignal()
+    # Guided creation wizard (File → New Project…, toolbar New, Ctrl+N).
+    new_project_requested    = pyqtSignal()
+    # Always-prompt variant; plain Save Project writes the current
+    # .lgproj silently once one is known.
+    save_project_as_requested = pyqtSignal()
 
     # Run signals
     run_envelope_requested   = pyqtSignal()
@@ -92,13 +97,16 @@ class Toolbar(QFrame):
 
         # ---- Menus ----------------------------------------------------
         lay.addWidget(self._mk_menu("File", [
+            ("New Project…",    self.new_project_requested.emit),
+            ("---", None),
             ("Open Lattice…",   self.open_lattice_requested.emit),
             ("Save Lattice",    self.save_lattice_requested.emit),
             ("Save Lattice As…",self.save_lattice_as_requested.emit),
             ("---", None),
             ("Open Project…",   self.open_project_requested.emit),
             ("Open Recent",     self._recent_menu),
-            ("Save Project…",   self.save_project_requested.emit),
+            ("Save Project",    self.save_project_requested.emit),
+            ("Save Project As…", self.save_project_as_requested.emit),
             ("---", None),
             ("Set Calculation Directory…", self.set_calc_dir_requested.emit),
             ("Export TraceWin output…", self.export_tracewin_requested.emit),
@@ -141,7 +149,17 @@ class Toolbar(QFrame):
 
         self._add_separator(lay)
 
-        # ---- Run controls --------------------------------------------
+        # ---- Project / run controls ----------------------------------
+        self._new_btn = QPushButton("  New")
+        self._new_btn.setIcon(icon("plus", 12))
+        self._new_btn.setStyleSheet(
+            f"background:{theme.BG_2}; color:{theme.TEXT_0}; "
+            f"border:1px solid {theme.BORDER_1}; border-radius:3px; padding:6px 12px;"
+        )
+        self._new_btn.setToolTip("Create a new project (Ctrl+N)")
+        self._new_btn.clicked.connect(self.new_project_requested)
+        lay.addWidget(self._new_btn)
+
         self._run_env_btn = QPushButton("  Run Envelope")
         self._run_env_btn.setIcon(icon("play", 12, "#00161c"))
         self._run_env_btn.setStyleSheet(
@@ -414,6 +432,9 @@ class Toolbar(QFrame):
         self._update_run_enabled()
         # Stop button is only meaningful while a simulation is in flight.
         self._stop_btn.setEnabled(running)
+        # Creating a project mid-run would tear the workers down; keep
+        # the entry point consistent with the Run buttons.
+        self._new_btn.setEnabled(not running)
         if not running and self._live_s_text is not None:
             # Run over — re-render the label without the "· N%" suffix
             # (the last live tick would otherwise leave e.g. "· 99%"
