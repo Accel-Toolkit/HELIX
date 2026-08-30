@@ -91,6 +91,7 @@ extra_css:
 
 nav:
   - Home: index.md
+  - Tutorials: tutorials.md
   - Getting Started:
       - 01_getting_started/01_introduction.md
       - 01_getting_started/02_installation.md
