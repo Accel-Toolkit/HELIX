@@ -67,6 +67,19 @@ jobs:
           mkdir -p site/home
           cp -R web/. site/home/
 
+      - name: Bundle tutorial videos from the tutorials-v1 release
+        # Release assets are served as application/octet-stream with
+        # nosniff, which browsers refuse to play in <video>; Pages
+        # serves the same files as video/mp4.  Non-fatal so forks and
+        # the dev repo (no such release) still build the manual.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p site/videos
+          gh release download tutorials-v1 \
+            --repo "${{ github.repository }}" --dir site/videos \
+            || echo "tutorials-v1 release not found — page will show posters only"
+
       - name: Upload site artifact
         uses: actions/upload-pages-artifact@v3
         if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
