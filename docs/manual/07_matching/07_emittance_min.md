@@ -229,21 +229,21 @@ ADJUST'd elements; omit it to scan all of them.
 
 When to pick `sequential_scan` over `cmaes`:
 
-* You want full transparency into which knob did what -- per-element
+* You want full transparency into which knob did what — per-element
   scans are easier to interpret than CMA-ES population samples.
 * The lattice has weak inter-knob coupling and a small number of
-  variables (≤ 10) -- coordinate descent converges in fewer total
+  variables (≤ 10) — coordinate descent converges in fewer total
   evaluations.
-* You're validating a hand-tuned baseline -- sequential_scan with
+* You're validating a hand-tuned baseline — sequential_scan with
   small `step_frac` (e.g. 0.02) refines a near-matched lattice
   conservatively.
 
 When to stay with `cmaes`:
 
-* The problem is strongly coupled (12+ variables, HWR-style) -- CMA-ES
+* The problem is strongly coupled (12+ variables, HWR-style) — CMA-ES
   learns the covariance matrix and moves diagonally; coordinate descent
   zigzags.
-* You want a single number that captures algorithm confidence -- CMA-ES
+* You want a single number that captures algorithm confidence — CMA-ES
   provides one via the population spread; sequential scan does not.
 
 ## Emittance-exchange tolerance (`MIN_EMIT_4D_GROWTH`)

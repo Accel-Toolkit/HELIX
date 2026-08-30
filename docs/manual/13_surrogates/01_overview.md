@@ -42,11 +42,11 @@ mlp, meta = train_surrogate_for_element(
 
 | Use case | Worth surrogating? |
 |---|---|
-| Single envelope pass, novel lattice | ❌ — training cost > savings |
-| Parameter scan (10² runs, same elements) | ✅ — break-even at ~5-10 runs |
-| Matching loop (100s of forward passes) | ✅✅ — payoff is large |
-| Tolerance study (50-1000 seeds) | ✅✅ — payoff dominates |
-| Differentiable matching (gradient path) | ⚠️ — needs M7, see below |
+| Single envelope pass, novel lattice | No — training cost > savings |
+| Parameter scan (10² runs, same elements) | Yes — break-even at ~5-10 runs |
+| Matching loop (100s of forward passes) | Yes — payoff is large |
+| Tolerance study (50-1000 seeds) | Yes — payoff dominates |
+| Differentiable matching (gradient path) | Only with M7 — see below |
 
 The break-even point is roughly: surrogate training takes ~1 h
 production (50 k samples, 1 CPU-worker minute per element) and
@@ -104,7 +104,7 @@ surrogate.
 
 | Toggle | Default | What it does |
 |---|---|---|
-| **Engage in MP runs** (master, M7) | OFF | When OFF: MP runs ignore all registered surrogates -- bit-identical to baseline.  When ON alone: the surrogate sits in the dispatch chain as a safe delegate (`track_rk4` calls `wrapped.track_rk4`); still bit-identical to baseline, ~1 % dispatch overhead. |
+| **Engage in MP runs** (master, M7) | OFF | When OFF: MP runs ignore all registered surrogates — bit-identical to baseline.  When ON alone: the surrogate sits in the dispatch chain as a safe delegate (`track_rk4` calls `wrapped.track_rk4`); still bit-identical to baseline, ~1 % dispatch overhead. |
 | **Experimental: linear-matrix fast path** (M7-followup) | OFF | When ON (and master also ON): per-substep `wrapped.track_rk4` is replaced by an analytic ref-advance + batched `M_slice @ particles`.  Linear-matrix accuracy applies; halo dynamics may drift. |
 
 The fast path is **double-opt-in** because its accuracy depends on
@@ -116,18 +116,18 @@ gaussian particles @ 5 mA, M3 Max 14-core):
 
 | Configuration | σ_x rel.diff | σ_z rel.diff | ε_nx rel.diff | Speedup |
 |---|---|---|---|---|
-| Master OFF (no surrogates engaged) | -- | -- | -- | baseline (1×) |
+| Master OFF (no surrogates engaged) | — | — | — | baseline (1×) |
 | Master ON, fast-path OFF | 0.00 % | 0.00 % | 0.00 % | 0.99× |
 | Master ON, fast-path ON, **smoke training** (200 sa × 40 ep) | 4.7 % | **28.4 %** | 1.5 % | 1.22× |
 | Master ON, fast-path ON, **moderate training** (2000 sa × 100 ep for cavities, smoke for solenoids) | 4.9 % | **4.7 %** | 1.9 % | 1.66× |
 
 Key observations:
 
-* **σ_z is highly sensitive to cavity training quality** -- moderate
+* **σ_z is highly sensitive to cavity training quality** — moderate
   training of the 12 RF cavities dropped σ_z error from 28 % to
   4.7 % (6× improvement).  Smoke training is fundamentally
   insufficient for the fast path on RF-rich lattices.
-* **σ_x/σ_y plateau around 5 %** -- driven by the MEBT bunchers
+* **σ_x/σ_y plateau around 5 %** — driven by the MEBT bunchers
   (zero-phase, sparse-matrix RF cavities, val MAPE inflated by
   near-zero denominators).  Further reducing this needs
   production-quality training (50 000 sa × 300 ep, ~12 h / element)
@@ -142,14 +142,14 @@ Key observations:
 
 | Use case | Acceptable? |
 |---|---|
-| Parameter scans for matching (σ moments are the only metric) | ⚠️ At ~5 % σ_x error, only if your matching residual is well above 5 % |
-| Tolerance studies measuring σ jitter under errors | ❌ The surrogate's ~5 % bias would masquerade as the tolerance signal |
-| Halo / aperture / beam-loss studies | ❌ Linear matrix misses nonlinear halo physics |
-| TraceWin parity / publication-grade physics | ❌ Use baseline RK4 |
-| Speed-priority exploration where you'll re-run RK4 for final results | ✅ Use the fast path; always click `Compare MP` first to validate the bias on YOUR lattice + beam |
+| Parameter scans for matching (σ moments are the only metric) | Partly — at ~5 % σ_x error, only if your matching residual is well above 5 % |
+| Tolerance studies measuring σ jitter under errors | No — the surrogate's ~5 % bias would masquerade as the tolerance signal |
+| Halo / aperture / beam-loss studies | No — linear matrix misses nonlinear halo physics |
+| TraceWin parity / publication-grade physics | No — use baseline RK4 |
+| Speed-priority exploration where you'll re-run RK4 for final results | Yes — use the fast path; always click `Compare MP` first to validate the bias on your own lattice + beam |
 
 Out-of-scope inputs fall back to the wrapped element automatically,
-so the run is always **physically defensible** -- never silently
+so the run is always **physically defensible** — never silently
 returning bad numbers, only either slower (delegate) or
 linear-approximation (fast path).
 
@@ -162,7 +162,7 @@ several private helpers from the wrapped `FieldMap3D`
 not a stable API; future refactors of `FieldMap3D` could break the
 fast path silently.  Defensive `hasattr` guards in
 `SurrogateFieldMap` cause the path to fall back to the safe
-delegate per element whenever any helper is missing -- so a future
+delegate per element whenever any helper is missing — so a future
 break would degrade performance, never correctness.
 
 The matrix log/expm slice approximation (`_slice_matrix` →
@@ -189,20 +189,20 @@ both env and MP modes after M8:
 
 | Workflow / Error type | Envelope mode | MP mode (fast path) |
 |---|---|---|
-| Beam errors (centroid, current jitter, Twiss mismatch) | ✅ Σ propagation invariant under beam-shape changes | ✅ tracker handles per-particle |
-| Field-strength errors (`ke`, `kb`, `phase` jitter) -- IN scope | ✅ surrogate reads post-error attr via `getattr(self._wrapped, "ke")` | ✅ same |
-| Field-strength errors (`ke`, `kb`, `phase` jitter) -- OUT of scope | ✅ `OutOfScopeError` → fall back to wrapped RK4 | ✅ same |
-| **Element tilt** (`tilt_deg`) | ✅ M8: `envelope.py` wraps each element's matrix with `R_out @ M @ R_in` mirroring `tracker.py:208-219` | ✅ M7: `tracker.py:196-254` wraps `_track_field_map` and therefore the surrogate's substep loop |
-| Element offset (`dx`, `dy`) | ✅ NO-OP for Σ by design (Σ is invariant under rigid translation around the centroid); matches TraceWin's envelope semantics | ✅ tracker applies per-particle translate |
-| `dz`, `pitch_deg`, `yaw_deg` | ⚠️ Tier-1 not implemented in baseline tracker either -- stored but ignored. Future work. | ⚠️ same |
-| **Matching (`gradient` algorithm) through a surrogated cavity** | ✅ M8: `element_matrix_torch` has a `SurrogateFieldMap` arm; `check_gradient_supported` accepts it. Surrogated cavities act as passive autograd-differentiable blocks the gradient flows through. | N/A -- matcher is env-mode |
-| Matching tuning surrogated `ke` / `phase` directly | ⚠️ Out of scope this iteration. Surrogated cavities are passive in the gradient flow; matcher tunes only quads / solenoids / dipoles. Adding `ADJUST_KE` etc. is a separate plan. | N/A |
-| Matching via `least_squares` / `differential_evolution` / `dual_annealing` (numpy paths) | ✅ Already works with surrogates -- the NumPy `fitted_matrix(ref)` path is `torch.no_grad`-wrapped and returns a plain ndarray that the scipy optimisers consume directly. | N/A |
-| TraceWin parity / publication-grade physics | ❌ Use baseline RK4 -- the fast path's linear-matrix approximation is documented as research-grade. | ❌ same |
+| Beam errors (centroid, current jitter, Twiss mismatch) | Supported — Σ propagation invariant under beam-shape changes | Supported — tracker handles per-particle |
+| Field-strength errors (`ke`, `kb`, `phase` jitter) — in scope | Supported — surrogate reads post-error attr via `getattr(self._wrapped, "ke")` | Supported — same |
+| Field-strength errors (`ke`, `kb`, `phase` jitter) — out of scope | Handled — `OutOfScopeError` → fall back to wrapped RK4 | Handled — same |
+| **Element tilt** (`tilt_deg`) | Supported — M8: `envelope.py` wraps each element's matrix with `R_out @ M @ R_in` mirroring `tracker.py:208-219` | Supported — M7: `tracker.py:196-254` wraps `_track_field_map` and therefore the surrogate's substep loop |
+| Element offset (`dx`, `dy`) | Supported — no-op for Σ by design (Σ is invariant under rigid translation around the centroid); matches TraceWin's envelope semantics | Supported — tracker applies per-particle translate |
+| `dz`, `pitch_deg`, `yaw_deg` | Not supported — Tier-1 not implemented in baseline tracker either; stored but ignored. Future work. | Not supported — same |
+| **Matching (`gradient` algorithm) through a surrogated cavity** | Supported — M8: `element_matrix_torch` has a `SurrogateFieldMap` arm; `check_gradient_supported` accepts it. Surrogated cavities act as passive autograd-differentiable blocks the gradient flows through. | N/A — matcher is env-mode |
+| Matching tuning surrogated `ke` / `phase` directly | Not supported — out of scope this iteration. Surrogated cavities are passive in the gradient flow; matcher tunes only quads / solenoids / dipoles. Adding `ADJUST_KE` etc. is a separate plan. | N/A |
+| Matching via `least_squares` / `differential_evolution` / `dual_annealing` (numpy paths) | Supported — already works with surrogates; the NumPy `fitted_matrix(ref)` path is `torch.no_grad`-wrapped and returns a plain ndarray that the scipy optimisers consume directly. | N/A |
+| TraceWin parity / publication-grade physics | Not supported — use baseline RK4; the fast path's linear-matrix approximation is documented as research-grade. | Not supported — same |
 
 Empirical env-vs-MP tilt parity (driver `/tmp/test_env_tilt.py`, MEBT
 drift-quad-drift mini-lattice, 10 000 particles): σ_x rel.diff
-**2.7e-5** across tilt_deg ∈ {0, 2, 5, 10}° -- far below the
+**2.7e-5** across tilt_deg ∈ {0, 2, 5, 10}° — far below the
 particle-statistics floor (~1 / √10 000 ≈ 1 %), confirming the env
 matrix wrap is consistent with the MP tracker's per-particle
 rotation.

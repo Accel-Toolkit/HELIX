@@ -163,11 +163,11 @@ deleting `weights.pt` alongside.
 
 | Change | Invalidates? | Why |
 |---|---|---|
-| You edited the `.dat` file | ✅ | new lattice hash → new dir |
-| Element renamed in the `.dat` | ✅ | name is the cache key |
-| You bumped a sweep range | ⚠️ | old weights still load but scope shrinks/grows are stale |
-| HELIX commit SHA changed | ⚠️ | physics may differ; rerun reproducibility CI to check |
-| Re-trained with different `seed` | ❌ | weights differ but both valid |
+| You edited the `.dat` file | Yes | new lattice hash → new dir |
+| Element renamed in the `.dat` | Yes | name is the cache key |
+| You bumped a sweep range | Partly | old weights still load but scope shrinks/grows are stale |
+| HELIX commit SHA changed | Partly | physics may differ; rerun reproducibility CI to check |
+| Re-trained with different `seed` | No | weights differ but both valid |
 
 ### Auto-discovery in the GUI
 

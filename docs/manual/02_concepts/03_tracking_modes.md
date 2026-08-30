@@ -8,10 +8,10 @@ either wastes hours or gives misleading results.
 
 | Goal | Mode | Speed | Output fidelity |
 |---|---|---|---|
-| Match Twiss / scan parameters | **Envelope** | ⚡ fast | RMS only |
-| Predict transmission, halo, loss | **Multi-particle + SC** | 🐢 slow | full |
+| Match Twiss / scan parameters | **Envelope** | fast | RMS only |
+| Predict transmission, halo, loss | **Multi-particle + SC** | slow | full |
 | Pre-RFQ continuous (DC) beam | **Sacherer ODE** or **MP+2D-DC** | medium | RMS or full |
-| Linear-optics sanity check | **Envelope no-SC** | ⚡⚡ fastest | RMS only, ignores SC |
+| Linear-optics sanity check | **Envelope no-SC** | fastest | RMS only, ignores SC |
 | Tolerance / error ensemble | **Envelope** (cheap) or **MP** (slow but accurate) | varies | RMS / full |
 
 If unsure, run **envelope first** to verify Twiss / focusing strengths,
@@ -173,13 +173,13 @@ For full DC-mode coverage see
 
 | Question | Envelope | MP no-SC | MP + 3D PIC | Sacherer ODE | MP + 2D DC |
 |---|:---:|:---:|:---:|:---:|:---:|
-| Bunched (post-RFQ) beam? | ✓ | ✓ | ✓ | ✗ | ✗ |
-| Continuous (pre-RFQ) beam? | ✓ (ε_z=0) | ✗ | ✗ | ✓ | ✓ |
-| Need halo / loss? | ✗ | ✓ | ✓ | ✗ | ✓ |
-| Need transmission? | ✗ | ✓ (aperture) | ✓ | ✗ | ✓ |
-| SC effects matter? | rough | ✗ | ✓ | ✓ | ✓ |
-| Need fast iteration? | ✓ | ~ | ✗ | ✓ | ~ |
-| Used in matcher? | ✓ default | ✗ | (occasional) | ✗ | ✗ |
+| Bunched (post-RFQ) beam? | Yes | Yes | Yes | No | No |
+| Continuous (pre-RFQ) beam? | Yes (ε_z=0) | No | No | Yes | Yes |
+| Need halo / loss? | No | Yes | Yes | No | Yes |
+| Need transmission? | No | Yes (aperture) | Yes | No | Yes |
+| SC effects matter? | rough | No | Yes | Yes | Yes |
+| Need fast iteration? | Yes | Partly | No | Yes | Partly |
+| Used in matcher? | Yes (default) | No | occasional | No | No |
 
 ## Performance reference
 

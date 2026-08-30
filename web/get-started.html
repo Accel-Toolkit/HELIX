@@ -20,7 +20,7 @@
       <a href="index.html">Home</a>
       <a href="features.html">Features</a>
       <a href="workbench.html">Workbench</a>
-      <a href="ai-copilot.html">AI Copilot</a>
+      <a href="ai-copilot.html">AI Assistant</a>
       <a href="tutorials.html">Tutorials</a>
       <a href="get-started.html" class="is-active">Get started</a>
       <a href="about.html">About</a>
@@ -91,7 +91,7 @@
 <span class="c"># a parameter scan over beam current</span>
 <span class="p">python</span> <span class="s">-m</span> linac_gen scan examples/batch_mode/chicane.dat <span class="s">--vary</span> current=0:10:2 <span class="s">--out</span> scan.csv</code></pre>
     </div>
-    <p class="kicker-note" style="margin-top:.9rem">Four subcommands: <code class="mono">run</code> · <code class="mono">scan</code> · <code class="mono">batch</code> · <code class="mono">twiss</code>.</p>
+    <p class="kicker-note" style="margin-top:.9rem">Ten subcommands: <code class="mono">run</code> · <code class="mono">scan</code> · <code class="mono">batch</code> · <code class="mono">study</code> · <code class="mono">twiss</code> · <code class="mono">mo</code> · <code class="mono">failures</code> · <code class="mono">backtrack</code> · <code class="mono">match</code> · <code class="mono">assist</code>.</p>
   </div>
 </section>
 
@@ -133,7 +133,7 @@ M = compute_transfer_matrix(lattice, ref)        <span class="c"># the 6×6 line
           <div class="term-bar"><span class="dots"><i></i><i></i><i></i></span><span class="name">bash</span><button class="copy" type="button">copy</button></div>
           <pre><code><span class="p">pytest</span> <span class="s">-q</span></code></pre>
         </div>
-        <p class="kicker-note" style="margin-top:.8rem">3,600+ tests cover lattice parsing, tracking, space charge, matching, the CLI and the GUI.</p>
+        <p class="kicker-note" style="margin-top:.8rem">3,900+ tests cover lattice parsing, tracking, space charge, matching, the CLI and the GUI.</p>
       </div>
     </div>
   </div>
@@ -146,7 +146,7 @@ M = compute_transfer_matrix(lattice, ref)        <span class="c"># the 6×6 line
   <div class="wrap hero-grid">
     <div>
       <p class="eyebrow">Next</p>
-      <h2>Read the 95-page manual.</h2>
+      <h2>Read the manual.</h2>
       <p class="lead">Every element, every configuration knob, worked examples, and validated benchmarks — auto-deployed on every release. Build it locally too:</p>
       <div class="term" style="margin-top:1rem">
         <div class="term-bar"><span class="dots"><i></i><i></i><i></i></span><span class="name">bash</span><button class="copy" type="button">copy</button></div>
@@ -158,7 +158,7 @@ M = compute_transfer_matrix(lattice, ref)        <span class="c"># the 6×6 line
     <div class="stack">
       <div class="card"><div class="k">Bundled examples</div><p>Runnable scripts and sample lattices live in <code class="mono">examples/</code> — including the showcase FODO deck this site's figures come from.</p></div>
       <div class="card"><div class="k">Requirements</div><p>Python 3.10+, NumPy, SciPy, h5py, PyTorch. GUI adds PyQt6, pyqtgraph, matplotlib.</p></div>
-      <div class="card"><div class="k">Apple Silicon</div><p>No CUDA needed — GPU acceleration comes via the PyTorch MPS backend; <code class="mono">.[gpu]</code> is a safe no-op on macOS.</p></div>
+      <div class="card"><div class="k">Apple Silicon</div><p>The PIC solver runs on the multi-threaded CPU FFT path; the CUDA extra <code class="mono">.[gpu]</code> is a safe no-op on macOS. An experimental FP32 PyTorch MPS backend exists but is opt-in (<code class="mono">use_gpu="mps"</code>) and never chosen automatically.</p></div>
     </div>
   </div>
 </section>
@@ -171,7 +171,7 @@ M = compute_transfer_matrix(lattice, ref)        <span class="c"># the 6×6 line
       <a class="brand" href="index.html"><img src="assets/img/helix-logo.png" alt=""><b>HELIX</b></a>
       <p>Hybrid Envelope-multiparticle LInac eXplorer. Developed at Fermi National Accelerator Laboratory for the PIP-II superconducting linac.</p>
     </div>
-    <div><h4>Explore</h4><a href="features.html">Features</a><a href="workbench.html">Workbench</a><a href="ai-copilot.html">AI Copilot</a><a href="get-started.html">Get started</a></div>
+    <div><h4>Explore</h4><a href="features.html">Features</a><a href="workbench.html">Workbench</a><a href="ai-copilot.html">AI Assistant</a><a href="get-started.html">Get started</a></div>
     <div><h4>Resources</h4><a href="../">User manual</a><a href="https://github.com/Accel-Toolkit/HELIX">Source code</a><a href="about.html#cite">Cite HELIX</a><a href="https://github.com/Accel-Toolkit/HELIX/releases">Releases</a></div>
     <div><h4>Project</h4><a href="about.html">About</a><a href="https://pip2.fnal.gov/">PIP-II at Fermilab</a><a href="about.html#license">License · GPL-3.0</a></div>
   </div>

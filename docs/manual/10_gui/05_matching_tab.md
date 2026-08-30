@@ -37,12 +37,12 @@ switching between two distinct physical questions:
 
 | Lattice type | Whole-lattice? | Why |
 |---|---|---|
-| Storage rings, synchrotrons, FFAGs | ✓ Yes | The beam circulates; "one turn = lattice" is literally periodic. |
-| Booster, main injector, collider arcs treated as rings | ✓ Yes | Same reason. |
-| A single FODO cell modeled in isolation, asking "what's the matched solution if this repeats forever?" | ✓ Yes | Mathematically identical to a ring of one cell. |
-| HWR / SSR / cryomodule cavities | ✗ No | Accelerating: eigenvalues drift off the unit circle as βγ grows.  Mathematically diverges. |
-| MEBT, BTL, HEBT, dump lines | ✗ No | Transfer lines — one-pass, not periodic.  Use cell mode. |
-| LEBT, RFQ | ✗ No | Acceleration + non-periodic geometry breaks the assumption. |
+| Storage rings, synchrotrons, FFAGs | Yes | The beam circulates; "one turn = lattice" is literally periodic. |
+| Booster, main injector, collider arcs treated as rings | Yes | Same reason. |
+| A single FODO cell modeled in isolation, asking "what's the matched solution if this repeats forever?" | Yes | Mathematically identical to a ring of one cell. |
+| HWR / SSR / cryomodule cavities | No | Accelerating: eigenvalues drift off the unit circle as βγ grows.  Mathematically diverges. |
+| MEBT, BTL, HEBT, dump lines | No | Transfer lines — one-pass, not periodic.  Use cell mode. |
+| LEBT, RFQ | No | Acceleration + non-periodic geometry breaks the assumption. |
 
 **FODO cell mode** is for everything else PIP-II-class: a transfer
 line or linac with a repeating sub-section inside it.  Cell mode

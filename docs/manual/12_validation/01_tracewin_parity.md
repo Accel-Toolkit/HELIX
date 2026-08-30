@@ -9,33 +9,33 @@ to differ.
 
 | Element type | Parser | Tracker | Matched within | Notes |
 |---|:---:|:---:|---|---|
-| Drift | ✓ | ✓ | bit-exact | linear matrix |
-| Quadrupole (no g3..g6) | ✓ | ✓ | bit-exact | linear matrix |
-| Quadrupole (with g3..g6) | ✓ | ✓ | ~1e-9 | thin Multipole kicks |
-| Solenoid (hard-edge) | ✓ | ✓ | bit-exact | linear matrix |
-| Solenoid (field map) | ✓ | ✓ | < 0.5 % | RK4; default step density |
-| Dipole (sector / rect with edges) | ✓ | ✓ | < 0.5 % | hv=1 fix 2026-05-07 |
-| RFGap | ✓ | ✓ | < 1 % | matches partran's GAP |
-| FieldMap (1-D / 2-D) | ✓ | ✓ | < 0.5 % | every TraceWin geom code |
-| FieldMap3D | ✓ | ✓ | < 1 % | KD/DKD integrators |
-| RfqCell (M1 2-term) | ✓ | ✓ | ~10 % (σ_y) | Boris+Hybrid; production path |
-| RfqCell (M3 family) | ✓ | partial | — | structural blockers; not production |
+| Drift | Yes | Yes | bit-exact | linear matrix |
+| Quadrupole (no g3..g6) | Yes | Yes | bit-exact | linear matrix |
+| Quadrupole (with g3..g6) | Yes | Yes | ~1e-9 | thin Multipole kicks |
+| Solenoid (hard-edge) | Yes | Yes | bit-exact | linear matrix |
+| Solenoid (field map) | Yes | Yes | < 0.5 % | RK4; default step density |
+| Dipole (sector / rect with edges) | Yes | Yes | < 0.5 % | hv=1 fix 2026-05-07 |
+| RFGap | Yes | Yes | < 1 % | matches partran's GAP |
+| FieldMap (1-D / 2-D) | Yes | Yes | < 0.5 % | every TraceWin geom code |
+| FieldMap3D | Yes | Yes | < 1 % | KD/DKD integrators |
+| RfqCell (M1 2-term) | Yes | Yes | ~10 % (σ_y) | Boris+Hybrid; production path |
+| RfqCell (M3 family) | Yes | partial | — | structural blockers; not production |
 
 ## Error directives
 
 | Directive | Parser | Effect |
 |---|:---:|---|
-| `ERROR_QUAD_NCPL_STAT` | ✓ | full coverage including g3..g6 |
-| `ERROR_CAV_NCPL_STAT` | ✓ | dx, dy, dz¹, voltage_rel², phase_offset |
-| `ERROR_BEND_NCPL_STAT` | ✓ | dx, dy, dz¹, tilt, field_rel² |
-| `ERROR_BEAM_STAT` | ✓ | centroid, ε, mismatch, current |
-| `ERROR_GAUSSIAN_CUT_OFF` | ✓ | global cutoff (last card wins, whole file) |
-| `ERROR_SET_RATIO` | ✓ | parsed and stored; ratio sweep **not consumed** |
-| `ERROR_*_DYN` (dynamic) | ✓ | absorbed as **static** NCPL errors (time-varying semantics ignored) |
-| `ERROR_*_CPL_*` (coupled) | ✓ | absorbed as **static** NCPL errors (group-draw semantics ignored) |
-| `ERROR_STAT_FILE` | ✗ | deferred (file-driven) |
-| `ERROR_RFQ_CEL_NCPL_STAT` | ✗ | deferred (per-cell RFQ) |
-| `ADJUST_STEERER` | ✓ | **shipped** — closed-orbit auto-correction, see [Orbit correction](../08_errors/07_correction.md) |
+| `ERROR_QUAD_NCPL_STAT` | Yes | full coverage including g3..g6 |
+| `ERROR_CAV_NCPL_STAT` | Yes | dx, dy, dz¹, voltage_rel², phase_offset |
+| `ERROR_BEND_NCPL_STAT` | Yes | dx, dy, dz¹, tilt, field_rel² |
+| `ERROR_BEAM_STAT` | Yes | centroid, ε, mismatch, current |
+| `ERROR_GAUSSIAN_CUT_OFF` | Yes | global cutoff (last card wins, whole file) |
+| `ERROR_SET_RATIO` | Yes | parsed and stored; ratio sweep **not consumed** |
+| `ERROR_*_DYN` (dynamic) | Yes | absorbed as **static** NCPL errors (time-varying semantics ignored) |
+| `ERROR_*_CPL_*` (coupled) | Yes | absorbed as **static** NCPL errors (group-draw semantics ignored) |
+| `ERROR_STAT_FILE` | No | deferred (file-driven) |
+| `ERROR_RFQ_CEL_NCPL_STAT` | No | deferred (per-cell RFQ) |
+| `ADJUST_STEERER` | Yes | **shipped** — closed-orbit auto-correction, see [Orbit correction](../08_errors/07_correction.md) |
 
 ¹ `dz` draws are stored on the element but **ignored by the
 tracker** (only dx, dy, tilt are honoured).

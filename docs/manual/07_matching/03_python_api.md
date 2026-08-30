@@ -251,29 +251,29 @@ Separate from `match()`, `linac_gen.matching.periodic` provides
 | `find_coupled_matched_twiss(lattice, ref)` | **Coupled** lattices (solenoid HWR, skew quads): eigenvector / Wolski method on the 4×4 transverse map.  Usually accessed indirectly via the auto-routing in `find_periodic_twiss`. |
 | `find_fodo_cells(lattice)` | Auto-detect candidate periodic cells.  Recognises Quadrupole, Solenoid, and FieldMap/FieldMap3D classified as solenoid (kb≠0, ke=0). |
 
-### Whole-lattice vs sub-cell mode -- which to use
+### Whole-lattice vs sub-cell mode — which to use
 
 The two main entry points (`find_periodic_twiss` and
 `find_matched_input_twiss`) answer different physical questions.
 
-**`find_periodic_twiss(lattice, ref)` -- "whole-lattice" mode**:
+**`find_periodic_twiss(lattice, ref)` — "whole-lattice" mode**:
 asks *"what input Twiss, tracked once through the whole lattice,
 comes back to itself at the end?"*  Computes the one-turn 6×6
 transfer matrix and extracts the periodic solution.
 
 * Physically meaningful for **rings**: storage rings, synchrotrons,
-  FFAGs -- structures where one circulation = one period.
+  FFAGs — structures where one circulation = one period.
 * Physically meaningful for **a single periodic cell modeled in
   isolation**, asking "what's the solution if this cell repeats
   forever?"
 * **Not** physically meaningful for transfer lines or accelerating
   sections (HWR / SSR / MEBT / BTL).  For accelerating sections,
-  eigenvalues drift off the unit circle as βγ grows -- the function
+  eigenvalues drift off the unit circle as βγ grows — the function
   will route to the coupled path and surface an
   ``accelerating-section deviation`` warning; result is the smooth
   approximation, not a strict periodic solution.
 
-**`find_matched_input_twiss(lattice, ref, cell_start, cell_end)` --
+**`find_matched_input_twiss(lattice, ref, cell_start, cell_end)` —
 "FODO-cell" mode**: asks *"there's a repeating sub-section.  What
 Twiss do I inject at s=0 so the beam is matched to that
 sub-section's period by the time it arrives?"*  Computes the
@@ -285,7 +285,7 @@ through the inverse of the front section.
 * Use `find_fodo_cells(lattice)` to discover candidate cells, or
   pass `cell_start`/`cell_end` manually if you know the period.
 * For lattices with bends (BTL arcs, HEBT), use
-  `find_sc_matched_input_twiss` instead -- it carries dispersion
+  `find_sc_matched_input_twiss` instead — it carries dispersion
   through an 8-state formulation, which `find_matched_input_twiss`
   does not.
 
@@ -301,7 +301,7 @@ through the inverse of the front section.
 
 For lattices with solenoid focusing, skew quadrupoles, or any other
 source of transverse x↔y coupling, the 2×2-block-trace approach used
-by the standard Courant–Snyder extraction is invalid -- the trace
+by the standard Courant–Snyder extraction is invalid — the trace
 is no longer the one-turn phase advance.
 
 `find_periodic_twiss` now **auto-detects** coupling (by catching the

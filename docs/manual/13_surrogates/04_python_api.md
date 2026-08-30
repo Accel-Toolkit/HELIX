@@ -62,12 +62,12 @@ print(f"val MAPE = {meta.val_mape:.3e}")
 
 | Arg | Type | Required | Notes |
 |---|---|---|---|
-| `element` | `FieldMapElement` | ✅ | source whose `fitted_matrix(ref)` provides ground truth |
-| `ref_template` | reference particle | ✅ | cloned per sample; only `w_kin` is varied |
-| `n_samples` | int | ✅ | LHS sample count |
-| `ref_w_kin_range` | `(lo, hi)` MeV | ✅ | scope on incoming kinetic energy |
-| `param_ranges` | `dict[str, (lo, hi)]` | ✅ | element attributes to sweep |
-| `out_dir` | path | ✅ | where to save `weights.pt` + `metadata.json` |
+| `element` | `FieldMapElement` | Yes | source whose `fitted_matrix(ref)` provides ground truth |
+| `ref_template` | reference particle | Yes | cloned per sample; only `w_kin` is varied |
+| `n_samples` | int | Yes | LHS sample count |
+| `ref_w_kin_range` | `(lo, hi)` MeV | Yes | scope on incoming kinetic energy |
+| `param_ranges` | `dict[str, (lo, hi)]` | Yes | element attributes to sweep |
+| `out_dir` | path | Yes | where to save `weights.pt` + `metadata.json` |
 | `hidden_dims` | tuple of int | `(128,128,128)` | MLP hidden layer sizes |
 | `activation` | `"silu"`/`"tanh"`/`"relu"` | `"silu"` | smooth = better Jacobians (M7-friendly) |
 | `epochs` | int | `200` | training epochs |

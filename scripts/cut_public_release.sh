@@ -75,7 +75,7 @@ rm -rf examples/pipii examples/MEBT_To_Foil examples/pipii_tunable \
        examples/pip2_misalignment_study examples/pipii_hwr_ssr1_match \
        examples/piplattice examples/emittance_min examples/lebt_pxie \
        examples/lebt_plus_rfq examples/hebt_diag \
-       examples/pipii_multibunch
+       examples/pipii_multibunch examples/commissioning
 rm -f  tests/analysis/test_scc_pxie_anchor.py
 # Instability-paper machinery: HELD from public releases until the PRAB
 # paper is submitted (user decision 2026-08-06) — remove these lines to
@@ -175,11 +175,19 @@ git log --oneline -3
 if [ "$PUSH" = "--push" ]; then
     git push origin main
     # a real GitHub Release (tag + notes) for the Releases sidebar
+    # Release TITLE stays short (the Releases sidebar truncates long ones
+    # into unreadable paragraphs); the full SUMMARY always lands in the
+    # notes body below, so nothing is lost.
+    SHORT_TITLE="${SUMMARY%%:*}"          # drop anything after a colon
+    SHORT_TITLE="${SHORT_TITLE%%.*}"      # ... and after the first sentence
+    if [ "${#SHORT_TITLE}" -gt 60 ]; then
+        SHORT_TITLE="$(printf '%.60s' "$SHORT_TITLE")…"
+    fi
     gh release create "${VERSION}" --repo Accel-Toolkit/HELIX \
-        --title "HELIX ${VERSION} — ${SUMMARY}" \
+        --title "HELIX ${VERSION} — ${SHORT_TITLE}" \
         --notes "${SUMMARY}
 
-📖 Manual: https://accel-toolkit.github.io/HELIX/" \
+Manual: https://accel-toolkit.github.io/HELIX/" \
         || echo "(release object failed — tag manually later)"
     echo "PUBLISHED ${VERSION}"
 else

@@ -20,7 +20,7 @@
       <a href="index.html">Home</a>
       <a href="features.html" class="is-active">Features</a>
       <a href="workbench.html">Workbench</a>
-      <a href="ai-copilot.html">AI Copilot</a>
+      <a href="ai-copilot.html">AI Assistant</a>
       <a href="tutorials.html">Tutorials</a>
       <a href="get-started.html">Get started</a>
       <a href="about.html">About</a>
@@ -53,12 +53,12 @@
       <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-spacecharge"/></svg></span><h3>Space charge</h3><p>3-D particle-in-cell Poisson solver, CIC / TSC deposition, C++ kernels, GPU-capable.</p></div>
       <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-tracewin"/></svg></span><h3>TraceWin-compatible</h3><p>Reads <code class="mono">.dat</code> lattices; MAD-X &amp; MAD8 import; <code class="mono">.dst</code> / partran / field-map I/O.</p></div>
       <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-matching"/></svg></span><h3>Matching</h3><p>Periodic &amp; transfer-line matched Twiss, multi-algorithm optimiser.</p></div>
-      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-workbench"/></svg></span><h3>GUI workbench</h3><p>PyQt6 — lattice, beam, convergence, matching, results, error studies.</p></div>
-      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-cli"/></svg></span><h3>Batch CLI</h3><p><code class="mono">run · scan · batch · twiss</code> — headless, parallel, scriptable.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-workbench"/></svg></span><h3>GUI workbench</h3><p>PyQt6 — lattice, beam, numerics, matching, surrogates, param study, error and failure studies, results.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-cli"/></svg></span><h3>Batch CLI</h3><p><code class="mono">run · scan · batch · study · twiss · mo · failures · backtrack</code> — headless, parallel, scriptable.</p></div>
       <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-io"/></svg></span><h3>Interoperable</h3><p>HDF5 · openPMD-beamphysics · TraceWin <code class="mono">.dst</code>.</p></div>
       <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-diagnostics"/></svg></span><h3>Diagnostics</h3><p>Emittances · halo · transmission · dispersion · phase advance.</p></div>
       <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-errors"/></svg></span><h3>Error studies</h3><p>Monte-Carlo misalignment / RF jitter · SVD orbit correction · failure studies.</p></div>
-      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-copilot"/></svg></span><h3>AI copilot</h3><p>46-tool assistant with offline voice, guided tour, training drills, sandboxed Python.</p></div>
+      <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-copilot"/></svg></span><h3>AI assistant</h3><p>53-tool assistant with offline voice, guided tour, training drills, sandboxed Python.</p></div>
       <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-gradient"/></svg></span><h3>Differentiable</h3><p>PyTorch autograd transfer-matrix path · gradient-based matching · exact knob sensitivities.</p></div>
       <div class="card feat"><span class="sym"><svg class="ic" aria-hidden="true"><use href="assets/icons.svg#i-surrogate"/></svg></span><h3>Surrogates</h3><p>Train and serve neural-network surrogate models of lattice sections.</p></div>
     </div>
@@ -106,7 +106,7 @@
   <div class="wrap">
     <div class="section-head">
       <p class="eyebrow">Space charge &amp; GPU</p>
-      <h2>A 3-D PIC Poisson solver that scales with your hardware.</h2>
+      <h2>A 3-D PIC Poisson solver with CPU and CUDA paths.</h2>
       <p class="lead">The solver ships C++ pybind11 kernels with an automatic pure-Python fallback. Its FFTs optionally run on an NVIDIA GPU via <code class="mono">cupy</code> — GPU results match the CPU reference to <span class="hl">~3×10⁻¹⁵</span> relative (FP64 on both paths).</p>
     </div>
 
@@ -124,7 +124,7 @@
       </div>
       <div class="stack">
         <p class="kicker-note">Hockney Poisson solve — RTX 2000 Ada Laptop GPU vs a 16-thread <code class="mono">scipy.fft</code> CPU path.</p>
-        <div class="callout">The crossover near <b>96³</b> is host↔device transfer cost, not the FFT. <code class="mono">SpaceChargeConfig(use_gpu="auto")</code> picks the GPU when it's the faster choice and leaves the decision to you otherwise — also switchable via <code class="mono">LINAC_GEN_USE_GPU</code> or the GUI's PIC-backend dropdown.</div>
+        <div class="callout">The crossover near <b>96³</b> is host↔device transfer cost, not the FFT. <code class="mono">SpaceChargeConfig(use_gpu="auto")</code> uses the CUDA path whenever <code class="mono">cupy</code> is importable and the CPU path otherwise; it never selects the experimental FP32 <code class="mono">mps</code> backend, which must be requested explicitly. Also switchable via <code class="mono">LINAC_GEN_USE_GPU</code> or the GUI's PIC-backend dropdown.</div>
       </div>
     </div>
   </div>
@@ -160,7 +160,7 @@
       <a class="brand" href="index.html"><img src="assets/img/helix-logo.png" alt=""><b>HELIX</b></a>
       <p>Hybrid Envelope-multiparticle LInac eXplorer. Developed at Fermi National Accelerator Laboratory for the PIP-II superconducting linac.</p>
     </div>
-    <div><h4>Explore</h4><a href="features.html">Features</a><a href="workbench.html">Workbench</a><a href="ai-copilot.html">AI Copilot</a><a href="get-started.html">Get started</a></div>
+    <div><h4>Explore</h4><a href="features.html">Features</a><a href="workbench.html">Workbench</a><a href="ai-copilot.html">AI Assistant</a><a href="get-started.html">Get started</a></div>
     <div><h4>Resources</h4><a href="../">User manual</a><a href="https://github.com/Accel-Toolkit/HELIX">Source code</a><a href="about.html#cite">Cite HELIX</a><a href="https://github.com/Accel-Toolkit/HELIX/releases">Releases</a></div>
     <div><h4>Project</h4><a href="about.html">About</a><a href="https://pip2.fnal.gov/">PIP-II at Fermilab</a><a href="about.html#license">License · GPL-3.0</a></div>
   </div>

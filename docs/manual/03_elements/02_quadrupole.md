@@ -151,7 +151,7 @@ where R is the 6×6 rotation built from the 2-D (x, y) rotation
 matrix.
 
 !!! warning "skew_angle vs tilt_deg"
-    These are *different* parameters!  `skew_angle` rotates the
+    These are *different* parameters.  `skew_angle` rotates the
     *magnetic* principal axes (a real engineering choice — some
     quads are mounted at 45° on purpose).  `tilt_deg` rotates the
     whole element about z due to *misalignment* — random per-seed
