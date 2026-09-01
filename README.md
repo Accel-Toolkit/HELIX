@@ -63,8 +63,8 @@ running, and exploring results.
 </table>
 
 A 13-episode [video course](https://accel-toolkit.github.io/HELIX/tutorials.html)
-covers installation, every tab of the workbench, space-charge physics, and the
-built-in assistant.
+(about three hours) covers installation, every tab of the workbench in depth,
+space-charge physics, and the built-in assistant, plus a bonus tour of the manual.
 
 ## Architecture
 
@@ -290,7 +290,8 @@ mkdocs serve --config-file docs/mkdocs.yml
 ```
 
 The [video tutorials](https://accel-toolkit.github.io/HELIX/tutorials.html) are
-a 13-episode course covering the same ground in about an hour.
+a 13-episode deep-dive course covering the same ground in about three hours,
+plus a bonus episode touring this manual.
 
 ## Project layout
 
