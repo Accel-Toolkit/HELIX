@@ -84,33 +84,42 @@ def test_seam_falls_through_when_no_surrogate_registered():
 def test_seam_routes_through_registered_surrogate():
     """When a surrogate is registered by name, the helper uses it."""
     registry.clear()
-    elem = _MockElem(name="EL_X")
-    surr = _build_surrogate("EL_X", in_scope=True)
-    registry.register(surr)
-    M = _fitted_matrix_slice_at(elem, _MockRef(), ds_mm=1.0, z_from_mm=0.0)
-    assert M[0, 0] == 42.0   # surrogate ran
-    registry.clear()
+    try:
+        elem = _MockElem(name="EL_X")
+        surr = _build_surrogate("EL_X", in_scope=True)
+        registry.register(surr)
+        M = _fitted_matrix_slice_at(elem, _MockRef(), ds_mm=1.0,
+                                    z_from_mm=0.0)
+        assert M[0, 0] == 42.0   # surrogate ran
+    finally:
+        registry.clear()
 
 
 def test_seam_falls_back_on_out_of_scope():
     """OutOfScopeError from the surrogate is caught; wrapped runs instead."""
     registry.clear()
-    elem = _MockElem(name="EL_Y")
-    surr = _build_surrogate("EL_Y", in_scope=False)  # raises OOD
-    registry.register(surr)
-    M = _fitted_matrix_slice_at(elem, _MockRef(), ds_mm=1.0, z_from_mm=0.0)
-    assert M[0, 0] == _MockElem.SENTINEL   # fell back to wrapped element
-    registry.clear()
+    try:
+        elem = _MockElem(name="EL_Y")
+        surr = _build_surrogate("EL_Y", in_scope=False)  # raises OOD
+        registry.register(surr)
+        M = _fitted_matrix_slice_at(elem, _MockRef(), ds_mm=1.0,
+                                    z_from_mm=0.0)
+        assert M[0, 0] == _MockElem.SENTINEL   # fell back to wrapped
+    finally:
+        registry.clear()
 
 
 def test_by_name_lookup_drops_when_lattice_hash_unregistered():
     """unregister() removes from _BY_NAME when no other reg keeps the name alive."""
     registry.clear()
-    surr = _build_surrogate("EL_Z", in_scope=True)
-    registry.register(surr)
-    assert registry.get_by_element_name("EL_Z") is not None
-    registry.unregister(surr.metadata.lattice_hash, "EL_Z")
-    assert registry.get_by_element_name("EL_Z") is None
+    try:
+        surr = _build_surrogate("EL_Z", in_scope=True)
+        registry.register(surr)
+        assert registry.get_by_element_name("EL_Z") is not None
+        registry.unregister(surr.metadata.lattice_hash, "EL_Z")
+        assert registry.get_by_element_name("EL_Z") is None
+    finally:
+        registry.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -322,14 +331,16 @@ def test_envelope_with_surrogate_matches_envelope_without_surrogate_endtoend():
     surr = _build_real_surrogate("ZTEST", elem)
     # surr.fitted_matrix is pinned to identity by _build_real_surrogate;
     # the mock's RK4 slice has the z-varying physics.
-    registry.register(surr)
+    try:
+        registry.register(surr)
 
-    M_with_surr = np.eye(6)
-    for _ in range(5):
-        M_step = _fitted_matrix_slice_at(
-            elem, ref, ds_mm=elem.length / 5.0, z_from_mm=0.0)
-        M_with_surr = M_step @ M_with_surr
-    registry.clear()
+        M_with_surr = np.eye(6)
+        for _ in range(5):
+            M_step = _fitted_matrix_slice_at(
+                elem, ref, ds_mm=elem.length / 5.0, z_from_mm=0.0)
+            M_with_surr = M_step @ M_with_surr
+    finally:
+        registry.clear()
 
     # With the current (correct) implementation: partial slices delegate
     # to wrapped RK4 -> M_with_surr equals M_baseline exactly.

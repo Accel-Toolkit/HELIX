@@ -57,21 +57,58 @@ WAKE_RE = re.compile(
 # and a false capture of silence times out.)
 
 
-def wake_matches(text: str) -> bool:
-    """Regex OR per-token fuzzy match (ratio >= 0.72 vs 'helix') —
-    accents produce renderings no fixed list anticipates (hillix,
-    healex, halix ...), while helipad/helical/relax stay excluded
-    (calibrated: they score <= 0.67)."""
+#: lead-in words that make a mid-window wake token a direct address
+#: ("… right now.  Hey helix, what's the temperature?")
+_VOCATIVE = {"hey", "hi", "yo", "ok", "okay", "so"}
+#: fillers allowed BEFORE an utterance-opening wake token ("ok so
+#: helix …").  Substantive words disqualify: "we integrated helix …"
+#: is about-talk even in the first three words (integration test
+#: caught a real wake on exactly that phrase).
+_LEADIN = _VOCATIVE | {"um", "uh", "hmm", "now", "well", "alright",
+                       "right", "and", "then", "please"}
+
+
+def _wake_span(text: str):
+    """``(start, end)`` of an ADDRESSED wake token, else ``None``.
+
+    A token counts as addressing the assistant when it opens the
+    utterance (at most two FILLER/vocative words before it — "ok so
+    helix …", never substantive words: "we integrated helix …" is
+    about-talk), follows a sentence boundary, or follows a vocative
+    lead-in ("hey helix").  Talking
+    ABOUT the software mid-sentence ("… how I integrated helix with
+    MIRAGE") no longer fires — the session transcripts showed exactly
+    those fragments becoming phantom turns.  Candidates come from the
+    regex OR the per-token fuzzy match (ratio >= 0.72 vs 'helix':
+    accents produce renderings no fixed list anticipates, while
+    helipad/helical/relax stay excluded — calibrated <= 0.67).
+    The LAST accepted occurrence wins (matches split_after_wake)."""
     if not text:
-        return False
-    if WAKE_RE.search(text):
-        return True
+        return None
+    spans = {(m.start(), m.end()) for m in WAKE_RE.finditer(text)}
     from difflib import SequenceMatcher
-    for tok in re.findall(r"[a-zA-Z']+", text.lower()):
+    words = list(re.finditer(r"[a-zA-Z']+", text))
+    for m in words:
+        tok = m.group(0).lower()
         if 4 <= len(tok) <= 8 and SequenceMatcher(
                 None, tok, "helix").ratio() >= 0.72:
-            return True
-    return False
+            spans.add((m.start(), m.end()))
+    accepted = None
+    for st, en in sorted(spans):
+        before = [w.group(0).lower() for w in words if w.end() <= st]
+        head = text[:st].rstrip()
+        boundary = (not head) or head[-1] in '.!?,;:—–-"'
+        vocative = bool(before) and before[-1] in _VOCATIVE
+        opening = len(before) <= 2 and all(t in _LEADIN for t in before)
+        if opening or boundary or vocative:
+            accepted = (st, en)
+    return accepted
+
+
+def wake_matches(text: str) -> bool:
+    """True when the text carries a wake token that ADDRESSES the
+    assistant (see :func:`_wake_span` for the positional rule)."""
+    return _wake_span(text) is not None
 
 
 def split_after_wake(text: str) -> str:
@@ -79,21 +116,53 @@ def split_after_wake(text: str) -> str:
     head of the command, not noise.  "helix open the results tab" in
     one breath used to lose everything after the token (the capture
     only started later); the head is now forwarded to the command."""
-    if not text:
+    span = _wake_span(text)
+    if span is None:
         return ""
-    m = None
-    for m in WAKE_RE.finditer(text):
-        pass                                  # last occurrence wins
-    if m is not None:
-        return text[m.end():].strip(" \t,.;:!?-")
-    from difflib import SequenceMatcher
-    toks = list(re.finditer(r"[a-zA-Z']+", text))
-    for i in range(len(toks) - 1, -1, -1):
-        tok = toks[i].group(0).lower()
-        if 4 <= len(tok) <= 8 and SequenceMatcher(
-                None, tok, "helix").ratio() >= 0.72:
-            return text[toks[i].end():].strip(" \t,.;:!?-")
-    return ""
+    return text[span[1]:].strip(" \t,.;:!?-")
+
+
+#: stopwords excluded from the repeated-token hallucination rule — a
+#: legitimate "open the tab and the plot" repeats THE without meaning it
+_HALLU_STOP = {"the", "a", "an", "and", "to", "of", "in", "on", "is",
+               "it", "that", "for", "with", "at", "you"}
+
+
+def looks_hallucinated(text: str, stock: bool = True) -> bool:
+    """Whisper fed room noise produces looping text ("switch off L1
+    okay L1 switch off L1" — a real 5 AM phantom command from the
+    session transcripts) or stock artifacts ("thanks for watching").
+    Used to discard unattended captures BEFORE they become a user
+    turn; push-to-talk is never filtered (deliberate).
+
+    ``stock=False`` (the WAKE path): the stock-phrase rule is skipped —
+    the user explicitly addressed the assistant, so "Helix, thank you"
+    is a real turn, not a noise artifact.  The follow-up window keeps
+    ``stock=True`` (that is where unattended TV/noise audio lands).
+
+    Pure-number tokens never count toward the repetition rule: "scan
+    quad 5 from 5 to 5.5" repeats '5' legitimately, while the looping
+    signature is repeated WORDS ('L1' is alphanumeric and still
+    counts)."""
+    if not text:
+        return False
+    low = text.lower().strip()
+    if stock and re.fullmatch(
+            r"(thank you[\s.!]*|thanks for watching[\s.!]*|"
+            r"please subscribe[\s.!]*)+", low):
+        return True
+    toks = re.findall(r"[a-zA-Z0-9']+", low)
+    if len(toks) >= 6:
+        from collections import Counter
+        counts = Counter(t for t in toks
+                         if t not in _HALLU_STOP and not t.isdigit())
+        if counts:
+            top = counts.most_common(1)[0][1]
+            if top >= 3 and top >= len(toks) / 3:
+                return True
+        if len(set(toks)) / len(toks) < 0.4:
+            return True
+    return False
 
 # local yes/no for confirmation-by-voice — the model is NEVER in this
 # loop.  "no" outranks "yes" ("no, don't do it" must deny).
@@ -627,6 +696,12 @@ class WakeListener:
         full = f"{head} {cmd}".strip() if head else cmd
         if self._stop.is_set():
             return
+        if full and looks_hallucinated(full, stock=False):
+            # room-noise Whisper loop — must not become a command turn
+            # (stock=False: the user DID address the assistant, so a
+            # plain "thank you" stays a real turn here)
+            self.on_status("discarded a garbled capture — say 'HELIX'")
+            return
         if full:
             self.on_command(full)
         self.on_status("say 'HELIX'")
@@ -635,7 +710,31 @@ class WakeListener:
         """Data watchdog: the reader can be alive while CoreAudio
         starves it (sleep/wake, device switch) — on_died would never
         fire and wake would be silently dead.  Real wall-clock on both
-        sides (mic timestamps are real monotonic, never a test clock)."""
+        sides (mic timestamps are real monotonic, never a test clock).
+
+        Also detects SYSTEM SLEEP: on macOS ``time.monotonic`` pauses
+        during sleep while ``time.time`` keeps running, so real sleep
+        shows as the wall clock OUTRUNNING the monotonic clock between
+        polls; a starved-but-trickling post-sleep stream then gets
+        recycled proactively (the three-day-session case: wake deaf +
+        PTT "(too short)" with a healthy OS mic).  A plain wall-clock
+        gap is NOT sleep — the poll loop legitimately blocks >5 s in
+        Whisper transcription / post-wake capture (and the first wake
+        loads the model), where BOTH clocks advance together; the first
+        cut used the plain gap and spuriously recycled the mic after
+        every long voice command."""
+        wall = time.time()
+        mono = time.monotonic()
+        lw = getattr(self, "_last_wall", None)
+        lm = getattr(self, "_last_mono", None)
+        self._last_wall, self._last_mono = wall, mono
+        if lw is not None and lm is not None \
+                and (wall - lw) - (mono - lm) > 5.0:
+            died = getattr(self.mic, "on_died", None)
+            if died is not None:
+                threading.Thread(target=died, daemon=True,
+                                 name="assist-mic-sleepwake").start()
+            return
         lb = getattr(self.mic, "last_block_t", None)
         if lb is None:
             return
@@ -1070,6 +1169,15 @@ class FollowUpListener:
         if self._cancel.is_set():        # cancelled DURING the final
             self._active.clear()         # transcription — a stale turn
             return                       # must not fire into the panel
+        if text and looks_hallucinated(text):
+            # unattended capture of room noise — never a user turn.
+            # Status is set AFTER on_timeout: the panel's timeout
+            # handler writes its own idle status, which would bury the
+            # discard message (a miss must never be a mystery).
+            self._active.clear()
+            self.on_timeout()
+            self.on_status("(discarded a garbled capture)")
+            return
         self.on_status("")
         self._active.clear()
         self.on_text(text)

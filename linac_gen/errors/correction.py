@@ -23,6 +23,16 @@ finite-difference response matrix.  ``vmax`` from the
 ``ADJUST_STEERER`` card is interpreted as an integrated kick (T·m) on
 the partner ``Steerer`` since HELIX steerers are zero-length thin
 kicks.
+
+Dead-beam contract (2026-09): a BPM row whose recorded ``transmission``
+is 0 reads a DEAD beam — the recorder's ``zeros(6)`` centroid
+placeholder is NOT an orbit.  Such readings return ``None`` from
+:func:`_live_bpm_reading`; the residual rms becomes NaN (which can never
+satisfy ``rms < tol_mm``), the pass that first observes a dead BPM is
+the last, and the drivers report ``status == "beam_lost"`` naming the
+first element with zero transmission.  Detection is MP-only: envelope
+results carry no ``transmission`` (no loss model), so envelope readings
+are never flagged dead.
 """
 import fnmatch
 import logging
@@ -132,7 +142,15 @@ def apply_correction(lattice, beam_factory, bpm_pattern="BPM_*",
     dict
         ``{steerer_name: {"bx_l": float, "by_l": float}}`` of applied
         settings.  When ``history=True``, returns
-        ``(kicks, [{"iter": k, "rms_orbit_mm": x, "n_saturated": m}, ...])``.
+        ``(kicks, [{"iter": k, "rms_orbit_mm": x, "n_saturated": m,
+        "n_dead_bpms": d, "transmission_pct": t, "beam_lost_at": name,
+        "stop_reason": r}, ...])``.  ``rms_orbit_mm`` is NaN when any
+        used BPM reads a dead beam (MP backend only — see the module
+        docstring's dead-beam contract); ``transmission_pct`` is None
+        for the envelope backend; ``stop_reason`` is one of
+        ``"converged"``, ``"saturated"``, ``"max_iter"``,
+        ``"beam_lost"``.  Kicks already applied when the beam is lost
+        STAY applied on the (in-place) lattice and are reported.
     """
     # ----- Resolve steerers / BPMs --------------------------------------
     if steerers is None:
@@ -185,8 +203,15 @@ def apply_correction(lattice, beam_factory, bpm_pattern="BPM_*",
         # run advances it; rigidity of a static line is s-independent
         # only for unaccelerated beams — keep the historical value).
         _beam_ref = beam_factory()
-        Tracker(lattice, _beam_ref).run()
+        _rec_pre = Tracker(lattice, _beam_ref).run()
         brho0 = _beam_ref.ref.brho
+        _lost_pre = _beam_lost_at(_rec_pre)
+        if _lost_pre is not None:
+            _log.warning(
+                "Orbit correction: beam already lost at %s BEFORE any "
+                "correction pass — the corrector cannot recover a dead "
+                "beam; expect status beam_lost after pass 1",
+                _lost_pre)
     else:
         raise ValueError(
             f"Unknown reading_backend: '{reading_backend}' "
@@ -236,27 +261,54 @@ def apply_correction(lattice, beam_factory, bpm_pattern="BPM_*",
                     "by_l": float(s.by_l),
                 }
 
+        # One residual pass per iteration, shared by the rms and the
+        # dead-beam audit (same single reader() call as before, hoisted).
+        rec_k = reader()
         rms = _orbit_rms_mm(lattice, reader, bpms, bpm_noise, rng,
-                            targets=resolved_targets)
+                            targets=resolved_targets, rec=rec_k)
+        n_dead = sum(
+            1 for b in bpms
+            if _bpm_row(lattice, rec_k, b) < len(rec_k.centroid)
+            and _live_bpm_reading(lattice, rec_k, b) is None)
+        lost_at = _beam_lost_at(rec_k)
         iter_history.append({
             "iter": k + 1,
             "rms_orbit_mm": rms,
             "n_saturated": n_saturated,
+            "n_dead_bpms": n_dead,
+            "transmission_pct": _final_transmission(rec_k),
+            "beam_lost_at": lost_at,
+            "stop_reason": None,
         })
 
+        # Dead beam: the pass that first observes a dead BPM is the
+        # last — rms is NaN here (never < tol_mm), so no convergence
+        # can be claimed.
+        if n_dead > 0:
+            iter_history[-1]["stop_reason"] = "beam_lost"
+            _log.warning(
+                "Orbit correction: beam LOST at %s after iter %d — "
+                "%d/%d BPM(s) read a dead beam; NOT converged",
+                lost_at, k + 1, n_dead, len(bpms))
+            break
         # Convergence: residual below tolerance.
         if rms < tol_mm:
+            iter_history[-1]["stop_reason"] = "converged"
             break
         # Saturation stall: every steerer at vmax AND orbit no longer
         # improving by ≥10 % between iterations.
         if (n_saturated == len(steerers) and prev_rms is not None
                 and rms > 0.9 * prev_rms):
+            iter_history[-1]["stop_reason"] = "saturated"
             _log.info(
                 "Correction stalled at iter %d (all %d steerers saturated)",
                 k + 1, n_saturated,
             )
             break
         prev_rms = rms
+
+    if iter_history and iter_history[-1]["stop_reason"] is None:
+        iter_history[-1]["stop_reason"] = "max_iter"
 
     return (last_corrections, iter_history) if history else last_corrections
 
@@ -290,7 +342,11 @@ def run_correction_from_lattice(lattice, beam_factory, *,
     Returns
     -------
     dict
-        ``{"kicks": dict, "history": list, "method": str, "n_pairs": int}``.
+        ``{"kicks": dict, "history": list, "method": str,
+        "n_pairs": int, "status": str, "converged": bool,
+        "beam_lost_at": str | None}``.  ``status`` follows
+        :func:`correction_status` (``none`` / ``converged`` /
+        ``saturated`` / ``max_iter`` / ``beam_lost``).
     """
     from linac_gen.elements.lattice_commands import (
         AdjustSteerer, AdjustSteererBx, AdjustSteererBy,
@@ -367,7 +423,8 @@ def run_correction_from_lattice(lattice, beam_factory, *,
         })
 
     if not pairs:
-        return {"kicks": {}, "history": [], "method": "none", "n_pairs": 0}
+        return {"kicks": {}, "history": [], "method": "none", "n_pairs": 0,
+                "status": "none", "converged": False, "beam_lost_at": None}
 
     # Method: one_to_one when #cards == #BPMs and pairing is clean (each
     # card pairs with a distinct BPM), else SVD.
@@ -414,11 +471,15 @@ def run_correction_from_lattice(lattice, beam_factory, *,
         beam_config=beam_config,
     )
     kicks, hist = out  # history=True ensures tuple
+    st = correction_status(hist)
     return {
         "kicks": kicks,
         "history": hist,
         "method": method,
         "n_pairs": len(pairs),
+        "status": st["status"],
+        "converged": st["converged"],
+        "beam_lost_at": st["beam_lost_at"],
     }
 
 
@@ -509,7 +570,8 @@ def apply_diagnostic_matching(lattice, beam_factory, *,
 
     if not steerers or not bpms:
         return {"kicks": {}, "history": [], "method": None,
-                "n_steerers": len(steerers), "n_bpms": len(bpms)}
+                "n_steerers": len(steerers), "n_bpms": len(bpms),
+                "status": "none", "converged": False, "beam_lost_at": None}
 
     out = apply_correction(
         lattice, beam_factory,
@@ -523,9 +585,12 @@ def apply_diagnostic_matching(lattice, beam_factory, *,
     )
     kicks, hist = out
     # ``history`` already rides inside the dict — one return shape only.
+    st = correction_status(hist)
     return {"kicks": kicks, "history": hist,
             "method": override_method or "svd",
-            "n_steerers": len(steerers), "n_bpms": len(bpms)}
+            "n_steerers": len(steerers), "n_bpms": len(bpms),
+            "status": st["status"], "converged": st["converged"],
+            "beam_lost_at": st["beam_lost_at"]}
 
 
 # ---------------------------------------------------------------------------
@@ -589,6 +654,67 @@ def _bpm_row(lattice, rec, bpm) -> int:
     return ei + 1
 
 
+def _live_bpm_reading(lattice, rec, bpm):
+    """``(x_mm, y_mm)`` of *bpm*'s exit row — or ``None`` when the row is
+    absent or the beam is DEAD there (recorded transmission <= 0).
+
+    The alive path returns exactly ``float(c[0]), float(c[2])`` of the
+    recorded centroid — bit-identical to what every caller computed
+    inline before this helper existed.  Results objects without a
+    ``transmission`` attribute (EnvelopeResults — no loss model) are
+    never flagged dead.
+    """
+    bi = _bpm_row(lattice, rec, bpm)
+    if bi >= len(rec.centroid):
+        return None
+    tr = getattr(rec, "transmission", None)
+    if tr is not None and bi < len(tr) and not (float(tr[bi]) > 0.0):
+        return None      # dead beam: zeros(6) placeholder, not an orbit
+    c = np.array(rec.centroid[bi])
+    return float(c[0]), float(c[2])
+
+
+def _beam_lost_at(rec):
+    """Name of the first element whose recorded transmission is 0, or
+    ``None`` (beam alive throughout, or no loss model)."""
+    tr = getattr(rec, "transmission", None)
+    if tr is None or len(tr) == 0:
+        return None
+    names = getattr(rec, "element_names", None) or []
+    for i, t in enumerate(tr):
+        if not (float(t) > 0.0):
+            return names[i] if i < len(names) else f"row {i}"
+    return None
+
+
+def _final_transmission(rec):
+    """Final-row transmission in %, or ``None`` when the results object
+    has no loss model (envelope backend)."""
+    tr = getattr(rec, "transmission", None)
+    if tr is None or len(tr) == 0:
+        return None
+    return float(tr[-1])
+
+
+def correction_status(history):
+    """Summarize an :func:`apply_correction` history into a status dict.
+
+    Status vocabulary: ``none`` (no correction ran), ``converged``,
+    ``saturated``, ``max_iter``, ``beam_lost``.  ``converged`` is True
+    only for status ``"converged"`` — a beam-lost run can NEVER be
+    converged (its rms is NaN).
+    """
+    if not history:
+        return {"status": "none", "converged": False,
+                "beam_lost_at": None, "rms_final_mm": None}
+    last = history[-1]
+    status = last.get("stop_reason") or "max_iter"
+    return {"status": status,
+            "converged": status == "converged",
+            "beam_lost_at": last.get("beam_lost_at"),
+            "rms_final_mm": last.get("rms_orbit_mm")}
+
+
 def _resolve_targets(bpms, targets):
     """Normalize the ``targets`` option to ``{bpm_name: (tx, ty)}`` (mm).
 
@@ -626,32 +752,40 @@ def _resolve_targets(bpms, targets):
 
 
 def _orbit_rms_mm(lattice, reader, bpms, bpm_noise, rng,
-                  targets=None) -> float:
+                  targets=None, rec=None) -> float:
     """RMS over both planes of all BPM (reading − target) errors (mm).
 
     ``reader`` is the zero-arg backend callable (MP tracking or
-    envelope) returning a results object with ``centroid``.
+    envelope) returning a results object with ``centroid``; pass
+    ``rec=`` to reuse an existing pass instead of tracking a new one.
     ``targets`` is the resolved ``{name: (tx, ty)}`` dict (``None`` ≡
     all-zero targets); an excluded (``None``) plane contributes nothing.
+
+    Returns NaN when any used BPM reads a DEAD beam — NaN can never
+    satisfy ``rms < tol_mm``, so a beam-killing correction cannot claim
+    convergence.  Dead rows still draw BPM noise, keeping the rng
+    stream bit-identical for every alive reading.
     """
     if not bpms:
         return 0.0
     tgt = targets or {}
-    rec = reader()
+    if rec is None:
+        rec = reader()
     vals: list[float] = []
     for b in bpms:
         bi = _bpm_row(lattice, rec, b)
-        if bi < len(rec.centroid):
-            c = np.array(rec.centroid[bi])
-            cx, cy = float(c[0]), float(c[2])
-            if bpm_noise > 0:
-                cx += float(rng.normal(0, bpm_noise))
-                cy += float(rng.normal(0, bpm_noise))
-            tx, ty = tgt.get(b.name, (0.0, 0.0))
-            if tx is not None:
-                vals.append(cx - tx)
-            if ty is not None:
-                vals.append(cy - ty)
+        if bi >= len(rec.centroid):
+            continue                 # historical skip — no noise draw
+        r = _live_bpm_reading(lattice, rec, b)
+        cx, cy = r if r is not None else (float("nan"), float("nan"))
+        if bpm_noise > 0:
+            cx += float(rng.normal(0, bpm_noise))
+            cy += float(rng.normal(0, bpm_noise))
+        tx, ty = tgt.get(b.name, (0.0, 0.0))
+        if tx is not None:
+            vals.append(cx - tx)
+        if ty is not None:
+            vals.append(cy - ty)
     if not vals:
         return 0.0
     return float(np.sqrt(np.mean(np.square(vals))))
@@ -674,10 +808,15 @@ def _unit_kick_response(lattice, reader, steer, bpms, plane,
     rec = reader()
     responses = {}
     for b in bpms:
-        rec_idx = _bpm_row(lattice, rec, b)
-        if rec_idx < len(rec.centroid):
-            c = np.array(rec.centroid[rec_idx])
-            responses[b.name] = float(c[0] if plane == "x" else c[2])
+        if _bpm_row(lattice, rec, b) >= len(rec.centroid):
+            continue                 # row absent — no key, as before
+        r = _live_bpm_reading(lattice, rec, b)
+        # A dead BPM responds NaN: the finite-difference R becomes NaN
+        # and ``abs(nan) > 1e-12`` is False, so the kick is skipped —
+        # exactly as the old 0.0 response skipped it, but without ever
+        # mistaking a garbage ``-r0/delta`` for a real response.
+        responses[b.name] = (float("nan") if r is None
+                             else (r[0] if plane == "x" else r[1]))
 
     # Restore
     if plane == "x":
@@ -743,9 +882,21 @@ def _one_to_one(lattice, reader, steerers, bpms, brho,
         bpm_idx = _bpm_row(lattice, rec0, bpm)
         if bpm_idx >= len(rec0.centroid):
             continue
-        c0 = np.array(rec0.centroid[bpm_idx])
-        reading_x = float(c0[0])
-        reading_y = float(c0[2])
+        r0 = _live_bpm_reading(lattice, rec0, bpm)
+        if r0 is None:
+            # Dead beam at this BPM: no kick (identical outcome to the
+            # old code, whose measured R == 0 skipped the kick) and no
+            # response probing (4 wasted tracking passes).  NOTE: the
+            # dead pair draws no BPM noise — regime-B noise streams are
+            # NEW behaviour; regime A (all alive) is untouched.
+            _log.warning(
+                "one_to_one: BPM %s reads a DEAD beam — steerer %s left "
+                "unchanged (response passes skipped)",
+                bpm.name, steer.name)
+            corrections[steer.name] = {"bx_l": float(steer.bx_l),
+                                       "by_l": float(steer.by_l)}
+            continue
+        reading_x, reading_y = r0
         if bpm_noise > 0:
             reading_x += float(rng.normal(0, bpm_noise))
             reading_y += float(rng.normal(0, bpm_noise))
@@ -775,10 +926,10 @@ def _one_to_one(lattice, reader, steerers, bpms, brho,
         # Apply correction: kick to drive the reading onto the target
         # (target 0.0 = the historical flatten behaviour, bit-identical:
         # subtracting a literal 0.0 changes nothing).
-        if allow_x and abs(R_x) > 1e-12:
+        if allow_x and np.isfinite(R_x) and abs(R_x) > 1e-12:
             correction_xp = -(reading_x - tx) / R_x  # mrad
             steer.by_l += correction_xp * brho / 1e3
-        if allow_y and abs(R_y) > 1e-12:
+        if allow_y and np.isfinite(R_y) and abs(R_y) > 1e-12:
             correction_yp = -(reading_y - ty) / R_y  # mrad
             steer.bx_l += correction_yp * brho / 1e3
 
@@ -816,16 +967,22 @@ def _svd_correction(lattice, reader, steerers, bpms, brho,
     n_bpm = len(bpms)
     n_steer = len(steerers)
 
-    # Measure initial orbit
+    # Measure initial orbit.  ``dead`` marks BPMs that read a dead beam
+    # in ANY pass — their rows are masked out of the solve below.
     rec0 = reader()
     orbit0_x = np.zeros(n_bpm)
     orbit0_y = np.zeros(n_bpm)
+    dead = np.zeros(n_bpm, dtype=bool)
     for k, b in enumerate(bpms):
         bi = _bpm_row(lattice, rec0, b)
-        if bi < len(rec0.centroid):
-            c = np.array(rec0.centroid[bi])
-            orbit0_x[k] = float(c[0])
-            orbit0_y[k] = float(c[2])
+        if bi >= len(rec0.centroid):
+            continue
+        r = _live_bpm_reading(lattice, rec0, b)
+        if r is None:
+            dead[k] = True
+            continue
+        orbit0_x[k] = r[0]
+        orbit0_y[k] = r[1]
 
     if bpm_noise > 0:
         orbit0_x += rng.normal(0, bpm_noise, n_bpm)
@@ -846,9 +1003,13 @@ def _svd_correction(lattice, reader, steerers, bpms, brho,
             rec_j = reader()
             for k, b in enumerate(bpms):
                 bi = _bpm_row(lattice, rec_j, b)
-                if bi < len(rec_j.centroid):
-                    c = np.array(rec_j.centroid[bi])
-                    R_x[k, j] = (float(c[0]) - orbit0_x[k]) / delta_kick
+                if bi >= len(rec_j.centroid):
+                    continue
+                r = _live_bpm_reading(lattice, rec_j, b)
+                if r is None:
+                    dead[k] = True
+                    continue
+                R_x[k, j] = (r[0] - orbit0_x[k]) / delta_kick
             steer.by_l -= delta_kick * brho / 1e3
 
         # y plane: bx_l kick
@@ -857,9 +1018,13 @@ def _svd_correction(lattice, reader, steerers, bpms, brho,
             rec_j2 = reader()
             for k, b in enumerate(bpms):
                 bi = _bpm_row(lattice, rec_j2, b)
-                if bi < len(rec_j2.centroid):
-                    c = np.array(rec_j2.centroid[bi])
-                    R_y[k, j] = (float(c[2]) - orbit0_y[k]) / delta_kick
+                if bi >= len(rec_j2.centroid):
+                    continue
+                r = _live_bpm_reading(lattice, rec_j2, b)
+                if r is None:
+                    dead[k] = True
+                    continue
+                R_y[k, j] = (r[1] - orbit0_y[k]) / delta_kick
             steer.bx_l -= delta_kick * brho / 1e3
 
     # SVD inversion with truncation at rcond * s_max.
@@ -899,6 +1064,20 @@ def _svd_correction(lattice, reader, steerers, bpms, brho,
             R_y[k, :] = 0.0
         else:
             err_y[k] -= ty
+
+    # Dead BPMs are excluded from the solve: a dead row's error entry
+    # and response row are zeroed (numerically what the old zeros(6)
+    # placeholder already produced at zero targets/noise — but now the
+    # exclusion is explicit, counted, and warned about).
+    if dead.any():
+        _log.warning(
+            "svd: %d BPM(s) read a DEAD beam and are excluded from the "
+            "solve: %s", int(dead.sum()),
+            [b.name for k, b in enumerate(bpms) if dead[k]])
+        err_x[dead] = 0.0
+        R_x[dead, :] = 0.0
+        err_y[dead] = 0.0
+        R_y[dead, :] = 0.0
 
     kicks_x = _svd_solve(R_x, err_x, "x")  # mrad
     kicks_y = _svd_solve(R_y, err_y, "y")  # mrad

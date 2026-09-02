@@ -13,7 +13,7 @@ What this means for a fresh clone:
   corresponding field-map files in a `Fields/` directory at the repo
   root (it is `.gitignore`d).
 - Four test modules that exercise field-map I/O skip automatically when
-  `Fields/` is absent — the rest of the suite (3,500+ tests) runs
+  `Fields/` is absent — the rest of the suite (about 3,900 tests) runs
   without it.
 - Everything else — the BTL examples, FODO/chicane decks, the matching
   and error-study examples, the full GUI — works out of the box.

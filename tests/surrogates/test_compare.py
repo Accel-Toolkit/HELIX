@@ -229,3 +229,137 @@ def test_compare_mp_records_fast_path_flag(monkeypatch):
     finally:
         registry.set_fast_path_enabled(False)
         registry.clear()
+
+
+# ---------------------------------------------------------------------------
+def test_compare_report_counts_nn_queries_and_notes_unqueried(monkeypatch):
+    """CompareReport.nn_calls is the DELTA of the engaged surrogates'
+    cumulative ``nn_calls`` across the surrogate run; summary_text
+    prints the count; the 'registered but never queried' regime note
+    appears iff a surrogate was engaged and never queried; the
+    registry-empty note text is unchanged."""
+    from linac_gen.elements.base import FieldMapElement
+    from linac_gen.surrogates.base import (
+        MlpHead, Scope, SurrogateFieldMap, SurrogateMetadata,
+    )
+
+    class _Mock(FieldMapElement):
+        def __init__(self):
+            super().__init__(name="NNQ", length=1.0, aperture=1.0,
+                             n_steps=1)
+        def track_rk4(self, beam, ds): return None
+        def fitted_matrix(self, ref): return np.eye(6)
+        def fitted_matrix_slice(self, ref, ds_mm): return np.eye(6)
+
+    mlp = MlpHead(input_dim=3, output_dim=36, hidden_dims=(2,))
+    meta = SurrogateMetadata(
+        element_key="NNQ", element_class="_Mock",
+        architecture={"input_dim": 3, "output_dim": 36,
+                      "hidden_dims": [2], "activation": "silu",
+                      "param_names": []},
+        scope=Scope(input_names=["w_kin", "beta", "gamma"],
+                    input_lo=np.array([0.0]*3),
+                    input_hi=np.array([100.0]*3)),
+        input_norm={"mean": [0.0]*3, "std": [1.0]*3},
+        output_norm={"mean": [0.0]*36, "std": [1.0]*36},
+        training_seed=0, n_samples=0, epochs=0, val_mape=0.0,
+        helix_commit_sha="", lattice_hash="lh", created_iso="",
+    )
+    surr = SurrogateFieldMap(_Mock(), mlp, meta)
+
+    bump = {"on": True}
+
+    def _fake_run(lattice, ref, init_twiss, current, should_abort=None):
+        # The surrogate run is the one with a populated registry (the
+        # baseline run temporarily clears it) -- emulate one engaged
+        # full-element NN query per surrogate run.
+        if bump["on"] and registry.list_registered():
+            surr.nn_calls += 1
+        return _FakeEnvelopeResult()
+
+    monkeypatch.setattr(
+        "linac_gen.surrogates.compare._envelope_run", _fake_run)
+
+    registry.clear()
+    try:
+        registry.register(surr)
+
+        # --- queried regime ------------------------------------------
+        rep = compare_envelope(lattice=None, ref=None, init_twiss={},
+                               current=0.0)
+        assert rep.nn_calls == 1
+        text = rep.summary_text()
+        assert "NN full-element queries: 1" in text
+        assert "never queried" not in text
+
+        # --- engaged-but-never-queried regime ------------------------
+        bump["on"] = False
+        rep0 = compare_envelope(lattice=None, ref=None, init_twiss={},
+                                current=5.0)
+        assert rep0.nn_calls == 0
+        text0 = rep0.summary_text()
+        assert "NN full-element queries: 0" in text0
+        assert any("never queried" in n for n in rep0.notes)
+
+        # --- registry-empty note text unchanged -----------------------
+        registry.clear()
+        rep_e = compare_envelope(lattice=None, ref=None, init_twiss={},
+                                 current=0.0)
+        assert "no surrogate engaged (registry empty)" in rep_e.notes
+        assert not any("never queried" in n for n in rep_e.notes)
+    finally:
+        registry.clear()
+
+
+# ---------------------------------------------------------------------------
+def test_compare_with_explicit_surrogates_leaves_no_stale_pin():
+    """Regression: ``compare_envelope(surrogates=[B])`` must not leave a
+    stale per-element pinned decision (``element._surr_binding``) behind.
+
+    Scenario: surrogate A is registered (the user ticked Use); the user
+    then runs a compare against a same-name surrogate B (the GUI passes
+    ``surrogates=[row surrogate]`` regardless of the Use state).  The
+    finally-block restore is a raw dict copy which — before this fix —
+    never bumped ``registry._GENERATION``, so the pin created during the
+    compare's surrogate leg stayed valid and the NEXT 0 mA envelope run
+    silently served B's matrix while the registry reported A."""
+    from linac_gen.tracking.envelope import EnvelopeSolver
+    from tests.surrogates.test_envelope_full_matrix_seam import (
+        INIT, _lattice, _pinned_surrogate, _ref)
+
+    lat = _lattice()
+    cav = lat.elements[1]
+    M_rk4 = cav.fitted_matrix(_ref())
+    M_a = M_rk4.copy()
+    M_a[0, 0] *= 1.02
+    M_b = M_rk4.copy()
+    M_b[0, 0] *= 0.98
+    surr_a = _pinned_surrogate(cav, M_a)
+    surr_b = _pinned_surrogate(cav, M_b)
+
+    registry.clear()
+    try:
+        registry.register(surr_a)
+        res_a = EnvelopeSolver(lat, _ref(), dict(INIT), current=0.0).run()
+        sx_a = np.asarray(res_a.sigma_x)
+        assert surr_a.nn_calls == 1
+
+        rep = compare_envelope(lat, _ref(), dict(INIT), current=0.0,
+                               surrogates=[surr_b])
+        assert rep.nn_calls == 1        # B queried once inside the compare
+        # Registry state restored: A is the registered object again.
+        assert registry.get("lh", "CAV3D") is surr_a
+        # THE regression: any pin created during the compare's surrogate
+        # leg must be invalid now (restore bumps the generation, matching
+        # registry.clear() semantics).
+        pin = getattr(cav, "_surr_binding", None)
+        assert pin is None or pin[0] != registry._GENERATION[0], \
+            "stale _surr_binding pin survived compare_envelope's restore"
+
+        res_2 = EnvelopeSolver(lat, _ref(), dict(INIT), current=0.0).run()
+        assert np.array_equal(sx_a, np.asarray(res_2.sigma_x)), (
+            "post-compare 0 mA run must serve the REGISTERED surrogate "
+            "(A), not the compare's temporary surrogate (B)")
+        assert surr_a.nn_calls == 2 and surr_b.nn_calls == 1
+    finally:
+        registry.clear()

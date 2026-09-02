@@ -90,6 +90,23 @@ loss-sensitive matching, and multi-particle runs for any loss
 prediction.  See
 [SET / ADJUST → MIN_TRANSMISSION](../07_matching/02_set_adjust.md).
 
+### ML surrogates accelerate 0 mA envelope runs only (plus opted-in MP)
+
+A registered surrogate engages on the envelope solver's pure-linear
+path — **current = 0, no per-sub-step recording, no
+`SHIFT_IN_FIELD_MAP` interior markers** — where the solver requests
+exactly the full-element matrix the network was trained on.
+SC-active envelope runs (current > 0) and per-sub-step walks request
+*partial* slices of the field map, and a linear end-to-end matrix
+cannot be cut into honest sub-slices of a time-varying RF field, so
+those requests always delegate to the wrapped RK4: zero NN queries,
+zero speedup, results bit-identical to the unregistered run.  The
+compare report, CLI and GUI all print the NN query count so a
+registered-but-idle surrogate is visible.  Multi-particle engagement
+requires the explicit double opt-in (see the
+[surrogates chapter](../13_surrogates/01_overview.md)).  A
+slice-aware surrogate is roadmap work.
+
 ### `ADJUST_STEERER` auto-correction (now shipped)
 
 Implemented as of 2026-05-09.  TraceWin's closed-orbit auto-
@@ -109,6 +126,16 @@ clean, otherwise SVD with truncated pseudoinverse.  Honours
 on the partner ``Steerer.bx_l`` / ``Steerer.by_l``, since HELIX
 steerers are zero-length thin kicks.  Magnetic-steerer ``Bmax``
 in the ``STEERER`` card itself uses the same convention.
+
+**Dead-beam detection is MP-only**: the corrector refuses to
+declare convergence when any used BPM reads a dead beam (recorded
+transmission 0 — see the
+[dead-beam contract](../08_errors/07_correction.md#dead-beam-contract)),
+but the envelope reading backend tracks no apertures and its
+results carry no transmission, so a correction computed with
+``reading_backend="envelope"`` can still be one that loses a real
+beam.  Verify envelope-backend corrections with a multi-particle
+run.
 
 ### `ERROR_RFQ_CEL_NCPL_STAT`
 

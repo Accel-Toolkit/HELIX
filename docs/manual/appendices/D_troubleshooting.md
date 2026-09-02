@@ -229,6 +229,24 @@ in the manual.  Failures usually mean:
 * Outdated API (chapter is out of date with current source).
 * External file missing (e.g. `examples/...` was deleted).
 
+Every python fence must be either executable or explicitly tagged;
+three tag forms cover the snippets that cannot simply run:
+
+* Pseudo-code / GUI-only flow: tag the fence `{.python .skip}` —
+  parsed and counted, never executed.
+* Undistributed input (third-party field maps, site-specific decks):
+  tag the fence `{.python data-needs="path …"}` — it runs where the
+  data exists and is reported as `data absent: …` elsewhere (same
+  idea as `tests/dataguard.py`).
+* Optional package (e.g. pymoo, torch): `{.python data-requires="pymoo"}`.
+
+Attribute values must be double-quoted — a single-quoted value is
+not recognised as a guard, so the fence executes (and fails loudly
+if its input is missing).
+
+Data/module skips are listed at the end of a green run, so passing
+output still shows exactly what was not verified.
+
 Run with a path filter to debug one chapter at a time:
 
 ```bash

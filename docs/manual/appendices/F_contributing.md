@@ -12,7 +12,7 @@ linac_gen/
 ├── tracking/        # Tracker, EnvelopeSolver, Sacherer ODE
 ├── pic/             # CIC/TSC deposition, FFT Poisson, C++ kernels
 ├── distributions/   # Gaussian, KV, Waterbag, Parabolic, Uniform, Thermal
-├── matching/        # Levenberg-Marquardt matcher, variables, constraints
+├── matching/        # matching engine (7 optimisers), variables, constraints
 ├── errors/          # ErrorStudy, ErrorDef, BeamErrorDef
 ├── diagnostics/     # DiagnosticRecorder, moments, eigenemittance
 ├── analysis/        # Aperture profile, magnetic stripping, IBS, phase advance
@@ -100,8 +100,13 @@ OK  cupy compute: sum=6.0
 2. To add real content, just rewrite the stub.  The build script
    (`make_stubs.py`) only writes if the existing file is < 1500
    bytes — your real content is preserved on re-runs.
-3. Add code blocks as ```python; they're auto-tested by
-   `verify_snippets.py`.
+3. Add code blocks as fenced `python` blocks — they are executed by
+   `verify_snippets.py` (and `pytest tests/docs`), so a runnable
+   fence must import everything it uses.  Every python block is
+   either executed or explicitly tagged (a structural test enforces
+   it).  Pseudo-code: tag the fence `{.python .skip}`; needs
+   undistributed data: `{.python data-needs="path …"}`; needs an
+   optional package: `{.python data-requires="pymoo"}`.
 4. Add figures via `regen_plots.py`:
    ```python
    @figure("fig_03_05_my_diagram")

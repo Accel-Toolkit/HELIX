@@ -9,6 +9,11 @@ REM C++ PIC/field-map kernels are OPTIONAL: without MSVC Build Tools
 REM the install still succeeds on a pure-Python fallback (the GUI notes
 REM this at startup; PIC runs are ~20x slower).
 REM
+REM Non-interactive use: when CI is defined (GitHub Actions does this)
+REM the launch prompt and the closing pause are skipped, so the script
+REM is scriptable end-to-end.  setup.sh has the same behaviour via its
+REM TTY check.
+REM
 REM Style notes for maintainers: no %ERRORLEVEL% inside parenthesized
 REM blocks (it expands at parse time there - use && / || or goto), and
 REM status tests use "NEQ 0", never "if errorlevel 1" (hard crashes
@@ -80,13 +85,15 @@ REM ---- 4. done -----------------------------------------------------
 echo.
 echo Setup complete. Launch the GUI any time by double-clicking run_gui.bat
 echo (it auto-detects the .venv created here).
+if defined CI goto :done
 set /p _ANS="Launch it now? [y/N] "
 if /i "%_ANS%"=="y" start "" "%_VPY%" -m linac_gen_gui.interphase
+:done
 echo.
-pause
+if not defined CI pause
 exit /b 0
 
 :fail
 echo.
-pause
+if not defined CI pause
 exit /b 1

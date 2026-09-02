@@ -174,3 +174,101 @@ def test_report_maps_linked_variables_to_their_column():
     assert "2" in lines[0] and "2" in lines[1]
     assert "8" in lines[2], \
         "independent variable must show ITS column, not a shifted one"
+
+
+# ---------------------------------------------------------------------
+# rows() with linked variables (display contract for GUI / examples)
+# ---------------------------------------------------------------------
+def test_rows_maps_linked_variables_to_their_column():
+    q1 = SimpleNamespace(name="Q1", gradient=1.0)
+    q2 = SimpleNamespace(name="Q2", gradient=1.0)
+    q3 = SimpleNamespace(name="Q3", gradient=9.0)
+    vs = [
+        Variable(target=q1, attr="gradient", vmin=0, vmax=10, x0=1.0,
+                 link_group=5, label="Q1.gradient", source=None),
+        Variable(target=q2, attr="gradient", vmin=0, vmax=10, x0=1.0,
+                 link_group=5, label="Q2.gradient", source=None),
+        Variable(target=q3, attr="gradient", vmin=0, vmax=10, x0=9.0,
+                 link_group=0, label="Q3.gradient", source=None),
+    ]
+    res = MatchResult(
+        success=True, message="ok", n_iter=1, elapsed_s=0.0,
+        x0=np.array([1.0, 9.0]),          # per-COLUMN (2 cols, 3 DoF)
+        x_final=np.array([2.0, 8.0]),
+        residuals=np.array([0.0]), cost=0.0,
+        variables=vs, constraints=[],
+    )
+    rows = res.rows()
+    assert len(rows) == 3                       # one row per ADJUST DoF
+    for k in range(3):
+        assert rows[k][0] is vs[k]              # collection order kept
+    assert [c for _v, c, _a, _b in rows] == [0, 0, 1]
+    assert [x for _v, _c, x, _b in rows] == [1.0, 1.0, 9.0]
+    assert [x for _v, _c, _a, x in rows] == [2.0, 2.0, 8.0]
+
+    # Empty/cancelled result: missing columns yield nan, never raise.
+    res_empty = MatchResult(
+        success=False, message="cancelled by user", n_iter=0,
+        elapsed_s=0.0, x0=np.array([]), x_final=np.array([]),
+        residuals=np.array([]), cost=0.0, variables=vs, constraints=[],
+    )
+    for _var, col, x0, xf in res_empty.rows():
+        assert col in (0, 1)
+        assert np.isnan(x0) and np.isnan(xf)
+
+
+# ---------------------------------------------------------------------
+# "No SET constraints" early return seeds per optimiser column
+# ---------------------------------------------------------------------
+_NOCON_LINKED = """\
+ADJUST QUAD 2 1 -30 30 0.5 0
+DRIFT 100 30
+QUAD 80 5 20
+ADJUST QUAD 2 1 -30 30 0.5 0
+DRIFT 200 30
+QUAD 80 -5 20
+DRIFT 100 30
+END
+"""
+
+
+def test_no_constraint_result_is_per_column(tmp_path):
+    from linac_gen.io.tracewin_parser import parse_tracewin
+    from linac_gen.matching import match
+
+    # Linked deck: 2 DoF, ONE column — x0/x_final must be per column
+    # (the dataclass contract), seeded like the real run (last writer).
+    deck = tmp_path / "linked_nocon.dat"
+    deck.write_text(_NOCON_LINKED)
+    lat, _meta = parse_tracewin(str(deck))
+    res = match(lat, BeamConfig())
+    assert res.success is False
+    assert "No SET constraints" in res.message
+    assert res.x0.shape == (1,)
+    assert res.x0[0] == -5.0            # last-writer seed, real baseline
+    assert np.array_equal(res.x_final, res.x0)
+    # The seed respects the intersected bounds (_build_x0_and_bounds
+    # clips into [vmin, vmax]).
+    v = res.variables[0]
+    assert v.vmin <= res.x0[0] <= v.vmax
+    rep = res.report()
+    grad_lines = [ln for ln in rep.splitlines() if ".gradient" in ln]
+    assert len(grad_lines) == 2
+    assert all("-5" in ln for ln in grad_lines)
+
+    # Same deck with an out-of-bounds seed: [1, 30] excludes -5, so the
+    # column seed is clipped to the bound exactly as the real run's.
+    deck_oob = tmp_path / "linked_nocon_oob.dat"
+    deck_oob.write_text(_NOCON_LINKED.replace("-30 30", "1 30"))
+    lat_oob, _meta = parse_tracewin(str(deck_oob))
+    res_oob = match(lat_oob, BeamConfig())
+    assert res_oob.x0.shape == (1,)
+    assert res_oob.x0[0] == 1.0
+
+    # Unlinked deck: one column per variable — array unchanged.
+    deck_u = tmp_path / "unlinked_nocon.dat"
+    deck_u.write_text(_NOCON_LINKED.replace(" 2 1 ", " 2 0 "))
+    lat_u, _meta = parse_tracewin(str(deck_u))
+    res_u = match(lat_u, BeamConfig())
+    assert res_u.x0.tolist() == [5.0, -5.0]
+    assert res_u.x_final.tolist() == [5.0, -5.0]

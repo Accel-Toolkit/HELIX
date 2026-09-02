@@ -35,9 +35,9 @@ _BY_NAME: dict[str, SurrogateFieldMap] = {}
 # Master MP-engagement flag (M7).  When False (default), the MP
 # tracker's surrogate hook is a no-op -- registered surrogates only
 # act in envelope-mode runs, matching M1-M6 behaviour.  When True,
-# the hook routes per-element track_rk4 calls through the surrogate's
-# hybrid linear-anchor + RK4-residual path.  Toggled from the GUI
-# "Multi-particle surrogates" section.
+# the hook routes per-element track_rk4 calls through the surrogate
+# (a safe delegate unless _FAST_PATH_ENABLED below is also True).
+# Toggled from the GUI "Multi-particle surrogates" section.
 _MP_ENGAGED: bool = False
 
 # Second opt-in (M7-followup): the actual linear-matrix fast path

@@ -56,8 +56,8 @@ Nine section headers, top to bottom:
 * **ENERGY · KINEMATICS** — energy · γ · transmission, beam power,
   4-D invariant ε_4D, eigenemittances ε₁ · ε₂ · ε₃.
 * **LOSSES · TRANSMISSION** — loss profile, aperture-profile
-  losses, intra-beam stripping (H⁻), magnetic stripping (H⁻), and
-  the error-study ensemble tile.
+  losses, **loss power (W/m · W/cm²)**, intra-beam stripping (H⁻),
+  magnetic stripping (H⁻), and the error-study ensemble tile.
 * **CENTROID · DISPERSION** — centroid ⟨x⟩ · ⟨y⟩ · ⟨φ⟩,
   longitudinal offset Δφ_s · ΔW_s, dispersion D_x · D_y, and
   **σ(Δp/p) along s** (the momentum-spread plot; see
@@ -315,7 +315,12 @@ The tile grid is static — every card is always shown, and cards
 whose data is missing simply open an empty/"no data" view.  The one
 exception is **Intra-beam stripping (H⁻)**: the card is disabled
 unless the beam species is H⁻, and its tooltip explains how to
-switch (Beam tab → Species → H- → Apply).  Eigenemittances are
+switch (Beam tab → Species → H- → Apply).  **Loss power** needs a
+multi-particle run (envelope mode records no per-particle losses)
+and a non-zero beam current — it says so in place rather than
+drawing an empty plot, and its exit-plane W/cm² map additionally
+needs the final distribution, so it fills on live MP runs while a
+reloaded file keeps the W/m profile.  Eigenemittances are
 always recorded — there is no flag to enable them.  The error-study
 ensemble popup fills only after an Error Study run, and the
 phase-space popup needs snapshot markers (or Numerics → "Snapshot

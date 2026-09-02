@@ -328,6 +328,14 @@ class _Backtracker:
         self._sc_explicitly_off = (pic_solver == "off")
         self.pic_solver = None if self._sc_explicitly_off else pic_solver
         self.recorder = recorder or DiagnosticRecorder()
+        # Run-current provenance on the backward recorder — same stamp
+        # (and same custom-recorder guard) as Tracker.__init__.
+        try:
+            _cur = getattr(beam, "current", None)
+            self.recorder.current_mA = (None if _cur is None
+                                        else float(_cur))
+        except Exception:                                   # noqa: BLE001
+            pass
         self._record_substeps = record_substeps
         self._progress_callback = progress_callback
         self._should_abort = should_abort

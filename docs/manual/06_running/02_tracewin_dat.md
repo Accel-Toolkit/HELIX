@@ -218,7 +218,7 @@ HELIX also reads **MAD8 flat / SAVELINE lattices** (`.lat` / `.flat`),
 the dialect used by the PIP-II BTL exports — `Open Lattice…` in the
 GUI, or:
 
-```python
+```{.python data-needs="BTL2025v0703.lat"}
 from linac_gen.io.mad8_parser import parse_mad8
 lattice, meta = parse_mad8("BTL2025v0703.lat")   # → (Lattice, metadata)
 ```
@@ -257,6 +257,39 @@ brackets automatically, so per-cell phase advance σ₀, tune depression
 > loaded, **Save** routes to *Save As…* (TraceWin `.dat`) instead of
 > overwriting the source.  Declared `LATTICE` brackets survive the
 > `.dat` export and round-trip.
+
+## Importing Elegant lattices (`.lte`)
+
+HELIX also reads **Elegant lattice-element files** (`.lte`) —
+`Open Lattice…` in the GUI (filter *Elegant (\*.lte)*), any CLI
+`<input>`, or:
+
+```{.python data-needs="ring.lte"}
+from linac_gen.io.elegant_parser import parse_elegant
+lattice, meta = parse_elegant("ring.lte", species="H-",
+                              w_kin=1000.0, frequency=352.21)
+```
+
+**Supported:** `!`/`#` comments, `&` and trailing-comma continuation;
+`line=(...)` beamlines with leading-`-` reversal and `N*elem`
+repetition; element templates (a type token that names a defined
+element inherits its attributes) and `name[prop]=value` overrides.
+Lengths in metres, angles in radians, `k1`/`k2` in MAD-normalised
+units, cavity `volt` in V, `phase` in degrees (90° = crest), `freq` in
+Hz — the unit and rigidity conversions are shared with the MAD-X
+importer above.  An order-1 `ematrix` imports verbatim as a
+`MatrixElement` (explicit 6×6 map; the longitudinal block is kept in
+Elegant's basis — no basis change, and no warning, is applied).
+
+**Degrades explicitly, never silently:** CSR/LSC drifts → `Drift`
+(+warning); `charge`/`wake` → `Marker` (+warning); unknown types →
+`Drift` (+warning).  `.lte` files carry no beam energy (it lives in
+the run file), so pass `species` / `w_kin` / `frequency` — the
+strength conversion is self-consistent for any value.
+
+> Import-only: with an `.lte` lattice loaded, **Save** routes to
+> *Save As…* (TraceWin `.dat`) and never overwrites the Elegant
+> source.
 
 ## Cross-references
 

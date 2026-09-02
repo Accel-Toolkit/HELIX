@@ -141,3 +141,67 @@ class TestAnalysisHelpers:
         # a hole (missing cell) must demote to scatter (None)
         assert detect_grid(recs[:-1], "g", "cur", "transmission",
                            self._col) is None
+
+
+# ---------------------------------------------------------------------------
+# QSettings persistence (sandboxed store via HELIX_QSETTINGS_DIR)
+# ---------------------------------------------------------------------------
+def _fresh_tab(tmp_path):
+    from linac_gen.io.tracewin_parser import parse_tracewin
+    from linac_gen_gui.interphase.state import AppState
+    from linac_gen_gui.interphase.tabs.study_tab import StudyTab
+    deck = tmp_path / "fodo.dat"
+    if not deck.exists():
+        deck.write_text(FODO)
+    state = AppState()
+    lat, _ = parse_tracewin(str(deck))
+    state.set_lattice(lat, path=str(deck))
+    return StudyTab(state)
+
+
+def test_persistence_restores_root_and_last_study(qapp, tmp_path):
+    from linac_gen_gui.interphase.tabs.study_tab import (
+        _S_LAST, _S_ROOT, _settings)
+    st = _settings()
+    st.remove(_S_ROOT)
+    st.remove(_S_LAST)
+    try:
+        # a real (finished) study dir to remember: build via the engine
+        from linac_gen.study import ParamSpec, StudySpec, StudyManager
+        spec = StudySpec(
+            name="persisted", input=str(tmp_path / "fodo.dat"),
+            parameters=[ParamSpec(selector="@2.gradient", start=6.0,
+                                  stop=10.0, n=2)])
+        (tmp_path / "fodo.dat").write_text(FODO)
+        mgr = StudyManager.create(tmp_path / "persisted", spec)
+        mgr.run(serial=True)
+
+        t1 = _fresh_tab(tmp_path)
+        t1._folder.setText(str(tmp_path))
+        t1._study_dir = str(tmp_path / "persisted")
+        t1._remember()
+        t1.deleteLater()
+
+        t2 = _fresh_tab(tmp_path)
+        assert t2._folder.text() == str(tmp_path)
+        assert t2._study_dir == str(tmp_path / "persisted")
+        assert "persisted" in t2._status.text()
+        t2.deleteLater()
+    finally:
+        st.remove(_S_ROOT)
+        st.remove(_S_LAST)
+
+
+def test_persistence_clears_vanished_study(qapp, tmp_path):
+    from linac_gen_gui.interphase.tabs.study_tab import (
+        _S_LAST, _S_ROOT, _settings)
+    st = _settings()
+    st.setValue(_S_LAST, str(tmp_path / "gone"))
+    st.remove(_S_ROOT)
+    try:
+        t = _fresh_tab(tmp_path)
+        assert t._study_dir is None
+        assert st.value(_S_LAST) is None
+        t.deleteLater()
+    finally:
+        st.remove(_S_LAST)

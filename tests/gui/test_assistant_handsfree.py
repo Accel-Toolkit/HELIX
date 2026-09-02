@@ -275,9 +275,15 @@ def test_mic_died_recovery_cycles_wake_toggle(qapp, tmp_path):
     panel._wake_btn.setChecked = calls.append      # record the cycle
     panel._on_mic_died()
     assert calls == [False]                        # listening off NOW
-    # ...the reopen is DEBOUNCED ~1.5 s (device churn must settle)
+    # ...the reopen is DEBOUNCED ~1.5 s (device churn must settle).
+    # Budget 15 s, not 5: the 1.5 s Qt timer is serviced by this
+    # processEvents loop, so heavy machine load stretches the wall
+    # time (measured 2.7 s idle vs 4.8 s under 2x-oversubscribed CPU —
+    # the old 5 s budget had no margin and failed a contended
+    # full-suite run).  The loop still exits the moment the second
+    # call lands, so a genuinely broken debounce fails just as fast.
     t0 = time.time()
-    while len(calls) < 2 and time.time() - t0 < 5:
+    while len(calls) < 2 and time.time() - t0 < 15:
         qapp.processEvents()
         time.sleep(0.02)
     assert calls == [False, True]

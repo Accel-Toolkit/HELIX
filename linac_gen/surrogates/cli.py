@@ -305,6 +305,15 @@ def _cmd_run_envelope(args) -> int:
           f"sigma_y={res.sigma_y[-1]:.4f} mm  "
           f"W={res.ref_w_kin[-1]:.4f} MeV  "
           f"sigma_phi={res.sigma_phi[-1]:.3f} deg")
+    nn_calls = sum(
+        getattr(registry.get(lh, ek), "nn_calls", 0) or 0
+        for (lh, ek) in registry.list_registered())
+    print(f"NN full-element queries: {nn_calls}")
+    if n_registered and nn_calls == 0:
+        print("note: surrogates registered but never queried — at "
+              "current > 0 the envelope slice-walks FieldMaps with RK4; "
+              "surrogates serve the full-element matrix at current = 0 "
+              "only (or every query fell outside the trained scope)")
     return 0
 
 
@@ -324,7 +333,11 @@ def _add_common_beam_args(p, defaults):
     p.add_argument("--beta-z", type=float, default=defaults["beta_z"])
     p.add_argument("--emit-z", type=float, default=defaults["emit_z"])
     p.add_argument("--current", type=float, default=0.0,
-                   help="beam current in mA (for envelope SC; 0 = no SC)")
+                   help="beam current in mA (for envelope SC).  0 (the "
+                        "default) engages registered surrogates on the "
+                        "full-element matrix; > 0 exercises the RK4 "
+                        "slice walk — zero NN queries and zero diff "
+                        "expected")
 
 
 def main(argv=None) -> int:

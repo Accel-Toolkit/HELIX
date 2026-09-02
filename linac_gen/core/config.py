@@ -293,10 +293,11 @@ class SpaceChargeConfig:
                 f"grid_mode must be one of {valid_grid_mode}, got {self.grid_mode!r}"
             )
         # Keep this whitelist in lock-step with
-        # ``linac_gen.pic.gpu_backend._VALID_MODES``.  ``auto`` picks the best
-        # available (cupy → MPS → CPU); ``gpu`` requires any GPU; ``cuda``
-        # forces cupy; ``mps`` forces torch.mps (Apple Silicon Metal); ``cpu``
-        # disables GPU even if one is present.
+        # ``linac_gen.pic.gpu_backend._VALID_MODES``.  ``auto`` picks cupy
+        # (FP64) when available, else CPU — never the FP32 MPS backend;
+        # ``gpu`` requires any GPU (cupy preferred, MPS with a precision
+        # warning); ``cuda`` forces cupy; ``mps`` forces torch.mps (Apple
+        # Silicon Metal); ``cpu`` disables GPU even if one is present.
         valid_use_gpu = {"auto", "cpu", "gpu", "cuda", "mps"}
         if self.use_gpu not in valid_use_gpu:
             raise ValueError(

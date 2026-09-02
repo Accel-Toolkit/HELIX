@@ -34,6 +34,15 @@ from linac_gen.study.strategies import expand_runs
 from ..dialogs.parameter_scan import _scannable_params
 from ..panels.element_inspector import _SCHEMA
 from ..panels.study_plots import StudyAnalysisPanel
+from ..app_settings import make_settings
+
+#: QSettings keys (same store as the app: honors HELIX_QSETTINGS_DIR)
+_S_ROOT = "studyRootDir"      # last study root folder (Execution box)
+_S_LAST = "studyLastDir"      # last created/opened study directory
+
+
+def _settings():
+    return make_settings("Linac_Gen", "Interphase")
 
 _STRATEGIES = ("oat", "zip", "grid", "random", "lhs")
 
@@ -103,6 +112,7 @@ class StudyTab(QWidget):
         self._study_dir: str | None = None
         self._run_rows: dict[int, int] = {}
         self._build_ui()
+        self._restore_persisted()
         state.lattice_changed.connect(self._on_lattice_changed)
         self._on_lattice_changed(state.lattice)
 
@@ -354,6 +364,36 @@ class StudyTab(QWidget):
     # ------------------------------------------------------------------
     # execution
     # ------------------------------------------------------------------
+    def _restore_persisted(self) -> None:
+        """Session persistence: last root folder + last study.
+
+        The previous session's study is reopened in the analysis panel
+        (read-only summary load, cheap) so long-running studies survive
+        an app restart without re-navigating; a vanished directory just
+        clears the key."""
+        st = _settings()
+        root = st.value(_S_ROOT, "")
+        if isinstance(root, str) and root and Path(root).is_dir():
+            self._folder.setText(root)
+        last = st.value(_S_LAST, "")
+        if isinstance(last, str) and last:
+            if (Path(last) / "study.json").exists():
+                try:
+                    self._analysis.load_study(last)
+                    self._study_dir = last
+                    self._status.setText(f"loaded last study: {last}")
+                except Exception:                       # noqa: BLE001
+                    pass
+            else:
+                st.remove(_S_LAST)
+
+    def _remember(self) -> None:
+        st = _settings()
+        if self._folder.text().strip():
+            st.setValue(_S_ROOT, self._folder.text().strip())
+        if self._study_dir:
+            st.setValue(_S_LAST, self._study_dir)
+
     def _default_folder(self) -> str:
         base = Path.cwd() / "runs" / "studies"
         return str(base)
@@ -364,6 +404,7 @@ class StudyTab(QWidget):
             self._folder.text() or self._default_folder())
         if d:
             self._folder.setText(d)
+            self._remember()
 
     def _on_start(self) -> None:
         if self._worker is not None and self._worker.isRunning():
@@ -402,6 +443,7 @@ class StudyTab(QWidget):
                                  f"Study setup failed:\n{exc}")
             return
         self._study_dir = str(study_dir)
+        self._remember()
         total = len(mgr.plan())
         self._bar.setRange(0, total)
         self._bar.setValue(total - len(mgr.pending()))
@@ -479,6 +521,7 @@ class StudyTab(QWidget):
         try:
             self._analysis.load_study(d)
             self._study_dir = d
+            self._remember()
             self._status.setText(f"loaded study: {d}")
         except Exception as exc:                        # noqa: BLE001
             QMessageBox.critical(self, "Param Study",

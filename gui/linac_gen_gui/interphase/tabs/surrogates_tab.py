@@ -10,12 +10,15 @@ Workflow:
    training loss, val MAPE, per-entry MAPE heatmap) tracks the run.
 3. On completion the new surrogate is added to the **Trained
    surrogates** table:
-   - **Use** checkbox: register the surrogate in the runtime registry
-     (the envelope-mode hook (M3) engages automatically on the next
-     envelope run).
+   - **Use** checkbox: register the surrogate in the runtime registry.
+     The envelope-mode hook (M3) engages automatically on the next
+     0 mA envelope run — the pure-linear path serves the full-element
+     matrix from the NN.  SC-active runs (current > 0) and per-sub-step
+     recording slice-walk RK4 and never query the network.
    - **Compare** button: run baseline vs surrogate-enabled envelope
      (via :func:`linac_gen.surrogates.compare.compare_envelope`),
-     show a summary dialog and offer to save the σ-curves PNG.
+     show a summary dialog (including the NN full-element query count)
+     and offer to save the σ-curves PNG.
 
 **Persistence.**  Weights and ``metadata.json`` are written under
 ``linac_gen/surrogates/weights/<lattice-hash-16>/<element-name>/``.
@@ -1122,9 +1125,12 @@ class SurrogatesTab(QWidget):
         hint = QLabel(
             "Train ML surrogates for field-map elements (1-D FieldMap "
             "or 3-D FieldMap3D) in the loaded lattice.  Tick 'Use' to "
-            "engage the surrogate in envelope-mode runs; 'Compare' "
-            "runs the envelope twice (baseline vs surrogate) and shows "
-            "the diff plot."
+            "engage the surrogate in envelope-mode runs at 0 mA — it "
+            "serves the full-element matrix on the pure-linear path; "
+            "SC-active runs and per-sub-step recording slice-walk RK4 "
+            "and never query the network.  'Compare' runs the envelope "
+            "twice (baseline vs surrogate), shows the diff plot and "
+            "reports the NN query count."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet(
@@ -1731,7 +1737,10 @@ class SurrogatesTab(QWidget):
         surr, _, meta = self._trained[name]
         if checked:
             _reg.register(surr)
-            self._status.setText(f"registered surrogate '{name}'")
+            self._status.setText(
+                f"registered surrogate '{name}' — engages the "
+                f"full-element matrix in envelope runs at 0 mA (SC runs "
+                f"and per-sub-step recording stay RK4)")
         else:
             _reg.unregister(meta.lattice_hash, name)
             self._status.setText(f"unregistered surrogate '{name}'")

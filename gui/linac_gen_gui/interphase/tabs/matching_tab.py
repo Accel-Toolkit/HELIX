@@ -513,7 +513,8 @@ class MatchingTab(QWidget):
         wv.addWidget(title)
 
         hint = QLabel(
-            "Runs the Levenberg-Marquardt matcher against ADJUST_* "
+            "Runs the matcher (scipy least_squares by default — pick "
+            "another optimiser under Algorithm) against ADJUST_* "
             "variables and SET_* constraints in the loaded lattice. "
             "Variables and matched values appear below; click "
             "Apply to write them into the elements / beam config, "
@@ -1159,13 +1160,23 @@ class MatchingTab(QWidget):
         self._aa_save.setEnabled(True)
         self._aa_result = (lattice_after, beam_after, result)
 
-        # Populate variable table
-        self._aa_var_table.setRowCount(len(result.variables))
-        for i, (var, x0, xf) in enumerate(zip(
-                result.variables, result.x0, result.x_final)):
-            # If the variable is a follower in a link group (different
-            # column index), still display the linked column's value.
-            self._aa_var_table.setItem(i, 0, QTableWidgetItem(var.label))
+        # Populate variable table.  result.variables is per ADJUST DoF;
+        # x0/x_final are per optimiser COLUMN (link groups share one), so
+        # a positional zip blanked every row after the first linked pair
+        # and mislabelled the rest.  MatchResult.rows() maps each variable
+        # to its column; followers show their shared column's value.
+        # Annotation is gated on COLUMN POPULATION, not link_group != 0:
+        # ADJUST_BEAM_TWISS flag=1 knobs carry singleton link groups and
+        # must stay untagged.
+        from collections import Counter
+        rows = result.rows()
+        members = Counter(col for _v, col, _a, _b in rows)
+        self._aa_var_table.setRowCount(len(rows))
+        for i, (var, col, x0, xf) in enumerate(rows):
+            label = var.label
+            if members[col] > 1:          # ganged knob: tag every member
+                label = f"{var.label}  (link {var.link_group})"
+            self._aa_var_table.setItem(i, 0, QTableWidgetItem(label))
             self._aa_var_table.setItem(i, 1, QTableWidgetItem(f"{x0:.6g}"))
             self._aa_var_table.setItem(i, 2, QTableWidgetItem(f"{xf:.6g}"))
             self._aa_var_table.setItem(

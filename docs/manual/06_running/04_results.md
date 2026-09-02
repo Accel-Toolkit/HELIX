@@ -108,7 +108,17 @@ lattice_path=None, seed=None, sc_config=None)` writes:
   `sigma_phi`, `sigma_w`, `emit_x`, `emit_y`, `emit_z`, `emit_nx`,
   `emit_ny`, `alpha_x`, `beta_x`, `alpha_y`, `beta_y`, `alpha_z`,
   `beta_z` (longitudinal Twiss, 2026-07 — internal convention,
-  deg/MeV), `halo_x`, `halo_y`, `transmission`.
+  deg/MeV), `halo_x`, `halo_y`, `transmission`.  Run-level attributes
+  ride on the group: `continuous`, plus the run-current pair
+  `current_mA` — the beam current the run was configured with (the
+  envelope solver, multi-particle tracker and backtracker all record
+  it; `0.0` means the run was genuinely at 0 mA) — and a boolean
+  `run_current_known` marker.  `current_mA` is present only when the
+  current is known.  Files written before this pair existed stored
+  `0.0` for every multi-particle run; `load_results_hdf5` recognises
+  those legacy files (no marker) and substitutes `beam_config/current`,
+  or omits `current_mA` entirely when the file has no `beam_config`
+  group (unknown).
 * **`reference/`** — 5 reference-particle arrays: `w_kin`, `phi_s`,
   `beta`, `gamma`, `bg` (loaded back as `ref_w_kin`, `ref_phi_s`, …).
 * **`particles/`** — full phase-space snapshots, when the recorder

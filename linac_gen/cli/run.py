@@ -140,6 +140,7 @@ def run(args) -> int:
     summary = common.result_summary(results)
     if not args.quiet:
         _report(args, summary, written)
+        _report_loss_power(results, beam_cfg, summary)
 
     trans = summary.get("transmission")
     if args.fail_under is not None and trans is not None \
@@ -171,6 +172,42 @@ def _run_matrix(args, lattice, beam_cfg, out_dir, stem) -> int:
         print("\n".join(lines))
         print(f"\n[run] wrote {out_path}")
     return 0
+
+
+def _fmt_w(w: float) -> str:
+    return f"{w/1e3:.2f} kW" if abs(w) >= 1e3 else f"{w:.3g} W"
+
+
+def _report_loss_power(results, beam_cfg, summary: dict) -> None:
+    """Beam-power block for mp runs: average current, delivered power,
+    and the per-element loss table in watts (energies at the LOSS
+    point — a particle scraped at 2 MeV costs 2 MeV-scale power)."""
+    lt = getattr(results, "loss_table", None)
+    n_macro = int(getattr(results, "n_macro", 0) or 0)
+    if lt is None or n_macro <= 0:
+        return                                   # not an mp run
+    from linac_gen.analysis.loss_power import loss_power_summary
+    duty = float(getattr(beam_cfg, "duty_cycle", 100.0) or 100.0)
+    cur = float(getattr(beam_cfg, "current", 0.0) or 0.0)
+    if cur <= 0:
+        return                                   # zero-current run
+    w_exit = summary.get("ref_w_kin")
+    trans = summary.get("transmission")
+    n_alive = (int(round(n_macro * trans / 100.0))
+               if trans is not None else None)
+    s = loss_power_summary(lt, current_mA=cur, duty_pct=duty,
+                           n_macro=n_macro, w_exit_mev=w_exit,
+                           n_alive=n_alive)
+    line = (f"[power] I_avg = {s['i_avg_ma']:.4g} mA "
+            f"({cur:g} mA x {duty:g}% duty)")
+    if "delivered_w" in s:
+        line += f"  delivered = {_fmt_w(s['delivered_w'])}"
+    print(line)
+    print(f"[power] lost = {_fmt_w(s['lost_w'])} over {s['n_lost']} "
+          f"macroparticles" + ("" if s["top"] else " (no losses)"))
+    for name, watts, n in s["top"]:
+        if watts > 0:
+            print(f"[power]   {name:<24s} {_fmt_w(watts):>10s}  (n={n})")
 
 
 def _report(args, summary: dict, written: list) -> None:

@@ -42,8 +42,9 @@ state before you touch the tab.
 
 * **Lattice tab** → open the `.dat` (e.g. `examples/pipii/mebt/mebt.dat`).
 * **Beam tab** → species, w_kin, frequency, Twiss/emittance,
-  **current** (≥ 1 mA so the SC-engaged path is exercised — see
-  [the M3 limitation](01_overview.md#the-m3-honest-limitation)) →
+  **current** (0 mA engages the surrogates; > 0 exercises the RK4
+  slice walk — see
+  [which envelope runs engage the NN](01_overview.md#which-envelope-runs-engage-the-nn)) →
   **Apply**.
 
 ### 2. Open the Surrogates tab
@@ -125,8 +126,10 @@ skips the rest.
 Tick the **Use** checkbox on every row you want active.  This calls
 `linac_gen.surrogates.registry.register(surr)` — the envelope hook
 in `tracking/envelope.py` looks up surrogates by element name on
-each `fitted_matrix(_slice)` call and routes through the MLP when
-admissible.
+the full-element matrix request of a 0 mA envelope run and routes
+it through the MLP when admissible.  SC-active runs (current > 0)
+and per-sub-step recording request partial slices, which always
+stay on the wrapped RK4.
 
 You can mix-and-match: use FMAP_001 + FMAP_003, leave FMAP_002 +
 FMAP_004 as pure RK4.  Untick to revert.  The **Select all** /
@@ -147,9 +150,13 @@ surrogate exactly as a manual click would).
 ### 5. Run a normal envelope sim with surrogates engaged
 
 After ticking **Use** on the rows you want, switch to **Numerics**
-or **Results** and run as usual.  The surrogate replaces RK4 for
-every `fitted_matrix(ref)` call where it's both registered and
-admissible (input within training scope).
+or **Results** and run as usual.  In a **0 mA** envelope run without
+*Record per-sub-step*, the surrogate replaces RK4 for every
+full-element `fitted_matrix(ref)` request where it's both registered
+and admissible (input within training scope).  At current > 0, or
+with per-sub-step recording on, the run slice-walks RK4 and the
+network is never queried — results are identical to the
+unregistered run.
 
 ### 6. Compare baseline vs surrogate
 
@@ -162,35 +169,44 @@ Click **Compare** on a surrogate's table row to run:
 A summary dialog pops up.  You're prompted to save the σ-curves
 PNG.
 
-Typical output (MEBT, 5 mA, one surrogate engaged):
+The compare runs at the **configured beam current**.  Measured
+output at 0 mA (MEBT, one surrogate engaged, smoke-cycle weights):
 
     Surrogates engaged: 1 (FMAP_001)
-    Wall-clock: baseline 6.51 s  surrogate 5.93 s  speedup 1.10x
+    Wall-clock: baseline 1.250 s  surrogate 1.002 s  speedup 1.25x
     End-of-line sigma moments:
-         sigma_x  baseline= 1.7951e+00  surrogate= 1.7912e+00  rel.diff=2.2e-03  mm
+         sigma_x  baseline= 1.6476e+00  surrogate= 1.6405e+00  rel.diff=4.29e-03  mm
          ...
+    NN full-element queries: 1
 
-For an all-surrogate run (4 bunchers engaged) on the MEBT at 5 mA
-the speedup rises to ~1.86× and σ rel.diffs stay under 6 % at the
-smoke-cycle accuracy.
+With all 4 bunchers engaged at 0 mA the measured speedup is ~3.5×,
+with end-of-line σ rel.diffs of 1.5e-3 … 1.4e-2 at smoke-cycle
+accuracy.  At a **non-zero current** the compare returns zero diff
+**by design** — the SC walk requests partial slices, which always
+delegate to RK4 — and reports `NN full-element queries: 0` with a
+note saying the surrogates were registered but never queried.
 
 ### 7. (Optional) Engage surrogates in multi-particle runs
 
 The collapsible **Multi-particle surrogates (hybrid mode)** section
 beneath the table extends the *same* trained surrogates to the MP
-tracker: each surrogate call applies a fast linear-matrix anchor
-plus a cheap RK4 residual for the nonlinear physics.  Controls:
+tracker.  Controls:
 
 * **Engage in MP runs** — the master toggle; it drives
-  `linac_gen.surrogates.registry.set_mp_enabled()`.  Off by
-  default, so the envelope-only workflow is unchanged until you opt
-  in.
-* **Residual RK4 substeps** — substeps per surrogate call
-  (default 15, accuracy-first).  Lower is faster but less accurate;
-  0 means pure linear matrix.
+  `linac_gen.surrogates.registry.set_mp_enabled()`.  Off by default.
+  On alone, each surrogate call delegates to native RK4 —
+  bit-identical, no speedup.
+* **Experimental: linear-matrix fast path** — second opt-in; with the
+  master also on, the per-substep RK4 push is replaced by an analytic
+  reference advance plus a cached matrix-slice apply (linear-matrix
+  accuracy; halo particles drift).  Run Compare MP after toggling.
+* **Residual RK4 substeps (reserved)** — stored on every trained
+  surrogate but read by no tracking path yet: the planned hybrid
+  linear-anchor + RK4-residual mode is not implemented.
 * **Compare MP (baseline vs hybrid)** — runs two full MP
-  simulations (pure RK4 vs hybrid) in the background and reports
-  speedup and σ differences.  Run it after every toggle change.
+  simulations (pure RK4 vs surrogate-engaged) in the background and
+  reports speedup and σ differences.  Run it after every toggle
+  change.
 
 ## Behaviour on lattice swap
 

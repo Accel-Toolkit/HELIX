@@ -489,6 +489,27 @@ def _fitted_matrix_slice_at(element, ref, ds_mm: float,
         return element.fitted_matrix_slice(ref, ds_mm)
 
 
+def _full_matrix_at(element, ref) -> np.ndarray:
+    """Full-element 6x6 through the surrogate registry (M3 seam for the
+    pure-linear I=0 path — the ONE envelope request for the whole-element
+    matrix the NN was trained on).  OOD / non-finite / singular NN output
+    raises OutOfScopeError -> native element.  Non-FieldMap elements and
+    an empty registry take get_element_matrix unchanged.
+    """
+    if isinstance(element, FieldMapElement):
+        # Same lazy imports and identity/fingerprint guard (pinned per
+        # registry generation) as the slice seam above.
+        from linac_gen.surrogates import registry as _surr_reg
+        from linac_gen.surrogates.base import OutOfScopeError as _OOS
+        surr = _surr_reg.get_for_element(element)
+        if surr is not None:
+            try:
+                return surr.fitted_matrix(ref)
+            except _OOS:
+                pass   # OOD -> native RK4 below
+    return get_element_matrix(element, ref)
+
+
 def _rescale_sigma_for_freq_jump(sigma: np.ndarray, ratio: float) -> np.ndarray:
     """Rescale Σ across an RF-frequency jump: exact ``Σ → D Σ Dᵀ`` with
     ``D = diag(1, 1, 1, 1, ratio, 1)``, ``ratio = f_new / f_old``.
@@ -1050,10 +1071,13 @@ class EnvelopeSolver:
 
         # NOTE: the full-element 6x6 matrix is computed lazily on the
         # branches that consume it (pure-linear I=0 path; thin-element
-        # branch inside _propagate_with_sc).  The SC and substep walks
-        # rebuild transport from half-maps / sub-slice Jacobians, so
-        # requesting the full matrix up front spent a surrogate MLP
-        # query (plus its scope check) that was then discarded.
+        # branch inside _propagate_with_sc).  The pure-linear I=0 path
+        # requests it through `_full_matrix_at`, so a registered
+        # surrogate's MLP query is spent on purpose there — the matrix
+        # is consumed.  The SC and substep walks rebuild transport from
+        # half-maps / sub-slice Jacobians and never request the full
+        # matrix (partial slices delegate to RK4 by design), so those
+        # paths make no NN queries at all.
 
         # --- substep recording for FieldMap without SC -------------------
         # When record_substeps is on and current=0, mirror the SC loop but
@@ -1085,8 +1109,11 @@ class EnvelopeSolver:
             return sigma
 
         if self.current == 0.0:
-            # Pure linear propagation (no SC)
-            M = get_element_matrix(element, self._ref)
+            # Pure linear propagation (no SC).  FieldMaps go through the
+            # surrogate registry here: this is the ONE envelope path that
+            # requests the full-element matrix the NN was trained on
+            # (SC bundles and per-sub-step walks stay RK4 by design).
+            M = _full_matrix_at(element, self._ref)
             self._probe_push(M)
             sigma = M @ sigma @ M.T
             self._advance_ref(element)

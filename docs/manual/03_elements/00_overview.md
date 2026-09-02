@@ -1,6 +1,6 @@
 # Element catalog overview
 
-HELIX has 17 concrete element classes covering every component
+HELIX has 21 concrete element classes covering every component
 you'd find in a proton/H⁻ linac.  Each element is a Python class in
 `linac_gen/elements/` with a corresponding TraceWin `.dat` keyword.
 This page is the catalog; click an entry to see the chapter for that
@@ -29,6 +29,8 @@ element.
 | Space-charge compensation marker (LEBT) | [SpaceChargeComp](17_spacechargecomp.md) |
 | Multi-gap cavity (TraceWin `NCELLS`) | [NCells](18_ncells.md) |
 | Overlapping field maps (TraceWin `SUPERPOSE_MAP`) | [SuperposedFieldMap](19_superposedfieldmap.md) |
+| Explicit 6×6 transfer matrix (Elegant `EMATRIX` import; no `.dat` keyword, import-only) | [MatrixElement](../06_running/02_tracewin_dat.md) |
+| Mid-lattice PIC grid-extent directive (`; HELIX_SC_GRID extent_sigma`, 3-D bunched PIC only) | [ScGridDirective](../appendices/B_keyword_cheatsheet.md) |
 
 ## Element taxonomy
 
@@ -48,13 +50,15 @@ Drift                   RFGap                    FieldMap              Marker
 Quadrupole              Steerer                  FieldMap3D            Aperture
 Solenoid                Multipole                RfqCell               SpaceChargeComp
 Dipole                  Foil                     VaneRFQ               Edge
-                        ThinLens                 NCells
+MatrixElement           ThinLens                 NCells                ScGridDirective
                                                  SuperposedFieldMap
 ```
 
 * **TransferMapElement** — linear elements with a closed-form 6×6
   matrix.  Drift, hard-edge quad, hard-edge solenoid, sector/rect
-  dipole.
+  dipole, and MatrixElement (an explicit 6×6 map applied verbatim —
+  the Elegant `EMATRIX` import target; energy-agnostic and not
+  sub-sliceable).
 * **ThinKickElement** — zero-length kick.  RFGap (TraceWin's GAP
   card), Steerer, thin Multipole, Foil, ThinLens.
 * **FieldMapElement** — integrated substep-by-substep through a
@@ -64,7 +68,8 @@ Dipole                  Foil                     VaneRFQ               Edge
   options on the one class, not separate classes).
 * **PassiveElement** — zero-length (or matrix-thin), no tracked
   dynamics of their own.  Markers, aperture cuts,
-  space-charge-compensation tags, and the dipole Edge (its linear
+  space-charge-compensation tags, the `; HELIX_SC_GRID` grid-extent
+  directive (ScGridDirective), and the dipole Edge (its linear
   kick is applied via `apply()`).
 
 ## Mixin capabilities
@@ -82,7 +87,8 @@ element carries them**:
   `gradient_rel` (quad), `field_rel` (sol/bend), `voltage_rel`
   (cav), `phase_offset` (cav, deg), `frequency_offset` (cav).
 
-Edge, Marker, Aperture, Multipole, Steerer, Foil, and ThinLens have
+Edge, Marker, Aperture, Multipole, Steerer, Foil, ThinLens,
+MatrixElement, and ScGridDirective have
 **neither** mixin.  (Multipole exposes plain `dx`/`dy`/`tilt_deg`
 attributes of its own, used for feed-down — not the mixin.)
 

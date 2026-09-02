@@ -202,3 +202,19 @@ def test_overflow_keeps_dirty_after_full_unwind():
     while bus.undo():
         pass
     assert bus.dirty          # was: clean, despite one unreachable edit
+
+
+def test_peek_undo_is_read_only():
+    lat = _mini_lattice()
+    bus = CommandBus(lambda: lat)
+    assert bus.peek_undo() is None
+    q = lat.elements[1]
+    cmd = ParamChangeCommand(q, "gradient", q.gradient, 25.0)
+    bus.do(cmd)
+    depth, dirty, can_undo = len(bus._undo), bus.dirty, bus.can_undo
+    assert bus.peek_undo() is cmd
+    # the peek changed nothing
+    assert len(bus._undo) == depth
+    assert bus.dirty == dirty and bus.can_undo == can_undo
+    bus.undo()
+    assert bus.peek_undo() is None

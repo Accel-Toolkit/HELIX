@@ -56,13 +56,23 @@ For details see [PIC solver](02_pic_solver.md) and
 * **Cons**: ~10× slower than envelope; statistical noise floor
   ≈ 1/√N on σ.
 
-**Single bunch, no neighbour images.**  The solver sees the
-macroparticles it is given and nothing else, so a run downstream of an
-RFQ models one bunch of what is physically a train.  In a real train
-the neighbouring bunches partially cancel the longitudinal field, so
-E_z is slightly **over**estimated; the transverse field is barely
-affected at typical bunch aspect ratios.  Periodic images (the
-TraceWin PICNIR practice) are not implemented.
+**Neighbour images (bunch-train mode).**  By default the solver sees
+one isolated bunch — TraceWin's Partran semantics for a beam that is
+born bunched.  A beam injected DC and bunched in flight (an RFQ front
+end) is one period of an infinite train, and for it the 3-D bunched
+PIC deposits ±1 neighbour images: three copies shifted ±360° in phase
+on a grid with `nz` tripled, kicks gathered on the centre copy only
+(charge bookkeeping exact).  `SpaceChargeConfig.train_images`
+(default `None` = automatic) engages this whenever the beam carries
+`Beam.bunch_train` and its core phase spread (half the 16–84 %
+span) is ≥ 35°, releasing once it falls to ≤ 25° (hysteresis, so a
+loss-driven drift cannot toggle the solver).  `False` forces the
+isolated solve; `True` overrides only the `Beam.bunch_train`
+eligibility check — the σφ hysteresis still gates engagement.
+±2 images are omitted (their contribution scales as
+(σ_z/2βλ)³).  In the isolated regime E_z is slightly
+**over**estimated for what is physically a train; the transverse
+field is barely affected at typical bunch aspect ratios.
 
 This matters most alongside
 [`periodic_phase`](../04_beam/03_beam_config.md): with the flag on,

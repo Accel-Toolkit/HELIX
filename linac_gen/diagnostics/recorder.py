@@ -1,5 +1,7 @@
 # linac_gen/diagnostics/recorder.py
 """DiagnosticRecorder: stores beam diagnostics at each tracking step."""
+import math
+
 import numpy as np
 from linac_gen.diagnostics.moments import (
     compute_moments, compute_emittance,
@@ -74,6 +76,26 @@ def _convert_emit_z_to_mmmrad(emit_z_deg_mev: float, ref) -> float:
     if denom <= 0.0:
         return 0.0
     return emit_z_deg_mev / denom
+
+
+def run_current_mA(results):
+    """Beam current [mA] the results were produced at, or None when unknown.
+
+    Single owner of the "unknown vs 0 mA" convention (cf. the same rule
+    in :mod:`linac_gen.analysis.scc.driver`): 0.0 is DATA (a run at zero
+    current); None/NaN/absent is "unknown".  Resolution order: a finite
+    ``results.current_mA`` wins; otherwise the attached ``results.beam``'s
+    configured ``current`` (the GUI attaches the tracked beam post-run);
+    otherwise None.
+    """
+    cur = getattr(results, "current_mA", None)
+    if cur is None:
+        cur = getattr(getattr(results, "beam", None), "current", None)
+    try:
+        cur = float(cur)
+    except (TypeError, ValueError):
+        return None
+    return cur if math.isfinite(cur) else None
 
 
 class DiagnosticRecorder:
@@ -175,6 +197,11 @@ class DiagnosticRecorder:
         # once so popups can compute dispersion / dp-p / Δz without
         # rehydrating the ReferenceParticle object.
         self.mass_mev: float = 0.0
+        # Run-level provenance: beam current [mA] the run was configured
+        # with (Beam.current).  Set by Tracker/_Backtracker; None for a
+        # hand-built recorder = unknown.  0.0 means "ran at 0 mA".  Read
+        # through run_current_mA(); persisted by io/hdf5_output.py.
+        self.current_mA: float | None = None
         self._snapshots = {}
         # Per-snapshot alive mask (True = lost), kept in a PARALLEL dict so
         # the (particles, ref) tuple of `_snapshots` stays 2-wide — several

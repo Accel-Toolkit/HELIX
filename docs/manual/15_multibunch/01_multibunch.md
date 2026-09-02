@@ -27,7 +27,7 @@ bunch-to-bunch through up to three physics channels —
 
 ## Quick start
 
-```python
+```{.python .skip}
 from linac_gen.train import PulsePattern, TrainConfig, TrainPhysics, run_train
 
 tc = TrainConfig(
@@ -186,7 +186,7 @@ and `bunches/b_%04d/` groups; **single-bunch files are unchanged** and
 old readers keep working.  The authoritative schema tree lives in the
 `linac_gen/train/results.py` module docstring.  Load with:
 
-```python
+```{.python .skip}
 from linac_gen.train import load_train_results
 ld = load_train_results("train.h5")
 ld.summary["ref_w_kin"]       # per-bunch exit energies

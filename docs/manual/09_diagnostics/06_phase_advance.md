@@ -36,10 +36,19 @@ the two disagree at the fraction-of-a-degree level.  σ₀ must be the
 ```python
 from linac_gen.analysis.period_detect import detect_periods
 from linac_gen.analysis.phase_advance import channel_phase_advance
+from linac_gen.core.lattice import Lattice
 from linac_gen.core.particle import PROTON
 from linac_gen.core.reference import ReferenceParticle
+from linac_gen.elements.drift import Drift
+from linac_gen.elements.quadrupole import Quadrupole
 from linac_gen.tracking.envelope import EnvelopeSolver
-# ... build `lattice` ...
+
+lattice = Lattice()                      # a 3-cell FODO channel
+for _ in range(3):
+    lattice.add(Quadrupole(name="QF", length=40.0, gradient=+50.0, aperture=20.0))
+    lattice.add(Drift(name="D", length=100.0, aperture=20.0))
+    lattice.add(Quadrupole(name="QD", length=40.0, gradient=-50.0, aperture=20.0))
+    lattice.add(Drift(name="D", length=100.0, aperture=20.0))
 
 ref = ReferenceParticle(species=PROTON, w_kin=2.5, frequency=162.5)
 period = detect_periods(lattice)[0]
@@ -283,6 +292,15 @@ beam markers, labelled with their provenance.  The probe result is
 cached and shared, so the Hofmann chart fills from the same run; the
 cache invalidates automatically when the lattice or any beam-config
 field changes.
+
+Both the tune-depression and phase-advance popups also compare the beam
+current the results were produced at (recorded by the envelope solver,
+the multi-particle tracker and the backtracker, and carried by saved
+results files) against the live Beam-tab current, and show a
+**STALE** banner when they differ — the σ curves then reflect an
+earlier configuration and a re-run (Ctrl+R) refreshes them.  Results
+whose run current is unknown (hand-built recorders, openPMD imports)
+show no banner.
 
 ## Cross-references
 

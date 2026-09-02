@@ -10,24 +10,39 @@ Reports failures with the file path so the problem is easy to locate.
 Snippet conventions:
 
 * Code in fences tagged ``python`` (or ``py``) is executed.
-* Code in fences tagged ``python skip`` is parsed but not executed
-  (use for snippets that legitimately can't run: API-signature
-  pseudo-code, GUI-only flows, long-running cluster jobs).
-* Code in fences tagged ``pycon`` (REPL output) is parsed but not
-  executed.
+* Code in fences tagged ``{.python .skip}`` (attr_list form — the
+  manual's house style) is parsed but not executed: use it for
+  snippets that legitimately can't run (API-signature pseudo-code,
+  GUI-only flows, long-running cluster jobs).  The legacy space forms
+  ``python skip``, ``pycon``, ``pycon3`` and ``console`` are also
+  parsed-not-run.
+* Code in fences tagged ``{.python data-needs="path …"}`` runs only
+  when every listed path (relative to the repo root) exists; otherwise
+  it is skipped with an honest ``data absent: …`` reason (same idea as
+  ``tests/dataguard.py``).  Use it for snippets reading inputs that
+  are not distributed with every checkout.
+* Code in fences tagged ``{.python data-requires="module …"}`` runs
+  only when every listed module is importable; otherwise it is skipped
+  with ``module absent: …``.  Use it for optional dependencies.
+
+Every python fence is therefore either executed or explicitly skipped
+with a reason; the summary reports exact counts and lists the
+data/module skips so a green run still shows what was not verified.
 
 Usage:
     python docs/manual/_build/verify_snippets.py             # run everything
     python docs/manual/_build/verify_snippets.py 03_elements # filter by path
     python docs/manual/_build/verify_snippets.py --list      # list snippets
 
-CI integration: invoke from a pytest test file (see
-``tests/docs/test_manual_snippets.py``) so failures show up alongside
-regular tests.
+CI integration: the "Verify code snippets" step of
+``.github/workflows/docs.yml`` runs this script (blocking), and
+``tests/docs/test_manual_snippets.py`` replays the same loop inside
+the regular test suite.
 """
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import io
 import os
 import re
@@ -55,6 +70,51 @@ _FENCE_RE = re.compile(
     r"^```(?P<tag>[^\n]*?)\n(?P<body>.*?)^```",
     re.MULTILINE | re.DOTALL,
 )
+# attr_list fence form: ```{.python .skip}, ```{.python data-needs="…"}
+_ATTR_RE = re.compile(r"^\{(?P<body>[^}]*)\}$")
+_KV_RE = re.compile(r'(?P<k>[\w-]+)="(?P<v>[^"]*)"')
+
+
+def _module_present(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, AttributeError, ValueError):
+        return False
+
+
+def classify_tag(tag: str) -> "tuple[bool, str] | None":
+    """Classify one fence tag.
+
+    Returns ``None`` for a non-Python fence (ignored), ``(False, "")``
+    for a fence to execute, and ``(True, reason)`` for a fence that is
+    collected but skipped.  ``tag`` is the raw (stripped) text after
+    the opening triple-backtick.
+    """
+    m = _ATTR_RE.match(tag)
+    if m is None:                       # legacy space form, unchanged
+        low = tag.lower()
+        if low in EXEC_TAGS:
+            return (False, "")
+        if low in SKIP_TAGS or low.startswith("python skip"):
+            return (True, "tagged .skip")
+        return None
+    body = m.group("body")
+    toks = body.split()
+    classes = [t[1:] for t in toks if t.startswith(".")]
+    if not classes or classes[0].lower() not in EXEC_TAGS:
+        return None
+    if any(c.lower() == "skip" for c in classes[1:]):
+        return (True, "tagged .skip")
+    kv = dict(_KV_RE.findall(body))
+    missing = [p for p in kv.get("data-needs", "").split()
+               if not (_REPO_ROOT / p).exists()]
+    if missing:
+        return (True, "data absent: " + ", ".join(missing))
+    missing = [x for x in kv.get("data-requires", "").split()
+               if not _module_present(x)]
+    if missing:
+        return (True, "module absent: " + ", ".join(missing))
+    return (False, "")
 
 
 @dataclass
@@ -64,6 +124,7 @@ class Snippet:
     tag: str
     body: str
     skip: bool = False
+    reason: str = ""           # why a skipped snippet is skipped
 
 
 @dataclass
@@ -80,18 +141,19 @@ def collect_snippets(roots: list[Path]) -> list[Snippet]:
     for root in roots:
         for path in root.rglob("*.md"):
             text = path.read_text(encoding="utf-8")
-            offset = 0
             for m in _FENCE_RE.finditer(text):
-                tag = m.group("tag").strip().lower()
+                # Raw (not lowercased): data-needs paths are
+                # case-sensitive.  classify_tag lowercases per branch.
+                tag = m.group("tag").strip()
                 body = m.group("body")
                 # 1-based line number of the ``` fence
                 line = text.count("\n", 0, m.start()) + 1
-                if tag in EXEC_TAGS:
-                    out.append(Snippet(path, line, tag, body))
-                elif tag in SKIP_TAGS or tag.startswith("python skip"):
-                    out.append(Snippet(path, line, tag, body, skip=True))
-                # else: not a Python snippet; ignore
-                offset = m.end()
+                c = classify_tag(tag)
+                if c is None:
+                    continue            # not a Python snippet; ignore
+                skip, reason = c
+                out.append(Snippet(path, line, tag, body,
+                                   skip=skip, reason=reason))
     return out
 
 
@@ -136,13 +198,21 @@ def main() -> int:
 
     if args.list:
         for s in snippets:
-            mark = "SKIP" if s.skip else "RUN "
-            print(f"{mark} {s.file.relative_to(MANUAL_ROOT)}:{s.line}  ({s.tag})")
+            rel = s.file.relative_to(MANUAL_ROOT)
+            if s.skip:
+                print(f"SKIP {rel}:{s.line}  ({s.tag}) — {s.reason}")
+            else:
+                print(f"RUN  {rel}:{s.line}  ({s.tag})")
         return 0
 
     n_run = sum(1 for s in snippets if not s.skip)
     n_skip = len(snippets) - n_run
-    print(f"Running {n_run} snippet(s) ({n_skip} skipped)…")
+    n_tag = sum(1 for s in snippets if s.reason == "tagged .skip")
+    n_data = sum(1 for s in snippets if s.reason.startswith("data absent"))
+    n_mod = sum(1 for s in snippets if s.reason.startswith("module absent"))
+    print(f"Running {n_run} snippet(s); skipping {n_skip} "
+          f"({n_tag} tagged .skip, {n_data} data absent, "
+          f"{n_mod} module absent)…")
 
     failures: list[FailedSnippet] = []
     current_file: Path | None = None
@@ -163,7 +233,12 @@ def main() -> int:
             failures.append(f)
 
     if not failures:
-        print(f"\nAll {n_run} snippets passed.")
+        print(f"\nAll {n_run} snippets passed; {n_skip} skipped.")
+        # A green run still shows what was NOT verified here.
+        for s in snippets:
+            if s.skip and s.reason != "tagged .skip":
+                print(f"  skipped {s.file.relative_to(MANUAL_ROOT)}"
+                      f":{s.line} — {s.reason}")
         return 0
 
     print(f"\n{len(failures)} snippet(s) FAILED:\n")

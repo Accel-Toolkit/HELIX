@@ -474,3 +474,198 @@ def test_micstream_on_died_fires_on_error_exit_not_on_close(monkeypatch):
     ms2.close()
     t.join(timeout=2.0)
     assert died2 == []
+
+
+# ---------------------------------------------------------------------------
+# addressed-wake positional rule + hallucination filter (2026-08-23:
+# session transcripts showed mid-conversation fragments and a 5 AM
+# Whisper noise-loop dispatched as real commands)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("text,expect", [
+    # addressed: opens the utterance / follows a boundary / vocative
+    ("helix open the results tab", True),
+    ("Hey helix what's the temperature?", True),
+    ("is not online right now. Hey helix what's the temperature?", True),
+    ("okay. Helix, open the results", True),
+    ("run the envelope, helix", True),
+    ("ok so helix, run the envelope", True),   # filler lead-in: addressed
+    # about-talk: mentions must NOT fire, even early in the sentence —
+    # substantive leading words ("we integrated …") disqualify
+    ("I think helix could do that", False),
+    ("we integrated helix with mirage yesterday", False),
+    ("and how I have integrated that with helix and MIRAGE", False),
+    ("we ported the wake word into helix yesterday", False),
+    ("the assistant they call helix handled it", False),
+])
+def test_wake_positional_rule(text, expect):
+    assert L.wake_matches(text) is expect
+
+
+def test_split_after_wake_respects_positional_rule():
+    assert L.split_after_wake("okay. Helix, open the results") == \
+        "open the results"
+    assert L.split_after_wake("integrated that with helix today") == ""
+
+
+@pytest.mark.parametrize("text,expect", [
+    ("switch off L1 okay L1 switch off L1", True),   # the real 5 AM turn
+    ("Thank you. Thank you. Thank you.", True),
+    ("thanks for watching", True),
+    ("open the results tab and show sigma x", False),
+    ("set cavity 5 phase to minus 30 and cavity 7 to minus 25", False),
+    ("no no no", False),                     # short real speech passes
+    ("", False),
+])
+def test_looks_hallucinated(text, expect):
+    assert L.looks_hallucinated(text) is expect
+
+
+def test_sleep_jump_recycles_mic(monkeypatch):
+    """Real sleep = the wall clock OUTRUNS the monotonic clock between
+    watchdog polls (macOS time.monotonic pauses in sleep) — that must
+    proactively recycle the mic stream: the stall check alone cannot
+    see a starved post-sleep stream that still trickles blocks."""
+    fired = threading.Event()
+    mic = _FakeMic()
+    mic.on_died = fired.set
+    wl = L.WakeListener(mic, _FakeStt([]), on_command=lambda t: None,
+                        is_paused=lambda: False)
+    t = [1000.0]
+    m = [500.0]
+    monkeypatch.setattr(L.time, "time", lambda: t[0])
+    monkeypatch.setattr(L.time, "monotonic", lambda: m[0])
+    wl._check_mic_stall()                    # primes both clocks
+    assert not fired.is_set()
+    t[0] += 60.0                             # wall advanced 60 s ...
+    m[0] += 0.1                              # ... monotonic barely: SLEPT
+    wl._check_mic_stall()
+    assert fired.wait(1.0)
+
+
+def test_busy_poll_gap_is_not_sleep(monkeypatch):
+    """A long blocking stretch in the poll loop (Whisper transcription,
+    post-wake capture, first-wake model load) advances BOTH clocks
+    together — it must NOT be mistaken for sleep.  The first cut used a
+    plain wall-clock gap and spuriously recycled the mic ('microphone
+    stream lost — reopening') after every long voice command."""
+    fired = threading.Event()
+    mic = _FakeMic()
+    mic.on_died = fired.set
+    wl = L.WakeListener(mic, _FakeStt([]), on_command=lambda t: None,
+                        is_paused=lambda: False)
+    t = [1000.0]
+    m = [500.0]
+    monkeypatch.setattr(L.time, "time", lambda: t[0])
+    monkeypatch.setattr(L.time, "monotonic", lambda: m[0])
+    wl._check_mic_stall()
+    t[0] += 12.0                             # busy in STT/capture:
+    m[0] += 12.0                             # both clocks advance
+    wl._check_mic_stall()
+    assert not fired.wait(0.3)
+
+
+@pytest.mark.parametrize("text,stock,expect", [
+    # numbers repeat legitimately in accelerator commands
+    ("scan quad 5 from 5 to 5.5", True, False),
+    ("scan from 5 to 5.5 in steps of 5", True, False),
+    # stock phrases: noise artifact in unattended captures, a REAL turn
+    # after an explicit wake address
+    ("thank you", True, True),
+    ("thank you", False, False),
+    ("Thank you. Thank you. Thank you.", False, True),   # repetition
+])
+def test_hallucination_filter_refinements(text, stock, expect):
+    assert L.looks_hallucinated(text, stock=stock) is expect
+
+
+# ---------------------------------------------------------------------------
+# integration through the REAL dispatch paths (the seams the 2026-08-23
+# round edited): _handle_window and FollowUpListener._run
+# ---------------------------------------------------------------------------
+def _run_wake_once(monkeypatch, stt_texts, done, feed_blocks=260,
+                   deadline_s=15.0):
+    """Drive a WakeListener end-to-end with a fake mic feeder until
+    ``done(got)`` (or the deadline).  The feeder keeps running the
+    whole time — the first cut stopped it on a heuristic and tore the
+    listener down MID-CAPTURE, so the dispatch seam never executed."""
+    monkeypatch.setattr(L, "BLOCK", 160)
+    mic = _FakeMic()
+    stt = _FakeStt(stt_texts)
+    got = {"cmd": None, "woke": 0, "chimed": 0, "status": []}
+    wl = L.WakeListener(
+        mic, stt, on_command=lambda t: got.__setitem__("cmd", t),
+        is_paused=lambda: False,
+        on_status=lambda s: got["status"].append(s),
+        on_wake=lambda: got.__setitem__("woke", got["woke"] + 1),
+        chime_fn=lambda: got.__setitem__("chimed", got["chimed"] + 1))
+    wl.POLL_S = 0.05
+    wl.start()
+    try:
+        stop = threading.Event()
+
+        def _feed():
+            n = 0
+            while not stop.is_set():
+                mic.push(0.2 if n < feed_blocks else 0.0005)
+                n += 1
+                time.sleep(0.005)
+
+        th = threading.Thread(target=_feed, daemon=True)
+        th.start()
+        deadline = time.time() + deadline_s
+        while time.time() < deadline and not done(got):
+            time.sleep(0.02)
+        stop.set()
+        th.join(timeout=2)
+    finally:
+        wl.shutdown()
+    return got
+
+
+def test_about_mention_never_wakes(monkeypatch):
+    """Mid-sentence mention of the software (a REAL phantom-turn source
+    from the session transcripts) must not chime, wake, or dispatch."""
+    got = _run_wake_once(
+        monkeypatch, ["we integrated helix with mirage yesterday"],
+        done=lambda g: any("heard" in s for s in g["status"]))
+    assert got["woke"] == 0
+    assert got["chimed"] == 0
+    assert got["cmd"] is None
+    assert any("heard" in s for s in got["status"])   # miss is visible
+
+
+def test_hallucinated_command_discarded_at_dispatch(monkeypatch):
+    """An addressed wake whose captured command is a Whisper noise loop
+    (the real 5 AM phantom) wakes and chimes — but the garbled text
+    must be discarded at the dispatch seam, never reaching on_command."""
+    got = _run_wake_once(
+        monkeypatch, ["helix switch off L1 okay L1 switch off L1"],
+        done=lambda g: g["cmd"] is not None
+        or any("discarded" in s for s in g["status"]))
+    assert got["woke"] == 1
+    assert got["chimed"] == 1
+    assert got["cmd"] is None
+    assert any("discarded" in s for s in got["status"])
+
+
+def test_followup_discards_stock_artifact():
+    """The unattended follow-up window must drop stock Whisper noise
+    ('thanks for watching') as a timeout, with the discard visible."""
+    src = _FakeSource()
+    status = []
+    fl, out = _followup(src, _FakeStt(["thanks for watching"]),
+                        on_status=status.append)
+    assert fl.open_window()
+    t_end = time.time() + 15.0
+    while out["timeout"] == 0 and out["text"] is None and time.time() < t_end:
+        for _ in range(30):
+            src.push(0.2, n=1)
+            time.sleep(0.012)
+        for _ in range(30):
+            if out["timeout"] or out["text"] is not None:
+                break
+            src.push(0.001, n=1)
+            time.sleep(0.012)
+    assert out["text"] is None
+    assert out["timeout"] >= 1
+    assert any("discarded" in s for s in status)

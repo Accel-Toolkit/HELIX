@@ -245,6 +245,14 @@ class Simulation:
             tracker.recorder.configure_tail(self.tail_fractions)
         self._pic_solver = pic
         self._results = tracker.run()
+        # Attach the per-particle loss record to the results: every loss
+        # site already calls Beam.record_loss (aperture, RFQ boundary,
+        # tracker limits) but the table used to be dropped on the floor.
+        # Downstream consumers (HDF5 losses/ group, the loss-power
+        # analysis) read it from here.  n_macro is the LAUNCHED count —
+        # each macroparticle carries I_avg/n_macro of beam current.
+        self._results.loss_table = self.beam.loss_table
+        self._results.n_macro = int(self.beam.lost.size)
         return self._results
 
     def run_backtrack(self, *, entrance_ref=None, start: int = 0,

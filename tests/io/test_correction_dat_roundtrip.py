@@ -86,3 +86,33 @@ def test_round_trip_preserves_structure():
     s1 = [e for e in lat1.elements if isinstance(e, Steerer)]
     s2 = [e for e in lat2.elements if isinstance(e, Steerer)]
     assert len(s1) == len(s2) == 4
+
+
+def test_demo_bpms_sit_after_defocusing_quad():
+    """Deck-conditioning pin (2026-09 dead-beam fix): a BPM 50 mm of
+    drift downstream of its steerer is an ill-conditioned lever arm
+    (nulling 1.8 mm took -35 mrad and killed the beam).  Each demo BPM
+    must sit directly after its cell's defocusing quad, downstream of
+    the partner steerer."""
+    from linac_gen.elements.lattice_commands import LatticeCommand
+    from linac_gen.elements.quadrupole import Quadrupole
+    from linac_gen.elements.steerer import Steerer
+
+    lat, _meta = parse_tracewin(str(DEMO_DAT))
+    els = list(lat.elements)
+    bpms = _bpms(lat)
+    assert len(bpms) == 4
+    for bpm in bpms:
+        i = els.index(bpm)
+        prev = next(p for p in reversed(els[:i])
+                    if not isinstance(p, LatticeCommand))
+        assert isinstance(prev, Quadrupole), (
+            f"{bpm.name}: element before it is {type(prev).__name__}")
+        assert prev.gradient < 0, (
+            f"{bpm.name}: preceding quad {prev.name} is not defocusing")
+    for idx, e in enumerate(els):
+        if isinstance(e, AdjustSteerer):
+            steer = next(c for c in els[idx + 1:] if isinstance(c, Steerer))
+            bpm = bpms[e.diag_n - 1]
+            assert els.index(bpm) > els.index(steer), (
+                f"{e.name}: BPM {bpm.name} not downstream of {steer.name}")

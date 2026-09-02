@@ -9,7 +9,7 @@ the whole RFQ is tracked as one substepped field-map element.
 
 ## TL;DR
 
-```python
+```{.python data-needs="Fields/pxie-rfq.vane examples/lebt_plus_rfq/lebt_plus_rfq_user.dat"}
 from linac_gen.elements.vane_rfq import VaneRFQ
 from linac_gen.io.tracewin_parser import parse_tracewin
 from linac_gen.io.vane_rfq_helper import replace_rfq_cells_with_vane
@@ -54,7 +54,7 @@ diagnostic/reference paths that document specific failure modes.
 
 ### Example
 
-```python
+```{.python data-needs="Fields/pxie-rfq.vane examples/lebt_plus_rfq/lebt_plus_rfq_user.dat"}
 # `lattice` was parsed (and its RfqCell chain replaced) in the TL;DR
 # above — locate the VaneRFQ element it produced:
 rfq = next(e for e in lattice.elements if isinstance(e, VaneRFQ))

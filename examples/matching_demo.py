@@ -86,7 +86,10 @@ def main() -> None:
     print(f"  iters    : {result.n_iter}")
     print(f"  cost     : {result.cost:.4e}")
     print(f"  message  : {result.message}")
-    for var, x0, xf in zip(result.variables, result.x0, result.x_final):
+    # rows() maps each ADJUST DoF to its optimiser column (the demo's
+    # two quads share link_group=1 → one column; a positional zip
+    # printed only one of them).
+    for var, _col, x0, xf in result.rows():
         print(f"    {var.label:<30s}  {x0:>10.4g}  →  {xf:<10.4g}")
 
     # --- post-match envelope -----------------------------------------

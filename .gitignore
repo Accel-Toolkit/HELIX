@@ -112,3 +112,4 @@ TraceWIn_Tools/
 
 # fig_15_01 needs Fields/ (untracked) — cannot regen in CI, so track it
 !docs/manual/_build/figures/fig_15_01_pip2_pulse_droop.png
+tutorials/rendered/

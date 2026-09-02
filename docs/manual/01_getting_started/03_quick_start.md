@@ -69,7 +69,7 @@ Final transmission: 100.00 %
 
 If you already have a TraceWin lattice file:
 
-```python
+```{.python data-needs="examples/pipii/mebt/mebt.dat"}
 from linac_gen.io.tracewin_parser import parse_tracewin
 from linac_gen.core.config import BeamConfig
 from linac_gen.distributions.factory import create_beam
@@ -114,7 +114,7 @@ HELIX also imports a subset of **MAD-X** lattice files (`.madx` /
 For matching, parameter sweeps, and any case where you don't need
 particle-level diagnostics, use the much faster envelope solver:
 
-```python
+```{.python data-needs="examples/pipii/mebt/mebt.dat"}
 from linac_gen.tracking.envelope import EnvelopeSolver
 from linac_gen.core.reference import ReferenceParticle
 from linac_gen.core.particle import PROTON

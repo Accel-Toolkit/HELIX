@@ -236,10 +236,12 @@ retrain, or skip the surrogate for that element.
 
 ### Bit-identical compare (rel.diff = 0.00)
 
-The surrogate **isn't being engaged** — most likely you're at
-`current = 0` (no SC) and the envelope path skipped
-`fitted_matrix_slice`.  Run at ≥ 1 mA to exercise the SC slice
-path where the M3 hook engages.
+The surrogate **wasn't queried** — most likely the compare ran at
+`current > 0` (or with *Record per-sub-step* on), where the envelope
+slice-walks field maps for SC kicks and every partial slice
+delegates to the wrapped RK4.  Check the report's
+`NN full-element queries` line (it will read 0, with a note), and
+run at **0 mA** to engage the surrogate on the full-element matrix.
 
 ### Val MAPE high (> 5 %) despite production cycle
 

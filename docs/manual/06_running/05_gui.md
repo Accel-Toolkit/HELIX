@@ -139,10 +139,14 @@ A one-shot fix-up for a lattice that has steerers + BPMs (or
 1. **Lattice tab → Open…** the lattice.
 2. **Beam tab** → confirm beam settings.
 3. **Lattice tab → Correct orbit** toolbar button.
-4. Summary dialog reports the chosen method, RMS-orbit before /
-   after, and per-steerer kicks.  Steerer `bx_l` / `by_l` are
-   mutated in place; subsequent envelope / MP runs use the
-   corrected values.
+4. Summary dialog reports the chosen method, the correction
+   **status**, RMS-orbit at the first / final pass, per-pass
+   transmission, and per-steerer kicks.  Steerer `bx_l` / `by_l`
+   are mutated in place; subsequent envelope / MP runs use the
+   corrected values.  A pass that loses the beam
+   (`Status: beam_lost`) applies **no kicks** — a warning names the
+   element where the transmission reached 0 % (see the
+   [dead-beam contract](../08_errors/07_correction.md#dead-beam-contract)).
 
 Full walkthrough + example numbers in
 [Errors → Orbit correction → Path A](../08_errors/07_correction.md#path-a-gui-standalone-lattice-tab-correct-orbit).

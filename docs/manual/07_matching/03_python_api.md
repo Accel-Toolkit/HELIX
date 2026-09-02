@@ -177,11 +177,17 @@ point.
 | `baseline_cost` | cost at `x0` from the explicit baseline pass run at the start of every `match()` call.  Use to report "before → after" cost in UI / scripts. |
 | `residuals` | final residual vector |
 | `cost` | final ½‖residuals‖² |
-| `variables` | `Variable` objects, optimiser-column order |
+| `variables` | `Variable` objects in collection order — one per ADJUST DoF; can be **longer** than `x0` / `x_final` when a link group shares an optimiser column |
 | `constraints` | `Constraint` objects, residual order |
 | `per_constraint_residuals` | dict: constraint label → its residual sub-vector |
 
 `MatchResult.report()` returns a formatted multi-line summary.
+
+`MatchResult.rows()` returns one `(var, col, x0, x_final)` tuple per
+variable, where `col` is the variable's optimiser column and
+`x0` / `x_final` are that column's values — use it (never
+`zip(variables, x0, x_final)`, which truncates and mislabels rows as
+soon as a link group shares a column) whenever you tabulate results.
 
 ### Cancellation contract
 

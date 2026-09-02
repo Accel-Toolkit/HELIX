@@ -172,3 +172,118 @@ def rfq_lattice() -> Lattice:
         ))
     lat.add(Drift(name="TAIL", length=50.0, aperture=10.0))
     return lat
+
+
+# ---------------------------------------------------------------------------
+# Shared e2e window scaffold (fix-plan shared infrastructure).
+#
+# The same scaffold was re-implemented ad hoc in
+# tests/gui/test_backtrack_end_to_end.py and in the defect repro scripts
+# (tune-stale, assist-mutate); this fixture is the single copy.  A test
+# module that defines its own ``win`` fixture shadows this one.
+# ---------------------------------------------------------------------------
+@pytest.fixture()
+def win(qapp, monkeypatch):
+    """A real InterphaseWindow with only the human seams stubbed.
+
+    * ``_launch_update_check`` is a no-op (belt and braces on top of the
+      PYTEST_CURRENT_TEST guard — never a network probe from a test).
+    * ``QMessageBox`` statics (warning/critical/information/question) and
+      ``QMessageBox.exec`` are stubbed to record-and-return-Yes: an
+      offscreen modal box would otherwise hang the run forever.  The
+      recorded ``(title, text)`` tuples are exposed as
+      ``win.message_boxes``.
+    * Auto-dump calc dir and QSettings are already sandboxed by the
+      autouse fixtures above.
+
+    Helpers attached to the window:
+        win.open_lattice(path)            File > Open Lattice via the real slot
+        win.pump(sec=0.3)                 process events for ``sec`` seconds
+        win.pump_until(pred, timeout_ms)  pump until pred() is True
+        win.wait_worker(worker)           join a run worker + deliver signals
+        win.wait_popup_idle(dlg)          wait for a results popup's workers
+    """
+    import time as _time
+
+    from PyQt6.QtWidgets import QMessageBox
+    from linac_gen_gui.interphase import app as appmod
+    from linac_gen_gui.interphase.app import InterphaseWindow
+
+    monkeypatch.setattr(InterphaseWindow, "_launch_update_check",
+                        lambda self: None)
+
+    boxes: list = []
+
+    def _record_box(*a, **k):
+        boxes.append(tuple(str(x) for x in a[1:3]))
+        return QMessageBox.StandardButton.Yes
+
+    for _name in ("warning", "critical", "information", "question"):
+        monkeypatch.setattr(QMessageBox, _name, staticmethod(_record_box))
+    monkeypatch.setattr(
+        QMessageBox, "exec",
+        lambda self, *a, **k: QMessageBox.StandardButton.Yes)
+
+    w = InterphaseWindow()
+    w.message_boxes = boxes
+
+    def _pump(sec: float = 0.3) -> None:
+        t0 = _time.time()
+        while _time.time() - t0 < sec:
+            qapp.processEvents()
+            _time.sleep(0.02)
+
+    def _pump_until(pred, timeout_ms: int = 60_000) -> bool:
+        t0 = _time.time()
+        while (_time.time() - t0) * 1000.0 < timeout_ms:
+            qapp.processEvents()
+            if pred():
+                return True
+            _time.sleep(0.02)
+        return False
+
+    def _wait_worker(worker, timeout_ms: int = 300_000) -> None:
+        assert worker is not None, "worker was never constructed"
+        assert worker.wait(timeout_ms), "worker thread did not finish"
+        _pump(0.5)
+
+    def _wait_popup_idle(dlg, timeout_s: float = 300.0) -> None:
+        t0 = _time.time()
+        while _time.time() - t0 < timeout_s:
+            qapp.processEvents()
+            wk = getattr(dlg, "_worker", None)
+            pw = getattr(dlg, "_probe_worker", None)
+            busy = ((wk is not None and wk.isRunning())
+                    or (pw is not None and pw.isRunning()))
+            if not busy and getattr(dlg, "_pending_key", None) is None:
+                break
+            _time.sleep(0.05)
+        _pump(0.5)
+
+    def _open_lattice(path) -> None:
+        monkeypatch.setattr(
+            appmod.QFileDialog, "getOpenFileName",
+            staticmethod(lambda *a, **k: (str(path), "")))
+        w._open_lattice()
+        qapp.processEvents()
+
+    w.pump = _pump
+    w.pump_until = _pump_until
+    w.wait_worker = _wait_worker
+    w.wait_popup_idle = _wait_popup_idle
+    w.open_lattice = _open_lattice
+
+    yield w
+
+    # Teardown: stop popup-owned workers, then any run workers, then the
+    # window itself (the autouse DeferredDelete flusher frees it).
+    for wk in w.results_tab.shutdown_begin():
+        wk.wait(5000)
+    for wk in (getattr(w, "_envelope_worker", None),
+               getattr(w, "_mp_worker", None)):
+        if wk is not None and wk.isRunning():
+            if hasattr(wk, "request_stop"):
+                wk.request_stop()
+            wk.wait(5000)
+    w.close()
+    w.deleteLater()

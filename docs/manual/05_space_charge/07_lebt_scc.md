@@ -65,6 +65,24 @@ pinned against that tool's cross-language test-vector contract.
 
 ```python
 from linac_gen.analysis.scc.driver import scc_analysis
+from linac_gen.core.lattice import Lattice
+from linac_gen.core.particle import H_MINUS
+from linac_gen.core.reference import ReferenceParticle
+from linac_gen.elements.drift import Drift
+from linac_gen.elements.solenoid import Solenoid
+from linac_gen.tracking.envelope import EnvelopeSolver
+
+lattice = Lattice()                      # two-solenoid LEBT, 30 keV H-
+lattice.add(Drift(name="D0", length=300.0, aperture=60.0))
+lattice.add(Solenoid(name="S1", length=250.0, field=0.16, aperture=60.0))
+lattice.add(Drift(name="D1", length=600.0, aperture=60.0))
+lattice.add(Solenoid(name="S2", length=250.0, field=0.16, aperture=60.0))
+lattice.add(Drift(name="D2", length=300.0, aperture=60.0))
+ref = ReferenceParticle(species=H_MINUS, w_kin=0.030, frequency=162.5)
+initial = dict(alpha_x=0.0, beta_x=0.5, emit_x=0.20 / ref.bg,
+               alpha_y=0.0, beta_y=0.5, emit_y=0.20 / ref.bg,
+               alpha_z=0.0, beta_z=1.0, emit_z=0.0, continuous=True)
+results = EnvelopeSolver(lattice, ref.copy(), initial, current=15.0).run()
 
 a = scc_analysis(results, lattice, species="H-", gas="N2",
                  pressure_mbar=2e-5)          # DC results required
@@ -111,6 +129,12 @@ moving (the physical fixed point `f_card = f_c(σ(f_card))`):
 
 ```python
 from linac_gen.analysis.scc.iterate import scc_self_consistent
+from linac_gen.core.config import BeamConfig
+
+beam_config = BeamConfig(species="H-", energy=0.030, frequency=162.5, current=15.0,
+                         n_particles=1000, emit_nx=0.20, emit_ny=0.20,
+                         alpha_x=0.0, beta_x=0.5, alpha_y=0.0, beta_y=0.5,
+                         emit_z=0.0, alpha_z=0.0, beta_z=1.0, continuous=True)
 
 a = scc_self_consistent(lattice, beam_config, gas="N2",
                         pressure_mbar=2e-5)   # DC beam config required

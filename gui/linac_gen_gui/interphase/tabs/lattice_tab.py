@@ -633,6 +633,27 @@ class LatticeTab(QWidget):
                 "cards) to enable orbit correction.",
             )
             return
+        status = res.get("status")
+        if status == "beam_lost":
+            # D2 (dead-beam contract): the computed kicks KILL the beam
+            # — refuse to apply them.  Nothing is pushed to the command
+            # bus; the dialog lists the refused kicks for inspection.
+            lost = res.get("beam_lost_at") or "unknown element"
+            kick_lines = "\n".join(
+                f"  {name}: bx_l={k['bx_l']:+.3e}  by_l={k['by_l']:+.3e}"
+                for name, k in res["kicks"].items())
+            QMessageBox.warning(
+                self, "Orbit correction failed",
+                f"The corrector LOST the beam (transmission reached 0 % "
+                f"at {lost}).\n"
+                f"Method: {res['method']}, pairs: {res['n_pairs']}.\n"
+                "No kicks were applied — check steerer\u2192BPM lever "
+                "arms / vmax, or switch method to SVD.\n"
+                f"\nComputed (refused) kicks:\n{kick_lines}")
+            self.state.status_message.emit(
+                f"orbit correction failed: beam lost at {lost} — "
+                "no kicks applied")
+            return
         # The worker corrected a SNAPSHOT — apply the kicks to the live
         # lattice here on the GUI thread, through the command bus, so
         # the correction is a single undoable step and the dirty flag /
@@ -663,8 +684,15 @@ class LatticeTab(QWidget):
         msg = (
             f"Method: {method}\n"
             f"Steerer/BPM pairs: {n_pairs}\n"
+            f"Status: {status or 'converged'}\n"
             f"RMS orbit error vs targets, iter 1: {rms_first:.4f} mm\n"
             f"RMS orbit error vs targets, final:  {rms_final:.4f} mm\n"
+        )
+        trans = [h.get("transmission_pct") for h in hist]
+        if any(t is not None for t in trans):
+            msg += ("Transmission per pass: " + ", ".join(
+                "?" if t is None else f"{t:.1f}" for t in trans) + " %\n")
+        msg += (
             f"(target-less BPMs steer to zero)\n"
             f"\nApplied kicks:\n"
         )

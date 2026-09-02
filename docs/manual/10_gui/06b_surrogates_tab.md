@@ -24,7 +24,9 @@ elements.
   the checked elements sequentially.
 * **Trained-surrogates table** — auto-populates from cached weights
   for the current lattice on load.  Per row: element name, val
-  MAPE, scope, **Use** checkbox (registers it), **Compare** button.
+  MAPE, scope, **Use** checkbox (registers it; engages in 0 mA
+  envelope runs — SC runs and per-sub-step recording stay RK4),
+  **Compare** button.
   **Select all** / **Deselect all** buttons above the table bulk-tick
   or untick every Use checkbox.
 * **Cache-aware Train** — clicking Train for an element with

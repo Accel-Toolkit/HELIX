@@ -175,3 +175,62 @@ def test_correction_worker_cancel(tab_env):
     w.request_stop()
     w.run()
     assert out == {"cancelled": True}
+
+
+def test_beam_lost_result_applies_no_kicks_and_warns(tab_env, monkeypatch):
+    """D2: on ``status == "beam_lost"`` the GUI must refuse to apply the
+    beam-killing kicks — nothing pushed to the bus, warning names the
+    element."""
+    st, tab, lt = tab_env
+    captured = {}
+    monkeypatch.setattr(
+        lt.QMessageBox, "warning",
+        staticmethod(lambda parent, title, text, *a, **k:
+                     captured.setdefault("text", text)))
+
+    res = {
+        "kicks": {"STEER_1": {"bx_l": 1e-3, "by_l": 1e-3}},
+        "history": [{"iter": 1, "rms_orbit_mm": float("nan"),
+                     "n_saturated": 0, "n_dead_bpms": 1,
+                     "transmission_pct": 0.0, "beam_lost_at": "D_post",
+                     "stop_reason": "beam_lost"}],
+        "method": "one_to_one", "n_pairs": 1,
+        "status": "beam_lost", "converged": False,
+        "beam_lost_at": "D_post",
+    }
+    tab._corr_lattice_at_launch = st.lattice
+    tab._on_correction_done(res)
+
+    steerer = next(e for e in st.lattice.elements if isinstance(e, Steerer))
+    assert steerer.bx_l == 0.0 and steerer.by_l == 0.0
+    assert not st.bus.can_undo
+    assert not st.bus.dirty
+    assert "D_post" in captured["text"]
+    assert "No kicks" in captured["text"]
+
+
+def test_worker_beam_lost_end_to_end_leaves_steerers_untouched(tab_env):
+    """Through the real worker: the original demo geometry produces a
+    beam-lost result and the done handler applies nothing."""
+    import numpy as np
+
+    from tests.errors.test_correction_dead_beam import (
+        _demo_cfg, _original_demo_lattice, _plant_demo_misalignments)
+
+    st, tab, lt = tab_env
+    lat = _original_demo_lattice()
+    _plant_demo_misalignments(lat)
+    st.set_lattice(lat, None)
+    st.set_beam_config(_demo_cfg(300))
+
+    out = _run_worker_sync(lt, st.lattice, st.beam_config)
+    assert "res" in out, out
+    assert out["res"]["status"] == "beam_lost"
+    assert out["res"]["beam_lost_at"]
+
+    tab._corr_lattice_at_launch = st.lattice
+    tab._on_correction_done(out["res"])
+    for e in st.lattice.elements:
+        if isinstance(e, Steerer):
+            assert e.bx_l == 0.0 and e.by_l == 0.0
+    assert not st.bus.can_undo

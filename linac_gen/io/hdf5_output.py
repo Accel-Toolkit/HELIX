@@ -281,8 +281,15 @@ def save_results_hdf5(recorder, filepath: str, beam_config=None,
         # and scales by `current_mA`; adversarial finding F2 — loaded DC runs
         # were refused as "bunched" because none of this was persisted).
         env.attrs["continuous"] = bool(getattr(recorder, "continuous", False))
-        env.attrs["current_mA"] = float(
-            getattr(recorder, "current_mA", 0.0) or 0.0)
+        # Run current: written ONLY when known (finite) — 0.0 means "ran
+        # at 0 mA", absence means unknown.  The boolean marker lets the
+        # loader tell a genuine 0.0 from the pre-fix MP sentinel (files
+        # written before this change stored 0.0 for every MP run).
+        from linac_gen.diagnostics.recorder import run_current_mA
+        _cur = run_current_mA(recorder)
+        env.attrs["run_current_known"] = bool(_cur is not None)
+        if _cur is not None:
+            env.attrs["current_mA"] = float(_cur)   # 0.0 = ran at 0 mA
         _exit_idx = getattr(recorder, "element_exit_idx", None)
         if _exit_idx is not None and len(_exit_idx):
             env.create_dataset("element_exit_idx",
@@ -318,6 +325,21 @@ def save_results_hdf5(recorder, filepath: str, beam_config=None,
                 grp.attrs["beta"]  = ref_state.beta
                 grp.attrs["gamma"] = ref_state.gamma
 
+        # ── per-particle loss record ─────────────────────────────────────────
+        # Attached by Simulation._run_mp (Beam.record_loss sites: apertures,
+        # RFQ boundary, tracker limits).  Powers the loss-power analysis on
+        # reloaded runs; n_macro is the LAUNCHED macroparticle count (each
+        # carries I_avg/n_macro of beam current).
+        losses = getattr(recorder, "loss_table", None)
+        if losses is not None and np.asarray(losses).size:
+            lt = np.asarray(losses)
+            lg = f.create_group("losses")
+            for key in ("particle_id", "s", "x", "y", "energy"):
+                lg.create_dataset(key, data=np.asarray(lt[key]))
+            names = np.asarray(lt["element_name"]).astype("S32")
+            lg.create_dataset("element_name", data=names)
+            lg.attrs["n_macro"] = int(getattr(recorder, "n_macro", 0))
+
         # ── beam config ───────────────────────────────────────────────────────
         if beam_config is not None:
             cfg = f.create_group("beam_config")
@@ -351,7 +373,36 @@ def load_results_hdf5(filepath: str) -> dict:
                 results[key] = f["envelope"][key][:]
             for key, val in f["envelope"].attrs.items():
                 results[key] = val.item() if hasattr(val, "item") else val
+            # Resolve the run current.  ``run_current_known`` is a
+            # transport-only marker (never a results field): absent =
+            # legacy writer, whose 0.0 was an unconditional MP sentinel;
+            # False = declared unknown.  Either way fall back to the
+            # dump-time beam_config current when the file has one, else
+            # drop the key so getattr(..., None) reports "unknown".
+            known = results.pop("run_current_known", None)
+            cur = results.get("current_mA")
+            if cur is not None and (known is False
+                                    or (known is None
+                                        and float(cur) == 0.0)):
+                cur = None
+            if cur is None:
+                bc = (f["beam_config"].attrs.get("current")
+                      if "beam_config" in f else None)
+                if bc is not None:
+                    results["current_mA"] = float(bc)
+                else:
+                    results.pop("current_mA", None)
         if "reference" in f:
             for key in f["reference"]:
                 results[f"ref_{key}"] = f["reference"][key][:]
+        if "losses" in f:
+            from linac_gen.core.beam import LOSS_DTYPE
+            lg = f["losses"]
+            n = lg["s"].shape[0]
+            lt = np.zeros(n, dtype=LOSS_DTYPE)
+            for key in ("particle_id", "s", "x", "y", "energy"):
+                lt[key] = lg[key][:]
+            lt["element_name"] = lg["element_name"][:].astype("U32")
+            results["loss_table"] = lt
+            results["n_macro"] = int(lg.attrs.get("n_macro", 0))
     return results

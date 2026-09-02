@@ -309,7 +309,7 @@ def write_partran_out(
 
     current_mA = float(getattr(beam_cfg, "current", 0.0)
                        if beam_cfg is not None else
-                       getattr(results, "current_mA", 0.0))
+                       (getattr(results, "current_mA", 0.0) or 0.0))
     n_particles_total = int(getattr(beam_cfg, "n_particles", 0) or 0)
 
     with path.open("w", encoding="latin-1", errors="replace") as fh:

@@ -5,11 +5,23 @@ M1 scope (per ``docs/plans/surrogates.md``):
   any ``FieldMapElement`` instance in **envelope-mode** tracking.
 * ``fitted_matrix(ref)`` is implemented by an MLP that predicts the
   flattened 6x6 transfer matrix from (ref kinematics, element params).
-* ``track_rk4(beam, ds)`` and ``fitted_matrix_slice(ref, ds_mm)``
-  FALL BACK to the wrapped element — M7 / future work will replace
-  these with per-particle NN tracking and slice-aware surrogates.
 * Out-of-scope inputs raise :class:`OutOfScopeError`; callers fall
   back to the wrapped element.
+
+Where a registered surrogate actually engages:
+
+* **Envelope, current = 0, no per-sub-step recording, no interior
+  markers** — the pure-linear path requests the FULL-element matrix
+  once per traversal through ``envelope._full_matrix_at``; that is the
+  quantity the NN was trained on, so the surrogate serves it (speedup).
+* **Envelope, current > 0 (SC bundles) or per-sub-step walks** — the
+  solver requests PARTIAL slices; ``fitted_matrix_slice`` delegates
+  every partial slice to the wrapped RK4 (see its docstring), so those
+  runs make zero NN queries and see no speedup — by design, stated in
+  the manual and the compare report.
+* **Multi-particle** — hybrid/fast paths only under the explicit
+  double opt-in (``registry.set_mp_enabled`` and the fast-path flag);
+  ``track_rk4`` otherwise falls back to the wrapped element.
 """
 from __future__ import annotations
 
@@ -201,6 +213,14 @@ class SurrogateFieldMap(FieldMapElement, nn.Module):
         self.mlp.eval()
         # M3 envelope hook reads this — set False to bypass surrogate.
         self._enabled: bool = True
+        # Cumulative count of SUCCESSFUL NN predictions actually
+        # returned by :meth:`fitted_matrix` over the lifetime of this
+        # object — across modes (the MP fast path's ``_init_fast_path``
+        # also queries ``fitted_matrix``) and NOT reset by
+        # ``reset_run_state``.  Per-run counts are deltas (see
+        # ``compare_envelope``).  ``fitted_matrix_torch`` (matcher arm)
+        # is deliberately not counted.
+        self.nn_calls: int = 0
         # M7 hybrid MP knob: how many RK4 substeps the residual pass
         # uses inside :meth:`track_rk4`.  Lower = faster + less
         # accurate; higher = slower + closer to baseline RK4.
@@ -262,6 +282,7 @@ class SurrogateFieldMap(FieldMapElement, nn.Module):
                 "a SINGULAR transfer matrix (|det|="
                 f"{abs(np.linalg.det(M)):.3g}) — falling back to the "
                 "wrapped element (weights may be corrupt)")
+        self.nn_calls += 1      # successful NN prediction actually returned
         return M
 
     def fitted_matrix_torch(self, kin_tensor: torch.Tensor) -> torch.Tensor:
@@ -335,17 +356,20 @@ class SurrogateFieldMap(FieldMapElement, nn.Module):
 
         Net effect for users:
 
-        * **No-SC envelope** (any lattice) -- speedup, surrogate used.
+        * **No-SC envelope, no per-sub-step recording** -- the solver's
+          pure-linear path does not call this method at all: it requests
+          the FULL-element matrix once via ``envelope._full_matrix_at``
+          -> :meth:`fitted_matrix` (NN used, speedup).
         * **SC-active envelope on Drift/Quad/Solenoid-only lattice** --
           partial slices through CONSTANT-COEFF elements would
           actually be correct via logm/expm, but the wrapped
           fitted_matrix_slice on Drift/Quad is already analytical
           (not RK4) so the surrogate doesn't help anyway.
-        * **SC-active envelope through FieldMap RF cavities** (the
-          user's PIP-II HWR case) -- partial slices delegate to RK4,
-          NO surrogate speedup.  Future work: train a slice-aware
-          surrogate that takes ds_mm as an input to gain speedup
-          here too.
+        * **SC-active envelope through FieldMap RF cavities, and I=0
+          per-sub-step / interior-marker walks** -- partial slices
+          delegate to RK4, zero NN queries, NO surrogate speedup.
+          Future work: train a slice-aware surrogate that takes ds_mm
+          as an input to gain speedup here too.
 
         OOD safety: surrogate's ``fitted_matrix`` raises
         :class:`OutOfScopeError` for inputs outside the trained scope;

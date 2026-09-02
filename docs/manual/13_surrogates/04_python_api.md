@@ -124,9 +124,12 @@ cached = discover_cached_surrogates(
 
 ## The runtime registry
 
-The envelope hook in `tracking/envelope.py:_fitted_matrix_slice_at`
-looks up surrogates by element name on every matrix call.  Register
-to engage, unregister to disengage.
+The envelope solver consults the registry through two seams:
+`tracking/envelope.py:_full_matrix_at` serves the **full-element**
+matrix on the pure-linear path of a **0 mA** run (this is where the
+NN engages), and `_fitted_matrix_slice_at` handles the SC/per-sub-
+step bundle walks — whose partial slices always delegate to the
+wrapped RK4.  Register to engage, unregister to disengage.
 
 ```{.python .skip}
 from linac_gen.surrogates import SurrogateFieldMap, registry
@@ -161,12 +164,12 @@ init_twiss = dict(
 )
 report = compare_envelope(
     lat, ref, init_twiss,
-    current=5.0,                       # mA; > 0 to engage SC slice path
+    current=0.0,     # mA; 0 engages the NN (at > 0 the SC walk stays RK4)
     surrogates=[surr1, surr2, surr3, surr4],
 )
 print(report.summary_text())
 plot_compare_report(report, "/tmp/cmp.png",
-                     title="MEBT @ 5 mA: all-surrogate vs RK4")
+                     title="MEBT @ 0 mA: all-surrogate vs RK4")
 ```
 
 ### `CompareReport` fields
@@ -179,7 +182,8 @@ plot_compare_report(report, "/tmp/cmp.png",
 | `wall_baseline_s` / `wall_surrogate_s` | float | seconds |
 | `scope_ok` | bool | `True` if every query was in scope (OOD silently falls back) |
 | `surrogate_names` | `list[str]` | names engaged this run |
-| `notes` | `list[str]` | warnings (e.g. "no surrogate engaged") |
+| `notes` | `list[str]` | warnings (e.g. "no surrogate engaged", "registered but never queried") |
+| `nn_calls` | int | NN full-element queries made during the surrogate run (0 at current > 0 — the SC walk stays on RK4) |
 | `speedup()` | method | `wall_baseline_s / wall_surrogate_s` |
 | `worst_rel_diff()` | method | max of the four end-of-line rel.diffs |
 | `summary_text()` | method | multi-line CLI-friendly summary |
@@ -192,8 +196,9 @@ safe to call in a long-running session.
 
 The MP analogue of `compare_envelope` runs the multi-particle
 tracker twice — a pure-RK4 baseline (registry temporarily cleared,
-MP engagement off), then the hybrid linear-anchor + RK4-residual
-path with the surrogates registered — and diffs the two:
+MP engagement off), then the surrogate-engaged run — a safe delegate
+unless `registry.set_fast_path_enabled(True)` is on, in which case
+the linear-matrix fast path runs — and diffs the two:
 
 ```{.python .skip}
 from linac_gen.surrogates.compare import (
@@ -215,18 +220,27 @@ rel-diffs (σ_x/σ_y/σ_z/ε_nx/ε_ny/transmission), wall times,
 / `summary_text()` helpers.  Like the envelope version, `compare_mp`
 restores the whole registry + MP-engagement state afterwards, and
 each surrogate's own `residual_n_steps` setting is restored too.
+`residual_n_steps` is recorded and restored but reserved — no
+tracking path reads it (the hybrid RK4-residual mode is not
+implemented).
 
 ## Drop-in inference
 
 When you've already registered surrogates, normal HELIX code paths
 (envelope solver, matcher, parameter scans) pick them up
-automatically — no changes to your scripts needed.
+automatically at **current = 0** — no changes to your scripts
+needed.
 
 ```{.python .skip}
 from linac_gen.tracking.envelope import EnvelopeSolver
-res = EnvelopeSolver(lat, ref, init_twiss, current=5.0).run()
-# -> uses every surrogate currently registered when admissible.
+res = EnvelopeSolver(lat, ref, init_twiss, current=0.0).run()
+# -> serves every registered surrogate's full-element matrix
+#    from the NN when admissible.
 ```
+
+At `current > 0` the solver slice-walks field maps for SC kicks and
+every partial slice delegates to the wrapped RK4 — the run is
+bit-identical to the unregistered one and makes zero NN queries.
 
 For ad-hoc inference outside the envelope solver, call
 `surr.fitted_matrix(ref)` directly:

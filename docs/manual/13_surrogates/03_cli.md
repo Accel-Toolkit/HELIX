@@ -85,7 +85,7 @@ python -m linac_gen.surrogates.cli compare \
     --lattice examples/pipii/mebt/mebt.dat \
     --weights linac_gen/surrogates/weights/bb088243c9fb33ce/FMAP_001 \
               linac_gen/surrogates/weights/bb088243c9fb33ce/FMAP_002 \
-    --current 5.0 \
+    --current 0.0 \
     --out /tmp/mebt_compare.png
 ```
 
@@ -98,28 +98,35 @@ python -m linac_gen.surrogates.cli compare \
 | `--out` | none | optional PNG of σ_{x,y,φ,W} overlay. |
 | `--ref-w-kin` / `--frequency` | 2.12 / 162.5 | ref-particle defaults. |
 | `--alpha-{x,y,z}`, `--beta-{x,y,z}`, `--emit-{x_n,y_n,z}` | MEBT entry | initial Twiss. |
-| `--current` | 0.0 | beam current in mA; **set > 0 to exercise the SC slice path** (where the M3 hook fully engages). |
+| `--current` | 0.0 | beam current in mA.  **0 (the default) engages surrogates** — the pure-linear path serves the NN full-element matrix; **> 0 exercises the RK4 slice walk** (zero NN queries, zero diff expected). |
 
 ### Output
 
 ```
-loaded surrogate 'FMAP_001' (val MAPE 4.28e-02)
-loaded surrogate 'FMAP_002' (val MAPE 5.56e-02)
+loaded surrogate 'FMAP_001' (val MAPE 6.75e-01)
+loaded surrogate 'FMAP_002' (val MAPE 9.47e-01)
 
 Running baseline vs surrogate-enabled envelope...
 
 Surrogates engaged: 2 (FMAP_001, FMAP_002)
-Wall-clock: baseline 6.64 s  surrogate 4.95 s  speedup 1.34x
+Wall-clock: baseline 1.250 s  surrogate 0.791 s  speedup 1.58x
 End-of-line sigma moments:
-     sigma_x  baseline= 1.7951e+00  surrogate= 1.7892e+00  rel.diff=3.3e-03  mm
-     sigma_y  baseline= 1.7905e+00  surrogate= 1.7944e+00  rel.diff=2.2e-03  mm
-   sigma_phi  baseline= 6.5356e+00  surrogate= 6.4209e+00  rel.diff=1.8e-02  deg
-     sigma_w  baseline= 1.1637e-02  surrogate= 1.1681e-02  rel.diff=3.8e-03  MeV
-Worst rel.diff: 1.8e-02
+     sigma_x  baseline= 1.6476e+00  surrogate= 1.6391e+00  rel.diff=5.14e-03  mm
+     sigma_y  baseline= 1.5740e+00  surrogate= 1.5694e+00  rel.diff=2.96e-03  mm
+   sigma_phi  baseline= 5.8742e+00  surrogate= 5.9055e+00  rel.diff=5.34e-03  deg
+     sigma_w  baseline= 1.0614e-02  surrogate= 1.0562e-02  rel.diff=4.92e-03  MeV
+Worst rel.diff: 5.34e-03
+NN full-element queries: 2
 Scope OK: True
 
 plot saved to: /tmp/mebt_compare.png
 ```
+
+`NN full-element queries` counts how many times the surrogate run
+actually consulted the network.  At `--current 0` it equals the
+number of surrogated field-map traversals; at `--current` > 0 it is
+0 and the report carries a note — the SC walk requests partial
+slices, which always delegate to RK4.
 
 ## `run-envelope`
 
@@ -133,20 +140,24 @@ python -m linac_gen.surrogates.cli run-envelope \
                      linac_gen/surrogates/weights/bb088243c9fb33ce/FMAP_002 \
                      linac_gen/surrogates/weights/bb088243c9fb33ce/FMAP_003 \
                      linac_gen/surrogates/weights/bb088243c9fb33ce/FMAP_004 \
-    --current 5.0
+    --current 0.0
 ```
 
 Output:
 
 ```
-registered surrogate 'FMAP_001' (val MAPE 4.28e-02)
+registered surrogate 'FMAP_001' (val MAPE 6.75e-01)
 ... (3 more)
 registered 4 surrogates total.
 
-End-of-line:  sigma_x=1.7822 mm  sigma_y=1.8221 mm  ...
+End-of-line:  sigma_x=1.6427 mm  sigma_y=1.5763 mm  ...
+NN full-element queries: 4
 ```
 
-The same beam-config flags as `compare` apply.
+At `--current` > 0 the last line reads
+`NN full-element queries: 0` followed by a one-line note — the SC
+slice walk stays on RK4, so the surrogates are registered but never
+queried.  The same beam-config flags as `compare` apply.
 
 ## `register-multi`
 

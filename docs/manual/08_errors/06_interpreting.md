@@ -13,7 +13,8 @@ output into engineering decisions ("yes, this lattice is robust to
 3. **Maximum-excursion vs s** — max σ_x, σ_y at every s over all
    seeds.  Tells you the *worst-case* aperture demand.
 
-The GUI's Errors-tab popup produces all three automatically.
+The Results-tab *Error study ensemble* popup produces all three — the
+maximum over seeds is the dotted line on each σ panel.
 
 ## σ-band envelopes
 

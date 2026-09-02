@@ -136,3 +136,30 @@ def test_correction_disabled_when_not_enabled():
         # accessor returns None.
         assert res.corrected_kicks(s) is None
         assert res.correction_history(s) is None
+
+
+def test_error_study_reports_seeds_where_correction_lost_the_beam():
+    """A seed whose orbit correction kills the beam must be REPORTED —
+    the study used to store a 'converged' rms ~1e-12 history for a 0 %
+    transmission seed (2026-09 dead-beam defect)."""
+    from tests.errors.test_correction_dead_beam import (
+        _demo_cfg, _original_demo_lattice, _plant_demo_misalignments)
+
+    lat = _original_demo_lattice()
+    _plant_demo_misalignments(lat)          # seed-2026, 0.2 mm RMS
+    # 500 particles (like the direct dead-beam tests): with 400 the
+    # cascade's kick lands just under the killing threshold after vmax
+    # clipping and the beam dies only downstream of the last BPM
+    # (status max_iter, honest but a different regime).
+    study = ErrorStudy(lat, _demo_cfg(500), n_seeds=1)
+    # No registered errors: _apply_errors only deep-copies, so the
+    # planted misalignments alone drive the (beam-killing) correction.
+    study.enable_correction(n_iter=5, tol_mm=0.01)
+    with pytest.warns(UserWarning, match="lost the beam"):
+        res = study.run()
+    assert res.correction_status(0) == "beam_lost"
+    assert res.n_correction_beam_lost == 1
+    # The tracked seed is honestly dead — no silently-biased statistics.
+    assert res.transmission_stats()["min"] == 0.0
+    assert isinstance(res.corrected_kicks(0), dict)
+    assert res.correction_history(0)[-1]["stop_reason"] == "beam_lost"

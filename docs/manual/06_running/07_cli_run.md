@@ -8,7 +8,8 @@ simulation, and writes the results.
 python -m linac_gen run <input> [options]
 ```
 
-`<input>` is a `.dat` / `.madx` lattice or a `.lgproj` project.
+`<input>` is a `.dat` / `.madx` / `.seq` / `.lat` / `.flat` / `.lte`
+lattice or a `.lgproj` project.
 
 ## Options
 

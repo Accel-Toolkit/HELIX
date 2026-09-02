@@ -1,6 +1,7 @@
-"""M7 — Hybrid MP-mode surrogate contract.
+"""M7 — MP-mode surrogate contract (safe delegate / linear fast path;
+no RK4-residual pass exists — ``residual_n_steps`` is reserved).
 
-The hybrid path lives in :meth:`SurrogateFieldMap.track_rk4`.  These
+The MP path lives in :meth:`SurrogateFieldMap.track_rk4`.  These
 tests cover:
 
   1. Bit-identical safety: when MP-engagement is OFF, registered

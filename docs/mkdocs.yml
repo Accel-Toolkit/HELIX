@@ -172,6 +172,7 @@ nav:
       - H⁻ stripping: 09_diagnostics/05_stripping.md
       - Phase advance: 09_diagnostics/06_phase_advance.md
       - Hofmann stability & tune footprint: 09_diagnostics/07_hofmann_footprint.md
+      - Loss power & plane power density: 09_diagnostics/08_loss_power.md
   - GUI:
       - Overview: 10_gui/01_overview.md
       - Lattice tab: 10_gui/02_lattice_tab.md
@@ -179,6 +180,7 @@ nav:
       - Numerics tab: 10_gui/04_convergence_tab.md
       - Matching tab: 10_gui/05_matching_tab.md
       - Surrogates tab: 10_gui/06b_surrogates_tab.md
+      - Param Study tab: 10_gui/06d_study_tab.md
       - Error Study tab: 10_gui/06_errors_tab.md
       - Failure Study tab: 10_gui/06c_failures_tab.md
       - Results tab: 10_gui/07_results_tab.md

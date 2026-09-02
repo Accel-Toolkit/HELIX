@@ -691,3 +691,58 @@ def test_stale_done_dialog_cannot_cancel_current_run(qapp):
     # THE regression: worker B must be untouched.
     assert not worker_b._stop_event.is_set()
     tab.deleteLater()
+
+
+def test_use_tick_engages_surrogate_in_i0_envelope_run(qapp, tmp_path):
+    """User-visible GUI regime: ticking a row's Use checkbox registers
+    the surrogate, and the NEXT 0 mA envelope run through the wrapped
+    cavity queries the NN (``nn_calls`` > 0).  Unticking restores the
+    RK4 result bit-identically."""
+    from PyQt6.QtCore import QSettings
+    QSettings.setPath(QSettings.Format.IniFormat,
+                      QSettings.Scope.UserScope, str(tmp_path))
+    import numpy as np
+    from pathlib import Path
+    from linac_gen.surrogates import registry as _reg
+    from linac_gen.tracking.envelope import EnvelopeSolver
+    from linac_gen_gui.interphase.state import AppState
+    from linac_gen_gui.interphase.tabs.surrogates_tab import SurrogatesTab
+    from tests.surrogates.test_envelope_full_matrix_seam import (
+        _lattice, _pinned_surrogate, _ref, INIT)
+
+    lat = _lattice()
+    cav = lat.elements[1]                       # the CAV3D FieldMap3D
+    M_pin = cav.fitted_matrix(_ref())
+    M_pin[0, 0] *= 1.02     # non-zero entry: differs from RK4 by design
+    surr = _pinned_surrogate(cav, M_pin)
+
+    _reg.clear()
+    try:
+        tab = SurrogatesTab(AppState())
+        tab._trained["CAV3D"] = (surr, Path(str(tmp_path)), surr.metadata)
+        tab._refresh_table()
+        assert tab._table.rowCount() == 1
+        cb = tab._table.cellWidget(0, 3)
+        assert not cb.isChecked()
+
+        base = EnvelopeSolver(lat, _ref(), dict(INIT), current=0.0).run()
+        assert surr.nn_calls == 0               # not registered yet
+
+        cb.setChecked(True)                     # -> _on_use_toggled
+        assert len(_reg.list_registered()) == 1
+        assert "0 mA" in tab._status.text()     # regime stated to the user
+
+        res = EnvelopeSolver(lat, _ref(), dict(INIT), current=0.0).run()
+        assert surr.nn_calls == 1
+        assert not np.array_equal(np.asarray(base.sigma_x),
+                                  np.asarray(res.sigma_x))
+
+        cb.setChecked(False)                    # -> unregister
+        assert len(_reg.list_registered()) == 0
+        res2 = EnvelopeSolver(lat, _ref(), dict(INIT), current=0.0).run()
+        assert surr.nn_calls == 1               # no further NN queries
+        assert np.array_equal(np.asarray(base.sigma_x),
+                              np.asarray(res2.sigma_x))
+        tab.deleteLater()
+    finally:
+        _reg.clear()

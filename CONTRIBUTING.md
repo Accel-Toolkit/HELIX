@@ -5,7 +5,7 @@ honesty outrank convenience.
 
 ## Ground rules
 
-- **Every change runs the full suite** (`pytest -q`, 3,600+ tests, zero
+- **Every change runs the full suite** (`pytest -q`, about 3,900 tests, zero
   failures expected) before a PR.
 - **Numerics changes need an external anchor**: compare against TraceWin
   output, an analytic identity, or a finite-difference check — never only

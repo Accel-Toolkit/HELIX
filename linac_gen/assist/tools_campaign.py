@@ -292,21 +292,31 @@ def _tuning_plan(ctx, knobs_json, objective, success_below=None,
             return None, _err(f"run carries no '{objective}'{hint}")
         return float(np.asarray(col)[-1]), env
 
+    handle = None
+
     def _rollback():
-        for elem, p, old, _new, _name in resolved:
-            setattr(elem, p, old)
+        # Through the context hook: headless = setattr restore; GUI =
+        # undo of the plan's own bus step (or a compensating command).
+        ctx.revert_param_changes(
+            handle, [(e, p, old) for e, p, old, _n, _nm in resolved],
+            label="Assistant tuning plan")
 
     m0 = None
     if measure_before:
         m0, env0 = _run_and_read()
         if m0 is None:
             return env0
-    for elem, p, _old, new, _name in resolved:
-        setattr(elem, p, new)
+    # ONE hook call for all knobs → one undo step in the GUI.
+    handle = ctx.apply_param_changes(
+        [(e, p, new) for e, p, _o, new, _nm in resolved],
+        label="Assistant tuning plan")
     try:
         m1, env1 = _run_and_read()
     except Exception:
-        _rollback()
+        try:
+            _rollback()
+        except Exception:                                   # noqa: BLE001
+            pass                # never mask the original exception
         raise
     if m1 is None:
         _rollback()

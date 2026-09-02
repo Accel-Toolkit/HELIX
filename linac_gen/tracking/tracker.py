@@ -363,6 +363,12 @@ class Tracker:
         # guessing from a checkbox.
         try:
             self.recorder.periodic_phase = self._periodic_phase
+            # Run current [mA]: the CONFIGURED beam current (an SC-off
+            # run at 5 mA records 5.0 — the stale-banner check detects
+            # config drift, not space-charge strength).  None = unknown.
+            _cur = getattr(self.beam, "current", None)
+            self.recorder.current_mA = (None if _cur is None
+                                        else float(_cur))
         except Exception:                                   # noqa: BLE001
             pass        # custom/null recorders need not carry provenance
         if self._periodic_phase:
@@ -906,8 +912,11 @@ class Tracker:
         """
         # M7 hook: if MP-engagement is on AND a surrogate is registered
         # for this element, route the per-substep `track_rk4` calls
-        # through the surrogate's hybrid linear-anchor + RK4-residual
-        # path.  Per-element decisions (length, n_steps, isinstance
+        # through the surrogate: a safe delegate to the wrapped element
+        # by default (bit-identical), or the linear-matrix fast path
+        # when the registry fast-path flag is also on (no hybrid
+        # RK4-residual mode exists; see SurrogateFieldMap.track_rk4).
+        # Per-element decisions (length, n_steps, isinstance
         # type checks, .scc/.field_data attributes) still come from
         # the original lattice element -- only the per-substep tracking
         # call is swapped, mirroring the envelope hook's pattern.

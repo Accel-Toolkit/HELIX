@@ -27,7 +27,7 @@ jobs:
           pip install -e ".[dev]"
       - name: Run the core suite
         # GUI (PyQt6) and torch-heavy dirs are exercised in the full local
-        # suite (3,600+ tests); CI gates the pure-Python physics core.
+        # suite (about 3,900 tests); CI gates the pure-Python physics core.
         run: |
           pytest tests/core tests/elements tests/io tests/matching tests/assist tests/pic/test_openmp_single_runtime.py -q
 
@@ -54,3 +54,32 @@ jobs:
       - name: Run the core suite
         run: |
           pytest tests/core tests/elements tests/io tests/matching tests/assist tests/pic/test_openmp_single_runtime.py -q
+
+  windows:
+    name: Core suite + setup.bat (Windows)
+    runs-on: windows-latest
+    # Windows minutes bill 2x on PRIVATE repos: skip PR events there
+    # (pushes to master still run); unrestricted once the repo is
+    # public.  This job doubles as the real-machine test of setup.bat,
+    # which cannot be executed from the maintainer's macOS box.
+    if: github.event.repository.private == false || github.event_name != 'pull_request'
+    timeout-minutes: 60
+    env:
+      # fail-hard: a broken MSVC kernel build (vcomp default,
+      # /fp:precise) must FAIL CI, not degrade to pure Python.
+      LINAC_GEN_REQUIRE_CPP: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: One-click setup (setup.bat, end to end)
+        shell: cmd
+        run: call setup.bat
+      - name: Install dev extras into the setup venv
+        shell: cmd
+        run: .venv\Scripts\python -m pip install -e ".[dev]"
+      - name: Run the core suite (same selection as ubuntu)
+        shell: cmd
+        run: .venv\Scripts\python -m pytest tests/core tests/elements tests/io tests/matching tests/assist tests/pic/test_openmp_single_runtime.py -q

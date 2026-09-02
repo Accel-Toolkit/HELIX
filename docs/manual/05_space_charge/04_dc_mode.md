@@ -134,7 +134,9 @@ LEBT-only agreement is 0.2 % either way, and the energy ramp is
 identical in both modes (exit 1955.72 vs TW 1955.77 keV).
 
 ```python
-res = EnvelopeSolver(lat, ref, init, current=5.0,
+from linac_gen.tracking.envelope import EnvelopeSolver
+
+res = EnvelopeSolver(lattice, ref, initial_twiss, current=5.0,
                      rfq_dc_envelope=True).run()   # TW-comparable
 ```
 

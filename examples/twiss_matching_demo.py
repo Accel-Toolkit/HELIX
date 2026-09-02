@@ -91,7 +91,7 @@ def main():
     print(f"  status   : {'OK' if result.success else 'FAILED'}")
     print(f"  iters    : {result.n_iter}")
     print(f"  cost     : {result.cost:.3e}")
-    for var, x0, xf in zip(result.variables, result.x0, result.x_final):
+    for var, _col, x0, xf in result.rows():
         print(f"    {var.label:<22s}  {x0:>10.4g}  →  {xf:<10.4g}")
 
     res_after = _run_envelope(lat_after, cfg_after)

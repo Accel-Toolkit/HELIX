@@ -3008,16 +3008,22 @@ class _PhaseAdvancePopup(_PopupPlot):
 
         # ---- Stale-results banner ---------------------------------
         # Compare the current beam_config.current against the current
-        # that was used to produce the envelope results.  If they
-        # differ, the σ curves don't reflect the user's latest input —
-        # warn explicitly so the user knows to press Ctrl+R.
+        # that was used to produce the results (envelope solver, MP
+        # tracker and backtracker all record it; saved files carry it).
+        # If they differ, the σ curves don't reflect the user's latest
+        # input — warn explicitly so the user knows to press Ctrl+R.
+        # None-aware: a result whose run current is unknown (hand-built
+        # recorder, openPMD import) must never banner; 0.0 is data.
         if results is not None:
-            res_I = float(getattr(results, "current_mA", 0.0))
-            cfg_I = float(getattr(cfg, "current", res_I))
-            if abs(res_I - cfg_I) > 1e-6:
+            from linac_gen.diagnostics.recorder import run_current_mA
+            res_I = run_current_mA(results)
+            cfg_I = getattr(cfg, "current", None)
+            if (res_I is not None and cfg_I is not None
+                    and abs(res_I - float(cfg_I)) > 1e-6):
                 notes.append(
                     f"⚠ STALE: σ run at {res_I:.3f} mA, "
-                    f"beam_config now {cfg_I:.3f} mA — press Ctrl+R to re-run"
+                    f"beam_config now {float(cfg_I):.3f} mA "
+                    f"— press Ctrl+R to re-run"
                 )
 
         # ---- Beam σ(s) — only if envelope results exist -----------
@@ -3802,13 +3808,17 @@ class _TuneDepressionPopup(_PopupPlot):
             notes.append("skipped — " + " / ".join(skipped))
         if coupled_msg:
             notes.append("⚠ " + coupled_msg)
-        # Stale-results banner.
-        res_I = float(getattr(results, "current_mA", 0.0))
-        cfg_I = float(getattr(cfg, "current", res_I))
-        if abs(res_I - cfg_I) > 1e-6:
+        # Stale-results banner.  None-aware (see the phase-advance
+        # popup's twin block): banner only when BOTH the run current and
+        # the config current are known and differ; 0.0 is data.
+        from linac_gen.diagnostics.recorder import run_current_mA
+        res_I = run_current_mA(results)
+        cfg_I = getattr(cfg, "current", None)
+        if (res_I is not None and cfg_I is not None
+                and abs(res_I - float(cfg_I)) > 1e-6):
             notes.append(
                 f"⚠ STALE: σ run at {res_I:.3f} mA, "
-                f"beam_config now {cfg_I:.3f} mA — Ctrl+R to re-run"
+                f"beam_config now {float(cfg_I):.3f} mA — Ctrl+R to re-run"
             )
         if mismatch_msg:
             notes.append(f"⚠ {mismatch_msg} — η unreliable for unmatched beams")
@@ -5278,9 +5288,15 @@ class _ApertureLossPopup(_PopupPlot):
                 self._ap_y_neg.setData(s_mm, -ry)
             except Exception:
                 pass
-        # Per-particle loss table from the recorder's beam reference.
+        # Per-particle loss table: prefer the results-level attachment
+        # (present on live MP runs AND runs reloaded from HDF5 — the
+        # beam reference below exists only on live runs, so reloaded
+        # runs used to show "No losses recorded" despite having them).
         beam = getattr(results, "beam", None) if results is not None else None
-        table = getattr(beam, "loss_table", None) if beam is not None else None
+        table = getattr(results, "loss_table", None) \
+            if results is not None else None
+        if (table is None or len(table) == 0) and beam is not None:
+            table = getattr(beam, "loss_table", None)
         self._summary.clear()
         if table is None or len(table) == 0:
             for sc in (self._loss_x, self._loss_y):
@@ -5296,18 +5312,178 @@ class _ApertureLossPopup(_PopupPlot):
         elem = np.asarray(table["element_name"]).astype(str)
         self._loss_x.setData(s_loss, x_loss)
         self._loss_y.setData(s_loss, y_loss)
-        # Group by element.
-        from collections import Counter
-        counts = Counter(elem.tolist())
+        # Group by element — with beam power in WATTS when the average
+        # current is known (energies at the LOSS point; peak current ×
+        # duty from the beam config, each launched macroparticle
+        # carrying I_avg/n_macro).
+        n_macro = int(getattr(results, "n_macro", 0) or
+                      (int(beam.lost.size) if beam is not None else 0))
+        cfg = self._state.beam_config
+        cur = float(getattr(cfg, "current", 0.0) or 0.0) if cfg else 0.0
+        duty = float(getattr(cfg, "duty_cycle", 100.0) or 100.0) \
+            if cfg else 100.0
         n_total = int(len(table))
-        for name, n in sorted(counts.items(), key=lambda kv: -kv[1]):
-            pct = 100.0 * n / max(n_total, 1)
-            self._summary.addItem(f"{name:<28} {n:>6}  ({pct:5.1f} %)")
+        power_txt = ""
+        if n_macro > 0 and cur > 0:
+            from linac_gen.analysis.loss_power import (loss_power_profile,
+                                                       loss_power_table)
+            tab = loss_power_table(table, current_mA=cur, duty_pct=duty,
+                                   n_macro=n_macro)
+            for r in tab:
+                pct = 100.0 * int(r["n_lost"]) / max(n_total, 1)
+                w = float(r["watts"])
+                w_str = (f"{w/1e3:.2f} kW" if w >= 1e3 else f"{w:.3g} W")
+                self._summary.addItem(
+                    f"{str(r['element_name']):<28} {int(r['n_lost']):>6}"
+                    f"  ({pct:5.1f} %)  {w_str:>10}")
+            _, wpm = loss_power_profile(table, current_mA=cur,
+                                        duty_pct=duty, n_macro=n_macro,
+                                        s_end_mm=float(s_loss.max()) + 1.0)
+            lost_w = float(tab["watts"].sum())
+            lost_str = (f"{lost_w/1e3:.2f} kW" if lost_w >= 1e3
+                        else f"{lost_w:.3g} W")
+            power_txt = (f"  |  lost {lost_str} at I_avg="
+                         f"{cur*duty/100.0:.3g} mA, peak "
+                         f"{float(wpm.max()):.3g} W/m (1 W/m hands-on)")
+        else:
+            from collections import Counter
+            counts = Counter(elem.tolist())
+            for name, n in sorted(counts.items(), key=lambda kv: -kv[1]):
+                pct = 100.0 * n / max(n_total, 1)
+                self._summary.addItem(f"{name:<28} {n:>6}  ({pct:5.1f} %)")
         self._status.setText(
-            f"{n_total} particle losses across {len(counts)} elements "
+            f"{n_total} particle losses across "
+            f"{len(np.unique(elem))} elements "
             f"(s ∈ [{float(s_loss.min()):.0f}, "
-            f"{float(s_loss.max()):.0f}] mm)"
+            f"{float(s_loss.max()):.0f}] mm)" + power_txt
         )
+
+
+class _LossPowerPopup(_PopupPlot):
+    """Beam-loss power: W/m profile vs s + exit-plane power density.
+
+    Top: lineal loss density in 1 m bins (energies at the LOSS point,
+    average current = peak × duty from the beam config) with the ~1 W/m
+    hands-on-maintenance criterion drawn as a dashed reference.
+    Bottom: W/cm² heat map of the SURVIVING beam on the terminal plane
+    (dump face / window / foil) — needs the final particle distribution,
+    so it fills on live MP runs (reloaded runs keep the W/m profile).
+    """
+
+    def __init__(self, parent, state: AppState):
+        super().__init__(parent,
+                         "Loss power  —  W/m profile and exit-plane W/cm²",
+                         size=(1150, 780))
+        self._state = state
+        v = QVBoxLayout(self); v.setContentsMargins(12, 12, 12, 12); v.setSpacing(6)
+
+        self._p = _mk_plot("loss density", "W/m")
+        self._p.setLabel("bottom", "s", units="mm")
+        self._curve = self._p.plot(
+            stepMode="center", fillLevel=0.0, brush=(248, 113, 113, 90),
+            pen=pg.mkPen("#f87171", width=1.4))
+        self._handson = pg.InfiniteLine(
+            pos=1.0, angle=0,
+            pen=pg.mkPen("#facc15", width=1.2,
+                         style=Qt.PenStyle.DashLine))
+        self._p.addItem(self._handson)
+        v.addWidget(self._p, stretch=3)
+        self.attach_lattice_strip(self._p)
+
+        self._plane = _mk_plot("y", "mm")
+        self._plane.setLabel("bottom", "x", units="mm")
+        self._plane.setAspectLocked(True)
+        self._image = pg.ImageItem(axisOrder="row-major")
+        self._plane.addItem(self._image)
+        from linac_gen_gui.interphase.plots.plot_style import _density_colormap
+        self._image.setLookupTable(
+            _density_colormap().getLookupTable(0.0, 1.0, 256))
+        v.addWidget(self._plane, stretch=4)
+
+        self._status = QLabel("")
+        self._status.setWordWrap(True)
+        v.addWidget(self._status)
+
+    def refresh(self, results):
+        self._curve.setData([], [])
+        self._image.clear()
+        if results is None:
+            self._status.setText("No results.")
+            return
+        beam = getattr(results, "beam", None)
+        table = getattr(results, "loss_table", None)
+        if (table is None or len(table) == 0) and beam is not None:
+            table = getattr(beam, "loss_table", None)
+        n_macro = int(getattr(results, "n_macro", 0) or
+                      (int(beam.lost.size) if beam is not None else 0))
+        cfg = self._state.beam_config
+        cur = float(getattr(cfg, "current", 0.0) or 0.0) if cfg else 0.0
+        duty = float(getattr(cfg, "duty_cycle", 100.0) or 100.0) \
+            if cfg else 100.0
+        if n_macro <= 0:
+            self._status.setText(
+                "No per-particle loss record.  Envelope runs track no "
+                "losses — use a multi-particle run.  Result files "
+                "written before HELIX stored the loss record also lack "
+                "it: re-run to populate this view.")
+            return
+        if cur <= 0:
+            self._status.setText(
+                "Beam current is zero — loss power is undefined.  Set a "
+                "beam current on the Beam tab and re-run.")
+            return
+        from linac_gen.analysis.loss_power import (loss_power_profile,
+                                                   loss_power_table,
+                                                   plane_power_density)
+        parts = []
+        if table is not None and len(table):
+            # Bin to the FULL span: histogram range must cover every
+            # recorded loss, not just the last recorder step, or losses
+            # past the end are silently dropped from the profile.
+            s_arr = np.asarray(getattr(results, "s", []), dtype=float)
+            s_end = max(float(s_arr[-1]) if s_arr.size else 0.0,
+                        float(np.asarray(table["s"]).max())) + 1.0
+            centers, wpm = loss_power_profile(
+                table, current_mA=cur, duty_pct=duty, n_macro=n_macro,
+                s_end_mm=s_end)
+            half = 0.5 * (centers[1] - centers[0]) if centers.size > 1 \
+                else 500.0
+            edges = np.concatenate([centers - half, [centers[-1] + half]])
+            self._curve.setData(edges, wpm)
+            # Exact total from the table (binning-independent).
+            lost_w = float(loss_power_table(
+                table, current_mA=cur, duty_pct=duty,
+                n_macro=n_macro)["watts"].sum())
+            parts.append(f"lost {lost_w/1e3:.2f} kW" if lost_w >= 1e3
+                         else f"lost {lost_w:.3g} W")
+            parts.append(f"peak {float(wpm.max()):.3g} W/m "
+                         "(dashed line: 1 W/m hands-on)")
+        else:
+            parts.append("no losses recorded")
+        # Exit-plane power density from the surviving beam (live runs).
+        alive = beam.alive_particles if beam is not None else None
+        w_hist = getattr(results, "ref_w_kin", None)
+        if alive is not None and len(alive) and w_hist is not None \
+                and len(w_hist):
+            # PER-PARTICLE energies (W_ref + ΔW, column 5): truthful when
+            # the bunch carries an energy offset from the reference.
+            w_ref = float(np.asarray(w_hist)[-1])
+            H, xe, ye = plane_power_density(
+                alive[:, 0], alive[:, 2],
+                energy_mev=w_ref + alive[:, 5],
+                current_mA=cur, duty_pct=duty, n_macro=n_macro, bins=64)
+            self._image.setImage(H.T, autoLevels=True)
+            self._image.setRect(pg.QtCore.QRectF(
+                float(xe[0]), float(ye[0]),
+                float(xe[-1] - xe[0]), float(ye[-1] - ye[0])))
+            parts.append(f"exit plane peak {float(H.max()):.3g} W/cm² "
+                         f"({len(alive)} macroparticles)")
+        else:
+            parts.append("exit-plane map needs the final distribution "
+                         "(live MP run)")
+        self._status.setText(
+            f"I_avg = {cur*duty/100.0:.3g} mA ({cur:g} mA × {duty:g}% "
+            "duty)  |  " + "  |  ".join(parts))
 
 
 class _IbsPopup(_PopupPlot):
@@ -5534,9 +5710,9 @@ class _EnsemblePopup(_PopupPlot):
         v = QVBoxLayout(self); v.setContentsMargins(12, 12, 12, 12); v.setSpacing(6)
 
         banner = QLabel(
-            "Mean ± 1σ across all Monte Carlo seeds.  Bottom panel: final "
-            "transmission histogram.  Run the Error Study tab first to populate "
-            "this view."
+            "Mean ± 1σ across all Monte Carlo seeds (dotted line: maximum "
+            "over seeds).  Bottom panel: final transmission histogram.  "
+            "Run the Error Study tab first to populate this view."
         )
         banner.setStyleSheet(
             f"color:{theme.TEXT_2}; font-size:11px; padding:4px 8px;"
@@ -5554,6 +5730,9 @@ class _EnsemblePopup(_PopupPlot):
                                                           style=Qt.PenStyle.DashLine))
         self._sx_band_lo = self._p_sx.plot(pen=pg.mkPen("#60a5fa", width=1,
                                                           style=Qt.PenStyle.DashLine))
+        self._sx_max = self._p_sx.plot(pen=pg.mkPen("#f87171", width=1,
+                                                    style=Qt.PenStyle.DotLine),
+                                       name="max over seeds")
         v.addWidget(self._p_sx, stretch=1)
 
         # Middle: σ_y
@@ -5564,6 +5743,9 @@ class _EnsemblePopup(_PopupPlot):
                                                           style=Qt.PenStyle.DashLine))
         self._sy_band_lo = self._p_sy.plot(pen=pg.mkPen("#a3e635", width=1,
                                                           style=Qt.PenStyle.DashLine))
+        self._sy_max = self._p_sy.plot(pen=pg.mkPen("#f87171", width=1,
+                                                    style=Qt.PenStyle.DotLine),
+                                       name="max over seeds")
         v.addWidget(self._p_sy, stretch=1)
 
         # Bottom: transmission histogram
@@ -5585,15 +5767,21 @@ class _EnsemblePopup(_PopupPlot):
         study = getattr(self._state, "error_study_results", None)
         if study is None or getattr(study, "n_seeds", 0) == 0:
             self._sx_mean.setData([], []); self._sx_band_hi.setData([], [])
-            self._sx_band_lo.setData([], [])
+            self._sx_band_lo.setData([], []); self._sx_max.setData([], [])
             self._sy_mean.setData([], []); self._sy_band_hi.setData([], [])
-            self._sy_band_lo.setData([], [])
+            self._sy_band_lo.setData([], []); self._sy_max.setData([], [])
             self._th_bars.setOpts(x=[], height=[])
             self._summary.setText("No error study results — run the Error Study tab.")
             return
         try:
             sx_mean = study.mean("sigma_x"); sx_std = study.std("sigma_x")
             sy_mean = study.mean("sigma_y"); sy_std = study.std("sigma_y")
+            # Worst case over seeds (the manual's third TL;DR plot —
+            # maximum-excursion vs s).  percentile(·, 100) == np.max
+            # across recorders and shares the equal-length-array
+            # requirement mean()/std() already impose in this try-block.
+            sx_max = study.percentile("sigma_x", 100)
+            sy_max = study.percentile("sigma_y", 100)
             # Pull s from the first recorder (all seeds share the lattice
             # element list, hence identical s arrays).
             s = np.asarray(study._recorders[0].s, dtype=float)
@@ -5603,9 +5791,11 @@ class _EnsemblePopup(_PopupPlot):
         self._sx_mean.setData(s, sx_mean)
         self._sx_band_hi.setData(s, sx_mean + sx_std)
         self._sx_band_lo.setData(s, np.maximum(sx_mean - sx_std, 0.0))
+        self._sx_max.setData(s, sx_max)
         self._sy_mean.setData(s, sy_mean)
         self._sy_band_hi.setData(s, sy_mean + sy_std)
         self._sy_band_lo.setData(s, np.maximum(sy_mean - sy_std, 0.0))
+        self._sy_max.setData(s, sy_max)
 
         # Final transmission histogram.  Skip any seed whose recorder has an
         # empty transmission array (a degenerate/zero-step seed) so a single
@@ -7530,8 +7720,15 @@ def _build_series_fns(state) -> dict:
     from linac_gen.elements.ncells import NCells
 
     def _arr(results, name):
-        a = np.asarray(getattr(results, name, []) or [], dtype=float)
-        return a
+        # NEVER `x or []`: a numpy array's truth value raises, so every
+        # provider-based tile (power, aperture loss, dispersion, phase
+        # advance …) silently fell back to its "—" placeholder on runs
+        # RELOADED from HDF5/openPMD, whose fields are numpy arrays
+        # while a live recorder's are lists.  Test for None explicitly.
+        v = getattr(results, name, None)
+        if v is None or (not isinstance(v, np.ndarray) and not v):
+            v = []                      # preserves the old `or []` for
+        return np.asarray(v, dtype=float)   # every non-array input
 
     def _mass(results):
         m = float(getattr(results, "mass_mev", 0.0) or 0.0)
@@ -7653,6 +7850,35 @@ def _build_series_fns(state) -> dict:
             return np.zeros(s.size) if s.size else None
         return 100.0 - tr
 
+    def loss_power(results):
+        """Cumulative lost beam power [W] vs s — the tile footer is the
+        run's TOTAL lost power.  Needs a multi-particle run (per-particle
+        loss record) and a non-zero current; otherwise the card shows its
+        placeholder rather than a misleading zero."""
+        if results is None:
+            return None
+        beam = getattr(results, "beam", None)
+        table = getattr(results, "loss_table", None)
+        if (table is None or len(table) == 0) and beam is not None:
+            table = getattr(beam, "loss_table", None)
+        n_macro = int(getattr(results, "n_macro", 0) or
+                      (int(beam.lost.size) if beam is not None else 0))
+        cfg = state.beam_config if state is not None else None
+        cur = float(getattr(cfg, "current", 0.0) or 0.0) if cfg else 0.0
+        if table is None or len(table) == 0 or n_macro <= 0 or cur <= 0:
+            return None
+        duty = float(getattr(cfg, "duty_cycle", 100.0) or 100.0)
+        from linac_gen.analysis.loss_power import loss_power_profile
+        s_arr = _arr(results, "s")
+        s_end = max(float(s_arr[-1]) if s_arr.size else 0.0,
+                    float(np.asarray(table["s"]).max())) + 1.0
+        centers, wpm = loss_power_profile(table, current_mA=cur,
+                                          duty_pct=duty, n_macro=n_macro,
+                                          s_end_mm=s_end)
+        bin_m = (float(centers[1] - centers[0]) if centers.size > 1
+                 else 1000.0) * 1e-3
+        return centers, np.cumsum(wpm * bin_m)
+
     def _centroid_comp(results, comp):
         if results is None:
             return None
@@ -7713,6 +7939,7 @@ def _build_series_fns(state) -> dict:
         "divergence": divergence,
         "power": power,
         "aperture_loss": aperture_loss,
+        "loss_power": loss_power,
         "centroid": centroid,
         "long_offset": long_offset,
         "dispersion": dispersion,
@@ -7810,6 +8037,8 @@ _SECTIONS: list[tuple[str, list[tuple]]] = [
             "%",        "{:.2f}", "#f87171"),
         ("aperture_loss", "Aperture-profile losses", "collision", None,
             "%",        "{:.2f}", "#f97316"),
+        ("loss_power",  "Loss power (W/m · W/cm²)",  "collision", None,
+            "W",        "{:.2f}", "#ef4444"),
         ("ibs",         "Intra-beam stripping (H⁻)", "collision", None,
             "W",        "{:.2f}", "#fbbf24"),
         ("magstrip",    "Magnetic stripping (H⁻)",    "magnet",    None,
@@ -8174,6 +8403,7 @@ class ResultsTab(QWidget):
             elif key == "energy":  dlg = _EnergyPopup(self)
             elif key == "loss":    dlg = _LossPopup(self)
             elif key == "aperture_loss": dlg = _ApertureLossPopup(self, self.state)
+            elif key == "loss_power": dlg = _LossPowerPopup(self, self.state)
             elif key == "ibs":     dlg = _IbsPopup(self, self.state)
             elif key == "magstrip":dlg = _MagStripPopup(self, self.state)
             elif key == "ensemble":dlg = _EnsemblePopup(self, self.state)

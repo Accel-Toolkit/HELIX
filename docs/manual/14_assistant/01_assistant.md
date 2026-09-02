@@ -198,14 +198,22 @@ server you can still type `URL`, `model`, or `URL model` in one line
 (e.g. `http://localhost:11434/v1 qwen2.5`; a bare model name reuses the
 saved URL).  Actions that change
 session state flow through the app's normal state signals, so the tabs
-stay in sync.
+stay in sync.  Element edits (`set_element_param`, campaign SET steps,
+`tuning_plan`) go through the Lattice tab's command bus: each approved
+call is one **Undo** step (Ctrl+Z) and the unsaved-changes prompt lists
+it as *Assistant edit …*.  A `tuning_plan` whose window is missed
+undoes its own step, leaving the undo history exactly as it was.
 
 **Hands-free voice.**  Beyond hold-to-talk (the 🎤 button or **holding
 SPACE** with the input line unfocused), the **👂 HELIX** toggle keeps
 the microphone open — fully locally — and wakes the assistant when you
 say **"HELIX"** (a rising chime confirms; common mishearings are
 accepted, and detection pauses while the assistant itself speaks so it
-can never wake itself).  After it finishes *speaking* a reply to a
+can never wake itself).  The wake word must *address* the assistant —
+open your sentence with it ("Helix, …", "hey Helix …") or start fresh
+after a pause; merely *mentioning* HELIX mid-sentence while talking to
+someone else does not trigger it.  Garbled captures (Whisper looping
+on room noise) are discarded instead of becoming commands.  After it finishes *speaking* a reply to a
 voice turn — and after **every station of an active guided tour**, no
 matter how the tour was started — the mic reopens for ~10 s
 (`HELIX_FOLLOWUP_S`, 0 disables) — just keep talking ("next", "back",
@@ -266,8 +274,12 @@ always.
     notices, prints "microphone stream lost — reopening", and re-arms
     hands-free listening automatically; push-to-talk also falls back to
     its own fresh recording stream whenever the shared wake stream is
-    not running.  If voice still seems unresponsive, toggle **👂
-    HELIX** off and on again.
+    not running.  Two more self-healing triggers: any detected **system
+    sleep** proactively recycles the stream on wake-up (a post-sleep
+    stream can trickle just enough audio to evade the stall watchdog
+    while being effectively deaf), and a **held 🎤 that captures
+    nothing** reopens the stream immediately.  If voice still seems
+    unresponsive, toggle **👂 HELIX** off and on again.
 
 **Confirming by voice.**  When a compute/mutate confirmation appears
 with voice active, the assistant speaks a short echo and listens: say
@@ -365,7 +377,9 @@ deliberately bypassed once you approve the plan — the single ledger
 record carries the complete step trail.  `tuning_plan` is the cautious
 sibling: 1–8 knobs, a declared success window on an exit KPI, a
 verification run — and if the window is missed **every knob is restored
-bit-exact automatically**, stated in the echo up front.
+bit-exact automatically**, stated in the echo up front (in the GUI the
+restore is an Undo of the plan's own step, so a rolled-back plan sits
+on the Redo stack).
 
 **Analysis sandbox (`run_python`).**  The assistant can write and run
 short Python analysis code — fits, FFTs, custom plots — in an

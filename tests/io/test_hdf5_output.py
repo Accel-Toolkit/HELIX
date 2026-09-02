@@ -239,3 +239,109 @@ class TestLoadResultsHDF5:
         np.testing.assert_allclose(results["ref_w_kin"], np.array(rec.ref_w_kin))
         np.testing.assert_allclose(results["ref_beta"], np.array(rec.ref_beta))
         np.testing.assert_allclose(results["ref_gamma"], np.array(rec.ref_gamma))
+
+
+class TestRunCurrent:
+    """Run-current provenance on the envelope group (fix item
+    tune-depression-stale-banner).
+
+    Writer: ``current_mA`` is written ONLY when the run current is known
+    (finite), and a boolean ``run_current_known`` marker is always
+    written — a legacy MP file's 0.0 sentinel is otherwise
+    indistinguishable from a genuine 0 mA envelope run.
+
+    Loader: legacy files (no marker) carrying 0.0 are treated as
+    unknown and fall back to ``beam_config/attrs['current']``; a
+    new-format 0.0 with the marker is trusted (genuine 0 mA is data);
+    the transport-only marker never appears in the returned dict.
+    """
+
+    @staticmethod
+    def _cfg(current):
+        from types import SimpleNamespace
+        return SimpleNamespace(current=current, n_particles=50)
+
+    @staticmethod
+    def _make_legacy(fp):
+        """Rewrite a saved file to the pre-fix on-disk form."""
+        with h5py.File(fp, "a") as f:
+            env = f["envelope"]
+            if "run_current_known" in env.attrs:
+                del env.attrs["run_current_known"]
+            env.attrs["current_mA"] = 0.0
+
+    def test_writer_omits_current_when_unknown_and_marks_known(self, tmp_path):
+        rec = make_recorder_with_data()          # bare recorder: unknown
+        fp = str(tmp_path / "unknown.h5")
+        save_results_hdf5(rec, fp)
+        with h5py.File(fp, "r") as f:
+            assert "current_mA" not in f["envelope"].attrs
+            assert bool(f["envelope"].attrs["run_current_known"]) is False
+
+    @pytest.mark.parametrize("value", [5.0, 0.0])
+    def test_writer_persists_known_current(self, tmp_path, value):
+        rec = make_recorder_with_data()
+        rec.current_mA = value
+        fp = str(tmp_path / "known.h5")
+        save_results_hdf5(rec, fp)
+        with h5py.File(fp, "r") as f:
+            assert float(f["envelope"].attrs["current_mA"]) == value
+            assert bool(f["envelope"].attrs["run_current_known"]) is True
+
+    def test_writer_resolves_current_from_attached_beam(self, tmp_path):
+        """MP recorder with only ``.beam`` attached persists correctly."""
+        from types import SimpleNamespace
+        rec = make_recorder_with_data()
+        rec.beam = SimpleNamespace(current=7.0)
+        fp = str(tmp_path / "beam_only.h5")
+        save_results_hdf5(rec, fp)
+        with h5py.File(fp, "r") as f:
+            assert float(f["envelope"].attrs["current_mA"]) == 7.0
+            assert bool(f["envelope"].attrs["run_current_known"]) is True
+
+    def test_loader_legacy_zero_falls_back_to_beam_config_current(self, tmp_path):
+        fp = str(tmp_path / "legacy_mp.h5")
+        save_results_hdf5(make_recorder_with_data(), fp,
+                          beam_config=self._cfg(60.0))
+        self._make_legacy(fp)
+        loaded = load_results_hdf5(fp)
+        assert loaded["current_mA"] == 60.0
+        assert "run_current_known" not in loaded
+
+    def test_loader_legacy_zero_without_beam_config_is_unknown(self, tmp_path):
+        fp = str(tmp_path / "legacy_nocfg.h5")
+        save_results_hdf5(make_recorder_with_data(), fp)
+        self._make_legacy(fp)
+        loaded = load_results_hdf5(fp)
+        assert "current_mA" not in loaded
+        assert "run_current_known" not in loaded
+
+    def test_loader_trusts_marker_for_genuine_zero(self, tmp_path):
+        """New-format envelope file at a genuine 0 mA stays 0.0 even when
+        the dump-time beam_config carried a different current."""
+        rec = make_recorder_with_data()
+        rec.current_mA = 0.0
+        fp = str(tmp_path / "genuine_zero.h5")
+        save_results_hdf5(rec, fp, beam_config=self._cfg(60.0))
+        loaded = load_results_hdf5(fp)
+        assert loaded["current_mA"] == 0.0
+        assert "run_current_known" not in loaded
+
+    def test_loader_known_value_wins_over_beam_config(self, tmp_path):
+        rec = make_recorder_with_data()
+        rec.current_mA = 5.0
+        fp = str(tmp_path / "known_vs_cfg.h5")
+        save_results_hdf5(rec, fp, beam_config=self._cfg(60.0))
+        loaded = load_results_hdf5(fp)
+        assert loaded["current_mA"] == 5.0
+        assert "run_current_known" not in loaded
+
+    def test_loader_unknown_with_beam_config_resolves_to_config(self, tmp_path):
+        """New-format file from a hand-built recorder (marker False):
+        the dump-time config current is the best available answer."""
+        fp = str(tmp_path / "unknown_cfg.h5")
+        save_results_hdf5(make_recorder_with_data(), fp,
+                          beam_config=self._cfg(60.0))
+        loaded = load_results_hdf5(fp)
+        assert loaded["current_mA"] == 60.0
+        assert "run_current_known" not in loaded

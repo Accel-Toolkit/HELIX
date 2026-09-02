@@ -84,8 +84,13 @@ unrelated generator, it reproduces that deck's own −90 → −28 ramp to
 **+3.0 ± 1.0°** and flags nothing.
 
 ```python
+from linac_gen.io.tracewin_parser import parse_tracewin
 from linac_gen.io.rfq_phase_repair import (inconsistent_phase_cells,
                                            repair_rfq_phases)
+
+# the synthetic demo deck: proton, 352.21 MHz (examples/rfq_demo/README.md)
+lattice, _ = parse_tracewin("examples/rfq_demo/rfq_demo.dat")
+mass_MeV, charge, freq_MHz = 938.272088, 1.0, 352.21
 # read-only: which cards disagree with their own cell lengths?
 for f in inconsistent_phase_cells(lattice, mass_MeV, charge, freq_MHz):
     print(f.index, f.phi_card_deg, "->", f.phi_derived_deg)
@@ -356,8 +361,9 @@ DC→bunched transition fires at the first RFQ cell — physically early
 (the beam stays quasi-DC through the shaper) — but a controlled
 experiment keeping the DC 2-D kick through the whole line changed
 transmission by only 0.1 point at 5 mA, so the early flip is benign
-at PIP-II current; neighbour-bunch periodic images (TraceWin PICNIR
-practice) are deferred on that evidence.  With SC on, the captured
+at PIP-II current; neighbour-bunch images are handled by
+`SpaceChargeConfig.train_images` (see *Bunch-train space charge*
+below).  With SC on, the captured
 exit emittances land at 0.170/0.159 π·mm·mrad vs the PIP2IT
 measurement 0.17/0.16.  When quoting exit bunch length, use the
 *wrapped* Δφ (±n·360° offsets of barely-captured particles inflate
@@ -477,7 +483,7 @@ automatically uses the vane profile when the deck's `RFQ_GEOM` file
 exists (deck-relative path, loud log line), and **envelope/matrix**
 runs always stay on the cards.  Control it per run:
 
-```python
+```{.python .skip}
 Simulation(lat, beam)                          # "auto" (default)
 Simulation(lat, beam, rfq_geometry="off")      # classic card model
 Simulation(lat, beam, rfq_geometry="per_plane")  # force a mode
@@ -488,7 +494,7 @@ bit-identical to previous releases.  Explicit arming is also
 available and then applies to **all** subsequent runs on that lattice,
 including envelope:
 
-```python
+```{.python .skip}
 from linac_gen.io.rfq_geometry_helper import apply_rfq_geometry
 
 lat, meta = parse_tracewin("linac.dat")
@@ -532,7 +538,8 @@ slice feels its ±1 neighbours — physics Toutatis gets for free from
 its periodic solve.  `SpaceChargeConfig.train_images` (default
 `None` = automatic) makes the 3-D PIC deposit the neighbouring
 periods whenever the beam carries the `bunch_train` marker **and** is
-still long (σφ ≥ 30°); once bunched, the isolated solve is both more
+still long (core σφ ≥ 35°, released once it falls to ≤ 25°); once
+bunched, the isolated solve is both more
 accurate on the grid and TraceWin's own downstream semantics.  Beams
 born bunched are never affected.
 

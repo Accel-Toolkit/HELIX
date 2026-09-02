@@ -219,3 +219,37 @@ def test_headline_core_is_independent_of_assist(tmp_path):
     out = subprocess.run([sys.executable, "-c", code],
                          capture_output=True, text=True, timeout=120)
     assert "CORE-OK" in out.stdout, out.stderr
+
+
+def test_default_param_hooks_are_plain_setattr(ctx):
+    """Headless regime (CLI / MCP / replay): the WorkContext mutation
+    hooks are exactly a setattr loop — no bus, no undo stack — and a
+    hook that refuses makes set_element_param report error, never ok."""
+    from linac_gen.assist.tools import WorkContext
+
+    assert not hasattr(ctx, "bus")
+    qf = ctx.lattice.elements[0]
+    handle = ctx.apply_param_changes([(qf, "gradient", 7.25)], label="x")
+    assert handle is None
+    assert qf.gradient == 7.25
+    ctx.revert_param_changes(None, [(qf, "gradient", 5.0)])
+    assert qf.gradient == 5.0                      # == : bit-exact
+
+    env = _call("set_element_param", ctx, element_name="QF",
+                param="gradient", value=7.5)
+    assert env["status"] == "ok"
+    assert env["data"] == {"element": "QF", "param": "gradient",
+                           "old": 5.0, "new": 7.5}
+    ctx.revert_param_changes(None, [(qf, "gradient", 5.0)])
+
+    class _Refusing(WorkContext):
+        def apply_param_changes(self, changes, label=""):
+            raise RuntimeError("gui busy")
+
+    rctx = _Refusing(calc_dir=ctx.calc_dir)
+    rctx.set_lattice(ctx.lattice, "<test-lattice>")
+    env = _call("set_element_param", rctx, element_name="QF",
+                param="gradient", value=9.0)
+    assert env["status"] == "error"
+    assert "gui busy" in env["data"]["message"]
+    assert qf.gradient == 5.0                      # nothing applied

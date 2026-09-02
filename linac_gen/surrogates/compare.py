@@ -5,10 +5,15 @@ registry between the two runs.  Returns a :class:`CompareReport`
 dataclass with the σ curves, end-of-line table, wall-clock, scope-
 compliance flag, and helpers for the CLI / GUI (M5, M6).
 
-Reusable from CLI and GUI; until slice-aware surrogates exist
-(SurrogateFieldMap currently delegates ``fitted_matrix_slice`` to
-the wrapped element), the diff will be near-zero — the framework is
-ready for the speedup that lands with the next training milestone.
+Reusable from CLI and GUI.  Regimes: at ``current = 0`` (no per-sub-
+step recording) the envelope's pure-linear path serves each surrogated
+FieldMap's FULL-element matrix from the NN — expect a real speedup and
+non-zero diffs at NN accuracy.  At ``current > 0`` the SC bundle walk
+requests partial slices, which ``SurrogateFieldMap.fitted_matrix_slice``
+delegates to the wrapped RK4 — zero NN queries, near-zero diff, no
+speedup (by design).  ``CompareReport.nn_calls`` counts the NN full-
+element queries of the surrogate run so 'registered' is never mistaken
+for 'engaged'.
 """
 from __future__ import annotations
 
@@ -45,6 +50,11 @@ class CompareReport:
     scope_ok: bool                         # True if every query was in scope
     surrogate_names: list[str]             # names of engaged surrogates
     notes: list[str] = field(default_factory=list)
+    # NN full-element queries made during the surrogate run (delta of
+    # the engaged surrogates' cumulative ``nn_calls``).  0 with
+    # surrogates engaged means the run never consulted the NN (e.g.
+    # current > 0: SC bundles slice-walk RK4).
+    nn_calls: int = 0
 
     def speedup(self) -> float:
         return (self.wall_baseline_s / self.wall_surrogate_s
@@ -78,6 +88,7 @@ class CompareReport:
             lines.append(f"  {lbl:>10s}  baseline={base:11.4e}  "
                          f"surrogate={srr:11.4e}  rel.diff={rel:.2e}  {unit}")
         lines.append(f"Worst rel.diff: {self.worst_rel_diff():.2e}")
+        lines.append(f"NN full-element queries: {self.nn_calls}")
         lines.append(f"Scope OK: {self.scope_ok}")
         if self.notes:
             lines.append("Notes: " + "; ".join(self.notes))
@@ -150,17 +161,32 @@ def compare_envelope(
                 registry._REGISTRY.update(saved_registry)
                 registry._BY_NAME.update(saved_by_name)
             engaged_names = [k[1] for k in registry.list_registered()]
+            # Snapshot the engaged surrogates' cumulative NN counters so
+            # the report can carry the per-run delta (the counter itself
+            # is cumulative across modes for the object's lifetime).
+            engaged = [registry.get(lh, ek)
+                       for (lh, ek) in registry.list_registered()]
+            n0 = sum(getattr(s, "nn_calls", 0) for s in engaged)
 
             t0 = time.time()
             res_s = _envelope_run(lattice, ref, init_twiss, current,
                                   should_abort)
             wall_s = time.time() - t0
+            nn_calls = sum(getattr(s, "nn_calls", 0)
+                           for s in engaged) - n0
         finally:
             # Restore the original registry state regardless of outcome.
             registry._REGISTRY.clear()
             registry._BY_NAME.clear()
             registry._REGISTRY.update(saved_registry)
             registry._BY_NAME.update(saved_by_name)
+            # A raw dict restore does not bump the registry generation
+            # the way registry.clear() does, so per-element pinned
+            # decisions (element._surr_binding) created during the
+            # surrogate leg would stay valid and a LATER 0 mA run could
+            # silently serve this compare's surrogate instead of the
+            # one the restored registry reports.  Invalidate them.
+            registry._GENERATION[0] += 1
 
     s_b, sig_b = _extract(res_b)
     _, sig_s = _extract(res_s)
@@ -175,6 +201,12 @@ def compare_envelope(
     notes: list[str] = []
     if not engaged_names:
         notes.append("no surrogate engaged (registry empty)")
+    elif nn_calls == 0:
+        notes.append(
+            "surrogates registered but never queried — at current > 0 "
+            "the envelope slice-walks FieldMaps with RK4; surrogates "
+            "serve the full-element matrix at current = 0 only (or "
+            "every query fell outside the trained scope)")
     return CompareReport(
         s=s_b,
         sigma_baseline=sig_b,
@@ -187,6 +219,7 @@ def compare_envelope(
                           # a whole is always scope-correct.
         surrogate_names=engaged_names,
         notes=notes,
+        nn_calls=nn_calls,
     )
 
 
@@ -338,10 +371,14 @@ def compare_mp(
 
     Baseline: registry temporarily cleared AND MP-engagement off
     -> pure wrapped-RK4 throughout.
-    Surrogate: surrogates registered, MP-engagement on, each
-    surrogate's ``residual_n_steps`` set to the caller's value
-    -> hybrid linear-anchor + RK4-residual path engaged in
-    ``tracker._track_field_map``.
+    Surrogate: surrogates registered, MP-engagement on.  With the
+    registry fast-path flag OFF the surrogate is a safe delegate
+    (bit-identical to the baseline); with it ON the linear-matrix fast
+    path runs (``SurrogateFieldMap.track_rk4``).  The flag is captured,
+    not toggled, so it applies to BOTH runs.  ``residual_n_steps`` is
+    set on each surrogate and restored afterwards, but it is RESERVED:
+    no tracking path reads it (the planned hybrid linear-anchor +
+    RK4-residual mode is not implemented).
 
     Whole-process registry + MP-flag state is restored after the
     call regardless of outcome, so this is safe to invoke from a
@@ -390,6 +427,10 @@ def compare_mp(
             registry._BY_NAME.clear()
             registry._REGISTRY.update(saved_registry)
             registry._BY_NAME.update(saved_by_name)
+            # See compare_envelope: the raw restore never bumps the
+            # generation, so pins created during the surrogate leg must
+            # be invalidated explicitly (clear() semantics).
+            registry._GENERATION[0] += 1
             registry.set_mp_enabled(saved_mp)
             if surrogates is not None:
                 for s in surrogates:

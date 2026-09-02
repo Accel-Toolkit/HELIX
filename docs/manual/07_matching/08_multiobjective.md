@@ -47,7 +47,7 @@ vs NSGA-II's ~200.
 
 ## Python API
 
-```python
+```{.python data-requires="pymoo"}
 from linac_gen.io.tracewin_parser import parse_tracewin
 from linac_gen.core.config import BeamConfig
 from linac_gen.matching.multiobjective import pareto_optimize
@@ -76,7 +76,7 @@ sharing a non-zero `link_group` collapse to a single column, so
 wide. When you write the front to CSV or a table, use the helpers so the
 labels line up with the columns even on linked lattices:
 
-```python
+```{.python data-requires="pymoo"}
 knee = 0                                # pick a design off the front
 labels = res.column_variable_labels()   # one label per _x column
 for v, x in zip(res.column_variables(), res.pareto_x[knee]):

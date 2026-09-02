@@ -91,6 +91,16 @@ class ErrorStudyResults:
             return entry.get("history") if isinstance(entry, dict) else None
         return None
 
+    def correction_status(self, seed_idx: int) -> str | None:
+        """Correction status for *seed_idx* — ``"converged"``,
+        ``"saturated"``, ``"max_iter"``, ``"beam_lost"`` or ``"none"``;
+        ``None`` when no correction ran for that seed (or the stored
+        dict predates the status key)."""
+        if 0 <= seed_idx < len(self._corrections):
+            entry = self._corrections[seed_idx]
+            return entry.get("status") if isinstance(entry, dict) else None
+        return None
+
     def mean(self, quantity):
         """Mean of quantity across all seeds.  Returns 1-D array vs. element index."""
         arrays = [np.asarray(getattr(r, quantity)) for r in self._recorders]
@@ -448,6 +458,24 @@ class ErrorStudy:
 
         results = ErrorStudyResults(all_results, corrections=all_corrections)
         results.n_requested = n_requested
+        # Seeds whose orbit correction KILLED the beam track a dead beam
+        # — count them and warn once, so the ensemble statistics are
+        # never silently biased by rows full of zeros.
+        n_lost = sum(1 for c in all_corrections
+                     if isinstance(c, dict) and c.get("status") == "beam_lost")
+        results.n_correction_beam_lost = n_lost
+        if n_lost:
+            first_idx = next(
+                i for i, c in enumerate(all_corrections)
+                if isinstance(c, dict) and c.get("status") == "beam_lost")
+            warnings.warn(
+                f"ErrorStudy: orbit correction lost the beam in "
+                f"{n_lost}/{len(all_corrections)} seed(s) (first: seed "
+                f"{self.base_seed + first_idx}, at "
+                f"{all_corrections[first_idx].get('beam_lost_at')}) — "
+                "those seeds track a dead beam",
+                stacklevel=2,
+            )
         return results
 
     def _apply_beam_errors(self, seed: int):

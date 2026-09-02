@@ -110,8 +110,17 @@ Undo/Redo buttons and the right-side lattice summary text.*
     * Method picked (`one_to_one` if #steerers == #BPMs cleanly,
       else `svd`).
     * Number of steerer/BPM pairs.
-    * RMS BPM reading **before** and **after**.
+    * **Status** — see the
+      [dead-beam contract](#dead-beam-contract) for the vocabulary.
+    * RMS BPM reading at the first and final pass, and the
+      transmission per pass.
     * Each steerer's applied `bx_l` / `by_l` in T·m.
+
+    If the computed kicks would LOSE the beam (`Status: beam_lost`),
+    the dialog becomes a warning naming the element where the
+    transmission reached 0 % and **no kicks are applied** — the
+    steerers keep their previous values and nothing lands on the
+    undo stack.
 
 5. **Inspect the result.**  The steerers are mutated in place,
    so the timeline + Inspector show the corrected
@@ -184,8 +193,17 @@ group with n_seeds + progress bar at the bottom.*
         kicks = res.corrected_kicks(seed)
         # dict: { steerer_name -> {"bx_l": float, "by_l": float} }
         hist  = res.correction_history(seed)
-        # list: [ {"iter": k, "rms_orbit_mm": x, "n_saturated": m}, ... ]
+        # list: [ {"iter": k, "rms_orbit_mm": x, "n_saturated": m,
+        #          "n_dead_bpms": d, "transmission_pct": t,
+        #          "beam_lost_at": name, "stop_reason": r}, ... ]
+        status = res.correction_status(seed)
+        # "converged" | "saturated" | "max_iter" | "beam_lost" | "none"
     ```
+
+    ``res.n_correction_beam_lost`` counts the seeds whose correction
+    lost the beam; the study emits a ``UserWarning`` (and the Error-
+    Study tab's status line says so) whenever it is non-zero — those
+    seeds track a dead beam.
 
 ### Path C — Python script
 
@@ -242,25 +260,31 @@ applied to all 12 quads:
 | After errors | ~0.5 mm |
 | After correction | < 0.001 mm |
 
-For the standalone Lattice-tab button on this scenario, the
-summary dialog reads:
+For the standalone Lattice-tab button on this scenario (pre-
+correction RMS BPM reading 0.5085 mm — the demo script prints it),
+the summary dialog reads:
 
 ```
 Method: one_to_one
 Steerer/BPM pairs: 4
-RMS orbit before: 0.5069 mm
-RMS orbit after:  0.0000 mm
+Status: converged
+RMS orbit error vs targets, iter 1: 0.0000 mm
+RMS orbit error vs targets, final:  0.0000 mm
+Transmission per pass: 100.0 %
+(target-less BPMs steer to zero)
 
 Applied kicks:
-  STEER_001: bx_l=+4.404e-04  by_l=+4.329e-04
-  STEER_002: bx_l=-1.139e-02  by_l=-1.143e-02
-  STEER_003: bx_l=+0.000e+00  by_l=+0.000e+00
-  STEER_004: bx_l=+0.000e+00  by_l=+0.000e+00
+  STEER_001: bx_l=+9.284e-05  by_l=+1.208e-04
+  STEER_002: bx_l=-1.533e-03  by_l=-1.134e-03
+  STEER_003: bx_l=+4.845e-03  by_l=+3.315e-03
+  STEER_004: bx_l=-8.153e-03  by_l=-4.406e-03
 ```
 
-STEER_003 and STEER_004 stay at zero because the FODO optics
-keep the orbit straight downstream once the upstream pair is
-corrected.
+All four steerers receive a non-zero kick: each pair's BPM sits
+directly after its cell's defocusing quad (a 250 mm lever arm
+through the quad), so every pair sees — and nulls — its own share
+of the misalignment orbit, and the transmission stays 100 %
+through every pass.
 
 ### Troubleshooting
 
@@ -277,6 +301,15 @@ the residual propagates to downstream BPMs.  Two fixes:
 The per-iteration ``history`` log includes ``n_saturated`` —
 when it stays > 0 across iterations the corrector has hit the
 limit.
+
+If the status is **``beam_lost``**, the corrector's own kick drove
+the beam into an aperture: a BPM too close to its steerer (a short
+drift-only lever arm) demands a huge kick to null a small offset —
+the original demo deck's 50 mm steerer→BPM spacing asked for
+−35 mrad and scraped the beam two cells later.  Move the BPM
+farther downstream (through a quad), relax the target, or switch
+to SVD; the warning names the element where the transmission
+reached zero.
 
 ### Auto-correction-on-load
 
@@ -336,10 +369,15 @@ returns `{kicks, history, method, n_pairs}`.
 After each pass:
 
 * The kicks are clipped to per-steerer `vmax`.
-* RMS BPM reading (combined x, y) is measured.
-* If `rms < tol_mm`, the loop exits.
+* RMS BPM reading (combined x, y) is measured **on one residual
+  tracking pass**, which also audits the transmission at every BPM.
+* If any used BPM reads a **dead beam**, the loop exits with
+  `stop_reason="beam_lost"` (see below).
+* If `rms < tol_mm`, the loop exits (`stop_reason="converged"`).
 * If every steerer has saturated AND RMS is no longer improving by
-  ≥ 10 % between iterations, the loop exits early.
+  ≥ 10 % between iterations, the loop exits early
+  (`stop_reason="saturated"`); otherwise, after `n_iter` passes,
+  `stop_reason="max_iter"`.
 
 `history=True` returns the per-iteration log so you can plot the
 convergence curve:
@@ -353,6 +391,41 @@ for entry in hist:
     print(entry["iter"], entry["rms_orbit_mm"], entry["n_saturated"])
 ```
 
+Each history entry also carries `n_dead_bpms`, `transmission_pct`
+(final-row transmission in %; `None` for the envelope backend),
+`beam_lost_at` and `stop_reason`.
+
+### Dead-beam contract
+
+When no particle is alive, the multi-particle recorder stores a
+`zeros(6)` centroid placeholder — which is **not** an orbit.  Until
+2026-09 the corrector read those zeros as perfect readings and could
+declare "converged" (rms ~1e-12) on a beam it had itself scraped to
+0 % transmission.  The contract is now:
+
+* A BPM row whose recorded transmission is 0 reads a **dead beam**:
+  the reading is discarded, the residual rms becomes **NaN** (which
+  can never satisfy `rms < tol_mm`), and the pass that first
+  observes a dead BPM is the last — the history entry gets
+  `stop_reason="beam_lost"` and `beam_lost_at` names the first
+  element with zero transmission.
+* A `one_to_one` pair whose BPM is dead applies **no kick** and
+  skips its four response-measurement passes; SVD masks dead rows
+  out of the solve.  Both warn, naming the BPM.
+* The driver dicts (`run_correction_from_lattice`,
+  `apply_diagnostic_matching`) carry `status` — one of `none`,
+  `converged`, `saturated`, `max_iter`, `beam_lost` — plus a
+  `converged` boolean and `beam_lost_at`.
+* The GUI **applies no kicks** on `status == "beam_lost"` (the
+  warning dialog lists the refused kicks for inspection); kicks a
+  Python caller already applied to its in-place lattice before the
+  loss stay applied and are reported.
+* Detection is **MP-only**: envelope results carry no
+  `transmission` (the envelope solver has no loss model), so a
+  correction computed with `reading_backend="envelope"` can still be
+  one that loses a real beam — verify with an MP run.  See
+  [known limitations](../12_validation/03_known_limitations.md).
+
 ## Worked example
 
 See `examples/correction_demo/` in the repository
@@ -360,9 +433,12 @@ for the end-to-end demo: load a 6-cell FODO with four
 ADJUST_STEERER + DIAG_POSITION pairs, plant 0.2 mm RMS quad
 misalignments, run correction, plot pre/post BPM readings.
 
-The demo passes its assertion (post-correction RMS ≤ 1 % of
-pre-correction RMS) on a 5 MeV proton beam with `vmax = 0.02 T·m`
-on each steerer.
+The demo passes (exit 0) only when the post-correction RMS is
+≤ 1 % of the pre-correction RMS **and** the driver reports
+`converged` **and** the transmission at every BPM is 100 % — on a
+5 MeV proton beam with `vmax = 0.02 T·m` on each steerer.  If the
+corrector loses the beam it exits 1 printing
+`beam lost at <element>`.
 
 ## API reference
 
@@ -375,7 +451,8 @@ linac_gen.errors.correction.run_correction_from_lattice(
     bpm_noise=0.0,               # mm — Gaussian noise added to readings
     rcond=None,                  # SVD truncation (None → 1e-10 default)
     history=False,
-) -> dict                        # {"kicks", "history", "method", "n_pairs"}
+) -> dict   # {"kicks", "history", "method", "n_pairs",
+            #  "status", "converged", "beam_lost_at"}
 ```
 
 ```{.python .skip}

@@ -38,7 +38,7 @@ bar at the bottom:
 │ File  Simulate  Tools  Help │ [Run Envelope] [Run Multi-particle] [Stop]  │
 │                             │ s = 0 / — mm [──slider──]        Font [pt]  │ ← Toolbar
 ├───────────────────────────────────────────────────────────────────────────┤
-│ Beam│Lattice│Matching│Numerics│Surrogates│Error Study│Failure Study│Results│ ← Tab bar
+│ Beam│Lattice│Matching│Numerics│Surrogates│Param Study│Error Study│Failure Study│Results│ ← Tab bar
 ├───────────────────────────────────────────────────────────────────────────┤
 │                                                                           │
 │                             Tab content                                   │
@@ -68,6 +68,7 @@ Left to right:
 | **Matching** | SET/ADJUST cards interactive editor, run matcher |
 | **Numerics** | space-charge grid, kernel, GPU/CPU, integrator settings + convergence scans |
 | **Surrogates** | train / engage ML surrogates for field-map elements |
+| **Param Study** | multi-parameter studies — per-run folders, resume, oat/zip/grid/random/lhs strategies |
 | **Error Study** | tolerance studies — element + beam errors, run ensembles |
 | **Failure Study** | element-failure sweeps (off/detune/partial) + compensation |
 | **Results** | post-tracking diagnostics — emittance, halo, loss, IBS, magstrip |
@@ -79,6 +80,7 @@ Each tab gets its own chapter:
 * [Matching tab](05_matching_tab.md)
 * [Numerics tab](04_convergence_tab.md)
 * [Surrogates tab](06b_surrogates_tab.md)
+* [Param Study tab](06d_study_tab.md)
 * [Error Study tab](06_errors_tab.md)
 * [Failure Study tab](06c_failures_tab.md)
 * [Results tab](07_results_tab.md)
@@ -96,6 +98,7 @@ Each tab gets its own chapter:
 | Run tracking | toolbar **Run Envelope** (Ctrl+R) or **Run Multi-particle** (Ctrl+Shift+R) |
 | Cancel a long run | toolbar **Stop** |
 | Inspect an element | click it in the Lattice tab list |
+| Run a parameter study | Param Study tab → add parameters → **Start study** |
 | Add element error | Error Study tab → Element errors form |
 | Plot results | Results tab → click any tile |
 

@@ -26,8 +26,11 @@ PIP-II"* (A. Pathak), which fixes three defects relative to the printed
 2. **Odd-branch interchange** (p. 4719): swapping `ν_x ↔ ν_y` rescales the
    `ν_x`-normalised quantities too —
    `D_odd(s, α, h, S²) = D_even(s/α², 1/α, 1/h, S²/α²)`.
-3. **Eq. (41) sign**: the `S⁴` block enters with `+S⁴`, as required by the
-   isotropic-limit reduction to Eq. (42).
+3. **Eq. (41)/(42) sign**: the `S⁴` block enters with `−S⁴`, exactly as
+   Eq. (41) prints it.  The journal's Eq. (42) carries the opposite sign
+   (a misprint): Eq. (43)'s five closed-form isotropic roots are the
+   independent arbiter and are satisfied only by `−S⁴`
+   (pinned by `test_eq43_roots_fix_the_l4_even_sp4_sign`).
 
 ### Chart coordinates from a HELIX run
 
@@ -44,8 +47,26 @@ Every input comes from one probe-bearing envelope run
 from linac_gen.analysis.hofmann_stability import (
     hofmann_stability, anisotropy_margin)
 from linac_gen.analysis.hofmann_probabilistic import instability_probability
+from linac_gen.analysis.period_detect import detect_periods
+from linac_gen.core.particle import PROTON
+from linac_gen.core.reference import ReferenceParticle
+from linac_gen.io.tracewin_parser import parse_tracewin
+from linac_gen.tracking.envelope import EnvelopeSolver
+from linac_gen.tracking.matrix_tracking import compute_transfer_matrix, compute_twiss
 
-tab = hofmann_stability(results, period)     # probe-bearing results
+lattice, _ = parse_tracewin("examples/hofmann_stability/hofmann_demo_linac.dat")
+ref = ReferenceParticle(species=PROTON, w_kin=2.5, frequency=162.5)
+period = detect_periods(lattice)[0]                  # section A: 16 cells
+a, b = period.spans()[0]
+M = compute_transfer_matrix(lattice, ref, start=a, end=b - 1)
+tx, ty, tz = (compute_twiss(M, pl) for pl in ("x", "y", "z"))
+initial = dict(alpha_x=tx["alpha"], beta_x=tx["beta"], emit_x=2.0,
+               alpha_y=ty["alpha"], beta_y=ty["beta"], emit_y=2.0,
+               alpha_z=tz["alpha"], beta_z=tz["beta"], emit_z=0.035)
+results = EnvelopeSolver(lattice, ref.copy(), initial, current=5.0,
+                         phase_probe=True).run()     # probe-bearing results
+
+tab = hofmann_stability(results, period)
 print(tab["g_combined"], tab["flagged"])     # per-cell γ/ν_0x + flags
 mg = anisotropy_margin(results, period)      # distance-to-onset in ε_z/ε_x
 p = instability_probability(tab, N_mc=200)   # Monte-Carlo jitter layer

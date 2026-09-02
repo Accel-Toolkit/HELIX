@@ -138,6 +138,28 @@ class MatchResult:
                 return True
         return False
 
+    def rows(self) -> list:
+        """Per-ADJUST display rows ``(var, col, x0, x_final)``.
+
+        ``variables`` has one entry per ADJUST DoF; ``x0``/``x_final``
+        have one entry per optimiser COLUMN (linked variables share a
+        column), so ``zip(variables, x0, x_final)`` mislabels every row
+        after the first linked pair and drops the tail.  Each row here
+        carries its column's values (``nan`` if the column is absent,
+        e.g. an empty/cancelled result).  GUI tables, reports and
+        scripts iterate this — never the positional zip.  (A caller
+        that wants per-COLUMN labels instead should group these rows
+        by ``col``.)
+        """
+        col_for_var, _n_cols = _link_group_index(self.variables)
+        out: list = []
+        for var, col in zip(self.variables, col_for_var):
+            x0 = float(self.x0[col]) if col < len(self.x0) else float("nan")
+            xf = (float(self.x_final[col]) if col < len(self.x_final)
+                  else float("nan"))
+            out.append((var, col, x0, xf))
+        return out
+
     def report(self) -> str:
         """Human-readable summary suitable for CLI / log output."""
         lines = [
@@ -153,15 +175,9 @@ class MatchResult:
             "",
             "Variables:",
         ]
-        # Map each variable to its optimiser COLUMN — linked variables
-        # share one column, so ``variables`` can be longer than
-        # ``x0``/``x_final`` and a positional zip mislabels every entry
-        # after the first linked pair (and drops the tail).
-        col_for_var, _n_cols = _link_group_index(self.variables)
-        for var, col in zip(self.variables, col_for_var):
-            x0 = self.x0[col] if col < len(self.x0) else float("nan")
-            x = (self.x_final[col] if col < len(self.x_final)
-                 else float("nan"))
+        # Each row carries its optimiser COLUMN's values (linked
+        # variables share a column) — see MatchResult.rows().
+        for var, _col, x0, x in self.rows():
             lines.append(
                 f"  {var.label:<32s}  {x0:>12.6g}  ->  {x:<12.6g}  "
                 f"[{var.vmin:>11.4g}, {var.vmax:<11.4g}]"
@@ -596,11 +612,17 @@ def match(lattice, beam_cfg: BeamConfig, *,
             per_constraint_residuals=per,
         )
     if not constraints:
+        # Per-COLUMN seed, like the real run — rows()/report() index by
+        # column, and the dataclass contract says x0/x_final are per
+        # optimiser column (linked variables share one; last writer
+        # wins, then clipped into the intersected bounds).
+        _cfv, _ncols = _link_group_index(variables)
+        _x0_cols, _lo, _hi = _build_x0_and_bounds(variables, _cfv, _ncols)
         return MatchResult(
             success=False, message="No SET constraints in lattice",
             n_iter=0, elapsed_s=time.time() - t0,
-            x0=np.array([v.x0 for v in variables]),
-            x_final=np.array([v.x0 for v in variables]),
+            x0=_x0_cols,
+            x_final=_x0_cols.copy(),
             residuals=np.array([]),
             cost=0.0,
             variables=variables, constraints=constraints,

@@ -264,7 +264,9 @@ about once per second during the run — see
 
 Two read-only tables fill in:
 
-* **Variables** — name, initial value, matched value, bounds.
+* **Variables** — name, initial value, matched value, bounds.  Knobs
+  ganged by a shared `link_group` are tagged `(link n)` and every
+  member of the group shows the group's single optimiser value.
 * **Constraints** — name, RMS residual, notes. Every `SET_*` / `MIN_*`
   card in the lattice gets a row here, including the soft-penalty cards
   **`MIN_EMIT_GROWTH`**, **`MIN_EMIT_4D_GROWTH`** and

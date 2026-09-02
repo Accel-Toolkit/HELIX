@@ -13,7 +13,7 @@ provides both a programmable API and a complete graphical workbench.
 | Envelope (RMS) tracking | 6×6 σ-matrix propagation with uniform-ellipsoid space charge |
 | Multi-particle tracking | Up to ~10⁶ macroparticles with 3-D PIC space charge (CPU or GPU) |
 | Continuous (DC) beams | Sacherer ODE for pre-RFQ LEBT, 2-D analytic SC kick, DC ↔ bunched transition |
-| Matching & optimisation | Levenberg-Marquardt SET/ADJUST language matching, Python and CLI |
+| Matching & optimisation | SET/ADJUST language matching (seven optimisers, least-squares default), Python and CLI |
 | Tolerance / error studies | Monte-Carlo ensembles over alignment, field, RF, beam-input errors |
 | Diagnostics | σ, Twiss, halo, eigenemittance, transmission, aperture loss, H⁻ stripping |
 | GUI workbench | Tabbed PyQt6 application with embedded plots |

@@ -43,7 +43,9 @@ class WorkContext:
     """What the assistant is currently working on.
 
     The CLI REPL owns a plain instance; the GUI subclasses it to proxy
-    ``AppState`` so assistant actions stay in sync with the tabs.
+    ``AppState`` so assistant actions stay in sync with the tabs — it
+    also overrides the element-parameter mutation hooks below so edits
+    become undoable commands on the app's CommandBus.
     """
     lattice: object = None
     lattice_path: str = ""
@@ -63,6 +65,23 @@ class WorkContext:
     def set_results(self, results, path: str = "") -> None:
         self.results = results
         self.results_path = path
+
+    # Element-parameter mutation hooks.  Headless (CLI / MCP / replay):
+    # plain setattr — there is no undo stack.  The GUI adapter overrides
+    # both to push ONE undoable command through AppState.bus on the GUI
+    # thread (tabs refresh, Undo works, unsaved-changes guard sees it).
+    # ``changes`` for apply = [(element, attr, new_value)], for revert =
+    # [(element, attr, old_value)]; apply returns an opaque handle (None
+    # headless) that revert receives back.
+    def apply_param_changes(self, changes, label: str = ""):
+        for elem, attr, new in changes:
+            setattr(elem, attr, new)
+        return None                       # opaque handle for revert
+
+    def revert_param_changes(self, handle, changes,
+                             label: str = "") -> None:
+        for elem, attr, old in changes:
+            setattr(elem, attr, old)
 
     # GUI navigation hooks — base has no GUI, so these are inert; the GUI
     # adapter overrides them to drive the app's tabs/plots via a queued
@@ -442,6 +461,66 @@ def _result_summary(ctx):
         return _ok(out, _ctx_provenance(ctx), warns)
     from linac_gen.cli.common import result_summary
     out, refusal, warns = _capture(result_summary, ctx.results)
+    if refusal:
+        return refusal
+    return _ok(out, _ctx_provenance(ctx), warns)
+
+
+@_tool("loss_power",
+       "Beam-loss power accounting from the last multi-particle run: "
+       "average current (peak current x duty), total lost power in "
+       "watts (energies at the LOSS point), per-element loss table "
+       "sorted by watts, and the peak lineal density in W/m against "
+       "the 1 W/m hands-on criterion.  Requires an MP run (envelope "
+       "mode records no per-particle losses).",
+       {"type": "object", "properties": {}, "required": []},
+       "read")
+def _loss_power(ctx):
+    gate = _need(ctx, "results")
+    if gate:
+        return gate
+
+    def _data(res, cfg):
+        lt = getattr(res, "loss_table", None)
+        n_macro = int(getattr(res, "n_macro", 0) or 0)
+        if lt is None or n_macro <= 0:
+            raise ValueError(
+                "no per-particle loss record — run a multi-particle "
+                "simulation (envelope mode tracks no losses)")
+        cur = float(getattr(cfg, "current", 0.0) or 0.0) if cfg else 0.0
+        if cur <= 0:
+            raise ValueError("beam current is zero — loss power is "
+                             "undefined; set a beam current first")
+        duty = float(getattr(cfg, "duty_cycle", 100.0) or 100.0) \
+            if cfg else 100.0
+        from linac_gen.analysis.loss_power import (loss_power_profile,
+                                                   loss_power_summary,
+                                                   loss_power_table)
+        summ = loss_power_summary(lt, current_mA=cur, duty_pct=duty,
+                                  n_macro=n_macro)
+        tab = loss_power_table(lt, current_mA=cur, duty_pct=duty,
+                               n_macro=n_macro)
+        import numpy as _np
+        s_end = float(_np.asarray(lt["s"]).max()) + 1.0 if len(lt) else 1.0
+        _, wpm = loss_power_profile(lt, current_mA=cur, duty_pct=duty,
+                                    n_macro=n_macro, s_end_mm=s_end)
+        return {
+            "i_avg_ma": summ["i_avg_ma"],
+            "n_lost": summ["n_lost"],
+            "lost_w": summ["lost_w"],
+            "peak_w_per_m": float(wpm.max()) if wpm.size else 0.0,
+            "elements": [
+                {"element": str(r["element_name"]),
+                 "n_lost": int(r["n_lost"]),
+                 "s_min_mm": float(r["s_min_mm"]),
+                 "s_max_mm": float(r["s_max_mm"]),
+                 "e_mean_mev": float(r["e_mean_mev"]),
+                 "watts": float(r["watts"])}
+                for r in tab[:20]
+            ],
+        }
+
+    out, refusal, warns = _capture(_data, ctx.results, ctx.beam_config)
     if refusal:
         return refusal
     return _ok(out, _ctx_provenance(ctx), warns)
@@ -1969,7 +2048,11 @@ def _set_param(ctx, element_name: str, param: str, value: float):
     old = getattr(elem, param)
     if not isinstance(old, (int, float)):
         return _refused(f"'{param}' is not numeric (is {type(old).__name__})")
-    setattr(elem, param, float(value))
+    try:
+        ctx.apply_param_changes([(elem, param, float(value))],
+                                label="Assistant edit")
+    except Exception as exc:                                # noqa: BLE001
+        return _err(f"could not apply {element_name}.{param}: {exc}")
     return _ok({"element": element_name, "param": param,
                 "old": float(old), "new": float(value)},
                _ctx_provenance(ctx))
@@ -2035,5 +2118,6 @@ def provider_tool_specs() -> list[dict]:
 # ---------------------------------------------------------------------------
 from linac_gen.assist import tools_analysis  # noqa: E402,F401  (registry)
 from linac_gen.assist import tools_campaign  # noqa: E402,F401  (registry)
+from linac_gen.assist import tools_study     # noqa: E402,F401  (registry)
 from linac_gen.assist import tools_training  # noqa: E402,F401  (registry)
 from linac_gen.assist import tools_grad  # noqa: E402,F401  (registry)

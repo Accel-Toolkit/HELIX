@@ -46,8 +46,8 @@ noted above.
 | `dc_kernel` | str | `uniform` | DC kernel: `uniform`, `gaussian`, `pic2d` |
 | `nx`, `ny`, `nz` | int | 96 | grid size |
 | `grid_extent` | float | 5.0 | σ multiplier |
-| `boundary` | str | `open` | `open` or `periodic` |
-| `use_gpu` | str | `auto` | `auto` / `cpu` / `gpu` |
+| `boundary` | str | `open` | `open` only — the Poisson solve is open-boundary Hockney; periodic is refused at validation |
+| `use_gpu` | str | `auto` | `auto` / `cpu` / `gpu` / `cuda` / `mps` — `auto` never selects the FP32 `mps` backend; request it explicitly |
 
 ### Tracker parameters
 
@@ -84,7 +84,7 @@ The directives are read at parse time and stored — nothing more:
 
 If you write a driver script, you can consume them yourself, e.g.:
 
-```python
+```{.python data-needs="examples/pipii/mebt/mebt.dat"}
 from linac_gen.core.config import SpaceChargeConfig
 from linac_gen.io.tracewin_parser import parse_tracewin
 

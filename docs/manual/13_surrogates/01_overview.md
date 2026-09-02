@@ -15,8 +15,10 @@ shifts.
   RFQ subclasses (`VaneRFQ`, `RfqCell`) are excluded — they carry
   state the surrogate doesn't replicate yet.
 * **What surrogates predict**: the 6×6 transfer matrix from
-  `fitted_matrix(ref)` — the envelope-mode contract.  Slice-aware
-  surrogates (for the SC-engaged path) are future work.
+  `fitted_matrix(ref)` — the envelope-mode contract at
+  **current = 0** (the pure-linear path requests exactly that full
+  matrix).  Slice-aware surrogates (for the SC-engaged path) are
+  future work.
 * **How they're trained**: Latin-Hypercube samples over (ref
   kinematics, element params) → ground-truth matrices from the
   existing HELIX RK4 → small MLP fit on flattened 6×6 outputs.
@@ -68,22 +70,31 @@ Acceptance gates (per `docs/plans/surrogates.md`, milestone M2):
 The smoke cycle is for "does the pipeline work" sanity checks.  For
 science runs, use the production cycle.
 
-## The M3 honest limitation
+## Which envelope runs engage the NN
 
-The shipped surrogate intercepts `fitted_matrix(ref)` cleanly but
-delegates `fitted_matrix_slice(ref, ds)` to the wrapped RK4.  This
-matters because:
+The shipped surrogate serves `fitted_matrix(ref)` — the full-element
+matrix — and delegates every *partial* `fitted_matrix_slice(ref, ds)`
+to the wrapped RK4.  The engagement regimes, each measured on the
+MEBT with the shipped smoke-cycle weights:
 
-* **No-SC envelope** — the field-map handling skips
-  `fitted_matrix_slice` entirely and uses a single full-element
-  matrix per element.  Surrogate engages, full speedup.
-* **SC-engaged envelope (current > 0)** — the SC bundling code in
+* **current = 0, no per-sub-step recording** — the pure-linear path
+  requests each surrogated field map's full-element matrix exactly
+  once per traversal, and the registry serves it from the NN.
+  Measured: 4 cavities → **4 NN queries**, **3.45× speedup**,
+  end-of-line rel.diff x/y/φ/W = 3.0e-3 / 1.5e-3 / 1.4e-2 / 1.3e-2.
+* **current > 0 (SC-engaged envelope)** — the SC bundling code in
   `envelope.py` slices the field map so SC kicks can be inserted
-  between slices.  Each slice call falls back to RK4 in the
-  shipped surrogate, so the surrogate is **effectively bypassed**:
-  measured on the MEBT at 5 mA, **zero** NN calls are made and there
-  is **no speedup**.  Surrogate acceleration currently applies to the
-  no-SC envelope path only.
+  between slices.  Each partial slice falls back to RK4, so the
+  surrogate is **bypassed**: measured at 5 mA, **zero** NN queries,
+  zero diff and no speedup (0.98×).  The compare report prints
+  `NN full-element queries: 0` with a note so a registered-but-idle
+  surrogate is visible, not silent.
+* **current = 0 with *Record per-sub-step* ticked, or with
+  `SHIFT_IN_FIELD_MAP` interior markers** — the sub-stepped walk is
+  taken for the interior σ(s) points; same as the SC case: zero NN
+  queries, bit-identical to the unregistered run.
+* **Multi-particle tracking** — the NN engages only under the
+  explicit MP double opt-in (see the M7 section below).
 
 A slice-aware surrogate (`fitted_matrix_slice` predicted directly,
 or via matrix log/exp from a full-element prediction) is in the

@@ -13,6 +13,7 @@ configured (or the subpackage removed) launches and runs untouched.
 from __future__ import annotations
 
 import threading
+import time
 
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -122,6 +123,83 @@ def _make_context(state, calc_dir: str, nav=None):
         def set_results(self, results, path=""):
             self._results_path = path
             self._state.set_results(results)
+
+        # -- element-parameter mutation hooks (WorkContext overrides) --
+        # Tools run OFF the GUI thread (_AgentWorker QThread, JobManager
+        # pool, SDK executor); the edit must become ONE undoable command
+        # on AppState.bus, pushed on the GUI thread so the Lattice tab,
+        # inspector, Undo stack and unsaved-changes guard all see it.
+        # run_on_gui returns None on timeout and drops exceptions, so
+        # success is encoded in the returned dict; a cancelled flag keeps
+        # a late thunk from applying after the tool reported failure.
+        def apply_param_changes(self, changes, label=""):
+            from linac_gen_gui.interphase.commands import (
+                MacroCommand, ParamChangeCommand)
+            state = self._state
+            box = {"cancelled": False}
+
+            def _do():
+                if box["cancelled"]:
+                    return {"ok": False, "err": "cancelled"}
+                lat = state.lattice
+                if lat is None:
+                    return {"ok": False, "err": "no lattice loaded"}
+                for elem, attr, _new in changes:
+                    if not any(e is elem for e in lat.elements):
+                        return {"ok": False,
+                                "err": f"element "
+                                f"{getattr(elem, 'name', '?')!r} is no "
+                                "longer in the loaded lattice"}
+                # MacroCommand (never a bare ParamChangeCommand): each
+                # approved assistant call is its own undo step — it must
+                # not coalesce into a preceding inspector drag nor into
+                # another assistant edit within the 600 ms window.
+                cmds = [ParamChangeCommand(elem, attr,
+                                           getattr(elem, attr), new)
+                        for elem, attr, new in changes]
+                cmd = MacroCommand(cmds, label=label or "Assistant edit")
+                state.bus.do(cmd)    # bus.changed → lattice_changed
+                state.status_message.emit("assistant: " + cmd.describe())
+                return {"ok": True, "handle": cmd}
+
+            return self._gui_sync(_do, box)["handle"]
+
+        def revert_param_changes(self, handle, changes, label=""):
+            from linac_gen_gui.interphase.commands import (
+                MacroCommand, ParamChangeCommand)
+            state = self._state
+
+            def _do():
+                bus = state.bus
+                if handle is not None and bus.peek_undo() is handle:
+                    # exact inverse: depth, dirty and redo stack land
+                    # exactly as before the apply
+                    bus.undo()
+                    return {"ok": True}
+                # user edits landed on top of the stack mid-run: push a
+                # compensating step instead of undoing their work
+                cmds = [ParamChangeCommand(elem, attr,
+                                           getattr(elem, attr), old)
+                        for elem, attr, old in changes]
+                bus.do(MacroCommand(
+                    cmds, label=(label or "Assistant edit") + " rollback"))
+                return {"ok": True}
+
+            self._gui_sync(_do, {"cancelled": False})
+
+        def _gui_sync(self, fn, box):
+            if self._nav is None:        # tests / no panel: same thread
+                out = fn()
+            else:
+                out = self._nav.run_on_gui(fn, timeout=30.0)
+                if out is None:          # timeout or panel closing
+                    box["cancelled"] = True
+                    raise RuntimeError("the GUI did not apply the "
+                                       "change (busy or shutting down)")
+            if not out.get("ok"):
+                raise RuntimeError(out.get("err",
+                                           "GUI refused the change"))
+            return out
 
         @property
         def results_path(self):
@@ -1186,6 +1264,7 @@ class AssistantPanel(QDialog):
     def _mic_pressed(self):
         if self._recorder is not None or self._capture_tap is not None:
             return                               # already recording (re-entry)
+        self._ptt_press_t = time.monotonic()     # for the too-short probe
         if self._speaker is not None:            # barge-in: cut the TTS
             self._barged_this_turn = True        # …and STAY quiet: late
             try:                                 # sentences must not talk
@@ -1275,6 +1354,7 @@ class AssistantPanel(QDialog):
     def _mic_released(self):
         self._mic_btn.setText("🎤 Hold")
         tap, self._capture_tap = self._capture_tap, None
+        self._ptt_via_tap = tap is not None      # for the too-short probe
         if tap is not None:                      # wake-mode PTT via tap
             self._wake_btn.setEnabled(True)
             audio = tap.stop()
@@ -1303,6 +1383,19 @@ class AssistantPanel(QDialog):
     def _on_too_short(self, seconds: float):
         self._append("[voice] (too short — keep holding 🎤 while "
                      "you speak)")
+        # A button HELD >0.6 s that captured essentially NOTHING
+        # (<0.05 s) through the shared wake stream means the stream is
+        # starved (post-sleep CoreAudio, device switch) — a live stream
+        # must have delivered blocks in that time.  The hold-duration
+        # gate keeps an accidental quick CLICK (zero complete blocks by
+        # timing alone) from cycling a healthy mic.  Recycle through
+        # the same debounced recovery as a dead reader.
+        held = time.monotonic() - getattr(self, "_ptt_press_t", 0.0)
+        if seconds < 0.05 and held > 0.6 \
+                and getattr(self, "_ptt_via_tap", False) \
+                and self._mic_stream is not None:
+            self._append("[voice] mic stream looks dead — reopening …")
+            self.mic_died.emit()
         self._set_state("idle")
 
     def _on_voice_failed(self, msg: str):

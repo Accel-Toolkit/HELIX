@@ -2977,11 +2977,15 @@ class InterphaseWindow(QMainWindow):
                 Qt.TransformationMode.SmoothTransformation,
             ))
         from linac_gen import __version__ as _v
+        from linac_gen_gui.interphase.state import TABS
+        # Derived from the tab registry at call time so this line can
+        # never drift from the real tab bar again (it had drifted 5→9).
+        _tabs = " · ".join(label for _, label in TABS)
         box.setText(
             f"HELIX {_v}\n"
             "Hybrid Envelope-multiparticle LInac eXplorer\n\n"
             "Beam dynamics studio for linear accelerators.\n"
-            "Tabs: Beam · Lattice · Matching · Numerics · Results\n\n"
+            f"Tabs: {_tabs}\n\n"
             "Engines: matrix · envelope · multiparticle\n"
             "Space charge: analytical · PIC fixed · PIC adaptive\n"
             "Backends: CPU (C++/OpenMP) · CUDA (cupy) · MPS (torch, Apple Silicon)\n"

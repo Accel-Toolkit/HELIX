@@ -1,12 +1,18 @@
 """End-to-end orbit-correction demo.
 
 1. Load ``correction_demo.dat`` (6-cell FODO + 4 BPM/steerer pairs).
-2. Plant 1 mm RMS quadrupole transverse misalignments on every QUAD.
-3. Track once → record pre-correction BPM readings.
+2. Plant 0.2 mm RMS quadrupole transverse misalignments on every QUAD.
+3. Track once → record pre-correction BPM readings (and transmission).
 4. Run :func:`run_correction_from_lattice` (TraceWin-card driven).
 5. Track again → record post-correction BPM readings.
 6. Plot pre/post side-by-side and assert the residual is < 1 % of the
-   pre-correction RMS.
+   pre-correction RMS, the driver reports ``converged``, and the
+   transmission at every BPM is 100 %.
+
+The script exits 1 — printing ``beam lost at <element>`` — if the
+corrector's own kicks kill the beam (``status == "beam_lost"``): a
+converged-looking residual on a dead beam is precisely the defect this
+demo now refuses to certify.
 
 Run from the repository root::
 
@@ -38,23 +44,26 @@ def _beam_factory(beam_cfg: BeamConfig, seed: int = 0):
     return lambda: create_beam(beam_cfg, seed=seed)
 
 
-def _bpm_readings(lattice, beam_factory) -> dict[str, tuple[float, float]]:
-    """Return ``{bpm_name: (centroid_x_mm, centroid_y_mm)}`` after a
-    single tracking pass."""
+def _bpm_readings(
+        lattice, beam_factory) -> dict[str, tuple[float, float, float]]:
+    """``{bpm_name: (centroid_x_mm, centroid_y_mm, transmission_pct)}``
+    after a single tracking pass (rows via ``element_exit_idx`` — the
+    ``i + 1`` convention breaks as soon as substep recording is on)."""
     rec = Tracker(lattice, beam_factory()).run()
-    out: dict[str, tuple[float, float]] = {}
+    out: dict[str, tuple[float, float, float]] = {}
     for i, elem in enumerate(lattice.elements):
         if getattr(elem, "is_bpm", False):
-            j = i + 1
+            j = rec.element_exit_idx[i]
             if j < len(rec.centroid):
                 c = np.array(rec.centroid[j])
-                out[elem.name] = (float(c[0]), float(c[2]))
+                out[elem.name] = (float(c[0]), float(c[2]),
+                                  float(rec.transmission[j]))
     return out
 
 
-def _rms(readings: dict[str, tuple[float, float]]) -> float:
+def _rms(readings: dict[str, tuple[float, float, float]]) -> float:
     vals: list[float] = []
-    for x, y in readings.values():
+    for x, y, _t in readings.values():
         vals.extend([x, y])
     return float(np.sqrt(np.mean(np.square(vals)))) if vals else 0.0
 
@@ -80,7 +89,7 @@ def main() -> int:
 
     # Plant 0.2 mm RMS dx/dy on every quadrupole — a realistic alignment
     # tolerance for a precision linac.  Larger misalignments would saturate
-    # the vmax=0.01 T·m steerer cap; that case is intentionally exercised
+    # the vmax=0.02 T·m steerer cap; that case is intentionally exercised
     # by tests/errors/test_correction_iter.py.
     rng = np.random.default_rng(2026)
     sigma_mm = 0.2
@@ -96,8 +105,9 @@ def main() -> int:
     pre = _bpm_readings(lattice, factory)
     rms_pre = _rms(pre)
     print(f"\nPre-correction BPM readings:")
-    for name, (x, y) in pre.items():
-        print(f"  {name}: x={x:+.3f} mm  y={y:+.3f} mm")
+    for name, (x, y, t) in pre.items():
+        print(f"  {name}: x={x:+.3f} mm  y={y:+.3f} mm  "
+              f"transmission={t:.1f} %")
     print(f"  RMS = {rms_pre:.3f} mm")
 
     # Run correction
@@ -107,10 +117,17 @@ def main() -> int:
     )
     print(f"  method = {result['method']}")
     print(f"  n_pairs = {result['n_pairs']}")
+    print(f"  status = {result['status']}  "
+          f"converged = {result['converged']}")
+    if result["beam_lost_at"]:
+        print(f"  beam lost at: {result['beam_lost_at']}")
     print(f"  history:")
     for h in result["history"]:
+        t = h.get("transmission_pct")
         print(f"    iter {h['iter']}: rms_orbit = {h['rms_orbit_mm']:.6f} mm  "
-              f"saturated = {h['n_saturated']}")
+              f"saturated = {h['n_saturated']}  "
+              f"dead BPMs = {h['n_dead_bpms']}  "
+              f"transmission = {'?' if t is None else f'{t:.1f}'} %")
     print(f"  applied kicks (T·m):")
     for name, kicks in result["kicks"].items():
         print(f"    {name}: bx_l={kicks['bx_l']:+.5e}  by_l={kicks['by_l']:+.5e}")
@@ -119,13 +136,22 @@ def main() -> int:
     post = _bpm_readings(lattice, factory)
     rms_post = _rms(post)
     print(f"\nPost-correction BPM readings:")
-    for name, (x, y) in post.items():
-        print(f"  {name}: x={x:+.6f} mm  y={y:+.6f} mm")
+    for name, (x, y, t) in post.items():
+        print(f"  {name}: x={x:+.6f} mm  y={y:+.6f} mm  "
+              f"transmission={t:.1f} %")
     print(f"  RMS = {rms_post:.6f} mm")
 
     ratio = rms_post / rms_pre if rms_pre > 0 else 0.0
+    # PASS requires all three: small residual, an honest "converged"
+    # from the driver, and a beam that actually survives to every BPM.
+    ok = (ratio < 0.01 and bool(result.get("converged"))
+          and all(t >= 100.0 for (_x, _y, t) in post.values()))
+    if result.get("status") == "beam_lost":
+        print(f"\nFAIL — the corrector lost the beam at "
+              f"{result['beam_lost_at']}")
     print(f"\nRatio post/pre = {ratio*100:.3f} %  "
-          f"({'PASS' if ratio < 0.01 else 'FAIL'} — target < 1 %)")
+          f"({'PASS' if ok else 'FAIL'} — target < 1 %, converged, "
+          f"100 % transmission at every BPM)")
 
     # Plot
     try:
@@ -134,7 +160,7 @@ def main() -> int:
         import matplotlib.pyplot as plt
     except ImportError:
         print("matplotlib not installed; skipping plot.")
-        return 0 if ratio < 0.01 else 1
+        return 0 if ok else 1
 
     names = list(pre)
     pre_x = [pre[n][0] for n in names]
@@ -162,7 +188,7 @@ def main() -> int:
     fig.savefig(OUT_PNG, dpi=120)
     print(f"\nSaved {OUT_PNG.name}")
 
-    return 0 if ratio < 0.01 else 1
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

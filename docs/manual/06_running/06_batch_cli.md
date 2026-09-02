@@ -14,17 +14,20 @@ python -m linac_gen <subcommand> …
 | `run` | one headless simulation (envelope / mp / matrix) | [CLI: run](07_cli_run.md) |
 | `scan` | sweep one or more variables → CSV summary | [CLI: scan](08_cli_scan.md) |
 | `batch` | a multi-run campaign from a JSON job file | [CLI: batch](09_cli_batch.md) |
+| `study` | parameter study — per-run folders, resume, oat/zip/grid/random/lhs strategies | [CLI: study](12_cli_study.md) |
 | `twiss` | matched Twiss — whole-lattice or FODO-cell input match | [CLI: twiss](10_cli_twiss.md) |
 | `backtrack` | backward tracking — reconstruct an upstream distribution from a downstream state | [CLI: backtrack](11_cli_backtrack.md) |
 | `mo` | multi-objective design — Pareto front over `ADJUST` knobs | [Multi-objective](../07_matching/08_multiobjective.md) |
 | `failures` | element failure impact + recovery → CSV | [Failure studies](../10_gui/06c_failures_tab.md) |
 | `match` | the matcher — delegates to `python -m linac_gen.matching` | [Matching CLI](../07_matching/04_cli.md) |
+| `assist` | AI assistant chat (optional — local or cloud LLM; the rest of HELIX never needs it) | [Assistant](../14_assistant/01_assistant.md) |
 
 ## The input model
 
 Every subcommand takes an **input** that is either:
 
-* a **lattice file** — `.dat` (TraceWin) or `.madx` / `.seq` (MAD-X);
+* a **lattice file** — `.dat` (TraceWin), `.madx` / `.seq` (MAD-X),
+  `.lat` / `.flat` (MAD8) or `.lte` (Elegant);
   the beam then starts from `BeamConfig` defaults; or
 * a **`.lgproj` project** — beam and convergence settings are read from
   the file (it is the same project the GUI saves).

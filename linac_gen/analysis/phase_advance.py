@@ -535,7 +535,16 @@ def coupled_beam_phase_advance_per_cell_via_M(
             "envelope results carry no sigma_matrix per element; "
             "run the envelope tracker (records σ on every element by default)"
         )
-    current = float(getattr(results, "current_mA", 0.0))
+    # D7 (run-current provenance round): MP recorders now carry a real
+    # ``current_mA``, but this legacy η-via-M branch keeps its historical
+    # 0.0 for non-envelope results so its displayed numbers do not shift;
+    # the ``or 0.0`` additionally hardens against current_mA=None (a
+    # hand-built DiagnosticRecorder declares None = unknown).
+    from linac_gen.tracking.envelope import EnvelopeResults
+    if isinstance(results, EnvelopeResults):
+        current = float(getattr(results, "current_mA", 0.0) or 0.0)
+    else:
+        current = 0.0
     continuous = bool(getattr(results, "continuous", False))
 
     def _entry_sigma_row(el_idx: int) -> int:

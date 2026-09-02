@@ -384,6 +384,11 @@ class CommandBus(QObject):
     def can_undo(self) -> bool: return bool(self._undo)
     @property
     def can_redo(self) -> bool: return bool(self._redo)
+
+    def peek_undo(self):
+        """The command Undo would revert next, or None (read-only)."""
+        return self._undo[-1] if self._undo else None
+
     @property
     def dirty(self) -> bool: return self._dirty
 

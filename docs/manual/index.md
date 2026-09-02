@@ -82,7 +82,7 @@ The manual is structured to serve three audiences in parallel:
 |---|---|
 | [I. Getting Started](01_getting_started/01_introduction.md) | Install, quick start, first run |
 | [II. Concepts](02_concepts/01_coordinates.md) | Coordinates, data model, tracking modes |
-| [III. Elements](03_elements/00_overview.md) | 17 element types, each with TL;DR + tutorial + API ref |
+| [III. Elements](03_elements/00_overview.md) | 21 element types, each with TL;DR + tutorial + API ref |
 | [IV. Beam](04_beam/01_distributions.md) | Distributions, Twiss, BeamConfig, file I/O |
 | [V. Space charge](05_space_charge/01_models.md) | Models, PIC, kernels, DC mode, convergence |
 | [VI. Running](06_running/01_python_api.md) | Python API, `.dat` reference, results, GUI, batch-mode CLI |
