@@ -99,7 +99,7 @@ class TestEnvelopeTxt:
     def test_header_matches_reference_fixture_verbatim(self, tmp_path):
         out = write_envelope_txt(_fake_envelope_results(), _beam_cfg(),
                                  tmp_path / "env.txt")
-        first = out.read_text().splitlines()[0]
+        first = out.read_text(encoding="utf-8").splitlines()[0]
         # Header taken directly from Tracewin_code/MEBT_spacechargeenvelope_envelope.txt
         expected = (
             "position\tgam-1"
@@ -115,7 +115,7 @@ class TestEnvelopeTxt:
         out = write_envelope_txt(_fake_envelope_results(n), _beam_cfg(),
                                  tmp_path / "env.txt")
         # Header (1) + blank (1) + n data rows
-        rows = [l for l in out.read_text().splitlines() if "\t" in l
+        rows = [l for l in out.read_text(encoding="utf-8").splitlines() if "\t" in l
                 and not l.startswith("position")]
         assert len(rows) == n
         for r in rows:
@@ -190,7 +190,7 @@ class TestPartranOut:
         out = write_partran_out(_fake_envelope_results(n), lattice=None,
                                 beam_cfg=_beam_cfg(),
                                 path=tmp_path / "partran1.out")
-        rows = [l for l in out.read_text().splitlines()
+        rows = [l for l in out.read_text(encoding="utf-8").splitlines()
                 if not l.startswith("#") and "\t" in l]
         assert len(rows) == n
 
@@ -198,7 +198,7 @@ class TestPartranOut:
         out = write_partran_out(_fake_envelope_results(3), lattice=None,
                                 beam_cfg=_beam_cfg(),
                                 path=tmp_path / "partran1.out")
-        data_rows = [l for l in out.read_text().splitlines()
+        data_rows = [l for l in out.read_text(encoding="utf-8").splitlines()
                      if not l.startswith("#") and "\t" in l]
         first = data_rows[0].split("\t")
         # Element# is the first column; INPUT → 0.
@@ -219,7 +219,7 @@ class TestPartranOut:
         out = write_partran_out(_fake_envelope_results(2), lattice=None,
                                 beam_cfg=_beam_cfg(),
                                 path=tmp_path / "partran1.out")
-        data_rows = [l for l in out.read_text().splitlines()
+        data_rows = [l for l in out.read_text(encoding="utf-8").splitlines()
                      if not l.startswith("#") and "\t" in l]
         cols = data_rows[0].split("\t")
         assert len(cols) == 50, (
@@ -232,7 +232,7 @@ class TestPartranOut:
         res.ref_bg = [2.0] * 3         # so norm = 0.5
         out = write_partran_out(res, lattice=None, beam_cfg=_beam_cfg(),
                                 path=tmp_path / "partran1.out")
-        data_rows = [l for l in out.read_text().splitlines()
+        data_rows = [l for l in out.read_text(encoding="utf-8").splitlines()
                      if not l.startswith("#") and "\t" in l]
         cols = data_rows[0].split("\t")
         # Column 12 is the covariance <xx'> per the genuine TW schema
@@ -247,7 +247,7 @@ class TestPartranOut:
         res = _fake_envelope_results(4)   # s = 0..1000 mm
         out = write_partran_out(res, lattice=None, beam_cfg=_beam_cfg(),
                                 path=tmp_path / "partran1.out")
-        rows = [l for l in out.read_text().splitlines()
+        rows = [l for l in out.read_text(encoding="utf-8").splitlines()
                 if not l.startswith("#") and "\t" in l]
         positions = [float(r.split("\t")[1]) for r in rows]   # col 1
         np.testing.assert_allclose(positions,
@@ -257,7 +257,7 @@ class TestPartranOut:
         out = write_partran_out(_fake_envelope_results(2), lattice=None,
                                 beam_cfg=_beam_cfg(current=12.5),
                                 path=tmp_path / "partran1.out")
-        data_rows = [l for l in out.read_text().splitlines()
+        data_rows = [l for l in out.read_text(encoding="utf-8").splitlines()
                      if not l.startswith("#") and "\t" in l]
         cols = data_rows[0].split("\t")
         # Current column (Ibeam) — 0-based index 30 per the 49-column schema.
@@ -272,7 +272,7 @@ class TestPartranOut:
         res.current_mA = 6.25
         out = write_partran_out(res, lattice=None, beam_cfg=None,
                                 path=tmp_path / "partran_nocfg.out")
-        lines = out.read_text().splitlines()
+        lines = out.read_text(encoding="utf-8").splitlines()
         # Parameter line: mc² f0 sign current n_macro (space-separated,
         # first non-comment line).
         param = next(l for l in lines
@@ -289,7 +289,7 @@ class TestPartranOut:
         out2 = write_partran_out(res, lattice=None,
                                  beam_cfg=_beam_cfg(current=2.0),
                                  path=tmp_path / "partran_cfg.out")
-        param2 = next(l for l in out2.read_text().splitlines()
+        param2 = next(l for l in out2.read_text(encoding="utf-8").splitlines()
                       if not l.startswith("#") and "\t" not in l)
         assert float(param2.split()[3]) == pytest.approx(2.0, rel=1e-9)
 
@@ -332,12 +332,12 @@ class TestRoundTripWithRealEnvelope:
         assert env_path.stat().st_size > 0
         assert par_path.stat().st_size > 0
         # Envelope file: exactly 26 columns per data row.
-        env_rows = [l for l in env_path.read_text().splitlines()
+        env_rows = [l for l in env_path.read_text(encoding="utf-8").splitlines()
                     if l.strip() and not l.startswith("position")]
         for r in env_rows:
             assert len(r.split("\t")) == 26
         # Partran file: 50 columns per data row (TW-audited schema).
-        par_rows = [l for l in par_path.read_text().splitlines()
+        par_rows = [l for l in par_path.read_text(encoding="utf-8").splitlines()
                     if "\t" in l and not l.startswith("#")]
         for r in par_rows:
             assert len(r.split("\t")) == 50
@@ -351,7 +351,7 @@ def test_envelope_txt_dpp_column_formula(tmp_path):
     res = _fake_envelope_results()
     res.mass_mev = 939.2940880                      # physical H⁻ ion
     out = write_envelope_txt(res, _beam_cfg(), tmp_path / "env_dpp.txt")
-    rows = [l.split("\t") for l in out.read_text().splitlines()
+    rows = [l.split("\t") for l in out.read_text(encoding="utf-8").splitlines()
             if "\t" in l and not l.startswith("position")]
     data = np.array([[float(x) for x in r] for r in rows])
     i = 2                                            # an interior row
@@ -364,7 +364,7 @@ def test_envelope_txt_dpp_column_formula(tmp_path):
     # mass-less regime: falls back to 0.0, never a wrong number
     res2 = _fake_envelope_results()
     out2 = write_envelope_txt(res2, _beam_cfg(), tmp_path / "env_dpp0.txt")
-    rows2 = [l.split("\t") for l in out2.read_text().splitlines()
+    rows2 = [l.split("\t") for l in out2.read_text(encoding="utf-8").splitlines()
              if "\t" in l and not l.startswith("position")]
     data2 = np.array([[float(x) for x in r] for r in rows2])
     assert np.all(data2[:, 17] == 0.0)

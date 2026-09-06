@@ -488,7 +488,7 @@ def test_rfcavity_gain_and_slope_match_madx_for_both_charges(tmp_path, species):
     dW_helix = r.w_kin - ref.w_kin
     assert dW_helix == pytest.approx(ref.species.charge * math.cos(math.radians(-30.0)), rel=1e-12)
     pc0 = ref.bg * ref.species.mass / 1000.0
-    gain, slope = _track_gain_and_slope(out.read_text(), pc0)
+    gain, slope = _track_gain_and_slope(out.read_text(encoding="utf-8"), pc0)
     assert gain == pytest.approx(dW_helix, rel=1e-9)
     # φs = −30° (before crest): a LATE particle (t<0 in MAD-X) gains more
     # for a proton; the whole curve flips sign with the charge.
@@ -549,14 +549,14 @@ def test_multipole_tilt_round_trips_and_matches_madx(tmp_path):
     lat.add(Drift("d2", length=100.0))
     out = tmp_path / "tilt.madx"
     assert write_madx(lat, out, ref) == []
-    assert "tilt=" in out.read_text()
+    assert "tilt=" in out.read_text(encoding="utf-8")
     back, _ = parse_madx(str(out))
     assert _only(back, Multipole).tilt_deg == pytest.approx(45.0, rel=1e-12)
     # The physics is what is pinned (not the sign of the tilt attribute):
     # Multipole.tilt_deg rotates opposite to MAD-X's tilt and to
     # Quadrupole.skew_angle — the converter compensates.  If the core
     # sense is ever unified, this assertion flags the converter to follow.
-    Rx = _madx_R(out.read_text())
+    Rx = _madx_R(out.read_text(encoding="utf-8"))
     Rh = matrix_to_madx(compute_transfer_matrix(lat, ref.copy()), ref)
     np.testing.assert_allclose(Rh[:4, :4], Rx[:4, :4], rtol=1e-10, atol=1e-12)
     assert abs(Rx[1, 2]) > 0.1          # skew: x' couples to y

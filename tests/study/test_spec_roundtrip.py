@@ -30,7 +30,7 @@ def test_roundtrip(tmp_path):
 def test_unknown_keys_tolerated(tmp_path):
     p = tmp_path / "study.json"
     save_spec(_spec(), p)
-    doc = json.loads(p.read_text())
+    doc = json.loads(p.read_text(encoding="utf-8"))
     doc["future_field"] = 123
     doc["parameters"][0]["future_param_field"] = "x"
     p.write_text(json.dumps(doc))

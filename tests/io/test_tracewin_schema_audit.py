@@ -88,7 +88,7 @@ class TestWriterSchema:
     def test_covariance_columns_from_sigma_matrix(self, tmp_path):
         out = write_partran_out(_results(3), lattice=None, beam_cfg=None,
                                 path=tmp_path / "p.out")
-        row = [l for l in out.read_text().splitlines()
+        row = [l for l in out.read_text(encoding="utf-8").splitlines()
                if "\t" in l and not l.startswith("#")][1].split("\t")
         assert float(row[12]) == pytest.approx(1.5, rel=1e-9)    # <xx'>
         assert float(row[13]) == pytest.approx(-0.75, rel=1e-9)  # <yy'>
@@ -97,7 +97,7 @@ class TestWriterSchema:
     def test_e6d_column_present_and_positive(self, tmp_path):
         out = write_partran_out(_results(3), lattice=None, beam_cfg=None,
                                 path=tmp_path / "p.out")
-        row = [l for l in out.read_text().splitlines()
+        row = [l for l in out.read_text(encoding="utf-8").splitlines()
                if "\t" in l and not l.startswith("#")][1].split("\t")
         assert len(row) == 50
         # E6D is column 45 (after Dh, Dv, Dhp, Dvp — matches the
@@ -111,7 +111,7 @@ class TestWriterSchema:
         res.y_max = [1.5] * 3
         out = write_partran_out(res, lattice=None, beam_cfg=None,
                                 path=tmp_path / "p.out")
-        row = [l for l in out.read_text().splitlines()
+        row = [l for l in out.read_text(encoding="utf-8").splitlines()
                if "\t" in l and not l.startswith("#")][1].split("\t")
         assert float(row[3]) == pytest.approx(1.25, rel=1e-9)   # x (mm)
         assert float(row[6]) == pytest.approx(-0.5, rel=1e-9)   # x' (mrad)
@@ -123,7 +123,7 @@ class TestWriterSchema:
         # k = (180/π)·1e-3 / β deg/mm.
         out = write_partran_out(_results(4), lattice=None, beam_cfg=None,
                                 path=tmp_path / "p.out")
-        rows = [l for l in out.read_text().splitlines()
+        rows = [l for l in out.read_text(encoding="utf-8").splitlines()
                 if "\t" in l and not l.startswith("#")]
         k_expected = (180.0 / math.pi) * 1e-3 / 2.0
         first = rows[0].split("\t")
@@ -151,7 +151,7 @@ class TestWriterSchema:
         res.element_exit_idx = [2, 4]
         out = write_partran_out(res, lattice=None, beam_cfg=None,
                                 path=tmp_path / "p.out")
-        rows = [l for l in out.read_text().splitlines()
+        rows = [l for l in out.read_text(encoding="utf-8").splitlines()
                 if "\t" in l and not l.startswith("#")]
         assert len(rows) == 3                       # INPUT + 2 elements
         assert int(float(rows[1].split("\t")[0])) == 1
@@ -165,7 +165,7 @@ class TestWriterSchema:
         res.ref_frequency = [162.5, 162.5, 325.0]
         out = write_partran_out(res, lattice=None, beam_cfg=None,
                                 path=tmp_path / "p.out")
-        rows = [l for l in out.read_text().splitlines()
+        rows = [l for l in out.read_text(encoding="utf-8").splitlines()
                 if "\t" in l and not l.startswith("#")]
         sz_low = float(rows[1].split("\t")[39])
         sz_high = float(rows[2].split("\t")[39])
@@ -191,7 +191,7 @@ class TestValueLevelColumnsAgainstFixture:
     def test_fixture_identities_hold(self):
         # Independent arithmetic pin of the three identities on the
         # genuine row at s = 0.1774220 m.
-        raw = [l.split() for l in _FIXTURE.read_text().splitlines()
+        raw = [l.split() for l in _FIXTURE.read_text(encoding="utf-8").splitlines()
                if l and not l.startswith("#")]
         data = []
         for r in raw:
@@ -222,7 +222,7 @@ class TestValueLevelColumnsAgainstFixture:
         res.emit_4d = [0.25] * 3
         out = write_partran_out(res, lattice=None, beam_cfg=None,
                                 path=tmp_path / "p.out")
-        row = [l for l in out.read_text().splitlines()
+        row = [l for l in out.read_text(encoding="utf-8").splitlines()
                if "\t" in l and not l.startswith("#")][1].split("\t")
         bg = 0.07 * 1.0027
         assert float(row[17]) == pytest.approx(0.1, rel=1e-9)     # ep RAW
@@ -236,7 +236,7 @@ class TestValueLevelColumnsAgainstFixture:
     def test_writer_emits_parameter_line(self, tmp_path):
         out = write_partran_out(_results(2), lattice=None, beam_cfg=None,
                                 path=tmp_path / "p.out")
-        lines = [l for l in out.read_text().splitlines()
+        lines = [l for l in out.read_text(encoding="utf-8").splitlines()
                  if l and not l.startswith("#")]
         param = lines[0].split()
         assert "\t" not in lines[0] and 3 <= len(param) <= 8

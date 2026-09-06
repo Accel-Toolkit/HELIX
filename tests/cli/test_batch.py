@@ -21,7 +21,7 @@ def test_batch_two_jobs(tmp_path):
     assert rc == 0
     summary = tmp_path / "batch_summary.csv"
     assert summary.is_file()
-    rows = summary.read_text().strip().splitlines()
+    rows = summary.read_text(encoding="utf-8").strip().splitlines()
     assert len(rows) == 3                       # header + 2 jobs
     assert rows[0].startswith("name,input,mode,")
     assert rows[1].startswith("a,")
@@ -36,7 +36,7 @@ def test_batch_bare_list(tmp_path):
     jf.write_text(json.dumps(jobs))
     rc = main(["batch", str(jf), "--out", str(tmp_path), "-q"])
     assert rc == 0
-    assert len((tmp_path / "batch_summary.csv").read_text()
+    assert len((tmp_path / "batch_summary.csv").read_text(encoding="utf-8")
                .strip().splitlines()) == 2
 
 

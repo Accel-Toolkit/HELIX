@@ -393,7 +393,7 @@ def test_dat_round_trip_preserves_foil(tmp_path):
     dat_path = tmp_path / "foil_lattice.dat"
     write_tracewin(src, str(dat_path))
 
-    text = dat_path.read_text()
+    text = dat_path.read_text(encoding="utf-8")
     assert "; HELIX_FOIL STRIP C 600.0" in text
 
     parsed, _meta = parse_tracewin(str(dat_path))
@@ -440,7 +440,7 @@ def test_dat_round_trip_preserves_non_default_straggling(tmp_path):
 
     dat_path = tmp_path / "foil_gaussian.dat"
     write_tracewin(src, str(dat_path))
-    assert "; HELIX_FOIL STRIP C 600.0 gaussian" in dat_path.read_text()
+    assert "; HELIX_FOIL STRIP C 600.0 gaussian" in dat_path.read_text(encoding="utf-8")
 
     parsed, _meta = parse_tracewin(str(dat_path))
     foils = [e for e in parsed.elements if isinstance(e, Foil)]

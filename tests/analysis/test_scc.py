@@ -139,7 +139,7 @@ def test_radial_poisson_matches_closed_form():
 @pytest.mark.skipif(not _VECTORS.is_file(),
                     reason="SCC source repo testvectors not present")
 def test_source_testvector_parity_subset():
-    doc = json.loads(_VECTORS.read_text())
+    doc = json.loads(_VECTORS.read_text(encoding="utf-8"))
     tol = doc["tolerances_rel"]
 
     def close(got, want, rtol):

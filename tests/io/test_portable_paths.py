@@ -104,7 +104,7 @@ def test_writer_relocatable_within_tree(tmp_path, monkeypatch):
     try:
         monkeypatch.chdir(tmp_path)               # unrelated cwd
         write_tracewin(lat, out)
-        lines = out.read_text().splitlines()
+        lines = out.read_text(encoding="utf-8").splitlines()
         fmp = [l for l in lines if l.startswith("FIELD_MAP_PATH")]
         fm = [l for l in lines if l.startswith("FIELD_MAP ")]
         assert len(fmp) == 1                       # one shared directory
@@ -116,7 +116,7 @@ def test_writer_relocatable_within_tree(tmp_path, monkeypatch):
         # write→parse→write is byte-idempotent
         out2 = out_dir / "exported2.dat"
         write_tracewin(lat2, out2)
-        assert out.read_text() == out2.read_text()
+        assert out.read_text(encoding="utf-8") == out2.read_text(encoding="utf-8")
     finally:
         import shutil
         shutil.rmtree(out_dir, ignore_errors=True)
@@ -175,7 +175,7 @@ def test_writer_multiple_map_dirs(tmp_path):
     out = tmp_path / "out" / "multi.dat"
     out.parent.mkdir()
     write_tracewin(lat, out)
-    lines = out.read_text().splitlines()
+    lines = out.read_text(encoding="utf-8").splitlines()
     fmp = [l for l in lines if l.startswith("FIELD_MAP_PATH")]
     assert len(fmp) == 3                           # a → b → a re-emissions
     lat2, _ = parse_tracewin(str(out))

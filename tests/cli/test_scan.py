@@ -8,7 +8,7 @@ _DAT = _REPO / "examples" / "csr_chicane.dat"
 
 
 def _rows(csv_path):
-    return csv_path.read_text().strip().splitlines()
+    return csv_path.read_text(encoding="utf-8").strip().splitlines()
 
 
 def test_scan_beam_param(tmp_path):

@@ -106,7 +106,7 @@ def test_run_tool_read_executes_and_ledgers(tmp_path):
     text = out["content"][0]["text"]
     assert '"status": "ok"' in text
     # ledger recorded exactly this tool call
-    lines = be.session.ledger.path.read_text().splitlines()
+    lines = be.session.ledger.path.read_text(encoding="utf-8").splitlines()
     assert any('"tool": "get_status"' in ln for ln in lines)
 
 

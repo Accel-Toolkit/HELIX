@@ -54,7 +54,7 @@ def test_no_direct_qsettings_constructions_in_gui():
     for py in gui_root.rglob("*.py"):
         if py.name == "app_settings.py":
             continue   # the factory itself
-        tree = ast.parse(py.read_text(), filename=str(py))
+        tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue

@@ -638,5 +638,5 @@ def test_lgproj_round_trip_carries_the_flag(tmp_path):
     for name in ("lebt_plus_rfq.lgproj", "lebt_plus_rfq_66kV.lgproj"):
         p = root / "examples" / "lebt_plus_rfq" / name
         if p.exists():
-            assert json.loads(p.read_text())["beam"]["periodic_phase"] \
+            assert json.loads(p.read_text(encoding="utf-8"))["beam"]["periodic_phase"] \
                 is True, f"{name} should ship with periodic_phase on"

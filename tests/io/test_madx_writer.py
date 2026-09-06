@@ -156,7 +156,7 @@ def test_rbend_imported_line_reexports_as_equivalent_sbend(tmp_path):
     lat, meta = parse_madx(str(src))
     out = tmp_path / "rb_out.madx"
     assert write_madx(lat, out, meta["reference"]) == []
-    txt = out.read_text()
+    txt = out.read_text(encoding="utf-8")
     assert "SBEND" in txt and "RBEND" not in txt
     lat2, _ = parse_madx(str(out))
     for e1, e2 in zip(_physical(lat), _physical(lat2)):
@@ -208,7 +208,7 @@ def test_public_deck_round_trip_matrix_parity(tmp_path, deck, species_list):
         np.testing.assert_allclose(M1, M2, rtol=1e-12, atol=1e-12 * scale)
         # nothing is silently dropped: every command card became a comment
         n_cmd = sum(1 for e in lat.elements if isinstance(e, (LatticeCommand, SpaceChargeComp)))
-        txt = out.read_text()
+        txt = out.read_text(encoding="utf-8")
         assert txt.count("! HELIX:") >= n_cmd
         # warnings, if any, must be about things MAD-X cannot hold
         for w in warnings:
@@ -228,8 +228,8 @@ def test_public_deck_export_is_idempotent(tmp_path, deck, _):
     # same reference both times: the importer's reference takes the first
     # cavity's frequency, which only changes the informational header
     write_madx(lat2, out2, ref, sequence_name="s", title="t")
-    l1 = out1.read_text().splitlines()[1:]      # drop the dated header line
-    l2 = out2.read_text().splitlines()[1:]
+    l1 = out1.read_text(encoding="utf-8").splitlines()[1:]      # drop the dated header line
+    l2 = out2.read_text(encoding="utf-8").splitlines()[1:]
     # comment lines carrying TraceWin commands do not survive an import
     l1 = [x.lower() for x in l1 if not x.strip().startswith("! HELIX:")]
     l2 = [x.lower() for x in l2 if not x.strip().startswith("! HELIX:")]
@@ -242,7 +242,7 @@ def test_matching_cards_become_comments(tmp_path):
     lat = parse_tracewin(str(REPO / "examples/matching_demo.dat"))[0]
     out = tmp_path / "m.madx"
     write_madx(lat, out, _ref())
-    txt = out.read_text()
+    txt = out.read_text(encoding="utf-8")
     assert "! HELIX: ADJUST" in txt and "! HELIX: SET_SIZE" in txt
 
 
@@ -319,7 +319,7 @@ def test_output_is_madx_legal_text(tmp_path):
     lat.add(Marker(name=""))                                       # empty name
     out = tmp_path / "legal.madx"
     write_madx(lat, out, _ref(), sequence_name="1bad name")
-    txt = out.read_text()
+    txt = out.read_text(encoding="utf-8")
     assert "nan" not in txt.lower() and "inf" not in txt.lower()
     stmts = _split_statements(_strip_comments(txt))
     assert stmts[-1].strip().lower().startswith("use, sequence=")
@@ -349,7 +349,7 @@ def test_element_named_like_the_sequence_is_renamed(tmp_path):
     lat.add(Quadrupole("cell", length=100.0, gradient=1.0))
     out = tmp_path / "cell.madx"
     write_madx(lat, out, ReferenceParticle(species=PROTON, w_kin=5.0, frequency=352.21))
-    txt = out.read_text()
+    txt = out.read_text(encoding="utf-8")
     assert "cell: SEQUENCE" in txt
     assert "cell_1: QUADRUPOLE" in txt and "\ncell: QUADRUPOLE" not in txt
 
@@ -390,7 +390,7 @@ def test_reserved_command_and_class_names_are_renamed_and_load(tmp_path):
     lat.add(Quadrupole(name="exit", length=100.0, gradient=1.0))
     out = tmp_path / "res.madx"
     write_madx(lat, out, _ref())
-    txt = out.read_text()
+    txt = out.read_text(encoding="utf-8")
     for nm in ("start", "wire", "run", "proton", "srotation", "exit"):
         assert f"{nm}_el:" in txt and f"\n{nm}:" not in txt
     assert "\nd: DRIFT" in txt
@@ -405,7 +405,7 @@ def test_long_names_are_capped_and_load(tmp_path):
     lat.add(Drift(name="a" * 60 + "b", length=50.0))     # same first 40 chars
     out = tmp_path / "long.madx"
     write_madx(lat, out, _ref())
-    names = [ln.split(":")[0] for ln in out.read_text().splitlines()
+    names = [ln.split(":")[0] for ln in out.read_text(encoding="utf-8").splitlines()
              if ": DRIFT" in ln]
     assert names == ["a" * 40, "a" * 38 + "_1"]          # suffix inside the cap
     assert all(len(n) <= 40 for n in names)
@@ -433,7 +433,7 @@ def test_title_with_comment_characters_survives_reimport(tmp_path):
     lat.add(Drift(name="d", length=100.0))
     out = tmp_path / "t.madx"
     write_madx(lat, out, _ref("H-", 3.0), title='cell "A"; see note! ok')
-    txt = out.read_text()
+    txt = out.read_text(encoding="utf-8")
     assert "!" not in txt.split("TITLE")[1].split("\n")[0]
     back, meta = parse_madx(str(out))
     assert meta["reference"].species.charge == -1          # BEAM line intact
@@ -448,7 +448,7 @@ def test_collimators_carry_madx_aperture_model_and_rect_family(tmp_path):
     lat.add(Aperture(name="f", dx=10.0, dy=9.0, aperture_type=Aperture.FINGER_H))
     out = tmp_path / "ap.madx"
     warnings = write_madx(lat, out, _ref())
-    txt = out.read_text()
+    txt = out.read_text(encoding="utf-8")
     assert "r: RCOLLIMATOR, xsize=0.012, ysize=0.008, apertype=rectangle, aperture={0.012, 0.008};" in txt
     assert "c: ECOLLIMATOR, xsize=0.015, ysize=0.015, apertype=circle, aperture={0.015};" in txt
     assert "f: RCOLLIMATOR, xsize=0.01, ysize=0.009" in txt
@@ -481,7 +481,7 @@ def test_commands_between_edge_and_bend_do_not_break_folding(tmp_path):
     lat.add(e2)
     out = tmp_path / "fold.madx"
     warnings = write_madx(lat, out, _ref())
-    txt = out.read_text()
+    txt = out.read_text(encoding="utf-8")
     assert txt.count("SBEND") == 1 and "MARKER" not in txt
     assert "! HELIX: FREQ" in txt
     assert [w for w in warnings if "MARKER" in w] == []
@@ -501,7 +501,7 @@ def test_split_bend_shares_one_edge_pair(tmp_path):
         lat.add(e)
     out = tmp_path / "split.madx"
     warnings = write_madx(lat, out, _ref())
-    txt = out.read_text()
+    txt = out.read_text(encoding="utf-8")
     assert txt.count("SBEND") == 2 and "MARKER" not in txt
     assert any("share one EDGE pair" in w for w in warnings)
     b_line = [ln for ln in txt.splitlines() if ": SBEND" in ln]
@@ -542,7 +542,7 @@ def test_negative_angle_edges_export_with_madx_sign_convention(tmp_path):
         lat.add(e)
     out = tmp_path / "neg.madx"
     write_madx(lat, out, _ref())
-    line = [ln for ln in out.read_text().splitlines() if ": SBEND" in ln][0]
+    line = [ln for ln in out.read_text(encoding="utf-8").splitlines() if ": SBEND" in ln][0]
     assert "e1=-0.0349" in line and "e2=-0.0349" in line and "tilt=pi/2" in line
     back, meta = parse_madx(str(out))
     edges = [e for e in back.elements if isinstance(e, Edge)]
@@ -603,4 +603,4 @@ def test_error_study_definitions_are_reported_not_dropped_silently(tmp_path):
     warnings = write_madx(lat, out, _ref())
     assert any("ERROR_*" in w and "EALIGN" in w for w in warnings)
     n = len(lat.errors)                       # one ErrorDef per non-zero slot
-    assert f"! HELIX: {n} ERROR_* element + 0 beam error definitions" in out.read_text()
+    assert f"! HELIX: {n} ERROR_* element + 0 beam error definitions" in out.read_text(encoding="utf-8")

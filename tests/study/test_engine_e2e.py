@@ -58,10 +58,10 @@ class TestEnvelopeE2E:
         assert len(run_dirs) == 3
         for rd in run_dirs:
             assert (rd / "results.h5").exists()
-            st = json.loads((rd / "status.json").read_text())
+            st = json.loads((rd / "status.json").read_text(encoding="utf-8"))
             assert st["status"] == "ok"
             assert st["metrics"]["sigma_x"] is not None
-        rows = (sd / "summary" / "summary.csv").read_text().splitlines()
+        rows = (sd / "summary" / "summary.csv").read_text(encoding="utf-8").splitlines()
         assert len(rows) == 4                       # header + 3
         assert "sx_mid" in rows[0]
         # physics: stronger focusing quad -> smaller sigma_x at exit
@@ -90,7 +90,7 @@ class TestEnvelopeE2E:
         mgr2.run(serial=True)
         assert not (victim / "results.h5.part").exists()
         assert json.loads(
-            (victim / "status.json").read_text())["status"] == "ok"
+            (victim / "status.json").read_text(encoding="utf-8"))["status"] == "ok"
 
     def test_lattice_drift_refused(self, tmp_path, deck):
         _run(tmp_path, deck)
@@ -101,7 +101,7 @@ class TestEnvelopeE2E:
     def test_spec_edit_refused(self, tmp_path, deck):
         _run(tmp_path, deck)
         sp = tmp_path / "study" / "study.json"
-        doc = json.loads(sp.read_text())
+        doc = json.loads(sp.read_text(encoding="utf-8"))
         doc["parameters"][0]["n"] = 5
         sp.write_text(json.dumps(doc))
         with pytest.raises(RuntimeError, match="run plan"):
@@ -127,10 +127,10 @@ class TestMpE2E:
         assert len(mgr.pending()) == 0
         st = json.loads(
             (sorted((tmp_path / "study" / "runs").iterdir())[0]
-             / "status.json").read_text())
+             / "status.json").read_text(encoding="utf-8"))
         assert st["status"] == "ok"
         assert st["metrics"]["transmission"] is not None
-        seeds = {json.loads((rd / "status.json").read_text())["seed"]
+        seeds = {json.loads((rd / "status.json").read_text(encoding="utf-8"))["seed"]
                  for rd in (tmp_path / "study" / "runs").iterdir()}
         assert seeds == {42, 43}
 
@@ -158,7 +158,7 @@ class TestValidation:
                      "n_particles": 400, "cutoff": -4.0}
         mgr = StudyManager.create(tmp_path / "study", spec)
         mgr.run(serial=True)
-        stats = [json.loads((rd / "status.json").read_text())["status"]
+        stats = [json.loads((rd / "status.json").read_text(encoding="utf-8"))["status"]
                  for rd in sorted((tmp_path / "study" / "runs").iterdir())]
         assert stats == ["failed"] * 3
         # --retry-failed re-queues them

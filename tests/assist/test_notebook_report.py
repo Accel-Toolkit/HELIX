@@ -54,7 +54,7 @@ def test_session_summary_and_new_session_memory(tmp_path):
                      approver=lambda r: Decision.APPROVE, provider=prov)
     s.ask("go")
     s.close()
-    nb = (tmp_path / "assist_notebook.md").read_text()
+    nb = (tmp_path / "assist_notebook.md").read_text(encoding="utf-8")
     assert "## Session" in nb and "notebook_note" in nb
     assert "Concluded: matched." in nb
     s2 = AgentSession(AssistConfig(provider="anthropic", model="m",

@@ -61,7 +61,7 @@ def test_save_move_load_round_trip(win, tmp_path):
     shutil.copytree(a, b)
     shutil.rmtree(a)                                # original gone
 
-    win._apply_project_dict(json.loads((b / "p.lgproj").read_text()),
+    win._apply_project_dict(json.loads((b / "p.lgproj").read_text(encoding="utf-8")),
                             project_path=str(b / "p.lgproj"), silent=True)
     assert win.state.lattice_path is not None
     assert os.path.realpath(win.state.lattice_path) == \

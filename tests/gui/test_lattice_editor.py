@@ -123,7 +123,7 @@ def test_param_change_coalesces_within_600ms(mini_lattice):
 def test_save_reload_roundtrip_with_rfq_cell(rfq_lattice, tmp_path):
     fp = tmp_path / "rfq.dat"
     write_tracewin(rfq_lattice, fp)
-    txt = fp.read_text()
+    txt = fp.read_text(encoding="utf-8")
     # Writer must have emitted at least one RFQ_CELL card.
     assert "RFQ_CELL" in txt
     # Re-parse and confirm the chain made it back round-trip clean.

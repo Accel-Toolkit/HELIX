@@ -133,7 +133,7 @@ def test_new_project_import_materialises_a_foreign_deck(qapp, tmp_path):
     kinds = [type(e).__name__ for e in lat.elements]
     assert kinds.count("Quadrupole") == 2 and kinds.count("Dipole") == 2
     assert sum(e.length for e in lat.elements) == pytest.approx(6600.0, rel=1e-9)
-    assert FODO_JL.read_text().startswith("# ====")      # the source is untouched
+    assert FODO_JL.read_text(encoding="utf-8").startswith("# ====")      # the source is untouched
 
 
 def test_new_project_rejects_an_unknown_suffix(qapp, tmp_path, monkeypatch):

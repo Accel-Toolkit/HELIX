@@ -552,7 +552,7 @@ def test_assistant_param_edit_goes_through_command_bus(win, qapp, tmp_path):
         recs = []
         for p in (tmp_path / "assist_sessions").glob("*.jsonl"):
             recs += [_json.loads(ln)
-                     for ln in p.read_text().splitlines() if ln]
+                     for ln in p.read_text(encoding="utf-8").splitlines() if ln]
         tool_recs = [r for r in recs if r.get("event") == "tool"
                      and r.get("tool") == "set_element_param"]
         assert tool_recs and tool_recs[0]["status"] == "ok"

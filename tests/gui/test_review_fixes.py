@@ -206,7 +206,7 @@ def test_save_lattice_routes_madx_to_save_as(qapp, mini_lattice, monkeypatch,
                             lambda: routed.append(True))
         win._save_lattice()
         assert routed, ".madx path must route to Save-As"
-        assert src.read_text() == "! madx source — must survive Ctrl+S"
+        assert src.read_text(encoding="utf-8") == "! madx source — must survive Ctrl+S"
 
         # A .dat path still writes in place.
         written = []

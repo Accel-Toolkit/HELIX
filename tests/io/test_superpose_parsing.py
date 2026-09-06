@@ -223,7 +223,7 @@ def test_round_trip_byte_idempotent(maps):
     assert [z0 for z0, _c in sup.children] == [0.0, 100.0]
     out2 = maps / "rt2.dat"
     write_tracewin(lat2, str(out2))
-    assert out1.read_text() == out2.read_text()
+    assert out1.read_text(encoding="utf-8") == out2.read_text(encoding="utf-8")
 
 
 def test_round_trip_single_pair_provenance(maps):
@@ -236,7 +236,7 @@ def test_round_trip_single_pair_provenance(maps):
         "DRIFT 100 16 0\nEND\n")
     out = maps / "rt.dat"
     write_tracewin(lat, str(out))
-    text = out.read_text()
+    text = out.read_text(encoding="utf-8")
     assert "SUPERPOSE_MAP 0\nFIELD_MAP 10" in text
     lat2, _ = parse_tracewin(str(out))
     fm = next(e for e in lat2.elements if isinstance(e, FieldMap))
@@ -294,7 +294,7 @@ def test_shift_round_trip_byte_idempotent(maps):
     lat, _ = _parse(maps, _SHIFT_DECK)
     out1 = maps / "shift_rt1.dat"
     write_tracewin(lat, str(out1))
-    text = out1.read_text()
+    text = out1.read_text(encoding="utf-8")
     assert "SHIFT_IN_FIELD_MAP 200\nDIAG_SIZE 2" in text
     lat2, meta2 = parse_tracewin(str(out1))
     assert meta2["warnings"] == []
@@ -303,7 +303,7 @@ def test_shift_round_trip_byte_idempotent(maps):
     assert [dz for dz, _m in sup2.interior_markers] == [200.0, 360.0]
     out2 = maps / "shift_rt2.dat"
     write_tracewin(lat2, str(out2))
-    assert out1.read_text() == out2.read_text()
+    assert out1.read_text(encoding="utf-8") == out2.read_text(encoding="utf-8")
 
 
 def test_shift_before_plain_map_wraps_container(maps):
@@ -440,11 +440,11 @@ def test_shift_wrapped_plain_map_writes_plain_card(maps):
     assert meta["warnings"] == []
     out1 = maps / "wrap_rt1.dat"
     write_tracewin(lat, str(out1))
-    text = out1.read_text()
+    text = out1.read_text(encoding="utf-8")
     assert "SUPERPOSE_MAP" not in text
     assert "SHIFT_IN_FIELD_MAP 150\nDIAG_SIZE 2" in text
     lat2, meta2 = parse_tracewin(str(out1))
     assert meta2["warnings"] == []
     out2 = maps / "wrap_rt2.dat"
     write_tracewin(lat2, str(out2))
-    assert out1.read_text() == out2.read_text()
+    assert out1.read_text(encoding="utf-8") == out2.read_text(encoding="utf-8")

@@ -144,7 +144,7 @@ def test_explicit_matrix_round_trips_exactly(tmp_path, species, with_offset):
     lat.add(Quadrupole("q", length=100.0, gradient=2.0))
     out = tmp_path / "lin.madx"
     warnings = write_madx(lat, out, ref, linearize=True)
-    txt = out.read_text()
+    txt = out.read_text(encoding="utf-8")
     assert "mx: MATRIX, l=0.25" in txt and "MARKER" not in txt
     assert [w for w in warnings if "linearised as MAD-X MATRIX" in w]
     assert not [w for w in warnings if "reference energy gain" in w]
@@ -177,7 +177,7 @@ def test_explicit_matrix_energy_offset_is_a_kick6(tmp_path):
     out = tmp_path / "off.madx"
     write_madx(lat, out, ref, linearize=True)
     p0c = ref.bg * PROTON.mass
-    assert f"kick6={0.25 / p0c!r}" in out.read_text()
+    assert f"kick6={0.25 / p0c!r}" in out.read_text(encoding="utf-8")
     back, meta = parse_madx(str(out))
     m1, m2 = _matrix_elements(back)
     np.testing.assert_allclose(m1.matrix, M, rtol=0, atol=1e-13)
@@ -201,7 +201,7 @@ def test_field_map_static_regime(tmp_path):
     assert "linearised as MAD-X MATRIX" in warnings[0]
     assert "reference energy gain" not in warnings[0]
     assert "symplectic error" in warnings[0]
-    assert "kick" not in out.read_text().split("MATRIX")[1].split(";")[0]
+    assert "kick" not in out.read_text(encoding="utf-8").split("MATRIX")[1].split(";")[0]
     back, meta = parse_madx(str(out))
     assert meta["warnings"] == []
     (me,) = _matrix_elements(back)
@@ -242,7 +242,7 @@ def test_field_map_accelerating_regime(tmp_path):
     assert dW != 0.0
     assert np.linalg.det(M[:2, :2]) != pytest.approx(1.0, abs=1e-6)   # adiabatic damping
     p0c = ref.bg * PROTON.mass
-    assert f"kick6={dW / p0c!r}" in out.read_text()
+    assert f"kick6={dW / p0c!r}" in out.read_text(encoding="utf-8")
     # canonical form: the exit-angle rescaling removes the adiabatic
     # damping factor p_in/p_out from the x block (what remains, ~1e-5, is
     # the hard-edged box field's own non-Maxwellian / integration error).
@@ -266,7 +266,7 @@ def test_linearize_does_not_touch_supported_elements(tmp_path):
     kw = dict(sequence_name="fodo", title="fodo")
     assert write_madx(lat, a, ref, **kw) == []
     assert write_madx(lat, b, ref, linearize=True, **kw) == []
-    assert a.read_text() == b.read_text()
+    assert a.read_text(encoding="utf-8") == b.read_text(encoding="utf-8")
 
 
 def test_thin_lens_is_linearised_but_foil_and_electric_steerer_are_not(tmp_path):
@@ -278,7 +278,7 @@ def test_thin_lens_is_linearised_but_foil_and_electric_steerer_are_not(tmp_path)
     lat.add(Foil("foil", thickness=1.0)) if _foil_ok() else None
     out = tmp_path / "mix.madx"
     warnings = write_madx(lat, out, ref, linearize=True)
-    txt = out.read_text()
+    txt = out.read_text(encoding="utf-8")
     assert "tl: MATRIX" in txt
     assert "es: MARKER" in txt
     assert any("es" in w and "MARKER" in w for w in warnings)

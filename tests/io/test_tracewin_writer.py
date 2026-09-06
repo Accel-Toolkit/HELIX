@@ -698,7 +698,7 @@ def test_fieldmap_spaced_path_round_trip(tmp_path):
     assert len(_field_maps(lat1)) == 1 and not m1.get("warnings")
     out = tmp_path / "out.dat"
     write_tracewin(lat1, str(out))
-    assert '"' in out.read_text()          # spaced path emitted quoted
+    assert '"' in out.read_text(encoding="utf-8")          # spaced path emitted quoted
     lat2, m2 = parse_tracewin(str(out))
     assert not m2.get("warnings"), m2.get("warnings")
     assert len(_field_maps(lat2)) == 1

@@ -88,6 +88,6 @@ def test_overrides_not_serialized_by_writer(tmp_path):
     apply_diag_targets(lat, [(1.234, -5.678, None)])
     out = tmp_path / "o.dat"
     write_tracewin(lat, str(out))
-    txt = out.read_text()
+    txt = out.read_text(encoding="utf-8")
     assert "1.234" not in txt and "5.678" not in txt
     assert "9" in txt                         # deck targets still emitted

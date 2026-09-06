@@ -457,7 +457,7 @@ def test_load_surrogate_computes_weights_sha256(tmp_path):
     # never TRUSTED from metadata.json: plant a bogus stored hash and
     # re-load — the recomputed value must win
     mj = tmp_path / "surr" / "metadata.json"
-    d = json.loads(mj.read_text())
+    d = json.loads(mj.read_text(encoding="utf-8"))
     d["weights_sha256"] = "deadbeef" * 8
     mj.write_text(json.dumps(d))
     with warnings.catch_warnings():

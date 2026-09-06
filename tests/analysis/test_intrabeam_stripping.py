@@ -56,7 +56,7 @@ def _build_mock_from_partran(path: Path) -> tuple[_MockResults, _MockBeamConfig]
     analyzer's dp/p → dv/v conversion lands on the same θ_s Ostiguy
     used internally.
     """
-    lines = path.read_text().splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     fields0 = lines[1].split()
     mass_mev = float(fields0[0])
     f_mhz = float(fields0[1])

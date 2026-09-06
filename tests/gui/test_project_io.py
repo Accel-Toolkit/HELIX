@@ -80,7 +80,7 @@ def test_save_project_cancels_on_missing_section(win, monkeypatch, tmp_path):
     win._save_project()
     assert target.exists()
     import json
-    assert "beam" not in json.loads(target.read_text())
+    assert "beam" not in json.loads(target.read_text(encoding="utf-8"))
 
 
 def test_project_load_consolidates_section_warnings(win, monkeypatch):
@@ -157,7 +157,7 @@ def test_openpmd_export_extension_and_overwrite_guard(win, monkeypatch,
     _pick("taken")
     win._export_openpmd()
     assert len(saved) == n_before
-    assert (tmp_path / "taken.opmd.h5").read_text() == "precious"
+    assert (tmp_path / "taken.opmd.h5").read_text(encoding="utf-8") == "precious"
 
 
 def test_mismatch_spin_cannot_reach_invalid_floor(qapp):
@@ -246,7 +246,7 @@ def test_export_madx_never_overwrites_the_imported_source(win, monkeypatch, tmp_
 
     repo = Path(__file__).resolve().parents[2]
     src = tmp_path / "ring.madx"
-    src.write_text((repo / "examples" / "madx" / "fodo.madx").read_text())
+    src.write_text((repo / "examples" / "madx" / "fodo.madx").read_text(encoding="utf-8"))
     lat, meta = parse_madx(str(src))
     win.state.set_lattice(lat, str(src))
     win.state.set_beam_config(replace(BeamConfig(), species="proton",
@@ -259,11 +259,11 @@ def test_export_madx_never_overwrites_the_imported_source(win, monkeypatch, tmp_
         app_mod.QMessageBox, "warning",
         staticmethod(lambda *a, **k: warned.append(a[1])
                      or app_mod.QMessageBox.StandardButton.Ok))
-    before = src.read_text()
+    before = src.read_text(encoding="utf-8")
     win._export_madx()
     assert proposed[-1].endswith("ring_helix.madx")
     assert warned == ["Export refused"]
-    assert src.read_text() == before
+    assert src.read_text(encoding="utf-8") == before
 
 
 def test_drift_single_push_round_trips_through_the_project(win):

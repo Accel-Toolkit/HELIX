@@ -36,7 +36,7 @@ def test_export_from_project_uses_its_beam(tmp_path, monkeypatch):
     out = tmp_path / "chicane.seq"
     rc = main(["export", str(_LGPROJ), str(out), "-q"])
     assert rc == 0
-    txt = out.read_text()
+    txt = out.read_text(encoding="utf-8")
     assert "BEAM, particle=ion" in txt and "charge=-1" in txt  # H- project
     assert "SBEND" in txt
 
@@ -79,12 +79,12 @@ def test_strict_refuses_unrepresentable_elements(tmp_path, capsys):
 
 def test_output_equal_to_input_is_refused(tmp_path, capsys):
     src = tmp_path / "ring.madx"
-    src.write_text((_REPO / "examples" / "madx" / "fodo.madx").read_text())
-    before = src.read_text()
+    src.write_text((_REPO / "examples" / "madx" / "fodo.madx").read_text(encoding="utf-8"))
+    before = src.read_text(encoding="utf-8")
     rc = main(["export", str(src), str(src), "--energy", "3"])
     assert rc == 2
     assert "never overwritten" in capsys.readouterr().err
-    assert src.read_text() == before
+    assert src.read_text(encoding="utf-8") == before
 
 
 def test_linearize_flag_exports_explicit_matrix_as_madx_matrix(tmp_path, capsys):
@@ -101,7 +101,7 @@ def test_linearize_flag_exports_explicit_matrix_as_madx_matrix(tmp_path, capsys)
     assert rc == 0
     err = capsys.readouterr().err
     assert "MARKER + body DRIFT" in err
-    assert "MATRIX" not in out.read_text()
+    assert "MATRIX" not in out.read_text(encoding="utf-8")
     rc = main(["export", str(lte), str(out), "--energy", "5", "--linearize", "-q"])
     assert rc == 0
     err = capsys.readouterr().err
