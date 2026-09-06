@@ -88,8 +88,11 @@ def test_scalar_vmax_clips_kicks():
     )
     assert abs(kicks["STEER_1"]["bx_l"]) <= 1e-6 + 1e-12
     assert abs(kicks["STEER_1"]["by_l"]) <= 1e-6 + 1e-12
-    # Stalled at saturation: history records n_saturated > 0 in late iters.
+    # Stalled at saturation: history records n_saturated > 0 in late iters
+    # AND the loop's stall detector names the stop reason explicitly
+    # (all steerers at vmax, rms no longer improving by >= 10 %).
     assert any(h["n_saturated"] > 0 for h in hist)
+    assert hist[-1]["stop_reason"] == "saturated"
 
 
 def test_dict_vmax_per_steerer():
@@ -173,3 +176,36 @@ def test_no_hook_is_unchanged():
                            should_stop=None)
     kicks, hist = out
     assert "STEER_1" in kicks and len(hist) >= 1
+
+
+# ---------------------------------------------------------------------
+# Downstream-only loss: converged AND beam_lost_at can coexist
+# ---------------------------------------------------------------------
+def test_downstream_only_loss_coexists_with_converged():
+    """Beam lost strictly AFTER the last BPM: every used BPM reads an
+    alive beam (``n_dead_bpms == 0``) so the run converges normally —
+    but ``_beam_lost_at`` scans the WHOLE record, so ``beam_lost_at``
+    still names the downstream element.  ``correction_status`` forwards
+    both: ``status == "converged"`` with a non-None ``beam_lost_at``
+    (the old docstring claim that a beam-lost run can never be
+    converged only holds for losses at or before a used BPM)."""
+    from linac_gen.errors.correction import correction_status
+
+    lat = _fodo_with_pair()
+    # Killer aperture strictly after BPM_1 — no particle survives it.
+    lat.add(Drift("COLL_KILL", 100.0, aperture=1e-6))
+
+    kicks, hist = apply_correction(
+        lat, _factory(), n_iter=5, tol_mm=0.05, history=True,
+    )
+    assert "STEER_1" in kicks
+    last = hist[-1]
+    assert last["stop_reason"] == "converged"
+    assert last["n_dead_bpms"] == 0            # BPM readings all alive
+    assert last["beam_lost_at"] == "COLL_KILL"  # downstream loss visible
+    assert last["transmission_pct"] == 0.0
+
+    st = correction_status(hist)
+    assert st["status"] == "converged"
+    assert st["converged"] is True
+    assert st["beam_lost_at"] == "COLL_KILL"

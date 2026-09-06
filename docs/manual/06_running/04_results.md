@@ -146,7 +146,8 @@ records what `lattice_sha256` does **not** cover: SHA-256 hashes of the
 resolved **field-map data files** and (via `input_beam_path=`) an
 imported beam file, the **parser downgrade ledger** (`parse_downgrades`
 — attached to the lattice by the CLI loader), the diagnostic cadence
-(`integration_steps_per_metre` / `sc_steps_per_metre`), the effective
+(`integration_steps_per_metre` / `sc_steps_per_metre` /
+`drift_single_push`), the effective
 FP precision (`fp_dtype`), the contractual OpenMP `schedule(static)`
 clause (`omp_schedule`), and a manifest of every **registered
 surrogate** (element key, class, training seed, validation MAPE) that

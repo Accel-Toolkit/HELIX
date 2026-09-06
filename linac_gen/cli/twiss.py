@@ -21,7 +21,7 @@ from linac_gen.cli import common
 
 def add_arguments(p) -> None:
     """Populate the ``twiss`` sub-parser."""
-    p.add_argument("input", help="a .lgproj project or a .dat/.madx lattice")
+    p.add_argument("input", help="a .lgproj project or a lattice file (.dat, .madx, .lat, .lte; .bmad/.jl/.pals.yaml via lattix)")
     p.add_argument("--mode", choices=("whole", "cell"), default="cell",
                    help="'whole' = whole-lattice periodic Twiss (a ring); "
                         "'cell' = FODO-cell match back-propagated to the "

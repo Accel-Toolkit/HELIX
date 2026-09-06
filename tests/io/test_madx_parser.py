@@ -241,3 +241,18 @@ def test_tracewin_parser_untouched(rel, expect):
     from linac_gen.io.tracewin_parser import parse_tracewin
     lat, _ = parse_tracewin(str(_REPO / rel))
     assert len(lat.elements) == expect
+
+
+def test_comment_markers_inside_quoted_title_are_kept(tmp_path):
+    """A ``!`` or ``//`` inside a quoted TITLE is text, not a comment —
+    the BEAM statement after it used to be swallowed (1 GeV default)."""
+    path = tmp_path / "t.madx"
+    path.write_text('TITLE, "cell A! see http://x // note";\n'
+                    "beam, particle=proton, energy=0.94327208816;  ! real comment\n"
+                    "d: drift, l=0.5;\n"
+                    "s: sequence, refer=entry, l=0.5; d, at=0; endsequence;\n"
+                    "use, sequence=s;\n")
+    lat, meta = parse_madx(str(path))
+    assert meta["title"] == "cell A! see http://x // note"
+    assert meta["reference"].w_kin == pytest.approx(5.0, rel=1e-9)
+    assert len(lat.elements) == 1

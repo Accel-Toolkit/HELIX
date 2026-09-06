@@ -9,7 +9,10 @@ python -m linac_gen run <input> [options]
 ```
 
 `<input>` is a `.dat` / `.madx` / `.seq` / `.lat` / `.flat` / `.lte`
-lattice or a `.lgproj` project.
+lattice (or, with the optional lattix translator, a `.bmad` / `.jl` /
+`.pals.yaml` one — see [Importing Bmad, SciBmad and PALS
+lattices](02_tracewin_dat.md#importing-bmad-scibmad-and-pals-lattices-via-lattix))
+or a `.lgproj` project.
 
 ## Options
 
@@ -47,6 +50,7 @@ lattice or a `.lgproj` project.
 | `--grid-extent` | float | PIC grid extent, in σ |
 | `--step1` | float | integration steps per metre |
 | `--step2` | float | space-charge kicks per metre |
+| `--drift-single-push` | `on` \| `off` | push a field-free drift once when no space charge, sub-step diagnostics or phase fold sits between its sub-steps, losses located analytically (default: project value, else `on`; `off` = the sub-stepped walk of HELIX ≤ 1.9.1) |
 | `--kernel` | `cic` \| `tsc` | PIC deposit kernel |
 | `--backend` | `auto` \| `cpu` \| `gpu` | compute backend |
 | `--sc` | `NAME=VALUE` | any other `SpaceChargeConfig` field — repeatable |

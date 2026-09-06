@@ -1018,13 +1018,143 @@ class Tracker:
         if n_int > n_bundles * sc_every:
             self._check_aperture(element)
 
+    def _space_charge_active(self) -> bool:
+        """True when ``_apply_sc_kick`` would actually kick — the same gates it
+        applies (explicit off, full compensation, zero current, DC kernels need
+        no solver, bunched beams need a PIC solver)."""
+        if self._sc_explicitly_off or self._sc_factor <= 0:
+            return False
+        if float(getattr(self.beam, "current", 0.0) or 0.0) == 0.0:
+            return False
+        if getattr(self.beam, "continuous", False):
+            return True
+        return self.pic_solver is not None
+
+    def _drift_single_push(self, element) -> bool:
+        """``StepConfig.drift_single_push``: a drift needs sub-steps only for what
+        happens BETWEEN them — space-charge kicks, sub-step diagnostics, the
+        bunch-train phase fold, the multibunch snapshot ordinal that a PIC
+        solver with train hooks advances on every call.  With none of those
+        active the exact map is applied once (losses inside the pipe are then
+        located analytically, see ``_freeze_analytic_drift_losses``)."""
+        cfg = getattr(self.lattice, "step_config", None)
+        if not getattr(cfg, "drift_single_push", True):     # a config lacking the field: the default (on)
+            return False
+        if self._space_charge_active() or self._record_substeps:
+            return False
+        if self._periodic_phase and getattr(self.beam, "bunch_train", False):
+            return False
+        ps = self.pic_solver
+        if ps is not None and (getattr(ps, "train_snapshot_recorder", None) is not None
+                               or getattr(ps, "train_neighbor_provider", None) is not None):
+            return False
+        if getattr(element, "field_data", None) is not None:   # never set on a Drift; defensive
+            return False
+        return True
+
+    def _push_drift_once(self, element) -> None:
+        """The single-push walk of a drift: analytic losses, one map, exit check."""
+        s_entry = self.beam.ref.s
+        if float(getattr(element, "aperture", 0.0) or 0.0) > 0.0:
+            self._freeze_analytic_drift_losses(element, s_entry)
+        element.track(self.beam, ds=element.length)
+        self._check_aperture(element)          # element-frame exit check (rounding stragglers)
+
+    def _freeze_analytic_drift_losses(self, element, s_entry: float) -> None:
+        """Locate, freeze and record every alive particle that leaves the pipe
+        inside a field-free drift, from its straight-line trajectory.
+
+        Runs in the element frame (after ``_track_element``'s misalignment
+        pre-transform), so the wall coordinates match what the sub-stepped
+        walk records.  Units: x, y mm; x', y' mrad (``u = x'·1e-3`` mm per mm);
+        the strict outside test of ``_check_aperture`` is kept:
+          * circular pipe of radius ``a``: r²(s) = A s² + B s + C with
+            A = u²+w², B = 2(x·u + y·w), C = x²+y²−a²; outside at entry
+            (C > 0) → lost at s = 0; else the larger root, in the
+            cancellation-free form; A = 0 never crosses;
+          * rectangular pipe (``aperture_y`` > 0): per plane the linear
+            crossing of ±half-width, the earlier of the two planes.
+        A particle is lost when its crossing lies strictly inside (0, L);
+        it is moved to the crossing point (x, y on the wall, x', y', ΔW
+        unchanged, phase advanced as the drift map would over that length)
+        and recorded at ``s_entry + s_cross``.  A particle outside at entry
+        is recorded at ``s_entry``.  Survivors are untouched here and are
+        pushed by the caller with the full map.
+        """
+        beam = self.beam
+        alive_idx = np.where(beam.alive_mask)[0]
+        if len(alive_idx) == 0:
+            return
+        P = beam.particles
+        L = float(element.length)
+        a = float(element.aperture)
+        x0 = P[alive_idx, 0]
+        u = P[alive_idx, 1] * 1e-3
+        y0 = P[alive_idx, 2]
+        w = P[alive_idx, 3] * 1e-3
+        inf = np.inf
+        ap_y = getattr(element, "aperture_y", None)
+        # non-finite coordinates or angles (a diverged particle) take no part in the
+        # algebra: they are left to the exit check, exactly as the sub-stepped walk
+        with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
+            if ap_y is not None and ap_y > 0.0:
+                def plane(q0, v, h):
+                    sc = np.full(q0.shape, inf)
+                    outside = np.abs(q0) > h
+                    sc[outside] = 0.0
+                    pos = (~outside) & (v > 0.0)
+                    neg = (~outside) & (v < 0.0)
+                    sc[pos] = (h - q0[pos]) / v[pos]
+                    sc[neg] = (-h - q0[neg]) / v[neg]
+                    return sc
+                s_cross = np.minimum(plane(x0, u, a), plane(y0, w, float(ap_y)))
+            else:
+                A = u * u + w * w
+                B = 2.0 * (x0 * u + y0 * w)
+                C = x0 * x0 + y0 * y0 - a * a
+                s_cross = np.full(x0.shape, inf)
+                s_cross[C > 0.0] = 0.0
+                m = (C <= 0.0) & (A > 0.0)
+                if np.any(m):
+                    Am, Bm, Cm = A[m], B[m], C[m]
+                    sq = np.sqrt(np.maximum(Bm * Bm - 4.0 * Am * Cm, 0.0))
+                    # the non-negative root in two forms so neither suffers cancellation;
+                    # B + sq > 0 whenever B > 0, the guard only silences the unused branch
+                    den = np.where(Bm > 0.0, Bm + sq, 1.0)
+                    s_plus = np.where(Bm > 0.0, -2.0 * Cm / den, (sq - Bm) / (2.0 * Am))
+                    s_cross[m] = np.maximum(s_plus, 0.0)
+            s_cross[~np.isfinite(s_cross)] = inf
+        lost = s_cross < L
+        if not np.any(lost):
+            return
+        # record in order of s so loss_table["s"] stays non-decreasing, as the
+        # sub-stepped walk (bundle by bundle) produced it
+        order = np.argsort(s_cross[lost], kind="stable")
+        idx = alive_idx[lost][order]
+        s_l = s_cross[lost][order]
+        # move to the crossing point: the drift map over s_l (same expression
+        # order as Drift.transfer_matrix / Drift.track)
+        ref = beam.ref
+        P[idx, 0] = P[idx, 0] + P[idx, 1] * 1e-3 * s_l
+        P[idx, 2] = P[idx, 2] + P[idx, 3] * 1e-3 * s_l
+        m45 = -360.0 * s_l / (ref.beta ** 3 * ref.gamma ** 3 * ref.species.mass * ref.wavelength)
+        P[idx, 4] = P[idx, 4] + m45 * P[idx, 5]
+        for i, si in zip(idx, s_l):
+            beam.record_loss(int(i), s_entry + float(si), element.name)
+
     def _track_drift(self, element) -> None:
         """Drift integration on the global step1/step2 grid.
 
         Drifts have an exact analytic map, so sub-stepping only matters for
         SC kick placement.  We use a Strang bundle: drift(bundle/2) →
         SC(bundle) → drift(bundle/2) per group of ``sc_every`` sub-steps.
+        When nothing sits between the sub-steps and the step config allows
+        it (``StepConfig.drift_single_push``, see ``_drift_single_push``)
+        the map is applied once.
         """
+        if self._drift_single_push(element):
+            self._push_drift_once(element)
+            return
         cfg = getattr(self.lattice, "step_config", None)
         n_int = (cfg.integration_steps_for_length_mm(element.length)
                  if cfg is not None else 2)

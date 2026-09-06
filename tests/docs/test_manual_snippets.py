@@ -52,13 +52,29 @@ def _write_md(tmp_path: Path, name: str, *fences: tuple[str, str]) -> None:
 def test_attr_list_skip_fence_is_collected_as_skip(tmp_path):
     _write_md(tmp_path, "a.md",
               ("{.python .skip}", 'raise RuntimeError("never run")'),
-              ("python skip", 'raise RuntimeError("never run")'),
-              ("pycon", ">>> 1 + 1"))
+              ("python skip", 'raise RuntimeError("never run")'))
+    snips = _V.collect_snippets([tmp_path])
+    assert len(snips) == 2
+    for s in snips:
+        assert s.skip is True
+        assert s.reason == "tagged .skip"
+        assert _V.run_snippet(s, {}) is None      # never executed
+
+
+def test_legacy_console_fences_get_their_own_reason(tmp_path):
+    # pycon/pycon3/console fences are parsed-not-run like ``.skip``
+    # fences, but the summary must attribute them honestly: nobody
+    # *tagged* them ``.skip``, so they carry their own reason label
+    # instead of colliding with "tagged .skip".
+    _write_md(tmp_path, "f.md",
+              ("pycon", ">>> 1 + 1"),
+              ("pycon3", ">>> 2 + 2"),
+              ("console", "$ echo hi"))
     snips = _V.collect_snippets([tmp_path])
     assert len(snips) == 3
     for s in snips:
         assert s.skip is True
-        assert s.reason == "tagged .skip"
+        assert s.reason == "legacy console fence"
         assert _V.run_snippet(s, {}) is None      # never executed
 
 

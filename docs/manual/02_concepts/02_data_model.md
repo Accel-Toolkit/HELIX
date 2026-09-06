@@ -67,7 +67,7 @@ print(f"{len(lattice.elements)} elements, "
 | `beam_errors` | `list[BeamErrorDef]` | input-beam jitter specs |
 | `error_ratios` | `list[float]` | TraceWin `ERROR_SET_RATIO` values |
 | `error_cutoff` | `float` | gaussian truncation in σ |
-| `step_config` | `StepConfig` | step density (PARTRAN_STEP): `step_config.integration_steps_per_metre` and `step_config.sc_steps_per_metre` |
+| `step_config` | `StepConfig` | step density (PARTRAN_STEP): `step_config.integration_steps_per_metre`, `step_config.sc_steps_per_metre`, and `step_config.drift_single_push` (one push per field-free drift, default on) |
 
 ### Methods
 

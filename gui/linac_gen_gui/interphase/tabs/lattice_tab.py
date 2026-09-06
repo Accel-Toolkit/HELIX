@@ -642,13 +642,17 @@ class LatticeTab(QWidget):
             kick_lines = "\n".join(
                 f"  {name}: bx_l={k['bx_l']:+.3e}  by_l={k['by_l']:+.3e}"
                 for name, k in res["kicks"].items())
+            # Advice is method-aware: "switch to SVD" is a dead end
+            # when the failed method already WAS svd.
+            fix_hint = "check steerer\u2192BPM lever arms / vmax"
+            if res["method"] != "svd":
+                fix_hint += ", or switch method to SVD"
             QMessageBox.warning(
                 self, "Orbit correction failed",
                 f"The corrector LOST the beam (transmission reached 0 % "
                 f"at {lost}).\n"
                 f"Method: {res['method']}, pairs: {res['n_pairs']}.\n"
-                "No kicks were applied — check steerer\u2192BPM lever "
-                "arms / vmax, or switch method to SVD.\n"
+                f"No kicks were applied — {fix_hint}.\n"
                 f"\nComputed (refused) kicks:\n{kick_lines}")
             self.state.status_message.emit(
                 f"orbit correction failed: beam lost at {lost} — "
@@ -684,10 +688,18 @@ class LatticeTab(QWidget):
         msg = (
             f"Method: {method}\n"
             f"Steerer/BPM pairs: {n_pairs}\n"
-            f"Status: {status or 'converged'}\n"
+            f"Status: {status}\n"
             f"RMS orbit error vs targets, iter 1: {rms_first:.4f} mm\n"
             f"RMS orbit error vs targets, final:  {rms_final:.4f} mm\n"
         )
+        # Downstream-only loss: a run can converge (every USED BPM read
+        # an alive beam) while the beam still dies AFTER the last BPM —
+        # beam_lost_at scans the whole record.  Name the loss element so
+        # the dead beam is visible instead of silent.
+        lost = res.get("beam_lost_at")
+        if lost is not None:
+            msg += (f"WARNING: beam lost at {lost} (downstream of the "
+                    f"last BPM \u2014 transmission reached 0 %)\n")
         trans = [h.get("transmission_pct") for h in hist]
         if any(t is not None for t in trans):
             msg += ("Transmission per pass: " + ", ".join(

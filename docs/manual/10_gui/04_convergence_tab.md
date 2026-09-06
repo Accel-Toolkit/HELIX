@@ -18,7 +18,12 @@ state is persisted per user across sessions:
   (`Production (100/50)` / `Matching (30/15)` / `Custom` — editing
   either spinbox by hand switches to Custom), plus base step1
   (integration steps per metre) and step2 (SC kicks per metre).
-  Map to TraceWin's `PARTRAN_STEP step1 step2`.
+  Map to TraceWin's `PARTRAN_STEP step1 step2`.  Below them,
+  **Single-push field-free drifts** (on by default): a drift is pushed
+  once when nothing sits between its sub-steps, and a loss inside it
+  is located exactly on the particle's straight line; untick it to
+  keep the sub-stepped walk of HELIX ≤ 1.9.1.  With it on, a step1
+  scan at zero current only probes field maps.
 * **Space charge & PIC** — **Base PIC grid (nx=ny=nz)**: a single
   cubic spinbox (one value sets all three axes); grid extent
   (σ multiplier); **PIC backend** (auto / cpu / gpu / cuda / mps);
@@ -86,7 +91,7 @@ physics paper.  E.g. the IGF tooltip cites Qiang et al. 2006.
 
 Every "fixed" setting in this tab (PIC grid, SC engine, Green's
 function, particle-mesh kernel, integrator, interp, step1 / step2,
-CSR flag) is serialised into the `.lgproj` JSON.  Changing any of
+single-push drifts, CSR flag) is serialised into the `.lgproj` JSON.  Changing any of
 them marks the project as dirty so closing without Save Project
 triggers a warning.  Section-collapse toggles and scan-axis widgets
 don't flag the project — collapse states persist per user via

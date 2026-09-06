@@ -43,11 +43,15 @@ Three paths:
 * **File menu → Open Lattice…**.
 * **Ctrl+O**.
 
-The dialog accepts TraceWin `.dat` files and MAD-X `.madx` / `.seq`
-files; the file extension selects the parser (`parse_tracewin` or
-`parse_madx` — see
-[Importing MAD-X lattices](../06_running/02_tracewin_dat.md#importing-mad-x-lattices)).
-Errors and warnings appear in the status bar.
+The dialog accepts TraceWin `.dat` files, MAD-X `.madx` / `.seq`,
+MAD8 `.lat` / `.flat` and Elegant `.lte` files, and — through the
+optional lattix translator — Bmad `.bmad`, SciBmad `.jl` / `.scibmad`
+and PALS `.pals.yaml` / `.pals.json` files; the file extension selects
+the parser (see [Importing MAD-X
+lattices](../06_running/02_tracewin_dat.md#importing-mad-x-lattices) and
+the sections that follow it).  Errors and warnings appear in the status
+bar; the warning count links to the console, where each downgraded or
+dropped element is listed by name.
 
 **Reload** re-parses the current file from disk, discarding in-memory
 edits (after the unsaved-changes prompt) — handy when you edit the
@@ -169,12 +173,15 @@ replaces the lattice's RfqCell chain with a single VaneRFQ element
 
 * **Save** (File → Save Lattice, Ctrl+S) writes the lattice back to
   its `.dat` file **in place**.  If the lattice was imported from a
-  MAD-X `.madx` / `.seq` file — or has no path yet — HELIX only
-  writes TraceWin `.dat`, so Save automatically reroutes to
-  **Save As…** with a `*.dat` filter.  Your MAD-X source file is
-  never overwritten.
+  MAD-X, MAD8, Elegant, Bmad, SciBmad or PALS file — or has no path
+  yet — Save writes only TraceWin `.dat` (MAD-X output is the explicit
+  export below), so it automatically reroutes to **Save As…** with a
+  `*.dat` filter.  The imported source file is never overwritten.
 * **Save As…** (File → Save Lattice As…) writes a `.dat` file with
   all the current values, fully TraceWin-compatible.
+* **Export Lattice as MAD-X…** (File menu) writes the lattice as a
+  MAD-X `SEQUENCE` using the Beam tab's species/energy for the
+  rigidity — see [Exporting to MAD-X](../06_running/02_tracewin_dat.md#exporting-to-mad-x).
 * **File → Save Project…** writes the full `.lgproj` including beam
   config and SC config.
 

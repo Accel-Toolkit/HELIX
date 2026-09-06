@@ -232,3 +232,33 @@ def test_correction_targets_and_backend_wiring(qapp, monkeypatch,
     kw2 = tab2._worker._study._correction_kwargs
     assert kw2["targets"] is None
     assert kw2["reading_backend"] == "mp"
+
+
+def test_stopped_partial_status_reports_correction_beam_loss(
+        qapp, monkeypatch, mini_lattice):
+    """The stopped-partial early return must carry the same
+    orbit-correction-lost-the-beam suffix as the normal completion path
+    — a stopped ensemble with lost seeds used to hide them."""
+    from dataclasses import replace
+
+    from linac_gen_gui.interphase.tabs import error_study_tab as estab
+    from linac_gen_gui.interphase.state import AppState
+    from linac_gen.core.config import BeamConfig
+
+    monkeypatch.setattr(estab._StudyWorker, "start", lambda self: None)
+
+    state = AppState()
+    state.set_lattice(mini_lattice, None)
+    state.set_beam_config(replace(BeamConfig(), current=0.0))
+    tab = estab.ErrorStudyTab(state)
+    tab._on_add_element_error()
+    tab._on_run()
+
+    class _LostResults:
+        n_seeds = 4
+        n_requested = 50
+        n_correction_beam_lost = 3
+
+    tab._on_done(_LostResults(), stopped=True)
+    assert "4/50" in tab._status.text()
+    assert "orbit correction lost the beam in 3 seed(s)" in tab._status.text()

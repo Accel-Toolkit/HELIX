@@ -173,3 +173,119 @@ def test_mismatch_spin_cannot_reach_invalid_floor(qapp):
     cfg = tab.get_beam_config()           # must not raise
     assert cfg.mismatch_x > -100.0
     tab.deleteLater()
+
+
+def test_export_madx_slot_writes_the_loaded_lattice(win, monkeypatch, tmp_path):
+    """File → Export Lattice as MAD-X…: the app-level slot writes a MAD-X
+    sequence from state.lattice with the Beam tab's species/energy, tells
+    the status bar, and re-imports to the same quadrupole gradients."""
+    from pathlib import Path
+    from dataclasses import replace
+
+    from linac_gen.core.config import BeamConfig
+    from linac_gen.elements.quadrupole import Quadrupole
+    from linac_gen.io.madx_parser import parse_madx
+    from linac_gen.io.tracewin_parser import parse_tracewin
+    from linac_gen_gui.interphase import app as app_mod
+
+    repo = Path(__file__).resolve().parents[2]
+    dat = repo / "examples" / "fodo_cell.dat"
+    lat = parse_tracewin(str(dat))[0]
+    win.state.set_lattice(lat, str(dat))
+    win.state.set_beam_config(replace(BeamConfig(), species="H-", energy=3.0))
+
+    infos, statuses = [], []
+    monkeypatch.setattr(
+        app_mod.QMessageBox, "information",
+        staticmethod(lambda *a, **k: infos.append(a[2])
+                     or app_mod.QMessageBox.StandardButton.Ok))
+    win.state.status_message.connect(statuses.append)
+    # A bare name typed into the dialog gets the .madx extension.
+    monkeypatch.setattr(
+        app_mod.QFileDialog, "getSaveFileName",
+        staticmethod(lambda *a, **k: (str(tmp_path / "fodo_export"), "")))
+
+    win._export_madx()
+
+    out = tmp_path / "fodo_export.madx"
+    assert out.exists()
+    assert infos and "Reference: H- 3 MeV" in infos[-1]
+    assert any("Exported MAD-X" in m and "0 warning(s)" in m for m in statuses)
+    back, meta = parse_madx(str(out))
+    assert meta["reference"].species.charge == -1
+    g0 = [e.gradient for e in lat.elements if isinstance(e, Quadrupole)]
+    g1 = [e.gradient for e in back.elements if isinstance(e, Quadrupole)]
+    assert g1 == g0
+
+
+def test_export_madx_slot_without_lattice_warns(win, monkeypatch):
+    from linac_gen_gui.interphase import app as app_mod
+    warned = []
+    monkeypatch.setattr(
+        app_mod.QMessageBox, "warning",
+        staticmethod(lambda *a, **k: warned.append(a[1])
+                     or app_mod.QMessageBox.StandardButton.Ok))
+    called = []
+    monkeypatch.setattr(app_mod.QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: called.append(1) or ("", "")))
+    win.state.set_lattice(None)
+    win._export_madx()
+    assert warned == ["No lattice"] and called == []
+
+
+def test_export_madx_never_overwrites_the_imported_source(win, monkeypatch, tmp_path):
+    """A lattice imported from MAD-X: the dialog proposes ``<stem>_helix.madx``
+    and picking the source file itself is refused (the manual promises
+    the MAD-X source is never overwritten)."""
+    from pathlib import Path
+    from dataclasses import replace
+
+    from linac_gen.core.config import BeamConfig
+    from linac_gen.io.madx_parser import parse_madx
+    from linac_gen_gui.interphase import app as app_mod
+
+    repo = Path(__file__).resolve().parents[2]
+    src = tmp_path / "ring.madx"
+    src.write_text((repo / "examples" / "madx" / "fodo.madx").read_text())
+    lat, meta = parse_madx(str(src))
+    win.state.set_lattice(lat, str(src))
+    win.state.set_beam_config(replace(BeamConfig(), species="proton",
+                                      energy=meta["reference"].w_kin))
+    proposed, warned = [], []
+    monkeypatch.setattr(
+        app_mod.QFileDialog, "getSaveFileName",
+        staticmethod(lambda *a, **k: proposed.append(a[2]) or (str(src), "")))
+    monkeypatch.setattr(
+        app_mod.QMessageBox, "warning",
+        staticmethod(lambda *a, **k: warned.append(a[1])
+                     or app_mod.QMessageBox.StandardButton.Ok))
+    before = src.read_text()
+    win._export_madx()
+    assert proposed[-1].endswith("ring_helix.madx")
+    assert warned == ["Export refused"]
+    assert src.read_text() == before
+
+
+def test_drift_single_push_round_trips_through_the_project(win):
+    ct = win.convergence_tab
+    assert ct._drift_single_push.isChecked() is True
+    win._apply_project_dict({"__kind__": "linac_gen_project",
+                             "convergence": {"drift_single_push": False}}, silent=True)
+    assert ct._drift_single_push.isChecked() is False
+    data = win._collect_project_dict([], None)
+    assert data["convergence"]["drift_single_push"] is False
+    # a project written before the option existed leaves it where it is
+    win._apply_project_dict({"__kind__": "linac_gen_project",
+                             "convergence": {"step1_per_m": 100.0}}, silent=True)
+    assert ct._drift_single_push.isChecked() is False
+
+
+def test_drift_single_push_project_value_uses_the_cli_coercion(win):
+    """A hand-edited "false" in the project file means off, as it does for the CLI."""
+    ct = win.convergence_tab
+    win._apply_project_dict({"__kind__": "linac_gen_project",
+                             "convergence": {"drift_single_push": "false"}}, silent=True)
+    assert ct._drift_single_push.isChecked() is False
+    win._apply_project_dict({"__kind__": "linac_gen_project",
+                             "convergence": {"drift_single_push": "on"}}, silent=True)
+    assert ct._drift_single_push.isChecked() is True

@@ -54,5 +54,12 @@ class Drift(TransferMapElement, Misalignment):
         beam.ref.s += L
         beam.ref.phi_s += 360.0 * L / (beam.ref.beta * beam.ref.wavelength)
         M = self.transfer_matrix(beam.ref, ds=L)
-        alive = beam.alive_mask
-        beam.particles[alive] = (M @ beam.particles[alive].T).T
+        P = beam.particles
+        if not beam.lost.any():
+            # Same product as the masked form below (identical BLAS call and
+            # layout, so bit-identical results) without copying the array in
+            # and out through an all-true mask.
+            P[:] = (M @ P.T).T
+        else:
+            alive = beam.alive_mask
+            P[alive] = (M @ P[alive].T).T

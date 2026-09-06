@@ -737,3 +737,101 @@ def test_assistant_edit_gui_timeout_reports_error(qapp, tmp_path):
     assert "could not apply" in env["data"]["message"]
     assert qf.gradient == 5.0
     assert len(st.bus._undo) == 0 and st.bus.dirty is False
+
+
+def test_assistant_revert_timeout_cannot_land_late(qapp, tmp_path):
+    """A revert whose GUI hop times out must raise — and when the GUI
+    thread finally runs the queued thunk, it must be a NO-OP: the
+    revert used to hand ``_gui_sync`` a throwaway cancelled box its
+    ``_do`` never consulted, so a timed-out revert still landed late."""
+    from linac_gen_gui.interphase.dialogs.assistant_panel import (
+        _make_context,
+    )
+
+    class _FlakyNav:
+        """Answers the first hop (apply), goes deaf afterwards but keeps
+        the queued thunk — the real panel's late-delivery shape."""
+
+        def __init__(self):
+            self.deaf = False
+            self.late = []
+
+        def run_on_gui(self, fn, timeout=3.0):
+            if self.deaf:
+                self.late.append(fn)
+                return None          # timeout — thunk still queued
+            return fn()
+
+    nav = _FlakyNav()
+    st = _state_with_lattice(qapp)
+    ctx = _make_context(st, str(tmp_path), nav=nav)
+    qf = st.lattice.elements[0]
+
+    handle = ctx.apply_param_changes([(qf, "gradient", 9.0)],
+                                     label="Assistant edit")
+    assert qf.gradient == 9.0 and len(st.bus._undo) == 1
+
+    nav.deaf = True
+    with pytest.raises(RuntimeError, match="did not apply"):
+        ctx.revert_param_changes(handle, [(qf, "gradient", 5.0)],
+                                 label="Assistant edit")
+
+    # The GUI thread runs the queued thunk AFTER the timeout was
+    # reported: it must refuse (cancelled) and touch nothing.
+    assert len(nav.late) == 1
+    out = nav.late[0]()
+    assert out == {"ok": False, "err": "cancelled"}
+    assert qf.gradient == 9.0                 # edit still in place
+    assert len(st.bus._undo) == 1             # no late undo landed
+    assert st.bus.peek_undo() is handle
+
+
+def test_assistant_revert_refused_after_lattice_swap(qapp, tmp_path):
+    """Lattice replaced after the apply (bus.reset): the compensating
+    branch must refuse instead of pushing a MacroCommand over orphaned
+    elements of the discarded lattice — nothing mutated, nothing pushed
+    onto the NEW lattice's pristine bus."""
+    from linac_gen.core.lattice import Lattice
+    from linac_gen.elements.drift import Drift
+    from linac_gen_gui.interphase.dialogs.assistant_panel import (
+        _make_context,
+    )
+
+    st = _state_with_lattice(qapp)
+    ctx = _make_context(st, str(tmp_path))       # nav=None: same thread
+    qf = st.lattice.elements[0]
+    handle = ctx.apply_param_changes([(qf, "gradient", 9.0)],
+                                     label="Assistant edit")
+    assert qf.gradient == 9.0
+
+    other = Lattice()
+    other.add(Drift("D_OTHER", 100.0))
+    st.set_lattice(other, "<b>")     # bus.reset(): handle gone, qf orphaned
+
+    with pytest.raises(RuntimeError,
+                       match="no longer in the loaded lattice"):
+        ctx.revert_param_changes(handle, [(qf, "gradient", 5.0)],
+                                 label="Assistant edit")
+    assert qf.gradient == 9.0                    # orphan left untouched
+    assert len(st.bus._undo) == 0                # nothing pushed
+    assert st.bus.dirty is False
+
+
+def test_assistant_revert_refused_when_no_lattice_loaded(qapp, tmp_path):
+    """Compensating-branch guard, empty regime: lattice unloaded after
+    the apply — revert refuses instead of pushing onto a bare bus."""
+    from linac_gen_gui.interphase.dialogs.assistant_panel import (
+        _make_context,
+    )
+
+    st = _state_with_lattice(qapp)
+    ctx = _make_context(st, str(tmp_path))
+    qf = st.lattice.elements[0]
+    handle = ctx.apply_param_changes([(qf, "gradient", 9.0)],
+                                     label="Assistant edit")
+    st.set_lattice(None, "")
+    with pytest.raises(RuntimeError, match="no lattice loaded"):
+        ctx.revert_param_changes(handle, [(qf, "gradient", 5.0)],
+                                 label="Assistant edit")
+    assert qf.gradient == 9.0
+    assert len(st.bus._undo) == 0

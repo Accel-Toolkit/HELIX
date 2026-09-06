@@ -14,8 +14,10 @@ Snippet conventions:
   manual's house style) is parsed but not executed: use it for
   snippets that legitimately can't run (API-signature pseudo-code,
   GUI-only flows, long-running cluster jobs).  The legacy space forms
-  ``python skip``, ``pycon``, ``pycon3`` and ``console`` are also
-  parsed-not-run.
+  ``python skip`` / ``py skip`` are also parsed-not-run under the same
+  reason; the legacy console forms ``pycon``, ``pycon3`` and
+  ``console`` are parsed-not-run with their own reason label
+  ("legacy console fence") so the summary attributes them honestly.
 * Code in fences tagged ``{.python data-needs="path …"}`` runs only
   when every listed path (relative to the repo root) exists; otherwise
   it is skipped with an honest ``data absent: …`` reason (same idea as
@@ -28,6 +30,13 @@ Snippet conventions:
 Every python fence is therefore either executed or explicitly skipped
 with a reason; the summary reports exact counts and lists the
 data/module skips so a green run still shows what was not verified.
+
+Known limitation (deferred by design): ``_FENCE_RE`` recognises
+fences opening at column 0 only.  The manual's three INDENTED
+python-looking fences (inside list items / admonitions) are
+illustrative pseudo-code fragments (undefined names, ellipses) and
+are deliberately not collected — extending the regex to indented
+fences would execute them, which needs its own conversion round.
 
 Usage:
     python docs/manual/_build/verify_snippets.py             # run everything
@@ -64,7 +73,8 @@ for _p in (str(_REPO_ROOT), str(_REPO_ROOT / "gui")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 EXEC_TAGS = {"python", "py"}
-SKIP_TAGS = {"python skip", "py skip", "pycon", "pycon3", "console"}
+SKIP_TAGS = {"python skip", "py skip"}
+CONSOLE_TAGS = {"pycon", "pycon3", "console"}
 
 _FENCE_RE = re.compile(
     r"^```(?P<tag>[^\n]*?)\n(?P<body>.*?)^```",
@@ -95,6 +105,8 @@ def classify_tag(tag: str) -> "tuple[bool, str] | None":
         low = tag.lower()
         if low in EXEC_TAGS:
             return (False, "")
+        if low in CONSOLE_TAGS:
+            return (True, "legacy console fence")
         if low in SKIP_TAGS or low.startswith("python skip"):
             return (True, "tagged .skip")
         return None

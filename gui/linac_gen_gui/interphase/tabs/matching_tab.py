@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections import Counter
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
@@ -870,6 +871,7 @@ class MatchingTab(QWidget):
             step_cfg = StepConfig(
                 integration_steps_per_metre=float(step1),
                 sc_steps_per_metre=float(step2),
+                drift_single_push=bool(ct._drift_single_push.isChecked()),
             )
             return sc_cfg, step_cfg
         except Exception:                                  # noqa: BLE001
@@ -1168,7 +1170,6 @@ class MatchingTab(QWidget):
         # Annotation is gated on COLUMN POPULATION, not link_group != 0:
         # ADJUST_BEAM_TWISS flag=1 knobs carry singleton link groups and
         # must stay untagged.
-        from collections import Counter
         rows = result.rows()
         members = Counter(col for _v, col, _a, _b in rows)
         self._aa_var_table.setRowCount(len(rows))

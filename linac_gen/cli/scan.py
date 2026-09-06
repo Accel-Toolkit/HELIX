@@ -13,7 +13,7 @@ from pathlib import Path
 
 from linac_gen.cli import common
 
-_STRUCTURAL = ("nx", "grid_extent", "step1", "step2")
+_STRUCTURAL = ("nx", "grid_extent", "step1", "step2", "drift_single_push")
 _METRICS = ("sigma_x", "sigma_y", "sigma_phi", "sigma_w", "emit_x", "emit_y",
             "emit_z", "transmission", "ref_w_kin", "x_max", "y_max",
             "elapsed")
@@ -21,12 +21,13 @@ _METRICS = ("sigma_x", "sigma_y", "sigma_phi", "sigma_w", "emit_x", "emit_y",
 
 def add_arguments(p) -> None:
     """Populate the ``scan`` sub-parser."""
-    p.add_argument("input", help="a .lgproj project or a .dat/.madx lattice")
+    p.add_argument("input", help="a .lgproj project or a lattice file (.dat, .madx, .lat, .lte; .bmad/.jl/.pals.yaml via lattix)")
     p.add_argument("--vary", action="append", default=[], required=True,
                    metavar="VAR=start:stop:step",
                    help="variable to sweep (repeatable → Cartesian product); "
-                        "VAR is a beam field, nx/grid_extent/step1/step2, or "
-                        "an element param ELEM.attr.  Also VAR=v1,v2,v3")
+                        "VAR is a beam field, nx/grid_extent/step1/step2/"
+                        "drift_single_push (0 or 1), or an element param "
+                        "ELEM.attr.  Also VAR=v1,v2,v3")
     p.add_argument("--out", default="scan.csv", help="CSV output (default scan.csv)")
     p.add_argument("--mode", choices=("envelope", "mp"), default="envelope",
                    help="solver mode (default envelope)")
@@ -49,6 +50,12 @@ def add_arguments(p) -> None:
                    help="fixed PIC grid extent (sigma)")
     p.add_argument("--step1", type=float, help="fixed integration steps/m")
     p.add_argument("--step2", type=float, help="fixed space-charge kicks/m")
+    p.add_argument("--drift-single-push", choices=("on", "off"), default=None,
+                   dest="drift_single_push",
+                   help="push a field-free drift once when no space charge, "
+                        "sub-step diagnostics or aperture bookkeeping sits "
+                        "between its sub-steps (losses located analytically); "
+                        "default on, project value or off")
     p.add_argument("--backend", help="compute backend (auto / cpu / gpu)")
     p.add_argument("--sc", action="append", default=[], metavar="NAME=VALUE",
                    help="fixed SpaceChargeConfig override (repeatable)")
@@ -118,6 +125,8 @@ def run(args) -> int:
         fixed_sc = common.parse_assignments(args.sc)
         fixed_cli = {"nx": args.nx, "grid_extent": args.grid_extent,
                      "step1": args.step1, "step2": args.step2,
+                     "drift_single_push": (None if args.drift_single_push is None
+                                           else args.drift_single_push == "on"),
                      "backend": args.backend}
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)

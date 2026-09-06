@@ -144,23 +144,116 @@ def test_tracker_sc_comp_reduces_kick():
     assert tracker._sc_factor == 0.0
 
 
-def test_drift_integration_honours_step_config():
-    """A 200 mm drift with step1 = 100/m must produce 20 integration sub-steps."""
-    from linac_gen.core.beam import Beam
-    from linac_gen.core.lattice import Lattice
-    from linac_gen.core.particle import PROTON
-    from linac_gen.core.reference import ReferenceParticle
-    from linac_gen.core.step_config import StepConfig
-    from linac_gen.elements.drift import Drift
-    from linac_gen.tracking.tracker import Tracker
+def _count_drift_pushes(lat, beam, **tracker_kw):
+    """Run the tracker and return how many times Drift.track was called."""
+    from unittest.mock import patch
+    calls = {"n": 0}
+    original = Drift.track
 
-    ref = ReferenceParticle(species=PROTON, w_kin=3.0, frequency=352.21)
-    beam = Beam(ref=ref, n_particles=10, current=0.0)
+    def counting(self, beam_, ds=None):
+        calls["n"] += 1
+        return original(self, beam_, ds=ds)
+
+    with patch.object(Drift, "track", counting):
+        Tracker(lat, beam, **tracker_kw).run()
+    return calls["n"]
+
+
+def _drift_lattice(length=200.0, single_push=True, aperture=0.0, step1=100.0, step2=50.0):
+    from linac_gen.core.step_config import StepConfig
     lat = Lattice()
-    lat.step_config = StepConfig(integration_steps_per_metre=100.0)
+    lat.step_config = StepConfig(integration_steps_per_metre=step1, sc_steps_per_metre=step2,
+                                 drift_single_push=single_push)
+    lat.add(Drift("D", length=length, aperture=aperture))
+    return lat
+
+
+def _beam(current=0.0, n=10):
+    ref = ReferenceParticle(species=PROTON, w_kin=3.0, frequency=352.21)
+    beam = Beam(ref=ref, n_particles=n, current=current)
+    beam.continuous = False
+    return beam
+
+
+@pytest.mark.parametrize("single_push, length, expected", [
+    (False, 200.0, 20),   # 20 sub-steps, sc_every 2 -> 10 bundles x 2 half pushes
+    (False, 150.0, 30),   # 15 sub-steps, n_sc 8 -> sc_every 1 -> 15 bundles x 2
+    (True, 200.0, 1),     # nothing between the sub-steps: one push
+    (True, 150.0, 1),
+])
+def test_drift_integration_honours_step_config(single_push, length, expected):
+    """step1 = 100/m sub-steps a drift only when the sub-steps carry something;
+    StepConfig.drift_single_push=False keeps the historical walk."""
+    lat = _drift_lattice(length=length, single_push=single_push)
+    beam = _beam()
+    assert _count_drift_pushes(lat, beam) == expected
+    assert abs(beam.ref.s - length) < 1e-9
+
+
+def test_drift_single_push_gate_matrix():
+    """Every reason to keep the sub-steps, each on its own: space charge that
+    would actually kick (bunched + PIC solver, DC beam with current), sub-step
+    diagnostics, a PIC solver carrying multibunch train hooks (its kick ordinal
+    advances per call even at zero current), the periodic-phase bunch-train fold.
+    Everything else pushes once."""
+    from linac_gen.elements.space_charge_comp import SpaceChargeComp
+    from linac_gen.pic.pic_solver import PicSolver
+    from linac_gen.core.config import SpaceChargeConfig
+    from linac_gen.tracking.tracker import NoSpaceChargeWarning
+
+    # zero current, no solver
+    assert _count_drift_pushes(_drift_lattice(), _beam()) == 1
+    # bunched with current but NO solver: _apply_sc_kick never kicks -> one push
+    with pytest.warns(NoSpaceChargeWarning):
+        assert _count_drift_pushes(_drift_lattice(), _beam(current=60.0)) == 1
+    # explicit off
+    assert _count_drift_pushes(_drift_lattice(), _beam(current=60.0), pic_solver="off") == 1
+    solver = PicSolver(SpaceChargeConfig(nx=16, ny=16, nz=16))
+    # PIC solver + current: kicks land between the sub-steps -> 20 pushes
+    assert _count_drift_pushes(_drift_lattice(), _beam(current=5.0), pic_solver=solver) == 20
+    # PIC solver attached but zero current: the kernel would return early -> one push
+    assert _count_drift_pushes(_drift_lattice(), _beam(current=0.0), pic_solver=solver) == 1
+    # full space-charge compensation upstream -> factor 0 -> one push
+    lat = Lattice()
+    lat.step_config = _drift_lattice().step_config
+    lat.add(SpaceChargeComp("SCC", factor=1.0))
     lat.add(Drift("D", length=200.0))
-    Tracker(lat, beam).run()
-    assert abs(beam.ref.s - 200.0) < 1e-9
+    assert _count_drift_pushes(lat, _beam(current=5.0), pic_solver=solver) == 1
+    # DC beam with current: the 2-D kernel kicks without a solver -> 20
+    dc = _beam(current=10.0); dc.continuous = True
+    assert _count_drift_pushes(_drift_lattice(), dc) == 20
+    dc0 = _beam(current=0.0); dc0.continuous = True
+    assert _count_drift_pushes(_drift_lattice(), dc0) == 1
+    # sub-step diagnostics requested
+    assert _count_drift_pushes(_drift_lattice(), _beam(), record_substeps=True) == 20
+    # multibunch train hooks on the solver: ordinal alignment needs every call
+    hooked = PicSolver(SpaceChargeConfig(nx=16, ny=16, nz=16))
+    hooked.train_snapshot_recorder = lambda *a, **k: None
+    before = hooked._train_kick_ordinal
+    assert _count_drift_pushes(_drift_lattice(), _beam(current=0.0), pic_solver=hooked) == 20
+    assert hooked._train_kick_ordinal == before + 10
+    # periodic-phase fold active
+    bt = _beam(); bt.periodic_phase = True; bt.bunch_train = True
+    bt.bunch_train_frequency = 352.21
+    assert _count_drift_pushes(_drift_lattice(), bt) == 20
+
+
+def test_drift_track_full_form_matches_masked_form():
+    """With no lost particle Drift.track uses the copy-free product; it is the
+    same BLAS call as the masked form, so the coordinates are bit-identical."""
+    ref = ReferenceParticle(species=PROTON, w_kin=3.0, frequency=352.21)
+    d = Drift("D", length=123.4)
+    rng = np.random.default_rng(3)
+    P0 = rng.normal(size=(500, 6))
+    beam = Beam(ref=ref, n_particles=500, current=0.0)
+    beam.particles[:] = P0
+    d.track(beam)
+    ref2 = ReferenceParticle(species=PROTON, w_kin=3.0, frequency=352.21)
+    M = d.transfer_matrix(ref2, ds=123.4)
+    alive = np.ones(500, dtype=bool)
+    expected = P0.copy()
+    expected[alive] = (M @ expected[alive].T).T
+    assert np.array_equal(beam.particles, expected)
 
 
 def test_non_drift_elements_use_two_substeps():

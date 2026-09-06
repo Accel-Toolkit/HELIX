@@ -143,6 +143,8 @@ def _write_provenance(f, lattice_path=None, seed=None, sc_config=None,
                     cfg.integration_steps_per_metre)
                 prov.attrs["sc_steps_per_metre"] = float(
                     cfg.sc_steps_per_metre)
+                prov.attrs["drift_single_push"] = bool(
+                    getattr(cfg, "drift_single_push", True))
             except Exception:                               # noqa: BLE001
                 pass
         # Parser downgrade ledger (attached by cli.common.load_lattice).
@@ -237,8 +239,13 @@ def save_results_hdf5(recorder, filepath: str, beam_config=None,
     ├── beam_config/      scalar config values as HDF5 attrs (present only when provided)
     └── provenance/       code version + git commit + numpy/h5py versions,
                           write timestamp; plus lattice SHA-256/path, beam
-                          seed and SC backend/grid configuration when the
-                          caller provides them (all optional kwargs)
+                          seed, SC backend/grid configuration, and — from
+                          the ``lattice`` object — per-metre step config
+                          (``integration_steps_per_metre``, ``sc_steps_per_metre``,
+                          ``drift_single_push``),
+                          the parser downgrade ledger and field-map
+                          data-file hashes, when the caller provides them
+                          (all optional kwargs)
 
     Parameters
     ----------
@@ -250,7 +257,11 @@ def save_results_hdf5(recorder, filepath: str, beam_config=None,
         Object whose ``__dict__`` is inspected for scalar config entries.
         ``None`` values are silently skipped.
     lattice : object or None
-        Reserved for future use; currently ignored.
+        Feeds ``provenance/``: per-metre step configuration
+        (``lattice.step_config``), the parser downgrade ledger
+        (``lattice.parse_warnings``, attached by
+        ``cli.common.load_lattice``) and SHA-256 hashes of every
+        element's field-map data files.
     lattice_path : str or None
         Source deck path — stored together with its SHA-256 so the file
         pins WHICH machine description produced it.

@@ -740,12 +740,18 @@ class PicSolver:
 
         # Bunch-train neighbour images (config.train_images; None = on
         # exactly when the beam was injected DC and bunched in flight).
-        # Only while the bunch is LONG (σφ ≥ 30°): there the charge
-        # still overlaps the neighbouring periods and the images are
-        # real physics.  Once bunched, the neighbours (a full βλ away)
-        # are negligible while the 3×-span train grid would degrade the
-        # self-field resolution — so short bunches use the isolated
-        # solve, which is also TraceWin's downstream semantics.
+        # Only while the bunch is LONG — gated with hysteresis on the
+        # CORE σφ (half the 16-84 percentile spread; engage ≥ 35°,
+        # release ≤ 25°, rationale at the computation below): there the
+        # charge still overlaps the neighbouring periods and the images
+        # are real physics.  Once bunched, the neighbours (a full βλ
+        # away) are negligible while the 3×-span train grid would
+        # degrade the self-field resolution — so short bunches use the
+        # isolated solve, which is also TraceWin's downstream
+        # semantics.  Two paths bypass the σφ gate: train_force_engage
+        # (multibunch M5) engages regardless of σφ, and (0, 0) image
+        # factors fall through to the isolated solve even while
+        # engaged.
         use_train = self.config.train_images
         if use_train is None:
             # train_force_engage (multibunch M5) also declares the beam

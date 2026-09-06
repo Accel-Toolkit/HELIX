@@ -168,8 +168,14 @@ def _make_context(state, calc_dir: str, nav=None):
             from linac_gen_gui.interphase.commands import (
                 MacroCommand, ParamChangeCommand)
             state = self._state
+            # The SAME box _gui_sync flips on timeout — a revert whose
+            # GUI hop timed out must not land late when the queued thunk
+            # finally runs (the apply path has had this guard all along).
+            box = {"cancelled": False}
 
             def _do():
+                if box["cancelled"]:
+                    return {"ok": False, "err": "cancelled"}
                 bus = state.bus
                 if handle is not None and bus.peek_undo() is handle:
                     # exact inverse: depth, dirty and redo stack land
@@ -177,7 +183,22 @@ def _make_context(state, calc_dir: str, nav=None):
                     bus.undo()
                     return {"ok": True}
                 # user edits landed on top of the stack mid-run: push a
-                # compensating step instead of undoing their work
+                # compensating step instead of undoing their work — but
+                # only onto the lattice the changes belong to.  After a
+                # lattice swap (bus.reset) the elements are orphans of
+                # the DISCARDED lattice: refuse instead of pushing a
+                # no-op MacroCommand onto the new lattice's bus.
+                lat = state.lattice
+                if lat is None:
+                    return {"ok": False,
+                            "err": "cannot roll back: no lattice loaded"}
+                for elem, attr, _old in changes:
+                    if not any(e is elem for e in lat.elements):
+                        return {"ok": False,
+                                "err": f"cannot roll back: element "
+                                f"{getattr(elem, 'name', '?')!r} is no "
+                                "longer in the loaded lattice (the "
+                                "lattice was replaced)"}
                 cmds = [ParamChangeCommand(elem, attr,
                                            getattr(elem, attr), old)
                         for elem, attr, old in changes]
@@ -185,7 +206,7 @@ def _make_context(state, calc_dir: str, nav=None):
                     cmds, label=(label or "Assistant edit") + " rollback"))
                 return {"ok": True}
 
-            self._gui_sync(_do, {"cancelled": False})
+            self._gui_sync(_do, box)
 
         def _gui_sync(self, fn, box):
             if self._nav is None:        # tests / no panel: same thread

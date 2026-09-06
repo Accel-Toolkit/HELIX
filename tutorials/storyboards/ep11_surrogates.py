@@ -373,9 +373,10 @@ SCENES = [
     Scene("072_manual_tour",
           "The manual's surrogates section has five chapters: "
           "overview, G U I walkthrough, C L I, Python A P I, and the "
-          "training guide. The overview's M three section describes "
-          "the slice delegation, and its measured table sets the "
-          "fast path's accuracy against training quality. The "
+          "training guide. The overview spells out which envelope "
+          "runs engage the network and which fall back to slice "
+          "delegation, and its measured table sets the fast path's "
+          "accuracy against training quality. The "
           "training guide's cycle table tells you what a budget "
           "buys: two hundred samples for pipeline checks, fifty "
           "thousand for science. Its worker benchmark shows parallel "
@@ -526,7 +527,7 @@ def _webtour_main(out_root: str) -> None:
             y = y2
 
     tour("01_overview.html", [
-        ("the-m3-honest-limitation", -160, 3.2),
+        ("which-envelope-runs-engage-the-nn", -160, 3.2),
         ("table:Configuration", -190, 3.6),        # the measured MP table
     ])
     tour("05_training_guide.html", [
@@ -1121,6 +1122,11 @@ def capture_visuals() -> None:
     assert table.item(0, 1).text() == "6.75e-01", table.item(0, 1).text()
 
     # ---- 050 / 051 / 052: row Compare, live -----------------------------
+    # CAPTURE CONFIG: 5 mA.  The scene 051 narration (composed below) and
+    # the static 054_m3_limit narration are WORDED for this current —
+    # "configured five milliamps", NN queries == 0, identical envelopes.
+    # If this current ever changes, re-word both narrations (and the
+    # branch of the 051/054 assertions that runs) before rebuilding.
     win.state.set_beam_config(mebt_beam(5.0))
     settle(6)
     report = {}

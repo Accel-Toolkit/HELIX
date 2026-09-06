@@ -138,7 +138,7 @@ class MatchResult:
                 return True
         return False
 
-    def rows(self) -> list:
+    def rows(self) -> list[tuple[Variable, int, float, float]]:
         """Per-ADJUST display rows ``(var, col, x0, x_final)``.
 
         ``variables`` has one entry per ADJUST DoF; ``x0``/``x_final``

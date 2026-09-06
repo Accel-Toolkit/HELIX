@@ -23,7 +23,9 @@ Elegant conventions honoured
 Elements with no HELIX target degrade explicitly (never silently): CSR/LSC
 drifts → plain ``Drift`` (+warning); ``charge``/``wake`` → ``Marker``
 (beam data dropped, +warning); unknown types → ``Drift`` (+warning).
-``ematrix`` (order 1) imports faithfully as a :class:`MatrixElement`.
+``ematrix`` (order 1) imports faithfully as a :class:`MatrixElement`
+(a non-trivial longitudinal block warns: it stays in Elegant's
+``(t, p)`` basis, untranslated).
 """
 from __future__ import annotations
 
@@ -416,6 +418,18 @@ def _build_ematrix(name, ef, l_mm, warnings):
         if ckey in attrs:
             offset[i - 1] = ef.num(attrs, ckey)
             has_offset = True
+    # The longitudinal basis is Elegant's (t [s], p = beta*gamma), not
+    # HELIX's (dphi_deg, dW_MeV): a non-trivial longitudinal block (or a
+    # longitudinal offset, or transverse<->longitudinal coupling) is kept
+    # verbatim, untranslated — warn, per matrix_element.py's basis note.
+    # (`warnings` here is the threaded list parameter, not the stdlib.)
+    if (not np.array_equal(M[4:6, 4:6], np.eye(2))
+            or np.any(M[0:4, 4:6]) or np.any(M[4:6, 0:4])
+            or np.any(offset[4:6])):
+        warnings.append(
+            f"{name}: EMATRIX longitudinal block is non-trivial and is "
+            "kept in Elegant's (t, p) basis untranslated — no conversion "
+            "to HELIX (dphi_deg, dW_MeV) is applied")
     el = MatrixElement(name=name, matrix=M, length=l_mm,
                        offset=offset if has_offset else None)
     return [el], l_mm

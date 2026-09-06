@@ -94,3 +94,29 @@ def test_tab_stop_state_machine(qapp):
         assert "1/3" in tab._badge.text()
     finally:
         tab.deleteLater()
+
+
+def test_scan_worker_carries_drift_single_push_per_point(qapp, mini_lattice, monkeypatch):
+    """Every scan point rebuilds StepConfig with the tab's option, and the
+    original object is restored afterwards (identity)."""
+    import linac_gen.core.simulation as sim_mod
+    seen = []
+    real = sim_mod.Simulation
+
+    class Spy(real):
+        def __init__(self, lattice, beam, *a, **k):
+            seen.append(lattice.step_config)
+            super().__init__(lattice, beam, *a, **k)
+
+    monkeypatch.setattr(sim_mod, "Simulation", Spy)
+    original = StepConfig(integration_steps_per_metre=77.0, sc_steps_per_metre=33.0)
+    mini_lattice.step_config = original
+    w = _ScanWorker(mini_lattice, _beam_cfg(), AXIS_GRID, [16, 24],
+                    fixed_nx=16, fixed_extent=5.0, fixed_step1=20.0, fixed_step2=10.0,
+                    scan_n_particles=80, parallel_workers=0,
+                    fixed_drift_single_push=False)
+    out = _collect(w)
+    w.run()
+    assert out["failed"] == [] and len(seen) == 2
+    assert all(c.drift_single_push is False and c.integration_steps_per_metre == 20.0 for c in seen)
+    assert mini_lattice.step_config is original

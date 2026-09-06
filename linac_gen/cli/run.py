@@ -16,7 +16,7 @@ _EXT = {"hdf5": ".h5", "openpmd": ".opmd.h5", "partran": ".txt"}
 
 def add_arguments(p) -> None:
     """Populate the ``run`` sub-parser."""
-    p.add_argument("input", help="a .lgproj project or a .dat/.madx lattice")
+    p.add_argument("input", help="a .lgproj project or a lattice file (.dat, .madx, .lat, .lte; .bmad/.jl/.pals.yaml via lattix)")
     p.add_argument("--mode", choices=("envelope", "mp", "matrix"),
                    default="envelope", help="solver mode (default envelope)")
     p.add_argument("--out", default=".", help="output directory (default .)")
@@ -42,6 +42,12 @@ def add_arguments(p) -> None:
                    help="PIC grid extent in sigma (mp)")
     p.add_argument("--step1", type=float, help="integration steps / metre")
     p.add_argument("--step2", type=float, help="space-charge kicks / metre")
+    p.add_argument("--drift-single-push", choices=("on", "off"), default=None,
+                   dest="drift_single_push",
+                   help="push a field-free drift once when no space charge, "
+                        "sub-step diagnostics or aperture bookkeeping sits "
+                        "between its sub-steps (losses located analytically); "
+                        "default on, project value or off")
     p.add_argument("--kernel", help="PIC deposit kernel (cic / tsc)")
     p.add_argument("--backend", help="compute backend (auto / cpu / gpu)")
     p.add_argument("--fieldmap-sampling", choices=("kernel", "scipy"),
@@ -79,6 +85,8 @@ def _cli_overrides(args) -> dict:
     return {
         "nx": args.nx, "grid_extent": args.grid_extent,
         "step1": args.step1, "step2": args.step2,
+        "drift_single_push": (None if args.drift_single_push is None
+                              else args.drift_single_push == "on"),
         "kernel": args.kernel, "backend": args.backend,
         "fieldmap_sampling": args.fieldmap_sampling,
         "sc": common.parse_assignments(args.sc),

@@ -179,7 +179,7 @@ output at 0 mA (MEBT, one surrogate engaged, smoke-cycle weights):
          ...
     NN full-element queries: 1
 
-With all 4 bunchers engaged at 0 mA the measured speedup is ~3.5×,
+With all 4 bunchers engaged at 0 mA the measured speedup is 3.45×,
 with end-of-line σ rel.diffs of 1.5e-3 … 1.4e-2 at smoke-cycle
 accuracy.  At a **non-zero current** the compare returns zero diff
 **by design** — the SC walk requests partial slices, which always

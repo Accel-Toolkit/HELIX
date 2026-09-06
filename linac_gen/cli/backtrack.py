@@ -29,7 +29,7 @@ _EXT = {"hdf5": ".h5", "openpmd": ".opmd.h5", "partran": ".txt"}
 
 def add_arguments(p) -> None:
     """Populate the ``backtrack`` sub-parser."""
-    p.add_argument("input", help="a .lgproj project or a .dat/.madx lattice")
+    p.add_argument("input", help="a .lgproj project or a lattice file (.dat, .madx, .lat, .lte; .bmad/.jl/.pals.yaml via lattix)")
     p.add_argument("--dst", default=None, metavar="EXIT.dst",
                    help="exit-plane distribution to reconstruct from; "
                         "omitted → design mode (exit beam generated from "
@@ -98,6 +98,12 @@ def add_arguments(p) -> None:
                    help="PIC grid extent in sigma")
     p.add_argument("--step1", type=float, help="integration steps / metre")
     p.add_argument("--step2", type=float, help="space-charge kicks / metre")
+    p.add_argument("--drift-single-push", choices=("on", "off"), default=None,
+                   dest="drift_single_push",
+                   help="push a field-free drift once when no space charge, "
+                        "sub-step diagnostics or aperture bookkeeping sits "
+                        "between its sub-steps (losses located analytically); "
+                        "default on, project value or off")
     p.add_argument("--kernel", help="PIC deposit kernel (cic / tsc)")
     p.add_argument("--backend", help="compute backend (auto / cpu / gpu)")
     p.add_argument("--sc", action="append", default=[], metavar="NAME=VALUE",
@@ -123,6 +129,8 @@ def _cli_overrides(args) -> dict:
     return {
         "nx": args.nx, "grid_extent": args.grid_extent,
         "step1": args.step1, "step2": args.step2,
+        "drift_single_push": (None if args.drift_single_push is None
+                              else args.drift_single_push == "on"),
         "kernel": args.kernel, "backend": args.backend,
         "sc": common.parse_assignments(args.sc),
     }

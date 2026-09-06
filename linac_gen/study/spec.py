@@ -15,7 +15,7 @@ _KIND = "linac_gen_study"
 _VERSION = 1
 
 #: structural knobs a ParamSpec may target besides beam/element params
-STRUCTURAL_VARS = ("nx", "grid_extent", "step1", "step2")
+STRUCTURAL_VARS = ("nx", "grid_extent", "step1", "step2", "drift_single_push")
 
 STRATEGIES = ("oat", "zip", "grid", "random", "lhs")
 
@@ -29,7 +29,7 @@ class ParamSpec:
 
     * ``"NAME.attr"`` / ``"@N.attr"`` (1-based) — element parameter
     * a bare :class:`BeamConfig` field name — beam parameter
-    * one of ``nx / grid_extent / step1 / step2`` — numerics
+    * one of ``nx / grid_extent / step1 / step2 / drift_single_push`` — numerics
 
     Values come either from an explicit ``values`` list or from
     ``start``/``stop``/``n`` with ``spacing`` ``"lin"`` or ``"log"``.

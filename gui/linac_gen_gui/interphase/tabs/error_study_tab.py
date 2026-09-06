@@ -508,22 +508,25 @@ class ErrorStudyTab(QWidget):
             # Partial ensembles are statistically valid (only whole seeds
             # are aggregated) — store them so the Results tab can plot.
             self.state.error_study_results = results
+        # Correction-killed seeds must be reported on BOTH exits — the
+        # stopped-partial early return used to hide them.
+        suffix = ""
+        n_lost = getattr(results, "n_correction_beam_lost", 0)
+        if n_lost:
+            suffix = (f" — orbit correction lost the beam in "
+                      f"{n_lost} seed(s)")
         if stopped:
             if n == 0:
                 self._status.setText(
                     "stopped before the first seed completed — nothing stored")
             else:
                 self._status.setText(
-                    f"stopped — {n}/{n_req} seeds kept as a partial ensemble")
+                    f"stopped — {n}/{n_req} seeds kept as a partial "
+                    f"ensemble{suffix}")
                 self.state.status_message.emit(
                     f"error study stopped: {n}/{n_req} seeds — "
-                    "open the Results tab.")
+                    f"open the Results tab.{suffix}")
             return
-        suffix = ""
-        n_lost = getattr(results, "n_correction_beam_lost", 0)
-        if n_lost:
-            suffix = (f" — orbit correction lost the beam in "
-                      f"{n_lost} seed(s)")
         self._status.setText(
             f"done — {n} seeds, results stored on app state{suffix}")
         self._progress.setValue(100)

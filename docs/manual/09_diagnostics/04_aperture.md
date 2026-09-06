@@ -55,7 +55,17 @@ For a circular pipe `rx == ry`.
 During multi-particle tracking, any particle exceeding the local
 aperture is marked dead via `Beam.record_loss(particle_id, s,
 element_name)`.  Each loss is logged once (no duplicates) with the
-particle's position and energy at the moment of loss.
+particle's position and energy at the moment of loss.  Inside a
+field-free drift the moment of loss is exact when
+`StepConfig.drift_single_push` is on (the default): the crossing of
+the straight-line trajectory with the pipe is solved analytically, so
+`s` is the crossing point and `x`, `y` lie on the wall; a particle that
+is already outside the pipe when it enters the drift is recorded at
+the entrance.  With the option off, losses inside drifts are recorded
+at the end of the sub-step bundle that first saw the particle outside
+(up to one bundle, 20 mm at `PARTRAN_STEP 100 50`, past the true
+crossing).  Losses in every other element are recorded at the
+element's sub-step boundaries as before.
 
 The full log is available after the run as `Beam.loss_table` — a
 structured numpy array with fields `particle_id`, `s`, `x`, `y`,
@@ -128,7 +138,9 @@ analyzers (used alongside aperture loss).
 * [H⁻ stripping](05_stripping.md)
 * [Aperture element](../03_elements/12_aperture.md)
 * `linac_gen/analysis/aperture_profile.py:43` — `aperture_profile()`.
-* `linac_gen/core/beam.py:84` — `record_loss` / `loss_table`.
+* `linac_gen/core/beam.py:105` — `record_loss` / `loss_table`.
+* `linac_gen/tracking/tracker.py` — `Tracker._freeze_analytic_drift_losses`
+  (the straight-line crossing inside a drift).
 
 ← [Halo](03_halo.md) ·
 [Continue to H⁻ stripping →](05_stripping.md)

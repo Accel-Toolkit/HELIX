@@ -108,6 +108,7 @@ def test_hdf5_provenance_referenced_inputs(recorder, tmp_path, deck):
                 or str(prov["omp_schedule"]).startswith("n/a"))
         assert prov["integration_steps_per_metre"] == 100.0
         assert prov["sc_steps_per_metre"] == 50.0
+        assert bool(prov["drift_single_push"]) is True
         assert "THIN_STEERING" in prov["parse_downgrades"]
         expect = hashlib.sha256(fm_data.read_bytes()).hexdigest()
         assert f"cav.edz:{expect}" in prov["field_map_sha256"]
@@ -263,3 +264,19 @@ def test_env_override_matching_value_is_silent(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger=gpu_backend._log.name):
         assert gpu_backend._resolve_mode("cpu") == "cpu"
     assert not [r for r in caplog.records if "OVERRIDES" in r.getMessage()]
+
+
+def test_provenance_records_drift_single_push_off(tmp_path):
+    import dataclasses
+    import h5py
+    from linac_gen.core.lattice import Lattice
+    from linac_gen.elements.drift import Drift
+    from linac_gen.diagnostics.recorder import DiagnosticRecorder
+    from linac_gen.io.hdf5_output import save_results_hdf5
+    lat = Lattice()
+    lat.add(Drift("D", 100.0))
+    lat.step_config = dataclasses.replace(lat.step_config, drift_single_push=False)
+    out = tmp_path / "off.h5"
+    save_results_hdf5(DiagnosticRecorder(), str(out), lattice=lat)
+    with h5py.File(out, "r") as f:
+        assert bool(f["provenance"].attrs["drift_single_push"]) is False

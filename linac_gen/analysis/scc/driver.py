@@ -278,14 +278,19 @@ def scc_analysis(
             f"only {n} records: enable record_substeps (Numerics tab) for a "
             "smoothly resolved f_c(z) and finer card factors")
 
-    # Beam current: the RUN's own record wins (results.current_mA on
-    # envelope and loaded-HDF5 results, then results.beam.current on MP
-    # results with the beam attached) — the beam sizes being analysed
-    # were computed at that current, so analysing them at any other
-    # current is silently inconsistent.  The explicit parameter (the
-    # GUI/tool pass the Beam-tab value) is the fallback for MP recorder
-    # results, which carry NO current attribute — found live: an MP run
-    # otherwise computed I=0 and the balance returned f_c=0 everywhere.
+    # Beam current: the RUN's own record wins — results.current_mA
+    # first (envelope and loaded-HDF5 results carry it, and the
+    # run-current stamp in Tracker/_Backtracker.__init__ puts it on
+    # MP/backtrack recorder results too), then
+    # results.beam.current on results with the beam attached — the
+    # beam sizes being analysed were computed at that current, so
+    # analysing them at any other current is silently inconsistent;
+    # a differing explicit value is ignored with a note.  The explicit
+    # parameter (the GUI/tool pass the Beam-tab value) is only the
+    # fallback for results carrying neither (custom recorders the
+    # stamp could not reach, results saved before the stamp existed)
+    # — found live: such an MP run otherwise computed I=0 and the
+    # balance returned f_c=0 everywhere.
     cleared_z: list[tuple[float, float]] = []
     if cleared_regions:
         # Ion-cleared stretches (e.g. a biased chopper: the PXIE-style

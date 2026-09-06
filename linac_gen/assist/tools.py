@@ -1340,6 +1340,7 @@ def _parameter_scan(ctx, element: str, attribute: str, start: float,
     step = getattr(ctx.lattice, "step_config", None)
     step1 = float(getattr(step, "integration_steps_per_metre", 100.0))
     step2 = float(getattr(step, "sc_steps_per_metre", 50.0))
+    single = bool(getattr(step, "drift_single_push", True))
     # Prefer the NAME selector when it is unique in the session lattice —
     # robust against structural in-memory edits shifting indices between
     # this lattice and the re-parsed file.  Fall back to @index (1-based).
@@ -1374,6 +1375,7 @@ def _parameter_scan(ctx, element: str, attribute: str, start: float,
                               beam_config=dict(beam_dict),
                               nx=32, grid_extent=5.0,
                               step1=step1, step2=step2,
+                              drift_single_push=single,
                               mode=("envelope" if mode != "mp" else "mp"),
                               element_overrides=((selector, float(v)),))
             try:
@@ -1919,8 +1921,9 @@ def _compare_tw(ctx, tracewin_file: str, mass_mev: float = 939.294308,
 # MUTATE tools (always confirmed)
 # ---------------------------------------------------------------------------
 @_tool("load_lattice",
-       "Load a lattice file (.dat/.madx/.lat/.lte) or .lgproj project "
-       "into the session (a project also loads its beam).",
+       "Load a lattice file (.dat/.madx/.lat/.lte natively; .bmad/.jl/"
+       ".pals.yaml through lattix) or .lgproj project into the session "
+       "(a project also loads its beam).",
        {"type": "object",
         "properties": {"path": {"type": "string"}},
         "required": ["path"]},

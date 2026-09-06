@@ -59,6 +59,9 @@ class Toolbar(QFrame):
     # from the most recent envelope/multi-particle run.
     export_tracewin_requested = pyqtSignal()
 
+    # Export the loaded lattice as a MAD-X SEQUENCE (needs no results —
+    # only the lattice and the Beam tab's species/energy for the rigidity)
+    export_madx_requested = pyqtSignal()
     # Export results in openPMD-beamphysics format (interop with
     # openPMD-viewer / Astra / Genesis / LUME wrappers).
     export_openpmd_requested = pyqtSignal()
@@ -102,6 +105,7 @@ class Toolbar(QFrame):
             ("Open Lattice…",   self.open_lattice_requested.emit),
             ("Save Lattice",    self.save_lattice_requested.emit),
             ("Save Lattice As…",self.save_lattice_as_requested.emit),
+            ("Export Lattice as MAD-X…", self.export_madx_requested.emit),
             ("---", None),
             ("Open Project…",   self.open_project_requested.emit),
             ("Open Recent",     self._recent_menu),

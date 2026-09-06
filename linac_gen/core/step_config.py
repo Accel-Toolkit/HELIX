@@ -6,6 +6,16 @@ DRIFT and FIELD_MAP elements; ``step2`` sets how often a space-charge kick
 is applied inside those elements.  All other elements (QUAD, BEND,
 SOLENOID, GAP, ...) are tracked in exactly 2 integration sub-steps with
 one space-charge kick at the mid-plane, regardless of this config.
+
+``drift_single_push`` (default on): a DRIFT has an exact transfer map, so
+its ``step1`` sub-steps only matter for what happens *between* them —
+space-charge kicks, sub-step diagnostics, the bunch-train phase fold.
+When none of those is active the multiparticle tracker (and the
+backtracker) apply the map once; a particle that leaves the pipe inside
+the drift is located analytically on its straight line (exact ``s`` and
+wall coordinates) instead of at the end of the sub-step that first saw it
+outside.  Set it to ``False`` to keep the sub-stepped walk in every case
+(identical to HELIX ≤ 1.9.1).
 """
 from dataclasses import dataclass
 from typing import ClassVar
@@ -17,6 +27,10 @@ class StepConfig:
     """Steps-per-metre for integration and space-charge kicks."""
     integration_steps_per_metre: float = 100.0  # step1
     sc_steps_per_metre: float = 50.0            # step2
+    # One push per field-free drift when nothing sits between the sub-steps
+    # (see the module docstring).  Kept LAST so positional StepConfig(a, b)
+    # construction keeps working.
+    drift_single_push: bool = True
 
     # Lower bounds so that very short drifts still get at least one
     # half-kick split and one SC call.  ClassVar so they remain true
@@ -34,6 +48,9 @@ class StepConfig:
             raise ValueError(
                 f"sc_steps_per_metre must be > 0, got {self.sc_steps_per_metre}"
             )
+        # numpy.bool_ / JSON ints arrive from project files and provenance
+        # readers; store a plain bool (frozen dataclass -> object.__setattr__)
+        object.__setattr__(self, "drift_single_push", bool(self.drift_single_push))
 
     def integration_steps_for_length_mm(self, length_mm: float) -> int:
         """Number of integration sub-steps for a drift / field map of this length.

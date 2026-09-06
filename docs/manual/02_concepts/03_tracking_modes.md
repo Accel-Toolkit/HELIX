@@ -83,7 +83,11 @@ See full reference: [Python API → EnvelopeSolver](../06_running/01_python_api.
 `linac_gen.tracking.tracker.Tracker` propagates a macroparticle
 ensemble.  Each element exposes a `track(beam)` method; thin elements
 apply momentum kicks, thick elements integrate via 6×6 transfer
-matrices or a substepped field push (for field maps).
+matrices or a substepped field push (for field maps).  A field-free
+drift is pushed once unless space-charge kicks, sub-step diagnostics
+or the bunch-train phase fold need its sub-steps
+(`StepConfig.drift_single_push`, default on; losses inside such a
+drift are located exactly on the particle's straight line).
 
 Without space charge, MP tracking is exact for its element class
 (matrix elements: linear; 1-D/2-D field maps: first-order midpoint
@@ -214,7 +218,9 @@ entrance — with `backtrack_distribution` (multi-particle) and
 ### How it works
 
 Each forward operation Φ is undone by applying its exact algebraic
-inverse Φ⁻¹ in reverse element / sub-step order — no coordinate flips,
+inverse Φ⁻¹ in reverse element / sub-step order (a drift the forward
+tracker pushed once is undone with one inverse map — the backtracker
+evaluates the same `drift_single_push` rule) — no coordinate flips,
 no field-sign games, and every mid-walk diagnostic (σ, ε, Twiss) stays
 directly physical.  Matrix inverses use a true `inv(M)` (HELIX matrices
 in mm/mrad/deg/MeV are *not* symplectic — RF adiabatic damping sits on

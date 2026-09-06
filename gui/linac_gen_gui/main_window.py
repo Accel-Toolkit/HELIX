@@ -419,6 +419,7 @@ class MainWindow(QMainWindow):
                 step_dict = {
                     "integration_steps_per_metre": sc_cfg.integration_steps_per_metre,
                     "sc_steps_per_metre":         sc_cfg.sc_steps_per_metre,
+                    "drift_single_push":          bool(getattr(sc_cfg, "drift_single_push", True)),
                 }
 
         # Lattice summary

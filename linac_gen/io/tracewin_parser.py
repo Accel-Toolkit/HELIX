@@ -633,8 +633,13 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                             f"line {line_num}: PARTRAN_STEP needs 2 numbers "
                             f"(step1, step2), got {len(params)}"
                         )
+                    import dataclasses
                     from linac_gen.core.step_config import StepConfig
-                    lattice.step_config = StepConfig(
+                    # replace(): the card sets the two densities and keeps any
+                    # other StepConfig setting (drift_single_push) the caller chose
+                    base = getattr(lattice, "step_config", None) or StepConfig()
+                    lattice.step_config = dataclasses.replace(
+                        base,
                         integration_steps_per_metre=float(params[0]),
                         sc_steps_per_metre=float(params[1]),
                     )

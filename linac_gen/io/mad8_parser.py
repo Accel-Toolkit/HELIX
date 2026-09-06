@@ -318,8 +318,11 @@ def _build_mad8_element(f: _Mad8File, name: str, brho_signed: float,
             elems.append(Drift(name=f"{name}_body", length=l_mm))
         return elems, l_mm
 
+    # MAD8 has no RBARC option; its RBEND ``L`` is taken as the arc length
+    # (the pre-2026-09-03 behaviour of the shared builder, kept explicitly —
+    # not verified against a MAD8 binary, unlike the MAD-X chord rule).
     elems, total_mm = _build_element(name, etype, attrs, brho_signed,
-                                     f.warnings)
+                                     f.warnings, rbend_chord=False)
     if etype == "quadrupole" and attrs.get("tilt"):
         for el in elems:
             if isinstance(el, Quadrupole):

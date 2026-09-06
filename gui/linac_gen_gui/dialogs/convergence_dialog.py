@@ -144,10 +144,7 @@ class ConvergenceWorker(QThread):
                     f"Sweeping step1 (integration/m) = {v} ...",
                 )
                 sc = self._sc_config
-                step = StepConfig(
-                    integration_steps_per_metre=float(v),
-                    sc_steps_per_metre=base_step.sc_steps_per_metre,
-                )
+                step = replace(base_step, integration_steps_per_metre=float(v))
                 sx, sy, ex, ey, dt = self._simulate_one(sc, step_config=step)
                 rows.append(SweepRow("step1", float(v), sx, sy, ex, ey, dt))
                 self.row_done.emit(rows[-1])
@@ -160,10 +157,7 @@ class ConvergenceWorker(QThread):
                     f"Sweeping step2 (SC kicks/m) = {v} ...",
                 )
                 sc = self._sc_config
-                step = StepConfig(
-                    integration_steps_per_metre=base_step.integration_steps_per_metre,
-                    sc_steps_per_metre=float(v),
-                )
+                step = replace(base_step, sc_steps_per_metre=float(v))
                 sx, sy, ex, ey, dt = self._simulate_one(sc, step_config=step)
                 rows.append(SweepRow("step2", float(v), sx, sy, ex, ey, dt))
                 self.row_done.emit(rows[-1])
@@ -332,7 +326,8 @@ class ConvergenceDialog(QDialog):
             grid_extent=grid_ext,
             nx=n_grid, ny=n_grid, nz=n_grid,
         )
-        self._recommended_step = StepConfig(
+        self._recommended_step = replace(
+            self._original_step_config if self._original_step_config is not None else StepConfig(),
             integration_steps_per_metre=step1,
             sc_steps_per_metre=step2,
         )

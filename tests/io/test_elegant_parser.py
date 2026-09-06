@@ -146,6 +146,34 @@ def test_matrix_element_roundtrips_geometry(tmp_path):
     assert lat2.total_length == pytest.approx(total, rel=1e-6)
 
 
+def test_ematrix_longitudinal_basis_warns(tmp_path):
+    """A dispersive EMATRIX (non-zero r16/r56) must warn that the
+    longitudinal block stays in Elegant's (t, p) basis, untranslated
+    (matrix_element.py's own recommendation to importers)."""
+    deck = ("m1: ematrix, l=0.1, r11=1, r22=1, r33=1, r44=1, r55=1, r66=1, "
+            "r16=0.5, r56=0.1\n"
+            "l: line=(m1)\n")
+    lat, meta = parse_elegant(_write(tmp_path, deck), name="l")
+    el = {e.name: e for e in lat.elements}["m1"]
+    assert type(el).__name__ == "MatrixElement"   # imports, not degraded
+    assert el.matrix[0, 5] == pytest.approx(0.5)
+    warns = [w for w in meta["warnings"]
+             if "m1" in w and "longitudinal" in w and "Elegant" in w]
+    assert len(warns) == 1, meta["warnings"]
+
+
+def test_ematrix_transverse_only_no_warning(tmp_path):
+    """A pure transverse EMATRIX (identity longitudinal block, no
+    coupling, no longitudinal offset) is exact -> no warning."""
+    deck = ("m2: ematrix, l=0.1, r11=1, r12=0.5, r22=1, r33=1, r44=1, "
+            "r55=1, r66=1, c1=0.001\n"
+            "l: line=(m2)\n")
+    lat, meta = parse_elegant(_write(tmp_path, deck), name="l")
+    el = {e.name: e for e in lat.elements}["m2"]
+    assert type(el).__name__ == "MatrixElement"
+    assert meta["warnings"] == []
+
+
 # ---------------------------------------------------------------------------
 # cross-check vs Cheetah (the external anchor) — skipped if unavailable
 # ---------------------------------------------------------------------------

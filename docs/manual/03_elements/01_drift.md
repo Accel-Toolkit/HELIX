@@ -19,13 +19,26 @@ Conventions:
 * The longitudinal `M[4,5]` slip term is included
   (`Δφ[deg] = -360·L·ΔW / (β³·γ³·m·λ_RF)`) — this is what causes
   the bunch to drift in φ when there's an energy spread.
-* Drift apertures **are enforced**: the tracker checks apertures
-  after every element and inside every drift sub-step bundle.  With
-  only `aperture` set the pipe is circular (`x² + y² > aperture²`
-  loses the particle); setting `aperture_y > 0` switches to a
-  **rectangular** check with half-widths (`aperture`, `aperture_y`).
-  Use a dedicated [Aperture](12_aperture.md) element for shaped
-  point collimators.
+* Drift apertures **are enforced**.  With only `aperture` set the
+  pipe is circular (`x² + y² > aperture²` loses the particle);
+  setting `aperture_y > 0` switches to a **rectangular** check with
+  half-widths (`aperture`, `aperture_y`).  Where the loss is placed
+  depends on `StepConfig.drift_single_push` (default on): a drift
+  has no field, so every particle moves on a straight line and the
+  tracker solves for the exact `s` at which that line leaves the
+  pipe, records the loss there with the coordinates on the wall, and
+  pushes the survivors once with the full map.  A particle already
+  outside the pipe when it enters the drift (let through by a wider
+  element upstream) is recorded at the drift entrance — the
+  sub-stepped walk kept such a particle when it was back inside by
+  the first sub-step end, so where a drift is narrower than the
+  element before it the transmission can be slightly lower than in
+  HELIX ≤ 1.9.1 (and closer to TraceWin, which checks every step).
+  With the
+  option off the drift is walked in `step1` sub-steps and the loss
+  is recorded at the end of the sub-step bundle that first saw the
+  particle outside (HELIX ≤ 1.9.1 behaviour).  Use a dedicated
+  [Aperture](12_aperture.md) element for shaped point collimators.
 
 ## Tutorial (newcomers)
 
@@ -134,7 +147,7 @@ linac_gen.elements.drift.Drift(
 | `dx`, `dy`, `dz` | 0.0 | mm | misalignment offsets (Misalignment mixin); only `dx`/`dy` honoured by the tracker |
 | `tilt_deg` | 0.0 | deg | rotation about longitudinal axis |
 | `pitch_deg`, `yaw_deg` | 0.0 | deg | stored — not honoured by the tracker |
-| `n_steps` | 1 | — | **unused** for transfer-map elements: drift integration density comes from `lattice.step_config` (PARTRAN_STEP); quads/bends/solenoids always track in exactly 2 substeps |
+| `n_steps` | 1 | — | **unused** for transfer-map elements: drift integration density comes from `lattice.step_config` (PARTRAN_STEP), and with `drift_single_push` on (the default) a drift is pushed once whenever no space-charge kick, sub-step diagnostic or bunch-train phase fold sits between its sub-steps; quads/bends/solenoids always track in exactly 2 substeps |
 
 ### Methods
 

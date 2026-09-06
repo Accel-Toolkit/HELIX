@@ -28,7 +28,28 @@ numbers:
   elements;
 * **quads, bends, solenoids** (and other transfer-map elements) are
   always tracked in **exactly 2 substeps** with one mid-plane SC
-  kick, regardless of this config.
+  kick, regardless of this config;
+* **`drift_single_push`** (`StepConfig`, default on): a drift's map
+  is exact, so its `step1` sub-steps only matter for what happens
+  *between* them — space-charge kicks, sub-step diagnostics, the
+  bunch-train phase fold.  When none of those is active the tracker
+  applies the map once and locates any loss inside the pipe
+  analytically (see [Drift](../03_elements/01_drift.md)).  Where
+  space charge kicks, the sub-steps stay and results are unchanged;
+  a drift inside a fully compensated region (`SpaceChargeComp` factor
+  ≥ 1) applies no kick and is pushed once too.  A zero-current run
+  keeps the same transfer maps and no longer spends most of its time
+  in drift sub-steps; the one place its result differs from the
+  sub-stepped walk is a particle already outside a drift's pipe at
+  the entrance (a drift narrower than the element before it), which
+  is now lost at the entrance where the sub-stepped walk kept it if
+  it had wandered back inside by the first sub-step end — transmission
+  can be slightly lower there, and is closer to TraceWin's every-step
+  check.  Switch it off
+  (Numerics tab, `--drift-single-push off`, or
+  `StepConfig(drift_single_push=False)`) to reproduce the sub-stepped
+  walk of HELIX ≤ 1.9.1 exactly.  Note that with it on, a `step1`
+  convergence scan at zero current only probes field maps.
 
 ## Convergence checks
 

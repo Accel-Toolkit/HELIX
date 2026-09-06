@@ -65,3 +65,13 @@ def test_random_needs_n_samples():
     s.strategy = "random"
     with pytest.raises(ValueError, match="n_samples"):
         s.validate_shape()
+
+
+def test_numerics_drift_single_push_roundtrip_and_kind(tmp_path):
+    spec = _spec()
+    spec.numerics = {"nx": 32, "drift_single_push": False}
+    p = tmp_path / "study.json"
+    save_spec(spec, p)
+    back = load_spec(p)
+    assert back.numerics["drift_single_push"] is False
+    assert ParamSpec(selector="drift_single_push", start=0, stop=1, n=2).resolved_kind() == "structural"

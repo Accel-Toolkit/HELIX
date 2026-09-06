@@ -17,15 +17,6 @@ import pytest
 pytest.importorskip("PyQt6")
 
 
-@pytest.fixture()
-def win(qapp):
-    from linac_gen_gui.interphase.app import InterphaseWindow
-    w = InterphaseWindow()
-    yield w
-    w.close()
-    w.deleteLater()
-
-
 def _wait_worker(qapp, worker, timeout_ms=60_000):
     assert worker is not None, "worker was never constructed"
     assert worker.wait(timeout_ms), "worker thread did not finish"
@@ -99,6 +90,61 @@ def test_full_user_scenario_mp_then_backtrack(qapp, win, mini_lattice,
         assert any(len(a) >= 2 and "caveat" in str(a[1]).lower()
                    for a in warn_boxes), \
             "backtrack emitted caveats but no 'Backtrack caveats' box shown"
+
+
+def test_leftover_last_lattice_key_cannot_swap_lattice_mid_flow(
+        qapp, win, mini_lattice, monkeypatch):
+    """Regression (2026-09-02 full-suite hang): a ``lastLatticePath``
+    left in the process-wide sandboxed QSettings by an EARLIER test
+    module armed the window's startup restore timer, which silently
+    swapped ``state.lattice`` to fodo_cell.dat at the first
+    ``processEvents()``; the backtrack energy audit then (correctly)
+    refused the mismatched lattice/beam pair and the failure raised a
+    modal critical box.  Plant the key INSIDE the test body — after the
+    hygiene fixture has run, before the first event-loop pump — and
+    prove the mini-lattice MP → backtrack flow is immune."""
+    import os
+
+    from linac_gen.core.config import BeamConfig
+    from linac_gen_gui.interphase.app import (_SETTINGS_LAST_LATTICE,
+                                              _settings)
+    from linac_gen_gui.interphase.dialogs import backtrack_dialog as bd
+
+    fodo = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "..", "examples", "fodo_cell.dat"))
+    assert os.path.exists(fodo), "fixture lattice missing"
+    _settings().setValue(_SETTINGS_LAST_LATTICE, fodo)   # the poison key
+
+    lattice_path = "/tmp/e2e_backtrack_leftover.dat"
+    win.state.set_lattice(mini_lattice, lattice_path)
+    cfg = BeamConfig(species="proton", energy=3.0, frequency=162.5,
+                     current=0.0, n_particles=300)
+    win.beam_tab.set_beam_config(cfg)
+    win.state.set_beam_config(cfg)
+
+    win._run_mp()
+    _wait_worker(qapp, win._mp_worker)
+    assert win.state.results is not None
+
+    n_last = len(mini_lattice.elements) - 1
+    monkeypatch.setattr(bd.BacktrackDialog, "exec", lambda self: True)
+    monkeypatch.setattr(
+        bd.BacktrackDialog, "get_settings",
+        lambda self: {"source": "results", "dst_path": None,
+                      "start": 0, "end": n_last,
+                      "field_map_mode": "rk4", "space_charge": False,
+                      "write_dst": None})
+    win._run_backtrack()
+    _wait_worker(qapp, win._backtrack_worker)
+
+    # The leftover key must not have swapped the working lattice…
+    assert win.state.lattice_path == lattice_path, \
+        "stale lastLatticePath resurrected a different lattice mid-flow"
+    # …the backtrack must have succeeded…
+    assert getattr(win.state.results, "direction", None) == "backward"
+    # …and no failure modal was raised (caveat *warnings* are fine).
+    criticals = [b for b in win.message_boxes if b[0] == "critical"]
+    assert not criticals, f"failure box(es) recorded: {criticals}"
 
 
 def test_backtrack_slot_guards(qapp, win, monkeypatch):

@@ -478,8 +478,15 @@ class _Backtracker:
     # ------------------------------------------------------------------
     def _untrack_drift(self, element, entry, species) -> None:
         """Inverse of Tracker._track_drift: remainder first, then the
-        Strang bundles in reverse — [inv(half), SC⁻, inv(half)]."""
+        Strang bundles in reverse — [inv(half), SC⁻, inv(half)].  A drift
+        the forward tracker pushed once (no space charge, no aperture) is
+        undone with one inverse map, mirroring ``_drift_single_push``."""
         cfg = getattr(self.lattice, "step_config", None)
+        if self._drift_single_push(element):
+            ref_entry = entry.make_ref(species)
+            M = np.asarray(element.transfer_matrix(ref_entry, ds=element.length), dtype=float)
+            self._apply_matrix(_invert(M, element.name))
+            return
         n_int = (cfg.integration_steps_for_length_mm(element.length)
                  if cfg is not None else 2)
         n_sc = (cfg.sc_steps_for_length_mm(element.length)
@@ -504,6 +511,37 @@ class _Backtracker:
             self._apply_matrix(M_half_inv)
             self._apply_sc_kick_negated(bundle_len)
             self._apply_matrix(M_half_inv)
+
+    def _space_charge_active(self) -> bool:
+        """True when ``_apply_sc_kick_negated`` would actually un-kick (its gates
+        plus the kernels' zero-current early return)."""
+        if getattr(self, "_sc_explicitly_off", False) or self._sc_factor <= 0:
+            return False
+        if float(getattr(self.beam, "current", 0.0) or 0.0) == 0.0:
+            return False
+        if getattr(self.beam, "continuous", False):
+            return True
+        return self.pic_solver is not None
+
+    def _drift_single_push(self, element) -> bool:
+        """Forward-tracker rule (``Tracker._drift_single_push``) evaluated with
+        the backtracker's own state, so a drift the forward run pushed once is
+        undone with one inverse map (losses are never undone backwards, so
+        apertures do not enter the decision)."""
+        cfg = getattr(self.lattice, "step_config", None)
+        if not getattr(cfg, "drift_single_push", True):     # same default as the forward tracker
+            return False
+        if self._space_charge_active() or getattr(self, "_record_substeps", False):
+            return False
+        if getattr(self.beam, "periodic_phase", False) and getattr(self.beam, "bunch_train", False):
+            return False
+        ps = self.pic_solver
+        if ps is not None and (getattr(ps, "train_snapshot_recorder", None) is not None
+                               or getattr(ps, "train_neighbor_provider", None) is not None):
+            return False
+        if getattr(element, "field_data", None) is not None:
+            return False
+        return True
 
     def _untrack_transfer_map(self, element, entry, species) -> None:
         """Inverse of Tracker._track_transfer_map (n=2 split-operator).

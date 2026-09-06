@@ -37,7 +37,7 @@ source modes:
 | `--energy-hard-limit` | rel. | `5e-2` | refuse above this deviation |
 | `--sc-on` | flag | off | enable space charge on the backward walk |
 | `--out`, `--format` | | `.`, `hdf5` | results directory / format (as `run`) |
-| `--energy`, `--freq`, `--species`, `--current`, `--n-particles`, `--beam`, `--nx`, `--grid-extent`, `--step1`, `--step2`, `--kernel`, `--backend`, `--sc`, `--seed`, `-q` | | | same contract as [`run`](07_cli_run.md) |
+| `--energy`, `--freq`, `--species`, `--current`, `--n-particles`, `--beam`, `--nx`, `--grid-extent`, `--step1`, `--step2`, `--drift-single-push`, `--kernel`, `--backend`, `--sc`, `--seed`, `-q` | | | same contract as [`run`](07_cli_run.md); the backward walk undoes a single-pushed drift with one inverse map |
 
 The results file (`<stem>_backtrack.h5`) is an ordinary HELIX results
 file with `s` **increasing**: index 0 is the reconstructed entrance,

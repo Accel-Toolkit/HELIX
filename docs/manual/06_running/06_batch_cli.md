@@ -21,13 +21,16 @@ python -m linac_gen <subcommand> …
 | `failures` | element failure impact + recovery → CSV | [Failure studies](../10_gui/06c_failures_tab.md) |
 | `match` | the matcher — delegates to `python -m linac_gen.matching` | [Matching CLI](../07_matching/04_cli.md) |
 | `assist` | AI assistant chat (optional — local or cloud LLM; the rest of HELIX never needs it) | [Assistant](../14_assistant/01_assistant.md) |
+| `export` | write the lattice in another code's format — MAD-X `SEQUENCE`, the exact inverse of the MAD-X importer | [Exporting to MAD-X](02_tracewin_dat.md#exporting-to-mad-x) |
 
 ## The input model
 
 Every subcommand takes an **input** that is either:
 
 * a **lattice file** — `.dat` (TraceWin), `.madx` / `.seq` (MAD-X),
-  `.lat` / `.flat` (MAD8) or `.lte` (Elegant);
+  `.lat` / `.flat` (MAD8), `.lte` (Elegant), or — through the optional
+  lattix translator — `.bmad` (Bmad), `.jl` / `.scibmad` (SciBmad) and
+  `.pals.yaml` / `.pals.json` (PALS);
   the beam then starts from `BeamConfig` defaults; or
 * a **`.lgproj` project** — beam and convergence settings are read from
   the file (it is the same project the GUI saves).
@@ -49,7 +52,7 @@ project file as the baseline, and vary only what changes from the shell.
 |---|---|---|
 | **Beam** | any `BeamConfig` field | `--current 5` · `--beam emit_nx=0.3` |
 | **Element** | any element parameter | `--set QF.gradient=8.5` · `--set @12.angle=10` |
-| **Convergence / PIC** | step density, grid, kernel, backend | `--nx 64` · `--step1 100` · `--sc green_kind=point` |
+| **Convergence / PIC** | step density, grid, kernel, backend | `--nx 64` · `--step1 100` · `--sc green_kind=point` (the single-push drift option comes from the project file's `drift_single_push` key) |
 
 An **element selector** is `NAME.attr` (the element whose `.name` is
 `NAME`) or `@N.attr` (the N-th element, 1-based, over `lattice.elements`).

@@ -65,33 +65,28 @@ _SETTINGS_WINDOW_GEOMETRY = "windowGeometry"
 _SETTINGS_UPDATE_CHECK   = "updates/checkOnLaunch"
 _RECENT_PROJECTS_MAX     = 8
 
-# Suffixes handled by the non-TraceWin importers.  Files with these
-# suffixes must never be written in place by "Save" — write_tracewin
-# would silently overwrite the MAD source with TraceWin text.
-_MADX_SUFFIXES = (".madx", ".seq")
-_MAD8_SUFFIXES = (".lat", ".flat")
-_ELEGANT_SUFFIXES = (".lte",)
+# Lattice import formats live in linac_gen.io.formats (one suffix table
+# for the CLI, the GUI and the New Project wizard).  A lattice imported
+# from any non-TraceWin format must never be written in place by "Save"
+# — write_tracewin would silently overwrite the MAD/Bmad source with
+# TraceWin text — which _is_foreign_source decides.
+from linac_gen.io.formats import (  # noqa: E402
+    DIALOG_FILTER as _LATTICE_DIALOG_FILTER,
+    is_foreign_source as _is_foreign_source,
+    parse_lattice_file as _parse_lattice_file_impl,
+)
 
 
 def _parse_lattice_file(fp: str):
     """Extension-dispatched lattice parse → ``(lattice, metadata)``.
 
-    One shared implementation for the three GUI load paths (open dialog,
-    startup restore, project restore) so a new format only has to be
-    wired once.
+    One shared implementation for the GUI load paths (open dialog,
+    startup restore, project restore, New Project) — the same dispatcher
+    the CLI uses (``linac_gen.io.formats.parse_lattice_file``), so a new
+    format only has to be wired once.  Bmad / SciBmad / PALS / lattix
+    JSON go through the optional ``lattix`` translator.
     """
-    suf = Path(fp).suffix.lower()
-    if suf in _MADX_SUFFIXES:
-        from linac_gen.io.madx_parser import parse_madx
-        return parse_madx(fp)
-    if suf in _MAD8_SUFFIXES:
-        from linac_gen.io.mad8_parser import parse_mad8
-        return parse_mad8(fp)
-    if suf in _ELEGANT_SUFFIXES:
-        from linac_gen.io.elegant_parser import parse_elegant
-        return parse_elegant(fp)
-    from linac_gen.io.tracewin_parser import parse_tracewin
-    return parse_tracewin(fp)
+    return _parse_lattice_file_impl(fp)
 _FONT_MIN, _FONT_MAX     = 9, 22
 
 
@@ -544,6 +539,7 @@ class InterphaseWindow(QMainWindow):
         self._toolbar.font_size_changed.connect(self._apply_font_size)
         self._toolbar.export_tracewin_requested.connect(self._export_tracewin)
         self._toolbar.export_openpmd_requested.connect(self._export_openpmd)
+        self._toolbar.export_madx_requested.connect(self._export_madx)
         self._toolbar.set_calc_dir_requested.connect(self._set_calc_dir)
         self._toolbar.open_recent_requested.connect(self._open_recent_project)
         self._toolbar.clear_recent_requested.connect(self._clear_recent_projects)
@@ -610,7 +606,15 @@ class InterphaseWindow(QMainWindow):
         # Connected BEFORE the restore so a project-restore's beam is also
         # captured as the session beam.
         self.state.beam_config_changed.connect(self._save_session_beam)
-        QTimer.singleShot(0, self._restore_last_session)
+        # Guarded at the CALL SITE, not inside the method: tests call
+        # _restore_last_session()/_restore_session_beam() explicitly and
+        # those must keep working — only the *deferred* restore is the
+        # hazard under pytest, where a QSettings key left by one test
+        # module would silently swap another test's lattice/beam at its
+        # first processEvents() (2026-09-02 full-suite hang; same idiom
+        # as _launch_update_check).
+        if not os.environ.get("PYTEST_CURRENT_TEST"):
+            QTimer.singleShot(0, self._restore_last_session)
         # MIRAGE parity (2026-07-28): hands-free listening starts with
         # the APP, not with the first click — the assistant panel is
         # built hidden at startup so the wake stack (mic + VAD +
@@ -968,18 +972,15 @@ class InterphaseWindow(QMainWindow):
         s = _settings()
         start_dir = str(s.value(_SETTINGS_LAST_DIR, str(Path.cwd())))
         fp, _ = QFileDialog.getOpenFileName(
-            self, "Open Lattice", start_dir,
-            "Lattice files (*.dat *.madx *.seq *.lat *.flat *.lte);;"
-            "TraceWin (*.dat);;MAD-X (*.madx *.seq);;"
-            "MAD8 (*.lat *.flat);;Elegant (*.lte);;All Files (*)"
-        )
+            self, "Open Lattice", start_dir, _LATTICE_DIALOG_FILTER)
         if not fp:
             return
         self._detach_workers_for_new_lattice()
         try:
-            # Route by file extension: MAD-X (.madx/.seq) and MAD8
-            # (.lat/.flat) → the in-house subset parsers; everything
-            # else → the TraceWin parser.
+            # Route by file extension: MAD-X (.madx/.seq), MAD8
+            # (.lat/.flat) and Elegant (.lte) → the in-house subset
+            # parsers; Bmad/SciBmad/PALS → lattix; everything else →
+            # the TraceWin parser.
             lattice, meta = _parse_lattice_file(fp)
             self.state.set_lattice(lattice, fp)
             s.setValue(_SETTINGS_LAST_LATTICE, fp)
@@ -1164,16 +1165,14 @@ class InterphaseWindow(QMainWindow):
             else:
                 self._save_lattice_as()
             return
-        if lp and Path(lp).suffix.lower() not in (_MADX_SUFFIXES
-                                                  + _MAD8_SUFFIXES
-                                                  + _ELEGANT_SUFFIXES):
+        if lp and not _is_foreign_source(lp):
             self._write_lattice(lp)
         else:
-            # No path yet, OR the lattice came from a MAD-X/MAD8 file.
-            # HELIX only writes TraceWin .dat — Ctrl+S used to silently
-            # OVERWRITE the user's .madx/.seq (and would the .lat) source
-            # with TraceWin millimeter text (and mark it clean).  Route to
-            # Save-As, whose filter is *.dat.
+            # No path yet, OR the lattice came from a MAD-X/MAD8/Elegant/
+            # Bmad/SciBmad/PALS file.  HELIX only writes TraceWin .dat —
+            # Ctrl+S used to silently OVERWRITE the user's .madx/.seq (and
+            # would the .lat) source with TraceWin millimeter text (and
+            # mark it clean).  Route to Save-As, whose filter is *.dat.
             self._save_lattice_as()
 
     def _save_lattice_as(self, suggest: str | None = None) -> None:
@@ -1341,6 +1340,7 @@ class InterphaseWindow(QMainWindow):
             "density_bins":     int(ct._density_bins.value()),
             "density_extent":   float(ct._density_extent.value()),
             "csr_enabled":      bool(ct._fixed_csr.isChecked()),
+            "drift_single_push": bool(ct._drift_single_push.isChecked()),
         }
         return out
 
@@ -1478,6 +1478,9 @@ class InterphaseWindow(QMainWindow):
                 ct._record_density.setChecked(bool(conv["record_density"]))
             if "csr_enabled" in conv:
                 ct._fixed_csr.setChecked(bool(conv["csr_enabled"]))
+            if "drift_single_push" in conv:
+                from linac_gen.cli.common import _as_bool
+                ct._drift_single_push.setChecked(_as_bool(conv["drift_single_push"]))
             if "snapshot_every_n" in conv:
                 ct._snapshot_every_n.setValue(int(conv["snapshot_every_n"]))
             if "snapshot_elements" in conv:
@@ -1723,6 +1726,78 @@ class InterphaseWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Export failed", str(exc))
 
+    def _export_madx(self) -> None:
+        """File → Export Lattice as MAD-X…: write the loaded lattice as a
+        MAD-X ``SEQUENCE`` (the exact inverse of the MAD-X importer).  The
+        Beam tab's species/energy set the rigidity every ``k1``/``ks`` is
+        normalised by, so the beam must be configured first.  Elements
+        MAD-X cannot represent become MARKER + body DRIFT with a warning
+        (listed in the completion box and counted in the status bar)."""
+        if self.state.lattice is None:
+            QMessageBox.warning(self, "No lattice", "Load a lattice first.")
+            return
+        if not self._ensure_beam_config():
+            return
+        cfg = self.state.beam_config
+        s = _settings()
+        start_dir = str(s.value(_SETTINGS_LAST_DIR, str(Path.cwd())))
+        src = Path(self.state.lattice_path) if self.state.lattice_path else None
+        stem = src.stem if src else "lattice"
+        if src and src.suffix.lower() in (".madx", ".seq"):
+            # Imported from MAD-X: never propose the source as the target.
+            stem += "_helix"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export lattice as MAD-X…",
+            str(Path(start_dir) / f"{stem}.madx"),
+            "MAD-X sequence (*.madx *.seq);;All files (*)",
+        )
+        if not path:
+            return
+        if src and os.path.abspath(path) == os.path.abspath(str(src)):
+            QMessageBox.warning(
+                self, "Export refused",
+                "That is the MAD-X file this lattice was imported from — "
+                "the source is never overwritten.  Choose another name.")
+            return
+        if not path.lower().endswith((".madx", ".seq")):
+            path += ".madx"
+            # Appending the extension can target a DIFFERENT existing
+            # file than the one the dialog's own prompt covered.
+            if os.path.exists(path):
+                choice = QMessageBox.question(
+                    self, "Overwrite?",
+                    f"{os.path.basename(path)} already exists.\n\nOverwrite?",
+                    QMessageBox.StandardButton.Yes
+                    | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if choice != QMessageBox.StandardButton.Yes:
+                    return
+        try:
+            from linac_gen.cli.common import build_ref
+            from linac_gen.io.madx_writer import write_madx
+            warnings = write_madx(
+                self.state.lattice, path, build_ref(cfg),
+                title=src.name if src else Path(path).stem,
+            )
+            s.setValue(_SETTINGS_LAST_DIR, str(Path(path).parent))
+            self.state.status_message.emit(
+                f"Exported MAD-X → {Path(path).name} "
+                f"({cfg.species} {cfg.energy:g} MeV, "
+                f"{len(warnings)} warning(s))"
+            )
+            body = f"Wrote:\n  {path}\n\nReference: {cfg.species} " \
+                   f"{cfg.energy:g} MeV"
+            if warnings:
+                shown = warnings[:12]
+                body += f"\n\n{len(warnings)} warning(s):\n" + \
+                    "\n".join(f"  • {w}" for w in shown)
+                if len(warnings) > len(shown):
+                    body += f"\n  … and {len(warnings) - len(shown)} more"
+            QMessageBox.information(self, "Export complete", body)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+
     def _new_project(self) -> None:
         """Guided project creation (File → New Project…, toolbar, Ctrl+N).
 
@@ -1754,8 +1829,11 @@ class InterphaseWindow(QMainWindow):
             self._detach_workers_for_new_lattice()
             lattice, meta = _parse_lattice_file(res["lattice_path"])
             self.state.set_lattice(lattice, res["lattice_path"])
-            lat_warnings = (meta.get("warnings", [])
-                            if isinstance(meta, dict) else [])
+            # Warnings from materialising a foreign deck (the wizard parsed
+            # it and wrote <name>.dat) come first; the .dat re-parse rarely
+            # adds any.
+            lat_warnings = list(res.get("import_warnings", [])) + list(
+                meta.get("warnings", []) if isinstance(meta, dict) else [])
             for w in lat_warnings:
                 print(f"[lattice import] {w}")
             s = _settings()
@@ -1923,14 +2001,24 @@ class InterphaseWindow(QMainWindow):
         self.state.status_message.emit(msg)
 
     def _env_fail(self, msg: str) -> None:
-        # Shared by the envelope AND the MP worker (see _run_mp wiring).
-        if self.sender() not in (self._envelope_worker, self._mp_worker,
-                                 self._backtrack_worker,
-                                 self._train_worker):
+        # Shared by the envelope, MP, backtrack and train workers (see
+        # the respective _run_* wirings) — title the box after the
+        # worker that actually failed, not always "Envelope failed".
+        snd = self.sender()
+        if snd not in (self._envelope_worker, self._mp_worker,
+                       self._backtrack_worker, self._train_worker):
             return
         self.state.set_running(False)
         self._toolbar.set_progress(0)
-        QMessageBox.critical(self, "Envelope failed", msg)
+        if snd is self._mp_worker:
+            title = "Multi-particle run failed"
+        elif snd is self._backtrack_worker:
+            title = "Backtrack failed"
+        elif snd is self._train_worker:
+            title = "Pulse study failed"
+        else:
+            title = "Envelope failed"
+        QMessageBox.critical(self, title, msg)
 
     def _env_aborted(self) -> None:
         if self.sender() is not self._envelope_worker:
@@ -2049,13 +2137,9 @@ class InterphaseWindow(QMainWindow):
             from linac_gen.core.step_config import StepConfig
             cfg = self.state.beam_config
             beam = create_beam(cfg, seed=42)
-            step1 = self.convergence_tab._fixed_step1.value()
-            step2 = self.convergence_tab._fixed_step2.value()
-            # Push step1/step2 into the live lattice so the tracker picks them up
-            self.state.lattice.step_config = StepConfig(
-                integration_steps_per_metre=float(step1),
-                sc_steps_per_metre=float(step2),
-            )
+            # Push the Numerics tab's step settings into the live lattice so the
+            # tracker picks them up (step1/step2 and the single-push option)
+            self.state.lattice.step_config = self.convergence_tab.current_step_config()
             continuous = bool(getattr(beam, "continuous", False))
             # The torch PIC backend is a bunched-beam 3-D solver with no
             # continuous/DC kernels; the builder falls back to numpy for DC
@@ -2197,12 +2281,7 @@ class InterphaseWindow(QMainWindow):
                 file_cfg.distribution_file = cfg_ui["dst_path"]
                 beam = create_beam(file_cfg, seed=42)
 
-            step1 = self.convergence_tab._fixed_step1.value()
-            step2 = self.convergence_tab._fixed_step2.value()
-            self.state.lattice.step_config = StepConfig(
-                integration_steps_per_metre=float(step1),
-                sc_steps_per_metre=float(step2),
-            )
+            self.state.lattice.step_config = self.convergence_tab.current_step_config()
             sc = None
             if cfg_ui["space_charge"]:
                 sc = self.convergence_tab.current_sc_config(
@@ -2316,13 +2395,7 @@ class InterphaseWindow(QMainWindow):
         if tc is None:                      # defensive: never run unvalidated
             return
         try:
-            from linac_gen.core.step_config import StepConfig
-            step1 = self.convergence_tab._fixed_step1.value()
-            step2 = self.convergence_tab._fixed_step2.value()
-            self.state.lattice.step_config = StepConfig(
-                integration_steps_per_metre=float(step1),
-                sc_steps_per_metre=float(step2),
-            )
+            self.state.lattice.step_config = self.convergence_tab.current_step_config()
             # Same numerics the Run button applies (class-level FieldMap3D
             # toggles + sampling kernel; idempotent setters).
             from linac_gen.elements import field_map_3d
@@ -2989,7 +3062,8 @@ class InterphaseWindow(QMainWindow):
             "Engines: matrix · envelope · multiparticle\n"
             "Space charge: analytical · PIC fixed · PIC adaptive\n"
             "Backends: CPU (C++/OpenMP) · CUDA (cupy) · MPS (torch, Apple Silicon)\n"
-            "I/O: TraceWin .dat / .dst / partran1.out · HDF5\n\n"
+            "I/O: TraceWin .dat / .dst / partran1.out · HDF5 · MAD-X in/out\n"
+            "Imports: MAD8 · Elegant · Bmad / SciBmad / PALS (via lattix)\n\n"
             f"Developer  ·  Abhishek Pathak\n"
             f"Last modified  ·  {_last_modified_date()}"
         )

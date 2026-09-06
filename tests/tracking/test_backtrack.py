@@ -287,3 +287,60 @@ def test_foil_refused_with_clear_message():
     _forward(lat, beam)
     with pytest.raises(NotImplementedError, match="Foil has no inverse_kick"):
         backtrack_distribution(lat, beam, _make_ref())
+
+
+# ---------------------------------------------------------------------------
+# StepConfig.drift_single_push: forward and backward walk a drift the same way
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("single_push", [True, False])
+def test_fodo_roundtrip_both_step_modes(single_push):
+    from linac_gen.core.step_config import StepConfig
+    lat = _fodo()
+    lat.step_config = StepConfig(drift_single_push=single_push)
+    p_in, beam, _ = _roundtrip(lat)
+    np.testing.assert_allclose(beam.particles, p_in, rtol=1e-8, atol=1e-11)
+    assert beam.ref.s == pytest.approx(0.0, abs=1e-12)
+
+
+def test_drift_cadence_mirrors_forward(monkeypatch):
+    """Per 200 mm drift at 100/50: one forward push and one inverse map with the
+    option on; the historical 20 half-pushes, 20 inverse maps and 10 negated
+    kicks with it off; record_substeps keeps the sub-steps on both sides."""
+    from unittest.mock import patch
+    from linac_gen.tracking import backtrack as bt
+    from linac_gen.core.step_config import StepConfig
+
+    def counts(single_push, record_substeps=False):
+        lat = Lattice()
+        lat.step_config = StepConfig(drift_single_push=single_push)
+        lat.add(Drift("D1", 200.0))
+        beam = _make_beam()
+        fwd = {"n": 0}
+        orig = Drift.track
+
+        def spy_track(self, b, ds=None):
+            fwd["n"] += 1
+            return orig(self, b, ds=ds)
+
+        with patch.object(Drift, "track", spy_track):
+            Tracker(lat, beam, record_substeps=record_substeps).run()
+        bwd = {"mat": 0, "kick": 0}
+        orig_m, orig_k = bt._Backtracker._apply_matrix, bt._Backtracker._apply_sc_kick_negated
+
+        def spy_m(self, M):
+            bwd["mat"] += 1
+            return orig_m(self, M)
+
+        def spy_k(self, ds_mm):
+            bwd["kick"] += 1
+            return orig_k(self, ds_mm)
+
+        with patch.object(bt._Backtracker, "_apply_matrix", spy_m), \
+                patch.object(bt._Backtracker, "_apply_sc_kick_negated", spy_k):
+            backtrack_distribution(lat, beam, _make_ref(), record_substeps=record_substeps)
+        return fwd["n"], bwd["mat"], bwd["kick"]
+
+    assert counts(True) == (1, 1, 0)
+    assert counts(False) == (20, 20, 10)
+    assert counts(True, record_substeps=True) == (20, 20, 10)

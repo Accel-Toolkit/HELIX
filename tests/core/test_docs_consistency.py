@@ -235,7 +235,7 @@ def test_elegant_import_documented():
             break
         bullet_lines.append(ln)
     bullet = " ".join(bullet_lines)
-    for suf in (".dat", ".madx", ".seq", ".lat", ".lte"):
+    for suf in (".dat", ".madx", ".seq", ".lat", ".lte", ".bmad", ".jl", ".pals.yaml"):
         assert f"`{suf}`" in bullet, (
             f"06_batch_cli.md input-model bullet omits {suf} "
             "(cli/common.py:load_lattice accepts it)")
@@ -246,6 +246,9 @@ def test_elegant_import_documented():
     tw = _read("docs/manual/06_running/02_tracewin_dat.md")
     assert "## Importing Elegant lattices" in tw, (
         "02_tracewin_dat.md has no Elegant import section")
+    assert "## Importing Bmad, SciBmad and PALS lattices" in tw, (
+        "02_tracewin_dat.md has no lattix import section")
+    assert ".bmad" in cli_run and ".jl" in cli_run, "07_cli_run.md omits the lattix suffixes"
 
 
 # ---------------------------------------------------------------------------

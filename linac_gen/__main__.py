@@ -5,10 +5,18 @@ Subcommands:
 * ``run``   — one headless tracking simulation (envelope / mp / matrix);
 * ``scan``  — a native parameter scan, CSV summary;
 * ``batch`` — a multi-run campaign from a JSON job file;
+* ``study`` — a parameter study: per-run folders, resume,
+  oat/zip/grid/random/lhs strategies;
 * ``twiss`` — matched Twiss: whole-lattice periodic, or a FODO-cell input
   match back-propagated to the entrance (for transfer lines);
+* ``mo``    — multi-objective design: a Pareto front over ADJUST knobs;
+* ``failures`` — element failure impact + recovery, CSV summary;
 * ``backtrack`` — backward tracking: reconstruct an upstream distribution
   from a downstream ``.dst`` (or design-mode exit Twiss);
+* ``assist`` — the AI assistant chat (optional — local or cloud LLM;
+  the rest of HELIX never needs it);
+* ``export`` — write the lattice in another code's format (MAD-X
+  ``SEQUENCE``, the exact inverse of the MAD-X importer);
 * ``match`` — delegates to the matcher (``python -m linac_gen.matching``).
 
 All of it is GUI-free and drives the same engines the GUI uses.
@@ -50,6 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     from linac_gen.cli import twiss as twiss_cmd
     from linac_gen.cli import multiobjective as mo_cmd
     from linac_gen.cli import failures as fail_cmd
+    from linac_gen.cli import export as export_cmd
 
     run_cmd.add_arguments(sub.add_parser(
         "run", help="run one headless simulation"))
@@ -72,6 +81,9 @@ def main(argv: list[str] | None = None) -> int:
     assist_cmd.add_arguments(sub.add_parser(
         "assist", help="AI assistant chat (OPTIONAL — local or cloud "
                        "LLM; the rest of HELIX never needs it)"))
+    export_cmd.add_arguments(sub.add_parser(
+        "export", help="write the lattice in another code's format "
+                       "(MAD-X sequence)"))
     sub.add_parser("match", add_help=False,
                    help="run the matcher (delegates to linac_gen.matching)")
 
@@ -94,6 +106,8 @@ def main(argv: list[str] | None = None) -> int:
         return backtrack_cmd.run(args)
     if args.command == "assist":
         return assist_cmd.run(args)
+    if args.command == "export":
+        return export_cmd.run(args)
     return 2
 
 

@@ -37,7 +37,9 @@ python -m linac_gen study summarize runs/studies/my_study
 **Selectors** use the same grammar as `run --set` / `scan --vary`:
 `NAME.attr` or `@N.attr` (1-based) for element parameters, a bare
 `BeamConfig` field name for beam parameters, and
-`nx / grid_extent / step1 / step2` for numerics.
+`nx / grid_extent / step1 / step2 / drift_single_push` for numerics
+(`"numerics": {"drift_single_push": false}` keeps the sub-stepped drift
+walk for every point).
 
 **Strategies** — `oat` (one-at-a-time around per-parameter `baseline`s,
 with an all-nominal reference as run 0), `zip` (equal-length lists

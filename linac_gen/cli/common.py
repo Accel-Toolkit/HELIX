@@ -34,6 +34,21 @@ def _first(*vals):
     return None
 
 
+def _as_bool(value) -> bool:
+    """Coerce an on/off setting from the CLI, a project file or a study
+    spec: bool, int, or one of on/off, true/false, yes/no, 1/0."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ("on", "true", "yes", "1"):
+        return True
+    if text in ("off", "false", "no", "0"):
+        return False
+    raise ValueError(f"expected on/off (or true/false), got {value!r}")
+
+
 def coerce_like(old, raw: str):
     """Coerce a string ``raw`` to the type of an existing value ``old``."""
     if isinstance(old, bool):
@@ -60,24 +75,17 @@ def parse_assignments(items) -> dict:
 # input loading
 # ---------------------------------------------------------------------------
 def load_lattice(path):
-    """Parse a ``.dat`` / ``.madx`` / ``.seq`` / ``.lat`` lattice file →
-    ``Lattice``.  Parse warnings (downgraded cards, dropped elements,
-    approximations) are echoed to stderr — they used to be silently
-    discarded on every CLI path."""
+    """Parse a lattice file → ``Lattice``: TraceWin ``.dat``, MAD-X
+    ``.madx``/``.seq``, MAD8 ``.lat``/``.flat``, Elegant ``.lte`` natively;
+    Bmad ``.bmad``, SciBmad ``.jl``/``.scibmad``, PALS ``.pals.yaml``/
+    ``.pals.json`` and ``.lattix.json`` through the optional ``lattix``
+    translator (see :mod:`linac_gen.io.formats`).
+    Parse warnings (downgraded cards, dropped elements,
+    approximations, an unrecognised suffix parsed as TraceWin) are echoed
+    to stderr — they used to be silently discarded on every CLI path."""
     import sys
-    suf = Path(path).suffix.lower()
-    if suf in (".madx", ".seq"):
-        from linac_gen.io.madx_parser import parse_madx
-        lat, meta = parse_madx(str(path))[:2]
-    elif suf in (".lat", ".flat"):
-        from linac_gen.io.mad8_parser import parse_mad8
-        lat, meta = parse_mad8(str(path))[:2]
-    elif suf == ".lte":
-        from linac_gen.io.elegant_parser import parse_elegant
-        lat, meta = parse_elegant(str(path))[:2]
-    else:
-        from linac_gen.io.tracewin_parser import parse_tracewin
-        lat, meta = parse_tracewin(str(path))
+    from linac_gen.io.formats import parse_lattice_file
+    lat, meta = parse_lattice_file(str(path))
     warns = meta.get("warnings", []) if isinstance(meta, dict) else []
     for w in warns:
         print(f"parse warning: {w}", file=sys.stderr)
@@ -176,8 +184,12 @@ def make_step_config(conv: dict, cli: dict):
                    d.integration_steps_per_metre)
     step2 = _first(cli.get("step2"), (conv or {}).get("step2_per_m"),
                    d.sc_steps_per_metre)
+    single = _first(cli.get("drift_single_push"),
+                    (conv or {}).get("drift_single_push"),
+                    d.drift_single_push)
     return StepConfig(integration_steps_per_metre=float(step1),
-                      sc_steps_per_metre=float(step2))
+                      sc_steps_per_metre=float(step2),
+                      drift_single_push=_as_bool(single))
 
 
 def make_sc_config(cfg, conv: dict, cli: dict):
@@ -489,7 +501,8 @@ def build_scan_point(input_path, *, beam_overrides=None, element_overrides=(),
 
     Used by both ``scan`` (one point per swept value) and ``batch`` (one
     point per job).  ``cli`` may carry fixed ``nx`` / ``grid_extent`` /
-    ``step1`` / ``step2`` / ``backend`` overrides; ``beam_overrides`` and
+    ``step1`` / ``step2`` / ``drift_single_push`` / ``backend`` overrides;
+    ``beam_overrides`` and
     ``sc_overrides`` are ``name=value`` dicts; ``element_overrides`` is an
     iterable of ``(selector, value)`` pairs.
     """
@@ -519,6 +532,9 @@ def build_scan_point(input_path, *, beam_overrides=None, element_overrides=(),
                          sd.integration_steps_per_metre))
     step2 = float(_first(cli.get("step2"), conv.get("step2_per_m"),
                          sd.sc_steps_per_metre))
+    single = _as_bool(_first(cli.get("drift_single_push"),
+                             conv.get("drift_single_push"),
+                             sd.drift_single_push))
     backend = str(_first(cli.get("backend"), conv.get("backend"),
                          scd.use_gpu))
 
@@ -541,6 +557,7 @@ def build_scan_point(input_path, *, beam_overrides=None, element_overrides=(),
         mode=mode, env_solver=env_solver,
         element_overrides=tuple(element_overrides),
         sc_overrides=tuple(sc_kw.items()),
+        drift_single_push=single,
     )
 
 

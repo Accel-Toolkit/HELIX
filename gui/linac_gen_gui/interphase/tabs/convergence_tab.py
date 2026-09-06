@@ -175,7 +175,8 @@ class _ScanWorker(QThread):
                  scan_n_particles: int | None = None,
                  parallel_workers: int = 0,
                  lattice_path: str | None = None,
-                 use_gpu: str = "auto"):
+                 use_gpu: str = "auto",
+                 fixed_drift_single_push: bool = True):
         super().__init__()
         # Cooperative stop — same threading.Event pattern as the
         # envelope/MP workers (workers.py).  A plain Event (rather than
@@ -191,6 +192,9 @@ class _ScanWorker(QThread):
         self.fixed_extent = fixed_extent
         self.fixed_step1 = fixed_step1
         self.fixed_step2 = fixed_step2
+        # StepConfig.drift_single_push carried through every scan point (the
+        # scan only varies step1/step2/grid; the option is the tab's setting)
+        self.fixed_drift_single_push = bool(fixed_drift_single_push)
         # Override n_particles used during the scan (None → use cfg.n_particles)
         self.scan_n_particles = scan_n_particles
         # Process-pool fan-out: 0 → serial, N → up to N parallel points
@@ -267,6 +271,7 @@ class _ScanWorker(QThread):
                 self.lattice.step_config = StepConfig(
                     integration_steps_per_metre=float(step1),
                     sc_steps_per_metre=float(step2),
+                    drift_single_push=self.fixed_drift_single_push,
                 )
 
                 t0 = time.time()
@@ -333,6 +338,7 @@ class _ScanWorker(QThread):
                 step1=step1, step2=step2,
                 seed=42,
                 use_gpu=self.use_gpu,
+                drift_single_push=self.fixed_drift_single_push,
             ))
 
         total = len(points)
@@ -397,6 +403,21 @@ class ConvergenceTab(QWidget):
         self._fixed_ext   = QDoubleSpinBox(); self._fixed_ext.setRange(1, 20);        self._fixed_ext.setValue(7.0); self._fixed_ext.setSuffix(" σ")
         self._fixed_step1 = QDoubleSpinBox(); self._fixed_step1.setRange(5, 5000);    self._fixed_step1.setValue(100); self._fixed_step1.setSuffix(" /m")
         self._fixed_step2 = QDoubleSpinBox(); self._fixed_step2.setRange(5, 5000);    self._fixed_step2.setValue(50);  self._fixed_step2.setSuffix(" /m")
+        self._drift_single_push = QCheckBox("Single-push field-free drifts")
+        self._drift_single_push.setChecked(True)
+        self._drift_single_push.setToolTip(
+            "A drift's transfer map is exact, so its step1 sub-steps only matter for\n"
+            "what happens between them: space-charge kicks, sub-step diagnostics,\n"
+            "the bunch-train phase fold.  With none of those active the multiparticle\n"
+            "tracker (and the backtracker) apply the map once; a particle leaving the\n"
+            "pipe inside the drift is located exactly on its straight line instead of\n"
+            "at the end of the sub-step that first saw it outside.\n"
+            "A particle already outside the pipe at the drift entrance is lost there\n"
+            "(the sub-stepped walk missed it until a sub-step end), so where a drift is\n"
+            "narrower than the element before it transmission can be slightly lower.\n"
+            "Untick to keep the sub-stepped walk in every case (results as in HELIX\n"
+            "1.9.1).  Note: with this on, a step1 convergence scan at zero current\n"
+            "only probes field maps — drifts no longer move.")
         # PIC FFT backend.  'auto' picks GPU when cupy is installed and a
         # CUDA device is visible, else CPU.  'gpu' forces GPU and errors if
         # unavailable.  'cpu' disables GPU even if present.
@@ -547,7 +568,6 @@ class ConvergenceTab(QWidget):
         # for seeing transient ε spikes inside long elements (solenoids,
         # long drifts, field maps) — without this the recorder only writes
         # at element exits and long elements look like straight lines.
-        from PyQt6.QtWidgets import QCheckBox
         self._record_substeps = QCheckBox("Record per-sub-step")
         self._record_substeps.setChecked(False)
         self._record_substeps.setToolTip(
@@ -697,6 +717,7 @@ class ConvergenceTab(QWidget):
         sec_step.addRow("Integration profile", self._step_preset)
         sec_step.addRow("Base step1 (integration)", self._fixed_step1)
         sec_step.addRow("Base step2 (SC kicks)",    self._fixed_step2)
+        sec_step.addRow(self._drift_single_push)
         # Switching to "Custom" on any manual edit -- otherwise the
         # preset label and the spinbox values would drift apart silently.
         self._fixed_step1.valueChanged.connect(self._on_step_manual_edit)
@@ -949,6 +970,7 @@ class ConvergenceTab(QWidget):
         # constructs to "kernel" — no change signal fires in that case).
         self._apply_fieldmap_sampling()
         self._fixed_csr.toggled.connect(_mark_dirty)
+        self._drift_single_push.toggled.connect(_mark_dirty)
         # snapshot controls are serialized into the project too
         self._snapshot_every_n.valueChanged.connect(_mark_dirty)
         self._snapshot_elements.textChanged.connect(_mark_dirty)
@@ -1060,6 +1082,16 @@ class ConvergenceTab(QWidget):
         except RuntimeError:
             pass                                    # widget destroyed
 
+    def current_step_config(self):
+        """Build the StepConfig these settings describe — the single source
+        for every run path (MP run, backtrack, bunch train, matching)."""
+        from linac_gen.core.step_config import StepConfig
+        return StepConfig(
+            integration_steps_per_metre=float(self._fixed_step1.value()),
+            sc_steps_per_metre=float(self._fixed_step2.value()),
+            drift_single_push=bool(self._drift_single_push.isChecked()),
+        )
+
     def current_sc_config(self, current: float, *, continuous: bool = False):
         """Build the SpaceChargeConfig these settings describe.
 
@@ -1134,6 +1166,9 @@ class ConvergenceTab(QWidget):
             sp.blockSignals(True)
             sp.setValue(val)
             sp.blockSignals(False)
+        self._drift_single_push.blockSignals(True)
+        self._drift_single_push.setChecked(bool(getattr(sc, "drift_single_push", True)))
+        self._drift_single_push.blockSignals(False)
         # Detect which preset (if any) the project matches.
         self._step_preset.blockSignals(True)
         if (s1, s2) == (100.0, 50.0):
@@ -1218,6 +1253,7 @@ class ConvergenceTab(QWidget):
             parallel_workers=self._parallel_workers.value(),
             lattice_path=self.state.lattice_path,
             use_gpu=self._fixed_backend.currentText(),
+            fixed_drift_single_push=self._drift_single_push.isChecked(),
         )
         self._worker.progress.connect(self._progress.setValue)
         self._worker.row_done.connect(self._on_row)
@@ -1513,7 +1549,8 @@ class ConvergenceTab(QWidget):
                 self._log.append(
                     f"Current step_config: step1 = "
                     f"{sc.integration_steps_per_metre} /m,  step2 = "
-                    f"{sc.sc_steps_per_metre} /m\n"
+                    f"{sc.sc_steps_per_metre} /m,  single-push drifts = "
+                    f"{'on' if getattr(sc, 'drift_single_push', True) else 'off'}\n"
                 )
 
     def _log_recommendation_footer(self) -> None:
@@ -1546,10 +1583,6 @@ class ConvergenceTab(QWidget):
     def _write_step_to_lattice(self) -> None:
         """Persist step1/step2 into lattice.step_config so every subsequent
         MP run picks them up (the tracker reads from lattice.step_config)."""
-        from linac_gen.core.step_config import StepConfig
         if self.state.lattice is None:
             return
-        self.state.lattice.step_config = StepConfig(
-            integration_steps_per_metre=float(self._fixed_step1.value()),
-            sc_steps_per_metre=float(self._fixed_step2.value()),
-        )
+        self.state.lattice.step_config = self.current_step_config()

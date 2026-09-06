@@ -272,3 +272,27 @@ def test_no_constraint_result_is_per_column(tmp_path):
     res_u = match(lat_u, BeamConfig())
     assert res_u.x0.tolist() == [5.0, -5.0]
     assert res_u.x_final.tolist() == [5.0, -5.0]
+
+
+def test_no_constraint_unlinked_oob_seed_clips_per_column(tmp_path):
+    """Unlinked deck × out-of-bounds seeds: with one column PER variable
+    the bound clip applies independently to EACH column — the regime
+    ``test_no_constraint_result_is_per_column`` leaves untested (its
+    unlinked deck's seeds are already in bounds)."""
+    from linac_gen.io.tracewin_parser import parse_tracewin
+    from linac_gen.matching import match
+
+    deck = tmp_path / "unlinked_nocon_oob.dat"
+    deck.write_text(_NOCON_LINKED.replace(" 2 1 ", " 2 0 ")
+                                 .replace("-30 30", "1 30"))
+    lat, _meta = parse_tracewin(str(deck))
+    res = match(lat, BeamConfig())
+    assert res.success is False
+    assert "No SET constraints" in res.message
+    assert res.x0.shape == (2,)
+    # Column 0 (G=+5) sits inside [1, 30]; column 1 (G=-5) clips to the
+    # lower bound — per column, both entries independently.
+    assert res.x0.tolist() == [5.0, 1.0]
+    assert np.array_equal(res.x_final, res.x0)
+    for v, x in zip(res.variables, res.x0):
+        assert v.vmin <= x <= v.vmax

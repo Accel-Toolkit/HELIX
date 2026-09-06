@@ -220,7 +220,11 @@ TOP: LINE=(BV)
     assert isinstance(b, Dipole) and b.hv == 1
     assert b.rho > 0                       # TraceWin convention: sign in angle
     assert isinstance(e1, Edge) and e1.hv == 1 and isinstance(e2, Edge)
-    assert b.angle == pytest.approx(math.degrees(0.0416))
+    # TILT=-pi/2 bends towards -y: the direction goes into the angle's
+    # sign (pinned against MAD-X's vertical dispersion in
+    # tests/io/test_madx_conventions.py; before 2026-09-03 the sign was
+    # dropped and every TILT=-pi/2 bend was imported bending upwards).
+    assert b.angle == pytest.approx(-math.degrees(0.0416))
 
 
 def test_skew_quad_tilt(tmp_path):
@@ -298,6 +302,16 @@ TOP: LINE=(SEC)
 
 @pytest.mark.skipif(not (_BTL_LAT.exists() and _BTL_DAT.exists()),
                     reason="BTL v0703 files not present")
+@pytest.mark.xfail(strict=True, reason=(
+    "FINDING 2026-09-03 (MAD-X oracle): examples/pipii/btl/btl_2025v0703.dat "
+    "was converted with convert_BTL2025v0703.py, which (a) ignores the sign "
+    "of TILT=-pi/2 (a global vertical mirror, harmless for optics) and (b) "
+    "writes the EDGE angle as the SIGNED theta/2, so the negative-angle "
+    "vertical bends BVDD and ORB1 get FOCUSING edges (R43 = -3.3e-3 / "
+    "-1.0e-2 per magnet instead of ~0 for a rectangular magnet; end-to-end "
+    "BTL 4x4 changes by 0.70).  The MAD8 importer now follows the MAD-X-"
+    "verified convention (beta = sign(theta)*e).  Regenerate the deck with "
+    "the corrected script, then drop this marker."))
 def test_btl_anchor_lockstep():
     from linac_gen.io.tracewin_parser import parse_tracewin
     from linac_gen.analysis.period_detect import detect_periods

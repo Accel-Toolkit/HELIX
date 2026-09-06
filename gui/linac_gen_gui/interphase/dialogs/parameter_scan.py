@@ -210,6 +210,7 @@ class _ScanWorker(QThread):
                 self._lattice.step_config = StepConfig(
                     integration_steps_per_metre=float(s1),
                     sc_steps_per_metre=float(s2),
+                    drift_single_push=bool(self.convergence.get("drift_single_push", True)),
                 )
         except Exception:
             pass
@@ -492,6 +493,7 @@ class ParameterScanDialog(QDialog):
                 "grid_extent":     float(ct._fixed_ext.value()),
                 "step1":           float(ct._fixed_step1.value()),
                 "step2":           float(ct._fixed_step2.value()),
+                "drift_single_push": bool(ct._drift_single_push.isChecked()),
             }
         except Exception:
             return {}

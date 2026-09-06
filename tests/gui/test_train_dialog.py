@@ -19,33 +19,9 @@ pytest.importorskip("PyQt6")
 FREQ = 162.5
 
 
-@pytest.fixture(autouse=True)
-def _settings_hygiene():
-    """Leave the process-wide (sandboxed) QSettings exactly as found.
-
-    These tests run real windows that PERSIST session state
-    (``state.set_beam_config`` → sessionBeamConfig, lattice paths); a
-    later window's ``_restore_last_session`` would then replay it and
-    emit "Restored last session's beam …" — which
-    test_update_gui::test_fetch_failure_is_totally_silent rightly
-    asserts never happens.  Found as a full-suite ordering failure
-    (2026-08-11): this file sorts between the session-persistence tests
-    (which clean up after themselves) and the update tests."""
-    from linac_gen_gui.interphase.app import (
-        _SETTINGS_LAST_DIR, _SETTINGS_LAST_LATTICE, _SETTINGS_LAST_PROJECT,
-        _SETTINGS_SESSION_BEAM, _settings,
-    )
-    keys = (_SETTINGS_SESSION_BEAM, _SETTINGS_LAST_LATTICE,
-            _SETTINGS_LAST_PROJECT, _SETTINGS_LAST_DIR)
-    s = _settings()
-    before = {k: s.value(k) for k in keys}
-    yield
-    for k, v in before.items():
-        if v is None:
-            s.remove(k)
-        else:
-            s.setValue(k, v)
-    s.sync()
+# The module-local _settings_hygiene fixture (2026-08-11 full-suite
+# ordering fix) moved to tests/gui/conftest.py as the autouse
+# _settings_hygiene — clear-only, whole-family.
 
 
 @pytest.fixture()
@@ -60,13 +36,16 @@ def win(qapp):
 @pytest.fixture()
 def calc_dir(tmp_path):
     """Point the auto-dump calc dir at a per-test tmp (sandboxed
-    QSettings — conftest sets HELIX_QSETTINGS_DIR)."""
+    QSettings — conftest sets HELIX_QSETTINGS_DIR).
+
+    Fresh ``_settings()`` handle on each side of the yield — a handle
+    held across it dies with any QApplication a test destroys (the
+    conftest ``_settings_hygiene`` hazard class)."""
     from linac_gen_gui.interphase.app import _SETTINGS_CALC_DIR, _settings
-    s = _settings()
-    old = s.value(_SETTINGS_CALC_DIR, "")
-    s.setValue(_SETTINGS_CALC_DIR, str(tmp_path))
+    old = _settings().value(_SETTINGS_CALC_DIR, "")
+    _settings().setValue(_SETTINGS_CALC_DIR, str(tmp_path))
     yield tmp_path
-    s.setValue(_SETTINGS_CALC_DIR, old)
+    _settings().setValue(_SETTINGS_CALC_DIR, old)
 
 
 def _beam_config(n_particles=300):

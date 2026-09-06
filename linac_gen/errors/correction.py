@@ -701,8 +701,15 @@ def correction_status(history):
 
     Status vocabulary: ``none`` (no correction ran), ``converged``,
     ``saturated``, ``max_iter``, ``beam_lost``.  ``converged`` is True
-    only for status ``"converged"`` — a beam-lost run can NEVER be
-    converged (its rms is NaN).
+    only for status ``"converged"``.
+
+    ``status == "beam_lost"`` means a USED BPM read a dead beam — such
+    a run can never be converged (its rms is NaN).  But ``beam_lost_at``
+    comes from :func:`_beam_lost_at`, which scans the WHOLE record: a
+    loss strictly DOWNSTREAM of the last BPM deadens no BPM reading, so
+    ``status == "converged"`` CAN coexist with a non-None
+    ``beam_lost_at`` — callers reporting the status must surface the
+    loss element whenever it is set.
     """
     if not history:
         return {"status": "none", "converged": False,

@@ -119,9 +119,10 @@ The check runs in `apply(beam)` (Aperture is a zero-length
 ## See also
 
 * [Drift](01_drift.md) — element `aperture` fields are **enforced**
-  by the tracker after every element and inside drift sub-step
-  bundles; use a dedicated `Aperture` element for shaped
-  (rectangular/finger) collimators at a point.
+  by the tracker after every element and inside drifts (exactly, on
+  each particle's straight line, with `drift_single_push` on; at
+  sub-step bundle ends with it off); use a dedicated `Aperture`
+  element for shaped (rectangular/finger) collimators at a point.
 * [Aperture profile analysis](../09_diagnostics/04_aperture.md).
 
 ← [Multipole](11_multipole.md) ·

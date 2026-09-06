@@ -185,10 +185,10 @@ GUI package lives in the repository, not on PyPI.
 |---|---|
 | **Three solver modes** | Envelope Σ-matrix · multi-particle 3-D PIC · linear matrix tracking |
 | **Space charge** | 3-D particle-in-cell Poisson solver · CIC / TSC deposition · C++ kernels · GPU-capable |
-| **TraceWin-compatible** | Reads `.dat` lattices · MAD-X, MAD8 and Elegant `.lte` import · `.dst` / partran / field-map I/O |
+| **TraceWin-compatible** | Reads `.dat` lattices · MAD-X, MAD8 and Elegant `.lte` import · Bmad, SciBmad and PALS import via lattix · `.dst` / partran / field-map I/O |
 | **Matching** | Periodic and transfer-line matched Twiss · multi-algorithm optimiser |
 | **GUI workbench** | PyQt6 — Beam · Lattice · Matching · Numerics · Surrogates · Param Study · Error Study · Failure Study · Results |
-| **Batch CLI** | `run` · `scan` · `batch` · `study` · `twiss` · `mo` · `failures` · `backtrack` · `match` · `assist` — headless, parallel, scriptable |
+| **Batch CLI** | `run` · `scan` · `batch` · `study` · `twiss` · `mo` · `failures` · `backtrack` · `export` · `match` · `assist` — headless, parallel, scriptable |
 | **Interoperable** | HDF5 · openPMD-beamphysics · TraceWin `.dst` |
 | **Diagnostics** | Emittances · halo · transmission · dispersion · phase advance |
 | **Error studies** | Monte-Carlo misalignment / RF jitter · SVD orbit correction · failure studies |
@@ -273,8 +273,9 @@ about which path runs.
 ## Input and output formats
 
 - **TraceWin** `.dat` lattices · `.edz` / `.csv` field maps · `.dst` distributions
-- **MAD-X** and **MAD8 flat-file** (`.lat`) lattice import
+- **MAD-X** lattice import and export (`SEQUENCE` files; the export is the exact inverse of the import, verified against MAD-X itself) · **MAD8 flat-file** (`.lat`) import
 - **Elegant** (`.lte`) lattice import — `line=(...)` beamlines, element templates, `ematrix` → explicit-matrix element; import-only (HELIX never writes `.lte`)
+- **Bmad** (`.bmad`), **SciBmad** (`.jl` / `.scibmad`, Beamlines.jl source) and **PALS** (`.pals.yaml` / `.pals.json`) lattice import through the optional lattix translator (a separate package, not yet published: install its checkout into the same environment, or point `HELIX_LATTIX_ROOT` at it) — the deck is parsed, never run (no Julia or Bmad needed); every approximation is listed by element in the import warnings
 - **HDF5** (native) · **openPMD-beamphysics** · TraceWin **partran** output
 
 ## Documentation
@@ -307,10 +308,10 @@ linac_gen/
   pic/           CIC / TSC deposition, FFT Poisson solver, C++ kernels (csrc/)
   distributions/ Gaussian, KV, Waterbag, Parabolic, Uniform, file import
   matching/      matching engine, periodic & transfer-line matched Twiss
-  cli/           batch-mode CLI — run / scan / batch / study / twiss / mo / failures / backtrack / match / assist
+  cli/           batch-mode CLI — run / scan / batch / study / twiss / mo / failures / backtrack / export / match / assist
   errors/        error models, Monte-Carlo studies, orbit correction (SVD)
   diagnostics/   DiagnosticRecorder, moments (RMS / Twiss / emittance)
-  io/            TraceWin, MAD-X, MAD8 & Elegant I/O, field maps, HDF5 / openPMD output
+  io/            TraceWin, MAD-X, MAD8 & Elegant I/O, lattix bridge (Bmad/SciBmad/PALS), field maps, HDF5 / openPMD output
 gui/linac_gen_gui/   PyQt6 GUI workbench
 docs/manual/         MkDocs documentation
 tests/               pytest suite

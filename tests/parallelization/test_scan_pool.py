@@ -158,3 +158,19 @@ def test_capture_errors_returns_row_not_raise(tmp_path):
     # and a poisoned point inside a sweep doesn't sink the others
     rows = run_scan_points_serial([poisoned, good])
     assert rows[0]["error"] and rows[1].get("error") is None
+
+
+def test_scan_point_carries_drift_single_push():
+    """The worker rebuilds StepConfig from the point: the option must travel with it
+    (train replay relies on the replayed bunch being bit-identical to the tracked one)."""
+    import numpy as np
+    from linac_gen.parallel.scan_pool import _run_one_point_worker
+    beam = _beam_cfg_dict()
+    beam["current"] = 0.0
+    base = dict(lattice_path="examples/fodo_cell.dat", beam_config=beam, nx=16, grid_extent=5.0,
+                step1=100.0, step2=50.0)
+    assert ScanPoint(**base).drift_single_push is True
+    on = _run_one_point_worker(ScanPoint(**base, drift_single_push=True))
+    off = _run_one_point_worker(ScanPoint(**base, drift_single_push=False))
+    for key in ("sigma_x", "sigma_y", "emit_x", "emit_y"):
+        assert np.isclose(on[key], off[key], rtol=1e-10), key

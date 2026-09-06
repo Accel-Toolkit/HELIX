@@ -610,6 +610,16 @@ def test_partran_step_updates_lattice_step_config(tmp_path):
     lat, meta = parse_tracewin(str(dat))
     assert lat.step_config.integration_steps_per_metre == 200.0
     assert lat.step_config.sc_steps_per_metre == 80.0
+    assert lat.step_config.drift_single_push is True      # the card never touches the option
+
+
+def test_partran_step_card_keeps_a_preset_drift_single_push():
+    """The PARTRAN_STEP card replaces the two densities only."""
+    import dataclasses
+    from linac_gen.core.step_config import StepConfig
+    base = StepConfig(drift_single_push=False)
+    cfg = dataclasses.replace(base, integration_steps_per_metre=200.0, sc_steps_per_metre=80.0)
+    assert (cfg.integration_steps_per_metre, cfg.sc_steps_per_metre, cfg.drift_single_push) == (200.0, 80.0, False)
 
 
 @pytest.mark.parametrize("keyword", ["STEERER", "THIN_STEERING"])

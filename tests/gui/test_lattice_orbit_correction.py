@@ -234,3 +234,103 @@ def test_worker_beam_lost_end_to_end_leaves_steerers_untouched(tab_env):
         if isinstance(e, Steerer):
             assert e.bx_l == 0.0 and e.by_l == 0.0
     assert not st.bus.can_undo
+
+
+def test_downstream_loss_is_named_in_converged_summary(tab_env, monkeypatch):
+    """Downstream-only loss (after the last BPM): the run converges and
+    the kicks apply, but the summary must NAME the loss element —
+    ``status: "converged"`` with ``beam_lost_at`` non-None used to be
+    completely silent about the dead beam."""
+    st, tab, lt = tab_env
+    captured = {}
+    monkeypatch.setattr(
+        lt.QMessageBox, "information",
+        staticmethod(lambda parent, title, text, *a, **k:
+                     captured.setdefault("text", text)))
+
+    res = {
+        "kicks": {"STEER_1": {"bx_l": 1e-4, "by_l": -1e-4}},
+        "history": [{"iter": 1, "rms_orbit_mm": 0.01,
+                     "n_saturated": 0, "n_dead_bpms": 0,
+                     "transmission_pct": 0.0, "beam_lost_at": "COLL_KILL",
+                     "stop_reason": "converged"}],
+        "method": "one_to_one", "n_pairs": 1,
+        "status": "converged", "converged": True,
+        "beam_lost_at": "COLL_KILL",
+    }
+    tab._corr_lattice_at_launch = st.lattice
+    tab._on_correction_done(res)
+
+    # Kicks ARE applied (status vocabulary unchanged — only reporting).
+    from linac_gen.elements.steerer import Steerer
+    steerer = next(e for e in st.lattice.elements if isinstance(e, Steerer))
+    assert steerer.bx_l == pytest.approx(1e-4)
+    assert st.bus.can_undo
+    # ... and the loss is visible in the summary.
+    assert "COLL_KILL" in captured["text"]
+    assert "Status: converged" in captured["text"]
+
+
+def test_beam_lost_svd_advice_is_method_aware(tab_env, monkeypatch):
+    """When the FAILED method was already svd, the warning must not
+    advise "switch method to SVD"; for one_to_one it still does."""
+    st, tab, lt = tab_env
+    captured = {}
+    monkeypatch.setattr(
+        lt.QMessageBox, "warning",
+        staticmethod(lambda parent, title, text, *a, **k:
+                     captured.__setitem__("text", text)))
+
+    def _res(method):
+        return {
+            "kicks": {"STEER_1": {"bx_l": 1e-3, "by_l": 1e-3}},
+            "history": [{"iter": 1, "rms_orbit_mm": float("nan"),
+                         "n_saturated": 0, "n_dead_bpms": 1,
+                         "transmission_pct": 0.0, "beam_lost_at": "D_post",
+                         "stop_reason": "beam_lost"}],
+            "method": method, "n_pairs": 1,
+            "status": "beam_lost", "converged": False,
+            "beam_lost_at": "D_post",
+        }
+
+    tab._corr_lattice_at_launch = st.lattice
+    tab._on_correction_done(_res("svd"))
+    assert "switch method to SVD" not in captured["text"]
+    assert "D_post" in captured["text"]
+
+    tab._on_correction_done(_res("one_to_one"))
+    assert "switch method to SVD" in captured["text"]
+
+
+def test_downstream_loss_end_to_end_through_real_worker(tab_env, monkeypatch):
+    """End-to-end through the REAL worker: a killer aperture strictly
+    after the last BPM converges (alive BPM readings) yet reports the
+    loss element in the summary popup; no-loss runs stay silent."""
+    st, tab, lt = tab_env
+    captured = {}
+    monkeypatch.setattr(
+        lt.QMessageBox, "information",
+        staticmethod(lambda parent, title, text, *a, **k:
+                     captured.__setitem__("text", text)))
+
+    # Regime 1 — no loss anywhere: summary carries no loss warning.
+    out = _run_worker_sync(lt, st.lattice, st.beam_config)
+    assert out["res"]["beam_lost_at"] is None
+    tab._corr_lattice_at_launch = st.lattice
+    tab._on_correction_done(out["res"])
+    assert "beam lost" not in captured["text"]
+    assert "Status: converged" in captured["text"]
+    st.bus.undo()
+
+    # Regime 2 — killer aperture after the last BPM.
+    lat = _pair_lattice()
+    lat.add(Drift("COLL_KILL", 100.0, aperture=1e-6))
+    st.set_lattice(lat, None)
+    out2 = _run_worker_sync(lt, st.lattice, st.beam_config)
+    res2 = out2["res"]
+    assert res2["status"] == "converged"
+    assert res2["beam_lost_at"] == "COLL_KILL"
+    tab._corr_lattice_at_launch = st.lattice
+    tab._on_correction_done(res2)
+    assert "COLL_KILL" in captured["text"]
+    assert "Status: converged" in captured["text"]

@@ -68,6 +68,49 @@ def _no_stt_prewarm(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def gui_message_boxes(monkeypatch):
+    """Modal tripwire for EVERY gui test: no QMessageBox can ever block.
+
+    An offscreen modal box has no one to click it — a single unstubbed
+    ``QMessageBox.critical``/``exec`` hangs the whole suite forever
+    (2026-09-02 full-suite hang: a settings-leak-induced backtrack
+    failure surfaced through an unstubbed critical box in a module
+    whose local ``win`` fixture shadowed the stubbing one).  Stub the
+    four statics plus instance ``exec`` process-wide, record
+    ``(kind, title, text)`` and answer Yes.
+
+    Record-only, NEVER fail-at-teardown: many green tests intentionally
+    provoke boxes (backtrack caveats, train sidecar refusals, all of
+    test_project_io).  Per-test monkeypatches layer on the same
+    function-scoped MonkeyPatch — applied later, undone first, their
+    return values win — so existing per-test stubs keep working
+    unchanged.  Request the fixture by name to read the recorded list
+    (the shared ``win`` fixture exposes it as ``win.message_boxes``).
+    """
+    from PyQt6.QtWidgets import QMessageBox
+
+    boxes: list[tuple[str, str, str]] = []
+
+    def _static(kind):
+        def _record(*a, **k):
+            boxes.append((kind,
+                          str(a[1]) if len(a) > 1 else "",
+                          str(a[2]) if len(a) > 2 else ""))
+            return QMessageBox.StandardButton.Yes
+        return _record
+
+    for _name in ("warning", "critical", "information", "question"):
+        monkeypatch.setattr(QMessageBox, _name, staticmethod(_static(_name)))
+
+    def _exec(self, *a, **k):
+        boxes.append(("exec", self.windowTitle(), self.text()))
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(QMessageBox, "exec", _exec)
+    yield boxes
+
+
+@pytest.fixture(autouse=True)
 def _flush_deferred_deletes():
     """Actually destroy widgets scheduled with deleteLater() after EVERY test.
 
@@ -107,17 +150,37 @@ def _flush_deferred_deletes():
 
 
 @pytest.fixture(autouse=True)
-def _isolate_last_project():
-    """lastProjectPath now flips _save_project into silent-to-current-
-    path mode, and the sandbox QSettings store is process-wide — a key
-    left behind by one module would silently reroute saves in another.
-    Clear it around EVERY gui test (tests that need one set it
-    themselves)."""
+def _settings_hygiene():
+    """Scrub session-restore keys from the process-wide (sandboxed)
+    QSettings store before AND after EVERY gui test.
+
+    The store is process-wide: a key left behind by one module leaks
+    into every later one.  Two incident classes so far — a leftover
+    ``lastProjectPath`` flips ``_save_project`` into silent-to-current-
+    path mode, and a leftover ``lastLatticePath`` (2026-09-02 full-suite
+    hang) let a later window's restore timer silently swap
+    ``state.lattice`` mid-test.  CLEAR-only, deliberately not
+    snapshot/restore: no gui test needs one of these keys to survive a
+    test boundary (tests that need one set it themselves, inside the
+    test body), and clearing self-heals instead of re-planting captured
+    pollution.
+
+    The finalizer constructs a FRESH ``_settings()`` handle: a handle
+    held across the yield dies with any QApplication a test destroys
+    (the ``_flush_deferred_deletes`` immune shape — a wrapped-C/C++-
+    object-deleted RuntimeError otherwise)."""
     from linac_gen_gui.interphase import app as app_mod
+    keys = (app_mod._SETTINGS_SESSION_BEAM, app_mod._SETTINGS_LAST_LATTICE,
+            app_mod._SETTINGS_LAST_PROJECT, app_mod._SETTINGS_LAST_DIR)
     s = app_mod._settings()
-    s.remove(app_mod._SETTINGS_LAST_PROJECT)
+    for k in keys:
+        s.remove(k)
+    del s                               # never hold a handle across the yield
     yield
-    s.remove(app_mod._SETTINGS_LAST_PROJECT)
+    s = app_mod._settings()             # fresh handle (see docstring)
+    for k in keys:
+        s.remove(k)
+    s.sync()
 
 
 @pytest.fixture(autouse=True)
@@ -129,13 +192,16 @@ def _sandbox_calc_dir(tmp_path):
     REAL runs/ directory (observed 2026-08-11: a backtrack e2e mp file
     landed next to the user's own results).  Whole-family hardening,
     not per-test opt-in; tests that need to *inspect* the dump keep
-    using the explicit ``calc_dir`` fixture, which overrides this one."""
+    using the explicit ``calc_dir`` fixture, which overrides this one.
+
+    ``old`` is a plain str, safe to hold across the yield; the QSettings
+    handles are NOT — construct a fresh one on each side (same
+    QSettings-lifetime hazard as ``_settings_hygiene``)."""
     from linac_gen_gui.interphase.app import _SETTINGS_CALC_DIR, _settings
-    s = _settings()
-    old = s.value(_SETTINGS_CALC_DIR, "")
-    s.setValue(_SETTINGS_CALC_DIR, str(tmp_path))
+    old = _settings().value(_SETTINGS_CALC_DIR, "")
+    _settings().setValue(_SETTINGS_CALC_DIR, str(tmp_path))
     yield
-    s.setValue(_SETTINGS_CALC_DIR, old)
+    _settings().setValue(_SETTINGS_CALC_DIR, old)
 
 
 @pytest.fixture(scope="session")
@@ -183,15 +249,14 @@ def rfq_lattice() -> Lattice:
 # module that defines its own ``win`` fixture shadows this one.
 # ---------------------------------------------------------------------------
 @pytest.fixture()
-def win(qapp, monkeypatch):
+def win(qapp, monkeypatch, gui_message_boxes):
     """A real InterphaseWindow with only the human seams stubbed.
 
     * ``_launch_update_check`` is a no-op (belt and braces on top of the
       PYTEST_CURRENT_TEST guard — never a network probe from a test).
-    * ``QMessageBox`` statics (warning/critical/information/question) and
-      ``QMessageBox.exec`` are stubbed to record-and-return-Yes: an
-      offscreen modal box would otherwise hang the run forever.  The
-      recorded ``(title, text)`` tuples are exposed as
+    * ``QMessageBox`` is already stubbed process-wide by the autouse
+      ``gui_message_boxes`` tripwire (record-and-return-Yes); its
+      recorded ``(kind, title, text)`` tuples are exposed as
       ``win.message_boxes``.
     * Auto-dump calc dir and QSettings are already sandboxed by the
       autouse fixtures above.
@@ -205,27 +270,14 @@ def win(qapp, monkeypatch):
     """
     import time as _time
 
-    from PyQt6.QtWidgets import QMessageBox
     from linac_gen_gui.interphase import app as appmod
     from linac_gen_gui.interphase.app import InterphaseWindow
 
     monkeypatch.setattr(InterphaseWindow, "_launch_update_check",
                         lambda self: None)
 
-    boxes: list = []
-
-    def _record_box(*a, **k):
-        boxes.append(tuple(str(x) for x in a[1:3]))
-        return QMessageBox.StandardButton.Yes
-
-    for _name in ("warning", "critical", "information", "question"):
-        monkeypatch.setattr(QMessageBox, _name, staticmethod(_record_box))
-    monkeypatch.setattr(
-        QMessageBox, "exec",
-        lambda self, *a, **k: QMessageBox.StandardButton.Yes)
-
     w = InterphaseWindow()
-    w.message_boxes = boxes
+    w.message_boxes = gui_message_boxes
 
     def _pump(sec: float = 0.3) -> None:
         t0 = _time.time()

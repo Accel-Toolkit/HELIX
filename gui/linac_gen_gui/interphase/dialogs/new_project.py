@@ -10,8 +10,11 @@ acyclic and makes the dialog trivially testable.
 Starting points:
   * Blank lattice — writes a minimal one-drift TraceWin deck (mm units)
     so the fresh project is immediately loadable and runnable.
-  * Import an existing ``.dat`` — copied into the project folder by
-    default (portable project), or referenced in place when unchecked.
+  * Import an existing lattice — a ``.dat`` is copied into the project
+    folder by default (portable project) or referenced in place when
+    unchecked; a MAD-X / MAD8 / Elegant / Bmad / SciBmad / PALS deck is
+    parsed and materialised as ``<name>.dat`` inside the project (projects
+    stay TraceWin-native), its import warnings handed back in the result.
   * Bundled example — one of the small self-contained example decks,
     always copied so edits never touch ``examples/``.
 """
@@ -28,6 +31,9 @@ from PyQt6.QtWidgets import (
     QRadioButton, QVBoxLayout,
 )
 
+from linac_gen.io.formats import (
+    DIALOG_FILTER, IMPORT_SUFFIXES, import_format, parse_lattice_file,
+)
 from linac_gen_gui.interphase import theme
 
 # Windows refuses these as file/directory names (with or without an
@@ -105,7 +111,8 @@ class NewProjectDialog(QDialog):
         self._rb_blank.setChecked(True)
         bl.addWidget(self._rb_blank, 0, 0, 1, 3)
 
-        self._rb_import = QRadioButton("Import an existing lattice (.dat)")
+        self._rb_import = QRadioButton(
+            "Import an existing lattice (.dat, MAD-X, MAD8, Elegant, Bmad, SciBmad, PALS)")
         bl.addWidget(self._rb_import, 1, 0, 1, 3)
         self._import_path = QLineEdit()
         self._import_path.setEnabled(False)
@@ -117,6 +124,10 @@ class NewProjectDialog(QDialog):
         self._copy_in = QCheckBox("Copy the lattice into the project folder")
         self._copy_in.setChecked(True)
         self._copy_in.setEnabled(False)
+        self._copy_in.setToolTip(
+            "A .dat is copied as-is (or referenced in place when unchecked).\n"
+            "Any other format is always converted to <name>.dat inside the "
+            "project — the source file is never written.")
         bl.addWidget(self._copy_in, 3, 1, 1, 2)
 
         self._rb_example = QRadioButton("Start from a bundled example")
@@ -158,7 +169,7 @@ class NewProjectDialog(QDialog):
     def _browse_import(self) -> None:
         fp, _ = QFileDialog.getOpenFileName(
             self, "Lattice to import", self._location.text().strip(),
-            "TraceWin lattice (*.dat);;All Files (*)")
+            DIALOG_FILTER)
         if fp:
             self._import_path.setText(fp)
 
@@ -184,9 +195,11 @@ class NewProjectDialog(QDialog):
                 QMessageBox.warning(self, "New Project",
                                     "Choose the lattice file to import.")
                 return
-            if not src.lower().endswith(".dat"):
-                QMessageBox.warning(self, "New Project",
-                                    "The imported lattice must be a .dat file.")
+            if import_format(src) is None:
+                QMessageBox.warning(
+                    self, "New Project",
+                    "The imported lattice must be one of: "
+                    + " ".join(IMPORT_SUFFIXES) + ".")
                 return
 
         project_dir = Path(location) / name
@@ -198,6 +211,7 @@ class NewProjectDialog(QDialog):
                 "directory.")
             return
 
+        import_warnings: list[str] = []
         try:
             project_dir.mkdir(parents=True, exist_ok=True)
             if self._rb_blank.isChecked():
@@ -207,7 +221,18 @@ class NewProjectDialog(QDialog):
                 mode = "blank"
             elif self._rb_import.isChecked():
                 src = Path(self._import_path.text().strip())
-                if self._copy_in.isChecked():
+                if import_format(src) != "tracewin":
+                    # Foreign deck: parse through the shared dispatcher and
+                    # materialise it as a TraceWin .dat inside the project
+                    # (never in place — the source is not HELIX's to write).
+                    lattice_path = project_dir / f"{name}.dat"
+                    import_warnings = self._materialise(src, lattice_path)
+                    if import_warnings is None:
+                        # error already shown; leave no half-made project
+                        if project_dir.is_dir() and not any(project_dir.iterdir()):
+                            project_dir.rmdir()
+                        return
+                elif self._copy_in.isChecked():
                     lattice_path = project_dir / src.name
                     shutil.copy2(src, lattice_path)
                 else:
@@ -229,8 +254,29 @@ class NewProjectDialog(QDialog):
             "project_dir": str(project_dir),
             "lattice_path": str(lattice_path),
             "mode": mode,
+            "import_warnings": list(import_warnings),
         }
         self.accept()
+
+    def _materialise(self, src: Path, dst: Path) -> list[str] | None:
+        """Parse a non-TraceWin *src* and write it as TraceWin *dst*.
+        Returns the import warnings, or None after showing the error
+        (a half-written *dst* is removed so the folder cleanup can run)."""
+        from linac_gen.io.tracewin_writer import write_tracewin
+        try:
+            lattice, meta = parse_lattice_file(str(src))
+            write_tracewin(lattice, str(dst))
+        except Exception as exc:
+            try:
+                if dst.is_file():
+                    dst.unlink()
+            except OSError:
+                pass
+            QMessageBox.critical(self, "New Project",
+                                 f"Could not import {src.name}:\n{exc}")
+            return None
+        warns = meta.get("warnings", []) if isinstance(meta, dict) else []
+        return [str(w) for w in warns]
 
     def project_result(self) -> dict | None:
         """Ingredients of the accepted project, or None if cancelled.

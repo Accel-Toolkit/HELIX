@@ -29,7 +29,10 @@ HELIX result as "converged".
 ## Step density
 
 - [ ] `step1_per_m` ≥ 50 for drift / quad sections, ≥ 100 for
-  cavity sections.
+  cavity sections.  (With `drift_single_push` on — the default — a
+  zero-current run pushes each drift once regardless of `step1`; the
+  step density then matters for field maps and for drifts carrying
+  space-charge kicks.)
 - [ ] For RFQ sections, `n_steps` per cell auto-picked or ≥ 20.
 
 ## SC convergence

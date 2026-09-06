@@ -52,3 +52,27 @@ def test_torch_backend_falls_back_to_numpy_for_dc_beam(tab):
     tab._fixed_sc_backend.setCurrentText("torch")
     sc = tab.current_sc_config(5.0, continuous=True)
     assert sc.sc_backend == "numpy"
+
+
+def test_current_step_config_mirrors_widgets(tab):
+    """Single source for every run path: spinboxes + the single-push checkbox."""
+    tab._fixed_step1.setValue(30.0)
+    tab._fixed_step2.setValue(15.0)
+    tab._drift_single_push.setChecked(False)
+    cfg = tab.current_step_config()
+    assert (cfg.integration_steps_per_metre, cfg.sc_steps_per_metre, cfg.drift_single_push) == (30.0, 15.0, False)
+    tab._drift_single_push.setChecked(True)
+    assert tab.current_step_config().drift_single_push is True
+
+
+def test_sync_step_from_lattice_sets_the_checkbox(tab):
+    from linac_gen.core.lattice import Lattice
+    from linac_gen.core.step_config import StepConfig
+    lat = Lattice()
+    lat.step_config = StepConfig(integration_steps_per_metre=100.0, sc_steps_per_metre=50.0,
+                                 drift_single_push=False)
+    tab._sync_step_from_lattice(lat)
+    assert tab._drift_single_push.isChecked() is False
+    lat.step_config = StepConfig()
+    tab._sync_step_from_lattice(lat)
+    assert tab._drift_single_push.isChecked() is True

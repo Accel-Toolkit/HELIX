@@ -83,12 +83,16 @@ def test_run_current_helper_resolution_order():
     assert run_current_mA(stub_results(beam=stub_results(current=None))) is None
 
 
-def test_backtracker_stamps_run_current():
-    """MP backward walk (the GUI Backtrack path) carries the current."""
+@pytest.mark.parametrize("current", [5.0, 0.0])
+def test_backtracker_stamps_run_current(current):
+    """MP backward walk (the GUI Backtrack path) carries the current —
+    both regimes: 5 mA stamps 5.0 and 0 mA stamps 0.0 (data, never
+    None), the same contract as the forward run."""
     lat = _mini_lattice()
-    beam = create_beam(_cfg(5.0), seed=42)
+    beam = create_beam(_cfg(current), seed=42)
     sim = Simulation(lat, beam, space_charge="off")
     sim.run()
     res = sim.run_backtrack(start=0, end=len(lat.elements) - 1)
     assert res.direction == "backward"
-    assert res.current_mA == 5.0
+    assert res.current_mA is not None
+    assert res.current_mA == current

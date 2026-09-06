@@ -61,13 +61,14 @@ def test_envelope_worker_probe_can_be_disabled():
     assert len(res.element_maps_dep) == 0
 
 
-def test_matching_tab_model_kpis_populate(qapp=None):
-    """The panel's model KPI cards fill from a probe-bearing run."""
-    import pytest
-    pytest.importorskip("PyQt6")
-    from PyQt6.QtWidgets import QApplication
-    app = QApplication.instance() or QApplication([])
+def test_matching_tab_model_kpis_populate(qapp):
+    """The panel's model KPI cards fill from a probe-bearing run.
 
+    Takes the SESSION ``qapp`` fixture (no default!): a ``qapp=None``
+    default made pytest skip the fixture, and the test's own
+    function-local ``QApplication`` died at test end, destroying every
+    wrapped QObject — including QSettings handles the autouse fixtures
+    held across their yield (the standalone-run teardown error)."""
     lat, res = _run_worker()
     from linac_gen.analysis.period_detect import detect_periods
     from linac_gen.analysis.phase_advance import channel_phase_advance

@@ -58,27 +58,20 @@ class ScanPoint:
     #     leave the defaults and the worker is bit-identical to before) ---
     out_path: str | None = None     # when set: write full results here
     out_format: str = "hdf5"        # hdf5 | openpmd | partran
+    drift_single_push: bool = True  # StepConfig.drift_single_push for the worker
     capture_errors: bool = False    # True: a raised point returns an
     #                                 {"error", "traceback"} row instead
     #                                 of killing the whole pool
 
 
 def _parse_lattice_for_scan(path: str):
-    """Parse a ``.dat`` / ``.madx`` / ``.lat`` lattice file → ``Lattice``
-    (the parser is chosen from the file extension)."""
-    from pathlib import Path
-    suf = Path(path).suffix.lower()
-    if suf in (".madx", ".seq"):
-        from linac_gen.io.madx_parser import parse_madx
-        return parse_madx(path)[0]
-    if suf in (".lat", ".flat"):
-        from linac_gen.io.mad8_parser import parse_mad8
-        return parse_mad8(path)[0]
-    if suf == ".lte":
-        from linac_gen.io.elegant_parser import parse_elegant
-        return parse_elegant(path)[0]
-    from linac_gen.io.tracewin_parser import parse_tracewin
-    return parse_tracewin(path)[0]
+    """Parse a lattice file → ``Lattice`` in a worker process, through the same
+    suffix dispatcher as the CLI and the GUI (``linac_gen.io.formats``): a
+    private copy here once sent ``.jl`` / ``.bmad`` decks to the TraceWin
+    parser, silently.  Warnings are the parent's business (it parsed the
+    same file first)."""
+    from linac_gen.io.formats import parse_lattice_file
+    return parse_lattice_file(path, warn_unknown=False)[0]
 
 
 def _scan_metrics(res, elapsed: float) -> dict:
@@ -169,6 +162,7 @@ def _run_one_point_worker(point: ScanPoint) -> dict:
         lattice.step_config = StepConfig(
             integration_steps_per_metre=float(point.step1),
             sc_steps_per_metre=float(point.step2),
+            drift_single_push=bool(point.drift_single_push),
         )
         # Element-parameter overrides (a batch-mode scan over e.g. a quad
         # gradient).  Empty for the GUI convergence-tab caller — no import

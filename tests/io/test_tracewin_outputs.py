@@ -263,6 +263,36 @@ class TestPartranOut:
         # Current column (Ibeam) — 0-based index 30 per the 49-column schema.
         assert float(cols[30]) == pytest.approx(12.5, rel=1e-9)
 
+    def test_beam_cfg_none_falls_back_to_results_current(self, tmp_path):
+        """``beam_cfg=None``: the writer falls back to
+        ``results.current_mA`` (tracking results carry the stamp) for
+        the parameter line and the Ibeam column; a present ``beam_cfg``
+        wins — both regimes of the resolution."""
+        res = _fake_envelope_results(3)
+        res.current_mA = 6.25
+        out = write_partran_out(res, lattice=None, beam_cfg=None,
+                                path=tmp_path / "partran_nocfg.out")
+        lines = out.read_text().splitlines()
+        # Parameter line: mc² f0 sign current n_macro (space-separated,
+        # first non-comment line).
+        param = next(l for l in lines
+                     if not l.startswith("#") and "\t" not in l)
+        fields = param.split()
+        assert float(fields[3]) == pytest.approx(6.25, rel=1e-9)
+        assert int(fields[4]) == 0          # no beam_cfg → no macro count
+        data_rows = [l for l in lines
+                     if not l.startswith("#") and "\t" in l]
+        assert float(data_rows[0].split("\t")[30]) == pytest.approx(
+            6.25, rel=1e-9)
+
+        # beam_cfg present: its ``current`` wins over the stamp.
+        out2 = write_partran_out(res, lattice=None,
+                                 beam_cfg=_beam_cfg(current=2.0),
+                                 path=tmp_path / "partran_cfg.out")
+        param2 = next(l for l in out2.read_text().splitlines()
+                      if not l.startswith("#") and "\t" not in l)
+        assert float(param2.split()[3]) == pytest.approx(2.0, rel=1e-9)
+
 
 # --------------------------------------------------------------------- #
 class TestRoundTripWithRealEnvelope:
