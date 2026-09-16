@@ -88,6 +88,16 @@ def test_diff_flags_more_than_one_change(probe, tmp_path, capsys):
     assert "energy1" in out and "current1" in out
 
 
+def test_variant_label_parsing_survives_windows_drive_letters(probe):
+    sv = probe._split_variant
+    assert sv("/tmp/after.ini:energy") == ("/tmp/after.ini", "energy")
+    assert sv("/tmp/after.ini") == ("/tmp/after.ini", "")
+    assert sv(r"C:\proj\after.ini:energy") == (r"C:\proj\after.ini", "energy")
+    assert sv(r"C:\proj\after.ini") == (r"C:\proj\after.ini", "")
+    assert sv("C:/proj/after.ini") == ("C:/proj/after.ini", "")
+    assert sv("after.ini:dw1") == ("after.ini", "dw1")
+
+
 def test_dump_prints_report_table_and_raw(probe, capsys):
     assert probe.main(["dump", str(ADS), "--raw"]) == 0
     out = capsys.readouterr().out

@@ -205,6 +205,17 @@ def _readings(buf: bytes, start: int, end: int):
     return out
 
 
+def _split_variant(item: str):
+    """``VARIANT.ini[:label]`` → ``(path, label)``.  The label is the text
+    after the LAST colon and only when it holds no path separator, so a
+    Windows drive letter (``C:\\proj\\after.ini``) is never taken for one."""
+    if ":" in item:
+        head, _, tail = item.rpartition(":")
+        if tail and "/" not in tail and "\\" not in tail and head:
+            return head, tail
+    return item, ""
+
+
 def cmd_diff(args) -> int:
     base = _read_bytes(args.base)
     if len(base) not in KNOWN_SIZES:
@@ -213,7 +224,7 @@ def cmd_diff(args) -> int:
               file=sys.stderr)
     too_many = False
     for item in args.variants:
-        path, _, label = item.partition(":")
+        path, label = _split_variant(item)
         var = _read_bytes(path)
         runs = _runs(base, var)
         print(f"== {Path(args.base).name} -> {Path(path).name}"
