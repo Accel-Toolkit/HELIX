@@ -98,9 +98,25 @@ def write_tracewin(lattice, filepath, frequency=None):
         """Format a float with enough sig-figs for a round-trip."""
         return f"{v:.10g}"
 
-    def _emit_card(fh, keyword, required, optionals):
+    def _label_prefix(elem):
+        """``"Q01: "`` for an element that carries a deck label the
+        parser's grammar can re-read (leading letter, no spaces or
+        colons), else ``""``.  Only ``elem.label`` is used — generated
+        names are never emitted as labels, so unlabeled decks round-trip
+        byte-identically."""
+        lab = getattr(elem, "label", None)
+        if lab and lab[0].isalpha() and not re.search(r"[\s:]", lab):
+            try:
+                lab.encode("latin-1")            # the deck encoding
+            except UnicodeEncodeError:
+                return ""
+            return f"{lab}: "
+        return ""
+
+    def _emit_card(fh, keyword, required, optionals, elem=None):
         """Emit ``keyword`` followed by ``required`` fields plus trailing
-        ``optionals`` up to the last non-default entry.
+        ``optionals`` up to the last non-default entry (``elem`` supplies
+        the optional deck-label prefix).
 
         Parameters
         ----------
@@ -116,7 +132,7 @@ def write_tracewin(lattice, filepath, frequency=None):
             if not is_default:
                 last = i
         tokens = list(required) + [tok for tok, _ in optionals[:last + 1]]
-        fh.write(keyword + " " + " ".join(tokens) + "\n")
+        fh.write(_label_prefix(elem) + keyword + " " + " ".join(tokens) + "\n")
 
     def _emit_field_map_card(fh, elem, emitted_fmp):
         """Emit one FIELD_MAP card (with the stateful FIELD_MAP_PATH
@@ -233,7 +249,7 @@ def write_tracewin(lattice, filepath, frequency=None):
                                           elem.x_shift == 0.0))
                         optionals.append((_fmt(elem.y_shift),
                                           elem.y_shift == 0.0))
-                _emit_card(fh, "DRIFT", required, optionals)
+                _emit_card(fh, "DRIFT", required, optionals, elem=elem)
 
             elif isinstance(elem, Quadrupole):
                 # Schema: L G R [Θ] [G3] [G4] [G5] [G6] [GFR]
@@ -242,12 +258,13 @@ def write_tracewin(lattice, filepath, frequency=None):
                 trailing = [elem.skew_angle, elem.g3, elem.g4,
                             elem.g5, elem.g6, elem.gfr]
                 optionals = [(_fmt(v), v == 0.0) for v in trailing]
-                _emit_card(fh, "QUAD", required, optionals)
+                _emit_card(fh, "QUAD", required, optionals, elem=elem)
 
             elif isinstance(elem, Solenoid):
                 # Schema: L B R — n_steps has no .dat slot.
                 fh.write(
-                    f"SOLENOID {_fmt(elem.length)} {_fmt(elem.field)} "
+                    _label_prefix(elem)
+                    + f"SOLENOID {_fmt(elem.length)} {_fmt(elem.field)} "
                     f"{_fmt(elem.aperture)}\n"
                 )
 
@@ -262,7 +279,7 @@ def write_tracewin(lattice, filepath, frequency=None):
                             _fmt(elem.aperture)]
                 p_flag = int(getattr(elem, "p_flag", 0) or 0)
                 optionals = [(str(p_flag), p_flag == 0)]
-                _emit_card(fh, "GAP", required, optionals)
+                _emit_card(fh, "GAP", required, optionals, elem=elem)
 
             elif isinstance(elem, Dipole):
                 # Schema: angle rho [N] [R] [HV]
@@ -277,7 +294,7 @@ def write_tracewin(lattice, filepath, frequency=None):
                     (_fmt(elem.aperture),    elem.aperture == 0.0),
                     (str(int(elem.hv)),      int(elem.hv) == 0),
                 ]
-                _emit_card(fh, "BEND", required, trailing)
+                _emit_card(fh, "BEND", required, trailing, elem=elem)
 
             elif isinstance(elem, Edge):
                 # Schema: β rho [G] [K1] [K2] [R] [HV]
@@ -290,7 +307,7 @@ def write_tracewin(lattice, filepath, frequency=None):
                     (_fmt(elem.aperture_radius),  elem.aperture_radius == 0.0),
                     (str(int(elem.hv)),           int(elem.hv) == 0),
                 ]
-                _emit_card(fh, "EDGE", required, trailing)
+                _emit_card(fh, "EDGE", required, trailing, elem=elem)
 
             elif isinstance(elem, Steerer):
                 # Schema: bl_x bl_y [R] [elec].  Both are required.  The
@@ -298,17 +315,20 @@ def write_tracewin(lattice, filepath, frequency=None):
                 # slot is emitted (as 0) only when the electric flag
                 # needs the fourth position.
                 if getattr(elem, "elec", False):
-                    fh.write(f"THIN_STEERING {_fmt(elem.bx_l)} "
+                    fh.write(_label_prefix(elem)
+                             + f"THIN_STEERING {_fmt(elem.bx_l)} "
                              f"{_fmt(elem.by_l)} 0 1\n")
                 else:
-                    fh.write(f"THIN_STEERING {_fmt(elem.bx_l)} "
+                    fh.write(_label_prefix(elem)
+                             + f"THIN_STEERING {_fmt(elem.bx_l)} "
                              f"{_fmt(elem.by_l)}\n")
 
             elif isinstance(elem, Aperture):
                 # Schema: dx dy n.  All three required for a clean round-
                 # trip (the type flag disambiguates circle vs rectangle).
                 fh.write(
-                    f"APERTURE {_fmt(elem.dx)} {_fmt(elem.dy)} "
+                    _label_prefix(elem)
+                    + f"APERTURE {_fmt(elem.dx)} {_fmt(elem.dy)} "
                     f"{int(elem.aperture_type)}\n"
                 )
 
@@ -317,9 +337,9 @@ def write_tracewin(lattice, filepath, frequency=None):
                 # produced by the command's own ``to_tracewin_args``.
                 args = elem.to_tracewin_args()
                 if args:
-                    fh.write(f"{elem.KEYWORD} " + " ".join(args) + "\n")
+                    fh.write(_label_prefix(elem) + f"{elem.KEYWORD} " + " ".join(args) + "\n")
                 else:
-                    fh.write(f"{elem.KEYWORD}\n")
+                    fh.write(_label_prefix(elem) + f"{elem.KEYWORD}\n")
 
             elif isinstance(elem, Marker):
                 name = getattr(elem, "name", "") or ""
@@ -328,12 +348,12 @@ def write_tracewin(lattice, filepath, frequency=None):
                     # Periodicity bracket (from a LATTICE card or the MAD8
                     # importer) — round-trip it, else the declared period
                     # structure is silently lost on resave.
-                    fh.write("LATTICE " + " ".join(
+                    fh.write(_label_prefix(elem) + "LATTICE " + " ".join(
                         _fmt(a) for a in card_args) + "\n")
                 elif re.match(r"^LATTICE_END_\d+$", name):
-                    fh.write("LATTICE_END\n")
+                    fh.write(_label_prefix(elem) + "LATTICE_END\n")
                 elif elem.snapshot:
-                    fh.write("DIAG_PHASE 1\n")
+                    fh.write(_label_prefix(elem) + "DIAG_PHASE 1\n")
                 elif getattr(elem, "is_bpm", False):
                     fam = getattr(elem, "diag_family", None)
                     if fam is not None:
@@ -359,22 +379,26 @@ def write_tracewin(lattice, filepath, frequency=None):
                         # emit labels the parser's grammar can re-read
                         # (leading letter, no spaces/colons) — anything else
                         # would corrupt the card on reload.
-                        emit_label = (
-                            name
-                            and not re.match(r"^BPM_\d+", name)
-                            and re.match(r"^[A-Za-z][^\s:]*$", name))
-                        prefix = f"{name}: " if emit_label else ""
+                        # Prefer the deck label (raw, may repeat); fall
+                        # back to the marker name for hand-built lattices.
+                        prefix = _label_prefix(elem)
+                        if not prefix:
+                            emit_label = (
+                                name
+                                and not re.match(r"^BPM_\d+", name)
+                                and re.match(r"^[A-Za-z][^\s:]*$", name))
+                            prefix = f"{name}: " if emit_label else ""
                         fh.write(prefix + "DIAG_POSITION "
                                  + " ".join(toks) + "\n")
                     elif getattr(elem, "origin_keyword", None) == "BPM":
-                        fh.write("BPM\n")
+                        fh.write(_label_prefix(elem) + "BPM\n")
                     else:
-                        fh.write("DIAG_POSITION\n")
+                        fh.write(_label_prefix(elem) + "DIAG_POSITION\n")
                 else:
-                    fh.write("MARKER\n")
+                    fh.write(_label_prefix(elem) + "MARKER\n")
 
             elif isinstance(elem, SpaceChargeComp):
-                fh.write(f"SPACE_CHARGE_COMP {_fmt(elem.factor)}\n")
+                fh.write(_label_prefix(elem) + f"SPACE_CHARGE_COMP {_fmt(elem.factor)}\n")
 
             elif isinstance(elem, RfqCell):
                 # Schema: RFQ_CELL  V[V]  Ro[mm]  A10  m  L[mm]  θs[deg]  Type [Tc] [dP]
@@ -391,7 +415,7 @@ def write_tracewin(lattice, filepath, frequency=None):
                     (_fmt(elem.Tc_mm), elem.Tc_mm == 0.0),
                     (_fmt(elem.dP_deg), elem.dP_deg == 0.0),
                 ]
-                _emit_card(fh, "RFQ_CELL", required, trailing)
+                _emit_card(fh, "RFQ_CELL", required, trailing, elem=elem)
 
             elif isinstance(elem, VaneRFQ):
                 # Reconstruct the original RFQ_CELL chain from the cell list.
@@ -445,7 +469,7 @@ def write_tracewin(lattice, filepath, frequency=None):
                               t.input.Ts, t.input.kTp, t.input.k2Tpp,
                               t.output.Ts, t.output.kTp, t.output.k2Tpp):
                         trailing.append((_fmt(v), False))
-                _emit_card(fh, "NCELLS", required, trailing)
+                _emit_card(fh, "NCELLS", required, trailing, elem=elem)
 
             elif isinstance(elem, SuperposedFieldMap):
                 # TraceWin cluster: SHIFT_IN_FIELD_MAP + diagnostic per
@@ -462,7 +486,7 @@ def write_tracewin(lattice, filepath, frequency=None):
                     kw_mk = getattr(mk, "origin_keyword", None) or "MARKER"
                     ps_mk = " ".join(getattr(mk, "origin_params", [])
                                      or [])
-                    fh.write(kw_mk + ((" " + ps_mk) if ps_mk else "")
+                    fh.write(_label_prefix(mk) + kw_mk + ((" " + ps_mk) if ps_mk else "")
                              + "\n")
                 if getattr(elem, "_from_plain_wrap", False):
                     # Container created only to host SHIFT diagnostics

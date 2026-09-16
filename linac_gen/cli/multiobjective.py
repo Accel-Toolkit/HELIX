@@ -21,6 +21,7 @@ def add_arguments(p) -> None:
     """Populate the ``mo`` sub-parser."""
     p.add_argument("input", nargs="?", default=None,
                    help="a .lgproj project or a .dat/.madx lattice")
+    common.add_tracewin_ini_argument(p)
     p.add_argument("--objective", action="append", dest="objectives",
                    default=None, metavar="NAME",
                    help="objective to minimise (repeatable, >=2 required).  "
@@ -83,11 +84,14 @@ def run(args) -> int:
         return 2
 
     try:
-        lattice, beam_cfg, _conv = common.load_input(args.input)
+        lattice, beam_cfg, _conv = common.load_input(
+            args.input, tracewin_ini=args.tracewin_ini)
         if args.energy is not None:
             beam_cfg.energy = args.energy
         if args.freq is not None:
             beam_cfg.frequency = args.freq
+        common.note_tracewin_ini_overrides(
+            args.tracewin_ini, {"energy": args.energy, "freq": args.freq})
         if args.current is not None:
             beam_cfg.current = args.current
         if args.species is not None:

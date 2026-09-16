@@ -22,6 +22,8 @@ python -m linac_gen <subcommand> …
 | `match` | the matcher — delegates to `python -m linac_gen.matching` | [Matching CLI](../07_matching/04_cli.md) |
 | `assist` | AI assistant chat (optional — local or cloud LLM; the rest of HELIX never needs it) | [Assistant](../14_assistant/01_assistant.md) |
 | `export` | write the lattice in another code's format — MAD-X `SEQUENCE`, the exact inverse of the MAD-X importer | [Exporting to MAD-X](02_tracewin_dat.md#exporting-to-mad-x) |
+| `orm` | orbit-response matrix — compare a measurement with the model, LOCO-style calibration of quads, trims and BPM gains, recalibrated-deck export | [CLI: orm](13_cli_orm.md) |
+| `twini` | TraceWin project options file (`.ini`) — the converted beam, a decode report, or a `.lgproj` for the deck | [Importing TraceWin project settings](02_tracewin_dat.md#importing-tracewin-project-settings-ini) |
 
 ## The input model
 
@@ -31,7 +33,9 @@ Every subcommand takes an **input** that is either:
   `.lat` / `.flat` (MAD8), `.lte` (Elegant), or — through the optional
   lattix translator — `.bmad` (Bmad), `.jl` / `.scibmad` (SciBmad) and
   `.pals.yaml` / `.pals.json` (PALS);
-  the beam then starts from `BeamConfig` defaults; or
+  the beam then starts from `BeamConfig` defaults — or, with
+  `--tracewin-ini`, from beam 1 of the deck's TraceWin `.ini` options
+  file ([Importing TraceWin project settings](02_tracewin_dat.md#importing-tracewin-project-settings-ini)); or
 * a **`.lgproj` project** — beam and convergence settings are read from
   the file (it is the same project the GUI saves).
 
@@ -40,8 +44,14 @@ that — the "configure once, override per run" model.  The resolution
 priority for any setting is:
 
 ```
-   command-line option   >   project (.lgproj) value   >   built-in default
+   command-line option   >   project (.lgproj) value  |  --tracewin-ini beam   >   built-in default
 ```
+
+`--tracewin-ini` is for a bare lattice only: a project's saved beam
+always wins and the flag is refused with a `.lgproj`.  An energy,
+frequency or species override on top of an `.ini` beam is warned
+about — `emit_z`/`beta_z` were converted at the `.ini` values and are
+not re-derived.
 
 This is what makes parameter scans and campaigns possible: keep a
 project file as the baseline, and vary only what changes from the shell.

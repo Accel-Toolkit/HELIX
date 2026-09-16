@@ -540,12 +540,11 @@ def write_madx(lattice: Lattice, filepath, ref: ReferenceParticle, *,
                 parts.append("ksl={" + ", ".join(_fmt(x) for x in ksl) + "}")
             tilt_deg = float(getattr(elem, "tilt_deg", 0.0) or 0.0)
             if tilt_deg:
-                # Multipole.tilt_deg rotates in the OPPOSITE sense to
-                # MAD-X's tilt (and to Quadrupole.skew_angle, which
-                # follows MAD-X) — pinned against MAD-X's R-matrix in
-                # tests/io/test_madx_conventions.py; flip here so the
-                # exported optics are MAD-X's.
-                parts.append(f"tilt={_fmt(-tilt_deg * _DEG_TO_RAD)}")
+                # Multipole.tilt_deg and MAD-X's tilt share one rotation
+                # sense (the sense of Quadrupole.skew_angle) — pinned
+                # against MAD-X's R-matrix and TRACK in
+                # tests/io/test_madx_conventions.py.
+                parts.append(f"tilt={_fmt(tilt_deg * _DEG_TO_RAD)}")
             defs.append(f"{nm}: MULTIPOLE, " + ", ".join(parts) + ";")
             members.append(f"  {nm}, at={at};")
         elif isinstance(elem, Aperture):

@@ -32,7 +32,7 @@ import numpy as np
 from linac_gen.elements.base import FieldMapElement as FieldMapBase
 from linac_gen.io.field_map_data import FieldMapData, FieldChannel
 from linac_gen.io.tracewin_geom import Channel
-from linac_gen.tracking.rk4 import numerical_jacobian
+from linac_gen.tracking.rk4 import numerical_jacobian_batched
 
 # Speed-of-light conversion c [m/s] × 1e-6 [MeV/V].
 # Ensures B[T] × _C_LIGHT is numerically equivalent to E[MV/m].
@@ -1054,28 +1054,31 @@ class FieldMap(FieldMapBase, Misalignment, FieldError):
                     n = min_n
         ds = self.length / n
 
-        def _track_single(state):
+        def _track_batch(P):
+            # one ref copy and one beam for all twelve probes — see
+            # numerical_jacobian_batched for why this is bit-identical
             ref_copy = ref.copy()
-            b = Beam(ref=ref_copy, n_particles=1, current=0.0)
-            b.particles[0, :] = state
+            b = Beam(ref=ref_copy, n_particles=P.shape[0], current=0.0)
+            b.particles[:, :] = P
             saved_idx = self._step_idx
             self._step_idx = 0
             for _ in range(n):
                 self.track_rk4(b, ds)
             self._step_idx = saved_idx
-            return b.particles[0, :].copy()
+            return b.particles.copy()
 
         ref_state = np.zeros(6)
-        M = numerical_jacobian(_track_single, ref_state)
+        M = numerical_jacobian_batched(_track_batch, ref_state)
         return M
 
     def fitted_matrix_slice(self, ref, ds_mm: float) -> np.ndarray:
         """Linearised 6×6 map for a *ds_mm* slice starting at the current
         ``_step_idx``.
 
-        Each probe uses ``ref.copy()`` pre-advanced to the slice's
-        cumulative RF phase so that the transit-time integration is
-        preserved across chained slices.
+        The twelve probes ride one ``Beam`` on one ``ref.copy()`` (see
+        ``numerical_jacobian_batched``); the z-cursor ``_step_idx`` carries
+        the slice's cumulative RF phase so that the transit-time
+        integration is preserved across chained slices.
 
         For magnetic-only 1-D field maps (solenoids) the per-sub-step
         thin-slice error is O((K·ds)²) and becomes significant at strong
@@ -1108,15 +1111,17 @@ class FieldMap(FieldMapBase, Misalignment, FieldError):
         # directly rather than re-deriving an offset from saved_idx, which
         # would otherwise double-count the phase advance and blow up σ_φ.
 
-        def _track_single(state):
+        def _track_batch(P):
+            # one ref copy and one beam for all twelve probes — see
+            # numerical_jacobian_batched for why this is bit-identical
             ref_copy = ref.copy()
-            b = Beam(ref=ref_copy, n_particles=1, current=0.0)
-            b.particles[0, :] = state
+            b = Beam(ref=ref_copy, n_particles=P.shape[0], current=0.0)
+            b.particles[:, :] = P
             self._step_idx = saved_idx
             for _ in range(n_sub):
                 self.track_rk4(b, sub_ds)
-            return b.particles[0, :].copy()
+            return b.particles.copy()
 
-        M = numerical_jacobian(_track_single, np.zeros(6))
+        M = numerical_jacobian_batched(_track_batch, np.zeros(6))
         self._step_idx = saved_idx + n_sub
         return M

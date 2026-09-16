@@ -66,6 +66,11 @@ docs/manual/_build/figures/*.png
 # Example analysis outputs (regenerable by re-running the example scripts)
 examples/**/*.png
 examples/**/*.h5
+# fnalscl period-analysis outputs (regenerate with the scripts next to them)
+examples/piplattice/fnalscl_periods_analysis.json
+examples/piplattice/fnalscl_periods_analysis.npz
+examples/piplattice/fnalscl_matched_check.json
+examples/piplattice/fnalscl_deckbeam_substep_markers.json
 
 # Multi-objective example generated front
 examples/**/pareto.csv
@@ -113,3 +118,10 @@ TraceWIn_Tools/
 # fig_15_01 needs Fields/ (untracked) — cannot regen in CI, so track it
 !docs/manual/_build/figures/fig_15_01_pip2_pulse_droop.png
 tutorials/rendered/
+
+# orbit-response calibration outputs (regenerable)
+examples/**/orm_out/
+examples/orm_demo/synthetic_forma/
+examples/piplattice/fnalscl_orm_fitted*
+examples/piplattice/*orbit_response_matrix.*
+examples/piplattice/fnalscl_orm_trim_calibration.csv

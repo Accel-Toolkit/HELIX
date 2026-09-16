@@ -535,6 +535,7 @@ class InterphaseWindow(QMainWindow):
         self._toolbar.set_update_check_enabled(
             _settings().value(_SETTINGS_UPDATE_CHECK, True, type=bool))
         self._toolbar.open_parameter_scan_requested.connect(self._open_parameter_scan)
+        self._toolbar.open_orm_requested.connect(self._open_orm_calibration)
         self._toolbar.stop_requested.connect(self._stop_active_worker)
         self._toolbar.font_size_changed.connect(self._apply_font_size)
         self._toolbar.export_tracewin_requested.connect(self._export_tracewin)
@@ -871,6 +872,14 @@ class InterphaseWindow(QMainWindow):
             except Exception:
                 pass
             workers.append(psw)
+        orm_dlg = getattr(self, "_orm_dlg", None)
+        ow = getattr(orm_dlg, "_worker", None) if orm_dlg is not None else None
+        if ow is not None and hasattr(ow, "isRunning") and ow.isRunning():
+            try:
+                ow.request_stop()
+            except Exception:
+                pass
+            workers.append(ow)
         # Long-retired workers parked to avoid GC of a live QThread — hand
         # them to the same bounded wait / os._exit path, or interpreter
         # teardown destroys a running thread and qFatal-aborts on quit.
@@ -997,6 +1006,64 @@ class InterphaseWindow(QMainWindow):
             self.state.status_message.emit(msg)
         except Exception as exc:
             QMessageBox.critical(self, "Open failed", str(exc))
+            return
+        self._offer_tracewin_ini(fp)
+
+    def _offer_tracewin_ini(self, lattice_path: str) -> None:
+        """After a bare-lattice open: when ``<deck>.ini`` sits next to the
+        deck, ask before importing its beam.  Never silent — the session
+        beam stays unless the user says yes (a project open never asks:
+        the project's saved beam always wins)."""
+        from linac_gen.io.formats import import_format
+        from linac_gen.io.tracewin_ini import MAGIC, sibling_ini
+        if import_format(lattice_path) != "tracewin":
+            return                      # only TraceWin projects carry one
+        ini = sibling_ini(lattice_path)
+        if ini is None:
+            return
+        try:
+            with open(ini, "rb") as fh:
+                head = fh.read(len(MAGIC))
+        except OSError as exc:
+            self.state.status_message.emit(
+                f"{ini.name} next to the deck could not be read ({exc}) — "
+                f"not offered for import")
+            return
+        if head != MAGIC:
+            self.state.status_message.emit(
+                f"{ini.name} next to the deck is not a TraceWin options "
+                f"file — ignored")
+            return
+        choice = QMessageBox.question(
+            self, "TraceWin project settings found",
+            f"{ini.name} sits next to this deck — TraceWin's project "
+            f"options file with the input beam (particle, energy, "
+            f"frequency, current, emittances, Twiss).\n\n"
+            f"Import its beam into the Beam tab?  This replaces the "
+            f"current beam settings.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if choice == QMessageBox.StandardButton.Yes:
+            self._import_tracewin_ini(str(ini))
+
+    def _import_tracewin_ini(self, path: str) -> bool:
+        """Import a TraceWin ``.ini`` beam through the Beam tab; the
+        result becomes the session beam (``beam_config_changed`` →
+        ``_save_session_beam``).  Returns True when imported."""
+        try:
+            cfg, warns = self.beam_tab.import_tracewin_ini(path)
+        except Exception as exc:
+            QMessageBox.warning(self, "TraceWin .ini import failed",
+                                f"{os.path.basename(path)}: {exc}")
+            return False
+        msg = (f"Beam imported from {os.path.basename(path)} "
+               f"({cfg.species}, {cfg.energy:g} MeV, {cfg.current:g} mA) "
+               f"— replaces the session beam")
+        if warns:
+            msg += f"  ·  {len(warns)} warning(s) — see console"
+        self.state.status_message.emit(msg)
+        return True
 
     def _apply_font_size(self, pt: int, *, persist: bool = True) -> None:
         """Re-render the QSS at the requested base size and apply it
@@ -1858,6 +1925,9 @@ class InterphaseWindow(QMainWindow):
                 proj = Path(res["project_dir"])
                 if lat.parent == proj and lat.is_file():
                     lat.unlink()
+                ini = res.get("tracewin_ini")
+                if ini and Path(ini).parent == proj and Path(ini).is_file():
+                    Path(ini).unlink()          # the wizard's copy, not a source
                 if proj.is_dir() and not any(proj.iterdir()):
                     proj.rmdir()
             except OSError:
@@ -1865,6 +1935,12 @@ class InterphaseWindow(QMainWindow):
             QMessageBox.critical(self, "New Project",
                                  f"Could not load the new lattice:\n{exc}")
             return
+        # The wizard's "also import the beam from the TraceWin .ini"
+        # choice: import BEFORE the project file is written so the .lgproj
+        # carries the imported beam.  A failed import warns and the
+        # project is still written with the current beam.
+        if res.get("tracewin_ini"):
+            self._import_tracewin_ini(str(res["tracewin_ini"]))
         fp = os.path.join(res["project_dir"], res["name"] + ".lgproj")
         # The relative "runs" (not the absolute QSettings value) keeps
         # the written project portable; _write_project_file also sets
@@ -1970,6 +2046,7 @@ class InterphaseWindow(QMainWindow):
         # clicking Run right after Stop can't freeze the GUI thread on
         # worker.wait() for up to 8 s while the old solver winds down.
         self._retire_worker(self._envelope_worker, timeout_ms=300)
+        self.results_tab.cancel_background_walks()   # the run needs the walk lock
         self._envelope_worker = EnvelopeWorker(
             self.state.lattice, ref, initial, cfg.current,
             solver_kind=env_solver,
@@ -2198,6 +2275,7 @@ class InterphaseWindow(QMainWindow):
         # deadline — so clicking Run right after Stop can't freeze the GUI
         # thread on worker.wait() for up to 8 s.
         self._retire_worker(self._mp_worker, timeout_ms=300)
+        self.results_tab.cancel_background_walks()   # the run needs the walk lock
         self._mp_worker = MultiparticleWorker(
             self.state.lattice, beam, sc,
             record_substeps=record_substeps,
@@ -3036,6 +3114,33 @@ class InterphaseWindow(QMainWindow):
             from linac_gen_gui.interphase.dialogs import ParameterScanDialog
             dlg = ParameterScanDialog(self, self.state)
             self._param_scan_dlg = dlg
+        dlg.show(); dlg.raise_(); dlg.activateWindow()
+
+    def _open_orm_calibration(self) -> None:
+        """Tools → Orbit-Response Calibration (LOCO)… — single non-modal instance."""
+        if self.state.lattice is None:
+            QMessageBox.warning(self, "Orbit-Response Calibration",
+                                "Load a lattice first."); return
+        dlg = getattr(self, "_orm_dlg", None)
+        if dlg is not None and not dlg.isVisible():
+            w = getattr(dlg, "_worker", None)
+            if w is None or not hasattr(w, "isRunning") or not w.isRunning():
+                # Release the closed instance: sever its app-state
+                # connections first so no slot fires on the dead dialog.
+                for sig, slot in ((self.state.lattice_changed, dlg._on_lattice_changed),
+                                  (self.state.beam_config_changed, dlg._on_beam_changed)):
+                    try:
+                        sig.disconnect(slot)
+                    except (TypeError, RuntimeError):
+                        pass
+                dlg.deleteLater()
+                dlg = None
+            # else: a fit is still winding down inside the closed dialog —
+            # reuse it rather than orphaning a live QThread.
+        if dlg is None:
+            from linac_gen_gui.interphase.dialogs import OrmCalibrationDialog
+            dlg = OrmCalibrationDialog(self, self.state)
+            self._orm_dlg = dlg
         dlg.show(); dlg.raise_(); dlg.activateWindow()
 
     def _open_about(self) -> None:

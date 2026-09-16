@@ -19,6 +19,26 @@ from typing import Any, Optional
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
+#: Every background lattice walk holds this while it walks: the results-tab
+#: σ₀ and coupled per-cell workers, the companion probe, the footprint, and
+#: the envelope / multi-particle runs.  compute_transfer_matrix and the
+#: envelope solver mutate the lattice's own elements (reset_run_state /
+#: fitted_matrix / advance_ref; a FieldMap3D's _step_idx is rewritten by
+#: every Jacobian), and until the coupled walks left the GUI thread the
+#: frozen window was the only thing keeping a run and a walk apart.  The GUI
+#: thread never takes it; acquire through acquire_walk_lock so a worker told
+#: to stop while queued can still honour the stop.
+WALK_LOCK = threading.Lock()
+
+
+def acquire_walk_lock(should_stop, poll_s: float = 0.2) -> bool:
+    """Block until WALK_LOCK is held; return False, not holding it, if
+    ``should_stop()`` turns true while waiting."""
+    while not WALK_LOCK.acquire(timeout=poll_s):
+        if should_stop is not None and should_stop():
+            return False
+    return True
+
 
 class EnvelopeWorker(QThread):
     finished_ok = pyqtSignal(object)
@@ -68,6 +88,18 @@ class EnvelopeWorker(QThread):
         return self._stop_event.is_set()
 
     def run(self) -> None:
+        # Serialise with the results-tab walks (WALK_LOCK): a run and a walk
+        # mutate the same element objects.  The app stops popup walks before
+        # starting a run, so this wait is at most one walk cell.
+        if not acquire_walk_lock(self._should_abort):
+            self.aborted.emit()
+            return
+        try:
+            self._run_locked()
+        finally:
+            WALK_LOCK.release()
+
+    def _run_locked(self) -> None:
         try:
             if self.solver_kind == "sacherer":
                 # SachererSolver doesn't yet support progress/abort callbacks;
@@ -144,6 +176,18 @@ class MultiparticleWorker(QThread):
         return self._stop_event.is_set()
 
     def run(self) -> None:
+        # Serialise with the results-tab walks (WALK_LOCK): a run and a walk
+        # mutate the same element objects.  The app stops popup walks before
+        # starting a run, so this wait is at most one walk cell.
+        if not acquire_walk_lock(self._should_abort):
+            self.aborted.emit()
+            return
+        try:
+            self._run_locked()
+        finally:
+            WALK_LOCK.release()
+
+    def _run_locked(self) -> None:
         try:
             from linac_gen.core.simulation import Simulation
             sim = Simulation(

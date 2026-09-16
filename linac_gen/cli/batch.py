@@ -70,6 +70,15 @@ def run(args) -> int:
                     ipath = jobfile.parent / inp
             mode = str(job.get("mode", "envelope"))
             elem = list(job.get("set", {}).items())
+            # "tracewin_ini": true | "auto" | "path.ini" — a relative
+            # path resolves like the input (CWD, then the job-file dir).
+            twini = job.get("tracewin_ini")
+            if isinstance(twini, str) and twini.strip().lower() != "auto" \
+                    and not Path(twini).is_absolute():
+                for base in (Path.cwd(), jobfile.parent):
+                    if (base / twini).is_file():
+                        twini = str(base / twini)
+                        break
             point = common.build_scan_point(
                 str(ipath),
                 beam_overrides=dict(job.get("beam", {})),
@@ -78,6 +87,7 @@ def run(args) -> int:
                 mode=mode,
                 env_solver=str(job.get("env_solver", "matrix")),
                 seed=int(job.get("seed", 42)),
+                tracewin_ini=twini,
             )
         except (KeyError, ValueError) as exc:
             print(f"error: job {i + 1} ({job.get('name', '?')}): {exc}",

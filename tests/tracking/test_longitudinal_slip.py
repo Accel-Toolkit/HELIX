@@ -110,9 +110,14 @@ def test_solenoid_longitudinal_slip_matches_drift():
     assert abs(s.transfer_matrix(ref)[4, 5] - d.transfer_matrix(ref)[4, 5]) < 1e-12
 
 
-def test_dipole_longitudinal_slip_matches_drift():
-    """Dipole's M[4,5] should equal a drift of equal arc length."""
-    # Geometry: rho=1000 mm, angle=5.73 deg ⇒ arc length = pi/180 * rho * angle_deg
+def test_dipole_longitudinal_slip_exceeds_a_drift_by_the_momentum_compaction():
+    """A bend's M[4,5] is a drift's plus the momentum compaction.
+
+    Until 2026-09-07 the two were equal: the bend had no compaction at all.
+    An off-energy particle bends less, rides the outside of the arc and
+    travels rho*(theta - sin theta) further, which in HELIX's units is
+    360000*rho*(theta - sin theta)/(beta^3 gamma m lambda) degrees per MeV.
+    """
     ref = ReferenceParticle(species=PROTON, w_kin=3.0, frequency=352.21)
     angle_deg = 5.73
     rho_mm = 1000.0
@@ -122,6 +127,23 @@ def test_dipole_longitudinal_slip_matches_drift():
     drift = Drift("D", length=arc_mm)
     M_bend = bend.transfer_matrix(ref)
     M_drift = drift.transfer_matrix(ref)
-    # Pure sector bend (field_index=0) should have the same phase slip as a
-    # drift of equal arc length (dispersion is separate, in M[0,5]/M[1,5]).
-    assert abs(M_bend[4, 5] - M_drift[4, 5]) < 1e-10
+
+    theta = math.radians(angle_deg)
+    rho_m = rho_mm * 1e-3
+    compaction = 360000.0 * rho_m * (theta - math.sin(theta)) / (
+        ref.beta ** 3 * ref.gamma * ref.species.mass * ref.wavelength)
+    assert compaction > 0.0
+    assert M_bend[4, 5] - M_drift[4, 5] == pytest.approx(compaction, rel=1e-12)
+    # ... and the drift itself keeps the pure velocity term
+    assert M_drift[4, 5] == pytest.approx(
+        -360.0 * arc_mm / (ref.beta ** 3 * ref.gamma ** 3 * ref.species.mass * ref.wavelength),
+        rel=1e-12)
+
+
+def test_drift_has_no_path_length_coupling_but_a_bend_does():
+    """A straight drift's arrival time cannot depend on x or x'; a bend's must."""
+    ref = ReferenceParticle(species=PROTON, w_kin=3.0, frequency=352.21)
+    M_drift = Drift("D", length=100.0).transfer_matrix(ref)
+    M_bend = Dipole("B", angle=5.73, rho=1000.0).transfer_matrix(ref)
+    assert M_drift[4, 0] == 0.0 and M_drift[4, 1] == 0.0
+    assert M_bend[4, 0] > 0.0 and M_bend[4, 1] > 0.0        # outside of a +bend arrives later

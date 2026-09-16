@@ -15,6 +15,11 @@ Starting points:
     unchecked; a MAD-X / MAD8 / Elegant / Bmad / SciBmad / PALS deck is
     parsed and materialised as ``<name>.dat`` inside the project (projects
     stay TraceWin-native), its import warnings handed back in the result.
+    A TraceWin ``.dat`` with a ``<deck>.ini`` next to it offers to import
+    that options file's beam too (checkbox, off by default): the ``.ini``
+    travels with a copied deck and its path is handed back as
+    ``tracewin_ini`` for ``app._new_project`` to apply before the
+    ``.lgproj`` is written.
   * Bundled example — one of the small self-contained example decks,
     always copied so edits never touch ``examples/``.
 """
@@ -34,6 +39,7 @@ from PyQt6.QtWidgets import (
 from linac_gen.io.formats import (
     DIALOG_FILTER, IMPORT_SUFFIXES, import_format, parse_lattice_file,
 )
+from linac_gen.io.tracewin_ini import sibling_ini
 from linac_gen_gui.interphase import theme
 
 # Windows refuses these as file/directory names (with or without an
@@ -129,14 +135,25 @@ class NewProjectDialog(QDialog):
             "Any other format is always converted to <name>.dat inside the "
             "project — the source file is never written.")
         bl.addWidget(self._copy_in, 3, 1, 1, 2)
+        self._ini_in = QCheckBox(
+            "Also import the beam from the TraceWin .ini next to the deck")
+        self._ini_in.setChecked(False)
+        self._ini_in.setEnabled(False)
+        self._ini_in.setToolTip(
+            "Enabled when the imported TraceWin .dat has a <deck>.ini next "
+            "to it (TraceWin's project options file).  Its input beam — "
+            "particle, energy, frequency, current, emittances, Twiss — then "
+            "replaces the current Beam-tab settings before the project is "
+            "written; the .ini is copied alongside a copied deck.")
+        bl.addWidget(self._ini_in, 4, 1, 1, 2)
 
         self._rb_example = QRadioButton("Start from a bundled example")
-        bl.addWidget(self._rb_example, 4, 0, 1, 3)
+        bl.addWidget(self._rb_example, 5, 0, 1, 3)
         self._example_combo = QComboBox()
         for label, _path in self._examples:
             self._example_combo.addItem(label)
         self._example_combo.setEnabled(False)
-        bl.addWidget(self._example_combo, 5, 1, 1, 2)
+        bl.addWidget(self._example_combo, 6, 1, 1, 2)
         if not self._examples:
             self._rb_example.setEnabled(False)
             self._rb_example.setToolTip(
@@ -144,6 +161,7 @@ class NewProjectDialog(QDialog):
 
         for rb in (self._rb_blank, self._rb_import, self._rb_example):
             rb.toggled.connect(self._sync_enabled)
+        self._import_path.textChanged.connect(self._sync_enabled)
         v.addWidget(box)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
@@ -158,7 +176,16 @@ class NewProjectDialog(QDialog):
         self._import_path.setEnabled(imp)
         self._import_browse.setEnabled(imp)
         self._copy_in.setEnabled(imp)
+        self._ini_in.setEnabled(imp and self._sibling_ini() is not None)
         self._example_combo.setEnabled(self._rb_example.isChecked())
+
+    def _sibling_ini(self) -> Path | None:
+        """``<deck>.ini`` next to the import path when that path is a
+        TraceWin ``.dat`` (only TraceWin projects carry one)."""
+        src = self._import_path.text().strip()
+        if not src or not os.path.isfile(src) or import_format(src) != "tracewin":
+            return None
+        return sibling_ini(src)
 
     def _browse_location(self) -> None:
         d = QFileDialog.getExistingDirectory(
@@ -212,6 +239,7 @@ class NewProjectDialog(QDialog):
             return
 
         import_warnings: list[str] = []
+        tracewin_ini: Path | None = None
         try:
             project_dir.mkdir(parents=True, exist_ok=True)
             if self._rb_blank.isChecked():
@@ -238,6 +266,26 @@ class NewProjectDialog(QDialog):
                 else:
                     lattice_path = src
                 mode = "import"
+                if self._ini_in.isEnabled() and self._ini_in.isChecked():
+                    ini_src = self._sibling_ini()
+                    if ini_src is not None:
+                        if lattice_path.parent == project_dir:
+                            tracewin_ini = project_dir / ini_src.name
+                            try:
+                                shutil.copy2(ini_src, tracewin_ini)
+                            except OSError as exc:
+                                # The project is still created; only the
+                                # beam import is dropped, and said so.
+                                tracewin_ini = None
+                                QMessageBox.warning(
+                                    self, "New Project",
+                                    f"{ini_src.name} could not be copied "
+                                    f"({exc}); the project is created "
+                                    f"without its TraceWin beam — use the "
+                                    f"Beam tab's Import TraceWin .ini… "
+                                    f"later.")
+                        else:
+                            tracewin_ini = ini_src
             else:
                 _label, src = self._examples[self._example_combo.currentIndex()]
                 src = Path(src)
@@ -255,6 +303,7 @@ class NewProjectDialog(QDialog):
             "lattice_path": str(lattice_path),
             "mode": mode,
             "import_warnings": list(import_warnings),
+            "tracewin_ini": str(tracewin_ini) if tracewin_ini else None,
         }
         self.accept()
 

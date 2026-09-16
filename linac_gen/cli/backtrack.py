@@ -30,6 +30,7 @@ _EXT = {"hdf5": ".h5", "openpmd": ".opmd.h5", "partran": ".txt"}
 def add_arguments(p) -> None:
     """Populate the ``backtrack`` sub-parser."""
     p.add_argument("input", help="a .lgproj project or a lattice file (.dat, .madx, .lat, .lte; .bmad/.jl/.pals.yaml via lattix)")
+    common.add_tracewin_ini_argument(p)
     p.add_argument("--dst", default=None, metavar="EXIT.dst",
                    help="exit-plane distribution to reconstruct from; "
                         "omitted → design mode (exit beam generated from "
@@ -145,8 +146,10 @@ def run(args) -> int:
         print(f"error: --dst not found: {args.dst}", file=sys.stderr)
         return 2
     try:
-        lattice, beam_cfg, conv = common.load_input(args.input)
+        lattice, beam_cfg, conv = common.load_input(
+            args.input, tracewin_ini=args.tracewin_ini)
         common.apply_beam_overrides(beam_cfg, _beam_overrides(args))
+        common.note_tracewin_ini_overrides(args.tracewin_ini, _beam_overrides(args))
         cli = _cli_overrides(args)
         common.apply_fieldmap_settings(conv, cli)
     except (ValueError, KeyError) as exc:

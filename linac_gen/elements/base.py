@@ -10,6 +10,13 @@ class Element(ABC):
         self.length = length
         self.aperture = aperture
         self.n_steps = n_steps
+        # Deck label (``Q01: QUAD …`` → ``"Q01"``) when the source file
+        # carried one; ``None`` otherwise.  Never a key for HELIX
+        # internals — ``name`` stays the generated unique identifier
+        # (QUAD_001, STEER_001, …).  Set by the TraceWin parser, emitted
+        # again by the writer, used to talk to the control system
+        # (orbit-response calibration maps device names to labels).
+        self.label: str | None = None
 
 class TransferMapElement(Element):
     """Elements with a linear 6x6 transfer matrix (drift, quad, solenoid, dipole)."""

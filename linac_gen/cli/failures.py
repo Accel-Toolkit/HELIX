@@ -21,6 +21,7 @@ from linac_gen.cli import common
 def add_arguments(p) -> None:
     p.add_argument("input", nargs="?", default=None,
                    help="a .lgproj project or a .dat/.madx lattice")
+    common.add_tracewin_ini_argument(p)
     p.add_argument("--types", default="cavity,quad,solenoid,dipole",
                    help="comma list of element types to fail "
                         "(cavity,quad,solenoid,dipole)")
@@ -77,7 +78,8 @@ def run(args) -> int:
         return 2
 
     try:
-        lattice, beam_cfg, _conv = common.load_input(args.input)
+        lattice, beam_cfg, _conv = common.load_input(
+            args.input, tracewin_ini=args.tracewin_ini)
     except (ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -113,7 +115,8 @@ def run(args) -> int:
     print(f"[failures] {len(scenarios)} scenario(s) over {len(names)} "
           f"element(s); mode={args.mode}; forward={args.forward}")
     study = FailureStudy(args.input, beam_overrides=beam_overrides,
-                         mode=args.forward, env_solver=args.env_solver)
+                         mode=args.forward, env_solver=args.env_solver,
+                         tracewin_ini=args.tracewin_ini)
     results = study.run(scenarios, names, name_to_class,
                         combination=args.combination,
                         max_workers=(1 if args.workers == 1 else args.workers),

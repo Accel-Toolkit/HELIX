@@ -21,7 +21,7 @@ from linac_gen_gui.interphase.state import AppState
 # specially because it's a list-of-int.
 _LATTICE_COMMAND_HIDE = {
     "name", "length", "aperture", "n_steps",
-    "KEYWORD", "snapshot", "is_bpm", "_s_entry",
+    "KEYWORD", "snapshot", "is_bpm", "_s_entry", "label",
 }
 
 
@@ -149,17 +149,18 @@ _SCHEMA: dict[str, list[tuple[str, str, str]]] = {
                     ("tilt_deg", "Tilt",         "deg"),
                     ("aperture", "Aperture",     "mm")],
     "Dipole":      [("length", "Length", "mm"),
-                    ("angle", "Bend angle", "rad"),
+                    ("angle", "Bend angle", "deg"),
+                    ("rho", "Bending radius", "mm"),
                     ("field_rel", "Field error (rel.)", ""),
-                    ("n_index", "Field index n", ""),
-                    ("e1", "Edge angle 1", "rad"),
-                    ("e2", "Edge angle 2", "rad"),
+                    ("field_index", "Field index n", ""),
+                    ("e1", "Edge angle 1", "deg"),
+                    ("e2", "Edge angle 2", "deg"),
                     ("aperture", "Aperture", "mm")] + _MISALIGN,
     "Solenoid":    [("length", "Length", "mm"),
-                    ("Bz", "Bz", "T"),
+                    ("field", "Bz", "T"),
                     ("field_rel", "Field error (rel.)", ""),
                     ("aperture", "Aperture", "mm")] + _MISALIGN,
-    "RFGap":       [("amplitude", "Voltage amplitude", "MV"),
+    "RFGap":       [("voltage", "Voltage amplitude", "MV"),
                     ("phase", "RF phase", "deg"),
                     ("frequency", "Frequency", "MHz"),
                     ("voltage_rel", "Voltage error (rel.)", ""),

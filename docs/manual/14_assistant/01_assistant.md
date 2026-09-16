@@ -68,9 +68,9 @@ type, geom code and key parameters.  Tools are tiered:
 
 | Tier | Examples | Confirmation |
 |---|---|---|
-| **read** | status, lattice info + hardware rollup, element table, raw-file window, query a result value, beam-parameter table, provenance, matched input Twiss | auto |
+| **read** | status, lattice info + hardware rollup, element table, raw-file window, query a result value, beam-parameter table, provenance, matched input Twiss, decode a TraceWin `.ini` options file (`inspect_tracewin_ini`) | auto |
 | **compute** | run envelope / multiparticle / match, parameter scan, compare to TraceWin | confirmed (session auto-approve optional) |
-| **mutate** | load a lattice, set a beam field or element parameter, write results | **always confirmed** |
+| **mutate** | load a lattice (optionally with the beam of its TraceWin `.ini`, `tracewin_ini='auto'`), set a beam field or element parameter, write results | **always confirmed** |
 
 Every confirmation **echoes the exact resolved call with units** before
 anything runs — important because HELIX's conventions are exacting

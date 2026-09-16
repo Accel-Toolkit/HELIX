@@ -18,8 +18,8 @@ import os as _os
 import time as _time
 
 from linac_gen.assist.tools import (
-    _capture, _ctx_provenance, _err, _need, _ok, _refused, _save_capture,
-    _tool,
+    _capture, _ctx_provenance, _err, _local_path, _need, _ok, _refused,
+    _save_capture, _tool,
 )
 
 #: results columns run_python may request via ``include``
@@ -834,3 +834,344 @@ def _lebt_scc(ctx, gas="H2", pressure_mbar=8.0e-6, mode="computed",
                             for h in it["history"]],
             }
     return _ok(data, _ctx_provenance(ctx), warns)
+
+
+# ---------------------------------------------------------------------------
+# orm_calibrate / orm_apply — orbit-response comparison, LOCO-style calibration
+# ---------------------------------------------------------------------------
+_ORM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "measured": {"type": "array", "items": {"type": "string"}, "minItems": 1,
+                     "description": "FORMA scan folders (one driven plane each; give both) "
+                                    "and/or HELIX ORM CSV files"},
+        "mode": {"type": "string", "enum": ["compare", "fit", "validate"],
+                 "default": "compare",
+                 "description": "compare = map + model + metrics; fit = LOCO-style "
+                                "calibration (kept on the session for orm_apply); "
+                                "validate = synthetic closed loop"},
+        "mapping_file": {"type": "string",
+                         "description": "device-map JSON (default: built-in naming rules)"},
+        "stage": {"type": "string",
+                  "enum": ["trims", "trims+quads", "trims+quads+bpms"],
+                  "default": "trims+quads"},
+        "prior_g": {"type": "number", "default": 0.10,
+                    "description": "Gaussian prior width on the quad scale factors"},
+        "prior_G": {"type": "number", "default": 0.05,
+                    "description": "prior width on the BPM gains"},
+        "sys_floor": {"type": "number", "default": 0.05,
+                      "description": "systematic floor, fraction of each column's maximum"},
+        "max_iter": {"type": "integer", "default": 12},
+        "fix_quads": {"type": "array", "items": {"type": "string"}, "default": [],
+                      "description": "quad labels held at scale 1"},
+        "exclude_bpms": {"type": "array", "items": {"type": "string"}, "default": []},
+        "exclude_trims": {"type": "array", "items": {"type": "string"}, "default": []},
+        "check_tracking": {"type": "boolean", "default": False,
+                           "description": "compare: also build the kick-and-read model"},
+        "calibration_out": {"type": "string",
+                            "description": "fit: write the calibration JSON here"},
+        "export_deck": {"type": "string",
+                        "description": "fit: write the recalibrated deck here (text "
+                                       "surgery on the session's deck file)"},
+        "seed": {"type": "integer", "default": 7},
+        "g_sigma": {"type": "number", "default": 0.03,
+                    "description": "validate: rms of the injected quad errors"},
+        "G_sigma": {"type": "number", "default": 0.03,
+                    "description": "validate: rms of the injected BPM-gain errors"},
+    },
+    "required": ["measured"],
+}
+
+
+def _orm_f(x):
+    try:
+        x = float(x)
+    except (TypeError, ValueError):
+        return None
+    return x if x == x and abs(x) != float("inf") else None
+
+
+def _orm_selection_json(sel) -> dict:
+    return {"n_bpm": int(sel.n_bpm), "n_trim": int(sel.n_trim),
+            "bpms": list(sel.bpm_labels), "trims": list(sel.trim_labels),
+            "unmatched_devices": {k: list(v) for k, v in sel.unmatched_devices.items()},
+            "lattice_devices_without_data": {k: list(v) for k, v in sel.unmatched_elements.items()},
+            "dead_devices": list(sel.dead_devices), "notes": list(sel.notes)}
+
+
+def _orm_compare_json(cmp) -> dict:
+    planes = {}
+    for p, d in cmp["planes"].items():
+        planes[p] = {
+            "n_entries": int(d["n_entries"]),
+            "k_global_Tm_per_A": _orm_f(d["k_global_Tm_per_A"]),
+            "r_global": _orm_f(d["r_global"]),
+            "nrms_global": _orm_f(d["nrms_global"]),
+            "tank_noise_mm_per_A": _orm_f(d["tank_noise_mm_per_A"]),
+            "polarity_flipped": list(d["polarity_flipped"]),
+            "per_trim": [{"trim": r["trim"], "device": r["device"],
+                          "k_Tm_per_A": _orm_f(r["k_Tm_per_A"]), "dk": _orm_f(r["dk"]),
+                          "kick_mrad_per_A": _orm_f(r["kick_mrad_per_A"]),
+                          "r": _orm_f(r["r"]), "nrms_resid": _orm_f(r["nrms_resid"]),
+                          "n_down": int(r["n_down"]), "included": bool(r["included"])}
+                         for r in d["per_trim"]],
+        }
+    return {"reason": cmp["reason"], "sys_floor": _orm_f(cmp["sys_floor"]), "planes": planes}
+
+
+def _orm_session_deck(ctx):
+    """The deck file behind the session lattice (a .lgproj is resolved), or None."""
+    p = str(ctx.lattice_path or "")
+    if not p or not _os.path.isfile(p):
+        return None
+    if p.lower().endswith(".lgproj"):
+        from linac_gen.io.project import load_project
+        return str(load_project(p).lattice_path)
+    return p
+
+
+@_tool("orm_calibrate",
+       "Orbit-response matrix (ORM) against the session lattice: map the "
+       "measured BPM/trim devices onto the deck (Fermilab L:DnnBPH / "
+       "L:DnnTMH rules built in, or a mapping file), build the model "
+       "response from the envelope phase probe and compare (per-trim "
+       "calibration k in T.m per ampere, correlation, residual, noise "
+       "floor, polarity flips); mode='fit' runs the LOCO-style "
+       "Levenberg-Marquardt fit of quad gradient scale factors, trim "
+       "calibrations and optional BPM gains with Gaussian priors, keeps "
+       "the calibration on the session for orm_apply, and can write the "
+       "calibration JSON and a recalibrated deck; mode='validate' injects "
+       "random errors into the model and reports how well the fit "
+       "recovers them.  The session lattice is never modified (the fit "
+       "runs on a copy).  Long-running: executes as a background job.",
+       _ORM_SCHEMA, "compute")
+def _orm_calibrate(ctx, measured, mode="compare", mapping_file=None,
+                   stage="trims+quads", prior_g=0.10, prior_G=0.05,
+                   sys_floor=0.05, max_iter=12, fix_quads=(),
+                   exclude_bpms=(), exclude_trims=(), check_tracking=False,
+                   calibration_out=None, export_deck=None, seed=7,
+                   g_sigma=0.03, G_sigma=0.03,
+                   progress_callback=None, should_abort=None,
+                   _assist_prov=None):
+    gate = _need(ctx, "lattice", "beam_config")
+    if gate:
+        return gate
+    import copy
+
+    from linac_gen.orm import (DeviceMap, OrmFitOptions, OrmModel,
+                               calibration_from_fit, compare_orm,
+                               default_device_map, export_recalibrated_deck,
+                               fit_orm, load_measured, resolve_devices,
+                               save_calibration, synthetic_validation)
+    from linac_gen.orm.fit import STAGES
+
+    if isinstance(measured, str):
+        measured = [measured]
+    try:
+        paths = [_local_path(p) for p in (measured or [])]
+        for opt in (mapping_file, calibration_out, export_deck):
+            if opt:
+                _local_path(opt)
+    except ValueError as exc:
+        return _refused(exc)
+    if not paths:
+        return _refused("measured: give at least one FORMA folder or ORM CSV")
+    if mode not in ("compare", "fit", "validate"):
+        return _refused(f"mode must be compare / fit / validate, got {mode!r}")
+    if stage not in STAGES:
+        return _refused(f"stage must be one of {', '.join(STAGES)}, got {stage!r}")
+    missing = [p for p in paths if not _os.path.exists(p)]
+    if missing:
+        return _err(f"measured input not found: {', '.join(missing)}")
+    try:
+        prior_g, prior_G, sys_floor = float(prior_g), float(prior_G), float(sys_floor)
+        max_iter, seed = int(max_iter), int(seed)
+        g_sigma, G_sigma = float(g_sigma), float(G_sigma)
+    except (TypeError, ValueError) as exc:
+        return _refused(f"numeric option: {exc}")
+    warns: list[str] = []
+
+    meas, refusal, w0 = _capture(load_measured, paths)
+    if refusal:
+        return refusal
+    warns += w0
+    lat = copy.deepcopy(ctx.lattice)      # the fit sets gradient_rel on the copy only
+
+    def _map():
+        dm = (DeviceMap.from_json(mapping_file) if mapping_file
+              else default_device_map(lat, meas))
+        dm.exclude_bpms |= set(exclude_bpms or ())
+        dm.exclude_trims |= set(exclude_trims or ())
+        return dm, resolve_devices(lat, meas, dm)
+    out, refusal, w1 = _capture(_map)
+    if refusal:
+        return refusal
+    dm, sel = out
+    warns += w1
+    if sel.n_trim == 0 or sel.n_bpm == 0:
+        return _refused("no measured device could be matched to the session "
+                        "lattice — " + sel.summary()
+                        + "; unmatched BPMs: " + ", ".join(sel.unmatched_devices["bpm"][:8])
+                        + "; unmatched trims: " + ", ".join(sel.unmatched_devices["trim"][:8])
+                        + " (give a mapping_file)")
+
+    def _model():
+        model = OrmModel(lat, ctx.beam_config, sel)
+        return model, model.response(should_stop=should_abort)
+    out, refusal, w2 = _capture(_model)
+    if refusal:
+        return refusal
+    model, R = out
+    warns += w2
+    cmp, refusal, w3 = _capture(compare_orm, meas, R, sel, model.brho_trim,
+                                model.w_trim_MeV, sys_floor=sys_floor)
+    if refusal:
+        return refusal
+    warns += w3
+    data = {"mode": mode, "selection": _orm_selection_json(sel),
+            "compare": _orm_compare_json(cmp)}
+    prov = _ctx_provenance(ctx)
+    prov["measured"] = [str(p) for p in paths]
+
+    if mode == "compare":
+        if check_tracking:
+            T, refusal, w4 = _capture(model.tracked_response, should_stop=should_abort)
+            if refusal:
+                return refusal
+            warns += w4
+            data["tracking_max_rel_dev"] = _orm_f(model.selfcheck(R, T))
+        if cmp["reason"]:
+            warns.append("compare refused: " + str(cmp["reason"]))
+        return _ok(data, prov, warns)
+
+    opts = OrmFitOptions(stage=stage, prior_g=prior_g, prior_G=prior_G,
+                         sys_floor=sys_floor, fix_quads=tuple(fix_quads or ()),
+                         max_iter=max(1, max_iter))
+    prog = (None if progress_callback is None else
+            (lambda it, _chi2: progress_callback(min(0.95, it / max(1, max_iter)))))
+
+    if mode == "validate":
+        v, refusal, w4 = _capture(synthetic_validation, model, meas, opts,
+                                  seed=seed, g_sigma=g_sigma, G_sigma=G_sigma,
+                                  should_stop=should_abort, progress=prog)
+        if refusal:
+            return refusal
+        warns += w4
+        data["validation"] = {
+            "seed": int(v["seed"]), "stage": stage,
+            "g_rms_injected": _orm_f(v["g_rms_injected"]),
+            "g_rms_recovered": _orm_f(v["g_rms_recovered"]),
+            "g_max_recovered": _orm_f(v["g_max_recovered"]),
+            "k_rel_rms": _orm_f(v["k_rel_rms"]),
+            "G_rms_recovered": _orm_f(v["G_rms_recovered"]),
+            "worst_quads": [{"quad": lab, "injected": _orm_f(t), "recovered": _orm_f(f)}
+                            for lab, t, f in v["worst_quads"]],
+            "converged": bool(v["fit"].converged),
+        }
+        return _ok(data, prov, warns)
+
+    fit, refusal, w4 = _capture(fit_orm, model, meas, opts,
+                                should_stop=should_abort, progress=prog)
+    if refusal:
+        return refusal
+    warns += w4
+    cal = calibration_from_fit(fit, model, meas,
+                               lattice_path=_orm_session_deck(ctx),
+                               beam_cfg=ctx.beam_config, device_map=dm)
+    ctx.orm_calibration = cal
+    quads = sorted(cal["quads"], key=lambda q: -abs(q["scale"] - 1.0))
+    data["fit"] = {
+        "stage": fit.stage, "converged": bool(fit.converged),
+        "n_iter": int(fit.n_iter), "n_data": int(fit.n_data),
+        "n_params": int(fit.n_params), "dof": int(fit.dof),
+        "chi2_per_point": _orm_f(fit.chi2_history[-1] / max(fit.n_data, 1)) if fit.chi2_history else None,
+        "metrics": cal["metrics"],
+        "quads": [{"label": q["label"], "scale": _orm_f(q["scale"]),
+                   "scale_err": _orm_f(q["scale_err"]), "fixed": bool(q["fixed"]),
+                   "reason": q.get("reason")} for q in quads],
+        "held_fixed": [q["label"] for q in cal["quads"] if q["fixed"]],
+        "trims": cal["trims"],
+        "bpm_gains": cal.get("bpms") if stage == "trims+quads+bpms" else None,
+        "summary": fit.summary_lines(),
+    }
+    files = {}
+    if calibration_out:
+        _, refusal, w5 = _capture(save_calibration, calibration_out, cal)
+        if refusal:
+            return refusal
+        warns += w5
+        files["calibration"] = str(calibration_out)
+    if export_deck:
+        src = _orm_session_deck(ctx)
+        if src is None:
+            warns.append("export_deck skipped: the session lattice has no deck file "
+                         "on disk (load it from a .dat / .lgproj first)")
+        else:
+            rep, refusal, w6 = _capture(export_recalibrated_deck, src, export_deck, cal)
+            if refusal:
+                return refusal
+            warns += w6
+            files["deck"] = rep["dst"]
+            data["fit"]["deck_quads_rescaled"] = len(rep["changed"])
+    data["files"] = files
+    if fit.reason:
+        warns.append(str(fit.reason))
+    return _ok(data, prov, warns)
+
+
+@_tool("orm_apply",
+       "Apply an ORM calibration to the session lattice: the fitted quad "
+       "scale factors become Quadrupole.gradient_rel (mode='rel', the "
+       "design gradients stay; ErrorStudy overwrites gradient_rel per "
+       "seed and the deck writer does not save it) or are baked into the "
+       "gradients (mode='bake').  Uses the last orm_calibrate fit of the "
+       "session unless a calibration_file is given.  Refuses atomically "
+       "when a quad's design gradient no longer matches the calibration.  "
+       "In the GUI the change is one undoable command.",
+       {"type": "object",
+        "properties": {
+            "calibration_file": {"type": "string",
+                                 "description": "calibration JSON (default: the "
+                                                "session's last fit)"},
+            "mode": {"type": "string", "enum": ["rel", "bake"], "default": "rel"}},
+        "required": []},
+       "mutate")
+def _orm_apply(ctx, calibration_file=None, mode="rel"):
+    gate = _need(ctx, "lattice")
+    if gate:
+        return gate
+    from linac_gen.orm import apply_calibration, load_calibration
+    if mode not in ("rel", "bake"):
+        return _refused(f"mode must be 'rel' or 'bake', got {mode!r}")
+    if calibration_file:
+        try:
+            _local_path(calibration_file)
+        except ValueError as exc:
+            return _refused(exc)
+        if not _os.path.isfile(calibration_file):
+            return _err(f"{calibration_file} not found")
+        cal, refusal, _w = _capture(load_calibration, calibration_file)
+        if refusal:
+            return refusal
+    else:
+        cal = getattr(ctx, "orm_calibration", None)
+        if cal is None:
+            return _refused("no calibration in the session — run orm_calibrate "
+                            "with mode='fit' first, or give calibration_file")
+    changes, refusal, warns = _capture(apply_calibration, ctx.lattice, cal, mode=mode)
+    if refusal:
+        return refusal
+    if not changes:
+        warns.append("nothing to apply: the lattice already carries this calibration (or every scale factor is 1)")
+    rows = [{"element": getattr(q, "name", None), "label": getattr(q, "label", None),
+             "attr": attr, "old": _orm_f(old), "new": _orm_f(new)}
+            for q, attr, old, new in changes]
+    if changes:
+        try:
+            ctx.apply_param_changes([(q, attr, new) for q, attr, _old, new in changes],
+                                    label="ORM calibration")
+        except Exception as exc:                                # noqa: BLE001
+            return _err(f"could not apply the calibration: {exc}")
+    return _ok({"mode": mode, "n_applied": len(changes), "changes": rows,
+                "source": str(calibration_file) if calibration_file else "session"},
+               _ctx_provenance(ctx), warns)

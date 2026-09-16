@@ -66,6 +66,9 @@ class AppState(QObject):
         # FailureStudyResults bag (element-failure sweep output).  Set by
         # the Failure Study tab worker.
         self.failure_study_results: Any = None
+        # Orbit-response calibration dialog session (measured inputs,
+        # device map, last calibration) — survives closing the dialog.
+        self.orm_session: dict = {}
         # Optional TraceWin partran.out overlay for side-by-side
         # comparison.  ``None`` until the user opens a file via the
         # Results-tab "Compare with TraceWin" action.  Stored as a

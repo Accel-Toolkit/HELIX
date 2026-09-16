@@ -96,19 +96,105 @@ def load_lattice(path):
     return lat
 
 
-def load_input(path):
+def load_input(path, *, tracewin_ini=None):
     """Load a CLI input — a ``.lgproj`` project *or* a bare lattice file.
 
     Returns ``(lattice, beam_config, convergence_dict)``.  For a bare
-    lattice the beam is a default ``BeamConfig`` and convergence is empty.
+    lattice the beam is a default ``BeamConfig`` — or, with
+    ``tracewin_ini`` (``"auto"``/``True`` for the sibling ``<deck>.ini``,
+    or an explicit path), beam 1 of the deck's TraceWin options file —
+    and convergence is empty.  A project refuses ``tracewin_ini``: its
+    saved beam always wins.
     """
     p = Path(path)
     if p.suffix.lower() == ".lgproj":
+        if tracewin_ini:
+            raise ValueError(_TW_INI_PROJECT_MSG.format(name=p.name))
         from linac_gen.io.project import load_project
         proj = load_project(p)
         return load_lattice(proj.lattice_path), proj.beam, proj.convergence
     from linac_gen.core.config import BeamConfig
-    return load_lattice(str(p)), BeamConfig(), {}
+    lat = load_lattice(str(p))
+    if tracewin_ini:
+        return lat, beam_from_tracewin_ini(p, tracewin_ini, lattice=lat), {}
+    return lat, BeamConfig(), {}
+
+
+# ---------------------------------------------------------------------------
+# TraceWin .ini beam for a bare lattice (shared by every input-taking command)
+# ---------------------------------------------------------------------------
+_TW_INI_PROJECT_MSG = (
+    "--tracewin-ini cannot be combined with a project file ({name}): the "
+    "project's saved beam always wins.  Convert the .ini with "
+    "`python -m linac_gen twini` and save a new project instead.")
+# Paths whose "beam from X.ini" note has been printed in this process — a
+# scan builds one point per swept value from the same deck and must not
+# repeat the note (and its warnings) per point.
+_TW_INI_ANNOUNCED: set = set()
+
+
+def add_tracewin_ini_argument(p) -> None:
+    """The ``--tracewin-ini [INI]`` option shared by the input-taking
+    subcommands (``nargs="?"``: bare flag → the sibling ``<deck>.ini``)."""
+    p.add_argument("--tracewin-ini", nargs="?", const="auto", default=None,
+                   dest="tracewin_ini", metavar="INI",
+                   help="bare lattice file only: take the beam from the "
+                        "deck's TraceWin options file (<deck>.ini next to "
+                        "it, or INI); scalar overrides such as --energy "
+                        "still apply on top.  A .lgproj input keeps its "
+                        "saved beam and refuses this flag")
+
+
+_TW_INI_OVERRIDE_KEYS = ("energy", "frequency", "freq", "species")
+
+
+def note_tracewin_ini_overrides(tracewin_ini, overrides) -> None:
+    """Warn (once per process) when a ``--tracewin-ini`` beam is combined
+    with an energy / frequency / species override: ``emit_z`` and
+    ``beta_z`` were converted at the .ini values and are NOT re-derived
+    for the overridden ones (beta_z scales as 1/(beta*gamma)^3 and both
+    scale with the frequency)."""
+    import sys
+    if not tracewin_ini or not overrides:
+        return
+    hit = [k for k in _TW_INI_OVERRIDE_KEYS
+           if k in overrides and overrides[k] is not None]
+    if hit and "overrides" not in _TW_INI_ANNOUNCED:
+        _TW_INI_ANNOUNCED.add("overrides")
+        print(f"warning: {', '.join(hit)} overridden on top of the .ini beam: "
+              f"emit_z and beta_z were converted at the .ini energy, frequency "
+              f"and species and are not re-derived (beta_z ~ 1/(beta*gamma)^3, "
+              f"emit_z and beta_z ~ f)", file=sys.stderr)
+
+
+def beam_from_tracewin_ini(lattice_path, spec, *, lattice=None, base=None):
+    """Beam 1 of the TraceWin ``.ini`` selected by ``spec`` for a bare
+    lattice (see :func:`linac_gen.io.tracewin_ini.resolve_tracewin_ini`),
+    announced once per file on stderr together with its warnings."""
+    import sys
+    from linac_gen.core.config import BeamConfig
+    from linac_gen.io.tracewin_ini import (load_tracewin_ini,
+                                           resolve_tracewin_ini,
+                                           to_beam_config)
+    ini_path = resolve_tracewin_ini(lattice_path, spec)
+    if ini_path is None:
+        return base if base is not None else BeamConfig()
+    if ini_path.suffix.lower() != ".ini":
+        raise ValueError(
+            f"--tracewin-ini expects a TraceWin .ini options file, got "
+            f"{ini_path.name} (put the flag after the input, or pass the "
+            f".ini path explicitly)")
+    ini = load_tracewin_ini(ini_path)
+    cfg, warns = to_beam_config(ini, lattice=lattice, base=base)
+    key = str(ini_path.resolve())
+    if key not in _TW_INI_ANNOUNCED:
+        _TW_INI_ANNOUNCED.add(key)
+        print(f"beam from {ini_path.name}: {cfg.species}, {cfg.energy:g} MeV, "
+              f"{cfg.frequency:g} MHz, {cfg.current:g} mA, {cfg.n_particles} "
+              f"particles (replaces the BeamConfig default)", file=sys.stderr)
+        for w in list(ini.warnings) + list(warns):
+            print(f"warning: {w}", file=sys.stderr)
+    return cfg
 
 
 # ---------------------------------------------------------------------------
@@ -496,7 +582,8 @@ def result_summary(results) -> dict:
 # ---------------------------------------------------------------------------
 def build_scan_point(input_path, *, beam_overrides=None, element_overrides=(),
                      sc_overrides=None, mode="mp", env_solver="matrix",
-                     seed: int = 42, cli: dict | None = None):
+                     seed: int = 42, cli: dict | None = None,
+                     tracewin_ini=None):
     """Resolve a CLI input + overrides into a :class:`ScanPoint`.
 
     Used by both ``scan`` (one point per swept value) and ``batch`` (one
@@ -504,7 +591,9 @@ def build_scan_point(input_path, *, beam_overrides=None, element_overrides=(),
     ``step1`` / ``step2`` / ``drift_single_push`` / ``backend`` overrides;
     ``beam_overrides`` and
     ``sc_overrides`` are ``name=value`` dicts; ``element_overrides`` is an
-    iterable of ``(selector, value)`` pairs.
+    iterable of ``(selector, value)`` pairs.  ``tracewin_ini`` has the
+    :func:`load_input` meaning (bare lattice only; the beam of the deck's
+    TraceWin options file before ``beam_overrides`` are applied).
     """
     from dataclasses import asdict
     from linac_gen.core.config import BeamConfig, SpaceChargeConfig
@@ -514,14 +603,19 @@ def build_scan_point(input_path, *, beam_overrides=None, element_overrides=(),
     cli = cli or {}
     p = Path(input_path)
     if p.suffix.lower() == ".lgproj":
+        if tracewin_ini:
+            raise ValueError(_TW_INI_PROJECT_MSG.format(name=p.name))
         from linac_gen.io.project import load_project
         proj = load_project(p)
         lattice_path, beam_cfg, conv = (
             proj.lattice_path, proj.beam, proj.convergence)
     else:
-        lattice_path, beam_cfg, conv = str(p.resolve()), BeamConfig(), {}
+        lattice_path, conv = str(p.resolve()), {}
+        beam_cfg = (beam_from_tracewin_ini(p, tracewin_ini) if tracewin_ini
+                    else BeamConfig())
 
     apply_beam_overrides(beam_cfg, beam_overrides or {})
+    note_tracewin_ini_overrides(tracewin_ini, beam_overrides)
 
     sd, scd = StepConfig(), SpaceChargeConfig()
     nx = int(_first(cli.get("nx"), conv.get("grid_nx"), scd.nx))

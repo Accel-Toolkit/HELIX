@@ -22,6 +22,7 @@ from linac_gen.cli import common
 def add_arguments(p) -> None:
     """Populate the ``twiss`` sub-parser."""
     p.add_argument("input", help="a .lgproj project or a lattice file (.dat, .madx, .lat, .lte; .bmad/.jl/.pals.yaml via lattix)")
+    common.add_tracewin_ini_argument(p)
     p.add_argument("--mode", choices=("whole", "cell"), default="cell",
                    help="'whole' = whole-lattice periodic Twiss (a ring); "
                         "'cell' = FODO-cell match back-propagated to the "
@@ -60,13 +61,17 @@ def run(args) -> int:
         print(f"error: input not found: {args.input}", file=sys.stderr)
         return 2
     try:
-        lattice, beam_cfg, _conv = common.load_input(args.input)
+        lattice, beam_cfg, _conv = common.load_input(
+            args.input, tracewin_ini=args.tracewin_ini)
         if args.energy is not None:
             beam_cfg.energy = args.energy
         if args.freq is not None:
             beam_cfg.frequency = args.freq
         if args.species is not None:
             beam_cfg.species = args.species
+        common.note_tracewin_ini_overrides(
+            args.tracewin_ini, {"energy": args.energy, "freq": args.freq,
+                                "species": args.species})
         ref = common.build_ref(beam_cfg)
     except (ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)

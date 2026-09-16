@@ -1148,7 +1148,6 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
         integrator has O((K·ds)²) error per step — same situation as the
         1-D solenoid fix.  Auto-refine to ds < 0.2 mm (~5000 steps/m).
         """
-        import copy
         eps_x    = 1e-3   # mm
         eps_xp   = 1e-3   # mrad
         eps_dphi = 1e-2   # deg  (Δφ → Δφ, ΔW coupling)
@@ -1158,7 +1157,6 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
         M = np.eye(6)
 
         from linac_gen.core.beam import Beam
-        from linac_gen.core.reference import ReferenceParticle
 
         # Refine n_steps locally for static-B-only maps so the solenoid's
         # linear matrix matches TraceWin.  RF cavities (electric channel
@@ -1173,23 +1171,37 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
                     n = min_n
         ds = self.length / n
 
-        def _track_single(coord_vec):
-            ref_c = ref.copy()
-            beam  = Beam(ref=ref_c, n_particles=1, current=0.0)
-            beam.particles[0] = coord_vec
-            self._step_idx = 0
-            for _ in range(n):
-                self.track_rk4(beam, ds)
-            return beam.particles[0].copy()
-
-        origin = _track_single(np.zeros(6))
+        # All 13 probes ride in ONE beam: the tracker is vectorised over
+        # particles and advances the reference from on-axis quantities only,
+        # so this is bit-identical to thirteen single-particle tracks (row
+        # order and arithmetic unchanged; pinned in
+        # tests/elements/test_fieldmap_jacobian_batched.py).  The origin row
+        # is kept, unused, for layout parity with the thirteen-track
+        # original; it costs one extra particle.
+        probes = [np.zeros(6)]
         for j, dj in enumerate(deltas):
             if dj == 0:
                 continue
             v_plus  = np.zeros(6); v_plus[j]  = +dj
             v_minus = np.zeros(6); v_minus[j] = -dj
-            y_plus  = _track_single(v_plus)
-            y_minus = _track_single(v_minus)
+            probes.append(v_plus)
+            probes.append(v_minus)
+        P = np.array(probes, dtype=np.float64)
+
+        ref_c = ref.copy()
+        beam  = Beam(ref=ref_c, n_particles=P.shape[0], current=0.0)
+        beam.particles[:, :] = P
+        self._step_idx = 0
+        for _ in range(n):
+            self.track_rk4(beam, ds)
+        Y = beam.particles.copy()
+
+        row = 1
+        for j, dj in enumerate(deltas):
+            if dj == 0:
+                continue
+            y_plus, y_minus = Y[row], Y[row + 1]
+            row += 2
             M[:, j] = (y_plus - y_minus) / (2.0 * dj)
 
         self._step_idx = 0   # reset after Jacobian evaluation
@@ -1205,13 +1217,14 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
         built the counter is advanced by ``n_sub`` so successive calls in
         the envelope SC loop cover the full element in order.
 
-        The caller's ``ref`` is NOT modified.  Each probe uses a
-        ``ref.copy()`` that we pre-advance to the slice's cumulative RF
+        The caller's ``ref`` is NOT modified: the twelve probes ride one
+        ``Beam`` on one ``ref.copy()`` (see ``numerical_jacobian_batched``),
+        and the z-cursor ``_step_idx`` carries the slice's cumulative RF
         phase — otherwise every slice would think it is at the cavity
         entrance, destroying the transit-time integration.
         """
         from linac_gen.core.beam import Beam
-        from linac_gen.tracking.rk4 import numerical_jacobian
+        from linac_gen.tracking.rk4 import numerical_jacobian_batched
 
         native_ds = self.length / self.n_steps if self.n_steps > 0 else ds_mm
         n_sub = max(1, int(round(ds_mm / native_ds)))
@@ -1235,15 +1248,17 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
         # entrance.  Trust it directly; adding another offset here would
         # double-count the RF phase advance and blow up σ_φ.
 
-        def _track_single(state):
+        def _track_batch(P):
+            # one ref copy and one beam for all twelve probes — see
+            # numerical_jacobian_batched for why this is bit-identical
             ref_copy = ref.copy()
-            b = Beam(ref=ref_copy, n_particles=1, current=0.0)
-            b.particles[0, :] = state
+            b = Beam(ref=ref_copy, n_particles=P.shape[0], current=0.0)
+            b.particles[:, :] = P
             self._step_idx = saved_idx
             for _ in range(n_sub):
                 self.track_rk4(b, sub_ds)
-            return b.particles[0, :].copy()
+            return b.particles.copy()
 
-        M = numerical_jacobian(_track_single, np.zeros(6))
+        M = numerical_jacobian_batched(_track_batch, np.zeros(6))
         self._step_idx = saved_idx + n_sub
         return M

@@ -126,16 +126,21 @@ def _is_lattice_close(elem) -> bool:
 
 
 def _is_significant(elem) -> bool:
-    """Skip elements TraceWin doesn't count toward a LATTICE cell.
+    """Skip elements that don't count toward a LATTICE cell.
 
-    Per the TraceWin manual (LATTICE command), the following are NOT
-    counted: ``DIAG_XXX``, ``APERTURE``, ``THIN_STEERING``.  In HELIX:
+    HELIX counts every element that transports the beam, including a
+    ``THIN_STEERING`` (``Steerer`` — decided 2026-09-13, pinned by
+    ``tests/analysis/test_period_detect.py::test_steerer_counts_toward_lattice_cell``).
+    NOT counted:
 
       * ``DIAG_XXX`` → ``Marker``           (skipped via _is_marker)
       * ``APERTURE`` → ``Aperture``         (skipped here)
       * sub-LATTICE directives → ``LatticeCommand`` (skipped here)
+      * zero-length Drifts — they contribute no transport.
 
-    Zero-length Drifts are also skipped — they contribute no transport.
+    A deck whose cells hold steerers therefore needs an ``n1`` that
+    includes them (``examples/piplattice/fnalscl_periods.dat``: 7 per
+    module, 14 per FODO cell).
     """
     if _is_marker(elem):
         return False
@@ -279,8 +284,8 @@ def _build_from_cell_count(
 
     Counts only *significant* elements when sizing the cell —
     Markers / zero-length drifts / Apertures / LatticeCommands inside
-    the bracket are passed through transparently (matches TraceWin's
-    own exclusion list: ``DIAG_XXX``, ``APERTURE``, ``THIN_STEERING``).
+    the bracket are passed through transparently; steerers
+    (``THIN_STEERING``) ARE counted (see ``_is_significant``).
 
     **Transition-tolerant** since 2026-05-11: when
     ``sig_count % n_per_cell != 0`` we treat the leading

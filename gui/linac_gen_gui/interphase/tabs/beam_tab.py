@@ -109,6 +109,18 @@ class BeamTab(QWidget):
         self._import_dst_btn.clicked.connect(self._import_dst)
         row.addWidget(self._import_dst_btn)
 
+        self._import_ini_btn = QPushButton("  Import TraceWin .ini…")
+        self._import_ini_btn.setIcon(icon("file", 12))
+        self._import_ini_btn.setToolTip(
+            "Import the beam of a TraceWin project options file "
+            "(<project>.ini): species, energy, frequency, current, particle "
+            "count, normalised emittances and Twiss of input beam 1, "
+            "converted to HELIX units (alpha_z sign flipped).  Replaces the "
+            "current beam settings; the distribution stays generated."
+        )
+        self._import_ini_btn.clicked.connect(self._import_tracewin_ini)
+        row.addWidget(self._import_ini_btn)
+
         # Active-file chip + clear link.  Hidden until a .dst is loaded.
         self._file_chip = QLabel("")
         self._file_chip.setStyleSheet(
@@ -522,6 +534,76 @@ class BeamTab(QWidget):
             f"εnx={header.get('emit_nx'):.4f}, εny={header.get('emit_ny'):.4f}"
         )
         self.state.status_message.emit(f"beam source: {basename(fp)}")
+
+    def _import_tracewin_ini(self) -> None:
+        """Button slot: pick a TraceWin ``.ini`` and import its beam."""
+        s = make_settings("Helix", "HELIX")
+        start_dir = str(s.value("beam_tab/last_ini_dir",
+                                s.value("beam_tab/last_dst_dir", "")))
+        fp, _ = QFileDialog.getOpenFileName(
+            self, "Import TraceWin project settings (.ini)", start_dir,
+            "TraceWin options file (*.ini *.INI);;All Files (*)"
+        )
+        if not fp:
+            return
+        try:
+            self.import_tracewin_ini(fp)
+        except Exception as exc:
+            QMessageBox.critical(self, "Import .ini failed", str(exc))
+            return
+        from os.path import dirname
+        s.setValue("beam_tab/last_ini_dir", dirname(fp))
+
+    def import_tracewin_ini(self, path: str, *, species: str | None = None):
+        """Replace the form with beam 1 of the TraceWin options file at
+        ``path`` (HELIX units; see :mod:`linac_gen.io.tracewin_ini`).
+
+        Fields the file does not describe (distribution, cut-off, DC
+        energy spread, centroids) keep the form's current values; the
+        species falls back to the combo's selection when the file's
+        particle row has no HELIX species.  Pushes the config to the app
+        state (so it becomes the session beam), marks the project dirty
+        and returns ``(config, warnings)``.  Raises on an unreadable or
+        unconvertible file — the caller shows the message."""
+        from os.path import basename
+        from linac_gen.io.tracewin_ini import load_tracewin_ini, to_beam_config
+        ini = load_tracewin_ini(path)
+        try:
+            base = self._build_cfg()
+        except Exception:                       # an invalid form still imports
+            from linac_gen.core.config import BeamConfig
+            base = BeamConfig(species=self._species.currentText())
+        cfg, warns = to_beam_config(ini, base=base, species=species,
+                                    lattice=self.state.lattice)
+        warns = list(ini.warnings) + list(warns)
+        self.set_beam_config(cfg)               # widgets + state (quiet apply)
+        # The spinboxes clamp to their ranges (n_particles <= 2e6, energy
+        # >= 0.001 MeV, ...): what the state now holds is the truth, and a
+        # clamped value is reported, never returned silently.
+        applied = self.state.beam_config
+        from dataclasses import fields as _fields
+        if applied is not None:
+            for f in _fields(cfg):
+                a, b = getattr(cfg, f.name), getattr(applied, f.name)
+                if isinstance(a, float) and isinstance(b, float):
+                    same = math.isclose(a, b, rel_tol=1e-5, abs_tol=1e-7)
+                else:
+                    same = a == b
+                if not same:
+                    warns.append(f"{f.name} {a!r} from the .ini is outside "
+                                 f"the form's range: clamped to {b!r}")
+            cfg = applied
+        self.state.mark_project_dirty()
+        for w in warns:
+            print(f"[tracewin .ini] {w}")
+        note = (f"imported {basename(path)} — {cfg.species}, "
+                f"W={cfg.energy:.4g} MeV, f={cfg.frequency:g} MHz, "
+                f"I={cfg.current:g} mA, N={cfg.n_particles}")
+        if warns:
+            note += f"  ·  {len(warns)} warning(s) — see console"
+        self._status.setText(note)
+        self.state.status_message.emit(f"beam from {basename(path)}")
+        return cfg, warns
 
     def _build_cfg(self):
         from linac_gen.core.config import BeamConfig

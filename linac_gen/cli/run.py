@@ -17,6 +17,7 @@ _EXT = {"hdf5": ".h5", "openpmd": ".opmd.h5", "partran": ".txt"}
 def add_arguments(p) -> None:
     """Populate the ``run`` sub-parser."""
     p.add_argument("input", help="a .lgproj project or a lattice file (.dat, .madx, .lat, .lte; .bmad/.jl/.pals.yaml via lattix)")
+    common.add_tracewin_ini_argument(p)
     p.add_argument("--mode", choices=("envelope", "mp", "matrix"),
                    default="envelope", help="solver mode (default envelope)")
     p.add_argument("--out", default=".", help="output directory (default .)")
@@ -99,8 +100,10 @@ def run(args) -> int:
         print(f"error: input not found: {args.input}", file=sys.stderr)
         return 2
     try:
-        lattice, beam_cfg, conv = common.load_input(args.input)
+        lattice, beam_cfg, conv = common.load_input(
+            args.input, tracewin_ini=args.tracewin_ini)
         common.apply_beam_overrides(beam_cfg, _beam_overrides(args))
+        common.note_tracewin_ini_overrides(args.tracewin_ini, _beam_overrides(args))
         for item in args.set_:
             if "=" not in item:
                 raise ValueError(f"--set expects ELEM.attr=VALUE, got '{item}'")

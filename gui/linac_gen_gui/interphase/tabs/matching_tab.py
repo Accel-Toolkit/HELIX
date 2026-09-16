@@ -469,6 +469,10 @@ class MatchingTab(QWidget):
                 notes.append(
                     "⚠ span crosses x-y-coupled records — beam σ is a "
                     "projected value, not a mode tune (trust σ_model)")
+            if sigma_beam.get("method") == "maps":
+                notes.append("beam σ: exact (probe maps)"
+                             if sigma_beam.get("maps_source") != "companion"
+                             else "beam σ: companion probe maps (approximate)")
             if not sigma_beam.get("resolution_ok", True):
                 notes.append(
                     f"⚠ coarse sampling "

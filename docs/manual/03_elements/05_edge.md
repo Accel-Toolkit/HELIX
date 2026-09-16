@@ -71,8 +71,8 @@ round-tripping but never applied.
 
 | Block | Effect |
 |---|---|
-| (x, x') 2×2 | thin-lens focusing in bending plane: f_x = ρ / tan(β) |
-| (y, y') 2×2 | thin-lens defocusing in non-bending plane: f_y = -ρ / tan(β − ψ) |
+| (x, x') 2×2 | thin lens in the bending plane, **defocusing for β > 0**: M[1,0] = +tan(β)/ρ |
+| (y, y') 2×2 | thin lens in the non-bending plane, **focusing for β > 0**: M[3,2] = −tan(β − ψ)/ρ |
 | (Δφ, ΔW) 2×2 | identity (zero-length element does no longitudinal work) |
 | Cross blocks | all zero |
 
@@ -80,6 +80,21 @@ For a **vertical** bend (`hv = 1`), x and y swap throughout.
 
 A **sector bend** has β = 0 → tan(β) = 0 → no edge focusing →
 the Edge element collapses to the identity and can be omitted.
+
+!!! note "Sign of β — the same for either bend direction"
+    The sign of the edge kick depends on β alone, exactly as in TraceWin
+    ("an edge focalizes if β < 0, whatever the curvature radius sign, the
+    bending angle sign and the particle charge state" — TraceWin manual,
+    EDGE), and HELIX's `Edge` reproduces TraceWin's exported edge matrices to
+    the export's precision (all 72 BTL edges within 1e-4).  A **rectangular magnet** therefore takes
+    `β = +|θ|/2` on both faces **whether the bend angle is positive or
+    negative**: its faces defocus in the bend plane (cancelling the
+    sector focusing) and focus in the other plane.  Writing the signed
+    θ/2 for a negative bend turns those faces into bend-plane *focusing*
+    edges — the error found in the converted PIP-II BTL decks and fixed
+    on 2026-09-06.  A known difference from TraceWin: its ψ carries an
+    extra second-order factor `(1 − K1·K2·(g/|ρ|)·tan β)` that HELIX does
+    not model (HELIX's fringe form is MAD-X's `fint`/`hgap`).
 
 ### Example
 

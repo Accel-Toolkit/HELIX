@@ -251,6 +251,58 @@ def test_elegant_import_documented():
     assert ".bmad" in cli_run and ".jl" in cli_run, "07_cli_run.md omits the lattix suffixes"
 
 
+def test_tracewin_ini_import_documented():
+    """The TraceWin .ini importer is documented on every surface it has."""
+    readme = _read("README.md")
+    assert "`.ini`" in readme and "`twini`" in readme, (
+        "README never mentions the TraceWin .ini importer / twini")
+
+    tw = _read("docs/manual/06_running/02_tracewin_dat.md")
+    assert "## Importing TraceWin project settings (`.ini`)" in tw, (
+        "02_tracewin_dat.md has no TraceWin .ini import section")
+    for token in ("--report", "--lgproj", "alpha_z", "Degrades explicitly"):
+        assert token in tw, f"02_tracewin_dat.md .ini section lost {token!r}"
+
+    appendix = _read("docs/manual/appendices/G_tracewin_ini_format.md")
+    from linac_gen.io.tracewin_ini import FIELDS
+    for f in FIELDS:
+        if f.beam == 1 or f.name in ("nbr_thread", "picnic_r_mesh", "picnic_z_mesh"):
+            assert f"`0x{f.offset:04x}`" in appendix, (
+                f"appendix G field map lacks {f.name} at 0x{f.offset:04x}")
+    nav = _read("docs/mkdocs.yml")
+    assert "appendices/G_tracewin_ini_format.md" in nav, "appendix G not in the nav"
+    assert "## Extending the map" in appendix and "tracewin_ini_probe.py" in appendix
+    assert REPO.joinpath("scripts/tracewin_ini_probe.py").is_file()
+
+    # the --tracewin-ini option on the CLI pages and the input model
+    for page in ("07_cli_run.md", "08_cli_scan.md", "09_cli_batch.md",
+                 "10_cli_twiss.md", "11_cli_backtrack.md", "13_cli_orm.md",
+                 "06_batch_cli.md"):
+        txt = _read(f"docs/manual/06_running/{page}")
+        assert "--tracewin-ini" in txt or "`tracewin_ini`" in txt, (
+            f"{page} omits --tracewin-ini")
+    assert "--tracewin-ini" in _read("docs/manual/06_running/06_batch_cli.md")
+
+    # GUI pages name the real button and the prompt; the label is read
+    # from the widget source (text only — no GUI import in a core test)
+    beam_tab_src = _read("gui/linac_gen_gui/interphase/tabs/beam_tab.py")
+    assert 'QPushButton("  Import TraceWin .ini…")' in beam_tab_src
+    beam_tab_doc = _read("docs/manual/10_gui/03_beam_tab.md")
+    assert "**Import TraceWin .ini…**" in beam_tab_doc
+    assert "## Importing a TraceWin `.ini` project beam" in beam_tab_doc
+    assert ".ini" in _read("docs/manual/10_gui/02_lattice_tab.md")
+    workflows = _read("docs/manual/10_gui/08_workflows.md")
+    assert '## "I have a TraceWin project (.dat + .ini) and want its beam in HELIX"' in workflows
+    assert "### When to import it, and how" in tw and "Step by step (command line)" in tw
+    wizard_src = _read("gui/linac_gen_gui/interphase/dialogs/new_project.py")
+    assert "Also import the beam from the TraceWin .ini next to the deck" in wizard_src
+
+    # migration appendix and the assistant tier table
+    assert "twini" in _read("docs/manual/appendices/E_migrating_from_tw.md")
+    assistant = _read("docs/manual/14_assistant/01_assistant.md")
+    assert "inspect_tracewin_ini" in assistant and "tracewin_ini" in assistant
+
+
 # ---------------------------------------------------------------------------
 # 8. No phantom hybrid RK4-residual surrogate path
 # ---------------------------------------------------------------------------

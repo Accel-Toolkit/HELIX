@@ -6,7 +6,9 @@ Dialogs stay open so users can compare multiple quantities side-by-side.
 """
 from __future__ import annotations
 
+import functools
 import json
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -250,6 +252,29 @@ class _PopupPlot(QDialog):
         # the subclass calls it.  Used by _on_lattice_changed to refresh.
         self._lattice_strip = None
 
+    #: Every attribute a popup may hang a background QThread on, and every
+    #: "a result is pending" sentinel.  closeEvent, ResultsTab.shutdown_begin
+    #: and the test fixture's wait_popup_idle all iterate THESE instead of
+    #: literal names — adding a worker means adding it here, once.
+    _WORKER_ATTRS = ("_worker", "_probe_worker", "_coupled_worker")
+    _PENDING_ATTRS = ("_pending_key", "_coupled_pending_key")
+
+    def _live_workers(self) -> list:
+        """Running workers this popup references (tolerates absent
+        attributes and non-QThread fakes)."""
+        out = []
+        for name in self._WORKER_ATTRS:
+            w = getattr(self, name, None)
+            if w is not None and hasattr(w, "isRunning") and w.isRunning():
+                out.append(w)
+        return out
+
+    def _busy(self) -> bool:
+        """True while any worker runs or any result is still pending."""
+        if self._live_workers():
+            return True
+        return any(getattr(self, n, None) is not None for n in self._PENDING_ATTRS)
+
     def closeEvent(self, ev) -> None:                        # noqa: N802
         """Stop any background worker this popup owns before it goes.
 
@@ -257,14 +282,24 @@ class _PopupPlot(QDialog):
         closing the popup used to leave that thread running headless.
         Cooperative stop + short bounded wait; a straggler is parked in
         a module list so its QThread is never garbage-collected alive.
+        A worker other popups are still waiting on (``_waiters``) is
+        left running for them.
         """
-        w = getattr(self, "_worker", None)
-        if w is not None and w.isRunning():
+        for w in self._live_workers():
+            waiters = getattr(w, "_waiters", None)
+            if waiters is not None:
+                waiters.discard(id(self))
+                if waiters:
+                    continue            # someone else still needs it
             if hasattr(w, "request_stop"):
                 w.request_stop()
             w.requestInterruption()
+            key = getattr(w, "_key", None)
+            if key is not None:
+                _coupled_deregister(key, w)   # a dying worker must not be joined
             if not w.wait(2000):
                 _park_zombie(w)
+        self._coupled_pending_key = None
         super().closeEvent(ev)
 
     # ------------------------------------------------------------------
@@ -2553,6 +2588,10 @@ class _StructWorker(_QThread := __import__("PyQt6.QtCore", fromlist=["QThread"])
 
     def run(self):
         from linac_gen.core.cancelled import OperationCancelled
+        # All three walks below mutate the shared elements: hold the walk
+        # lock across the whole run, not just the first walk.
+        if not _acquire_walk_lock(self._stopping):
+            return
         try:
             from linac_gen.analysis.phase_advance import (
                 structure_phase_advance, structure_phase_advance_along_s,
@@ -2606,9 +2645,289 @@ class _StructWorker(_QThread := __import__("PyQt6.QtCore", fromlist=["QThread"])
             return
         except Exception as exc:                              # noqa: BLE001
             self.failed_signal.emit(self._key, str(exc))
+        finally:
+            _WALK_LOCK.release()
 
 
-class _PhaseAdvancePopup(_PopupPlot):
+#: Every background lattice walk holds workers.WALK_LOCK -- see there.  The
+#: GUI thread never takes it.
+from linac_gen_gui.interphase.workers import (   # noqa: E402
+    WALK_LOCK as _WALK_LOCK, acquire_walk_lock as _acquire_walk_lock,
+)
+
+#: Memo of the coupled per-cell walks, shared by the tune-depression and
+#: phase-advance popups.  key = the popups' _struct_cache_key(lattice, period,
+#: ref) -- exactly the dependency set of coupled_phase_advance_per_cell;
+#: value = (cpc, bpc, results_obj, generation).  bpc is valid only while
+#: results_obj IS the current results: never key on id(results), CPython
+#: reuses the address as soon as AppState.set_results drops the old object.
+_COUPLED_PER_CELL: dict = {}
+#: key -> running _CoupledWalkWorker, so a second popup on the same key joins
+#: the first worker instead of starting a duplicate walk.
+_COUPLED_PENDING: dict = {}
+#: key -> message of a walk that failed on this input set, reported through
+#: the popups' existing failure text once instead of re-spawning the walk on
+#: every refresh.
+_COUPLED_FAILED: dict = {}
+#: Generation of the memo, bumped by every invalidation.  A worker records
+#: the generation it started under and its result is discarded if the memo
+#: was invalidated meanwhile: an in-place lattice edit re-emits
+#: lattice_changed with the SAME object, so the key alone cannot tell a
+#: pre-edit walk from a post-edit one.
+_COUPLED_GEN = [0]
+
+
+def _coupled_stop_pending() -> None:
+    for w in list(_COUPLED_PENDING.values()):
+        w.request_stop()
+    _COUPLED_PENDING.clear()
+
+
+def _coupled_invalidate_all() -> None:
+    """Lattice or beam changed: nothing memoised survives, and a walk in
+    flight is stopped and its result discarded."""
+    _COUPLED_GEN[0] += 1
+    _COUPLED_PER_CELL.clear()
+    _COUPLED_FAILED.clear()
+    _coupled_stop_pending()
+
+
+def _coupled_drop_results(results) -> None:
+    """A new results object: cpc (results-independent) stays, bpc computed
+    for other results goes, and a walk in flight -- possibly computing bpc
+    for the old results -- is stopped and its result discarded."""
+    _COUPLED_GEN[0] += 1
+    gen = _COUPLED_GEN[0]
+    for key, (cpc, bpc, res_obj, _g) in list(_COUPLED_PER_CELL.items()):
+        keep = bpc is not None and res_obj is results
+        _COUPLED_PER_CELL[key] = (cpc, bpc if keep else None,
+                                  res_obj if keep else None, gen)
+    _COUPLED_FAILED.clear()
+    _coupled_stop_pending()
+
+
+def _coupled_store(key, cpc, bpc, results, gen) -> bool:
+    """Memoise a finished walk unless the memo was invalidated since the
+    worker started, keeping a still-valid bpc when this walk computed only
+    cpc.  Called on the worker thread before its signal is emitted, so a
+    popup refreshing between the worker finishing and the slot running finds
+    the result instead of starting a duplicate.  A get-then-set is not
+    atomic as a unit; the generation check is what lets a concurrent
+    invalidation win."""
+    if gen != _COUPLED_GEN[0]:
+        return False
+    prev = _COUPLED_PER_CELL.get(key)
+    if bpc is None and prev is not None and prev[1] is not None and prev[3] == gen:
+        bpc, results = prev[1], prev[2]
+    if gen != _COUPLED_GEN[0]:
+        return False
+    _COUPLED_PER_CELL[key] = (cpc, bpc, results, gen)
+    return True
+
+
+def _coupled_lookup(key, results):
+    """``(cpc, bpc)`` for this popup's needs, or None; raises RuntimeError
+    carrying the memoised message for a walk that failed on this input set
+    (the popups' existing except paths turn it into their failure text)."""
+    if key in _COUPLED_FAILED:
+        raise RuntimeError(_COUPLED_FAILED[key])
+    entry = _COUPLED_PER_CELL.get(key)
+    if entry is None:
+        return None
+    cpc, bpc, res_obj, _gen = entry
+    if results is None:
+        return cpc, None
+    if bpc is not None and res_obj is results:
+        return cpc, bpc
+    return None
+
+
+def _coupled_deregister(key, worker) -> None:
+    if _COUPLED_PENDING.get(key) is worker:
+        _COUPLED_PENDING.pop(key, None)
+
+
+class _CoupledWalkWorker(
+        __import__("PyQt6.QtCore", fromlist=["QThread"]).QThread):
+    """Background ``coupled_phase_advance_per_cell`` (+ the depressed
+    ``..._via_M`` walk when results are given), same arguments the popups
+    used to pass on the GUI thread -- no ``cache=``: the matrix cache's ref
+    fingerprint is rounded, so a hit could hand back a matrix computed at a
+    fuzz-different reference, and the legacy depressed replay would write
+    matrices computed under a possibly stale sync-phase offset into a cache
+    shared with _StructWorker.  Holds WALK_LOCK while walking; stores each
+    finished walk itself (generation-checked) before signalling; emits
+    nothing on cancel."""
+    from PyQt6.QtCore import pyqtSignal as _Signal
+    finished_signal = _Signal(object, int)          # key, generation
+    failed_signal = _Signal(object, str, int)       # key, message, generation
+
+    def __init__(self, lattice, ref, period, key, results, cpc=None, gen=0):
+        super().__init__()
+        # numpy/BLAS on the 544 KB default macOS QThread stack → SIGBUS
+        # (house pattern — see workers._MatchWorker).
+        self.setStackSize(16 * 1024 * 1024)
+        self._args = (lattice, ref, period, results, cpc)
+        self._key = key
+        self._gen = gen
+        self._waiters: set = set()
+        self._stop_event = threading.Event()
+
+    def request_stop(self) -> None:
+        self._stop_event.set()
+
+    def _stopping(self) -> bool:
+        return self._stop_event.is_set() or self.isInterruptionRequested()
+
+    def run(self):
+        from linac_gen.core.cancelled import OperationCancelled
+        if not _acquire_walk_lock(self._stopping):
+            return
+        try:
+            from linac_gen.analysis.phase_advance import (
+                coupled_phase_advance_per_cell,
+                coupled_beam_phase_advance_per_cell_via_M,
+            )
+            lattice, ref, period, results, cpc = self._args
+            if cpc is None:
+                cpc = coupled_phase_advance_per_cell(
+                    lattice, ref, period, should_stop=self._stopping)
+                # cpc stands on its own even if the depressed walk fails
+                _coupled_store(self._key, cpc, None, None, self._gen)
+            if results is not None:
+                bpc = coupled_beam_phase_advance_per_cell_via_M(
+                    lattice, ref, period, results, should_stop=self._stopping)
+                _coupled_store(self._key, cpc, bpc, results, self._gen)
+            self.finished_signal.emit(self._key, self._gen)
+        except OperationCancelled:
+            return          # a partial walk must never reach the memo
+        except Exception as exc:                              # noqa: BLE001
+            if self._gen == _COUPLED_GEN[0]:
+                _COUPLED_FAILED[self._key] = str(exc)
+            self.failed_signal.emit(self._key, str(exc), self._gen)
+        finally:
+            _WALK_LOCK.release()
+
+
+class _CoupledWalkMixin:
+    """Shared by the two σ₀ popups: the coupled per-cell walks off the GUI
+    thread, memoised across popups, one live worker per key.
+
+    Attributes are created lazily so neither popup's ``__init__`` changes;
+    ``_PopupPlot._live_workers`` / ``_busy`` read them with getattr.
+    """
+
+    def _coupled_can_join(self, w, results) -> bool:
+        """A registry worker is worth waiting on only if it is alive, not
+        stopping, of the current generation, and computing what we need."""
+        if not w.isRunning() or w._stopping() or w._gen != _COUPLED_GEN[0]:
+            return False
+        theirs = w._args[3]
+        return results is None or theirs is None or theirs is results
+
+    def _coupled_release_current(self, key) -> None:
+        """Moving to another key: stop waiting on the current worker and,
+        if nobody else waits on it, stop it and keep it parked until it
+        exits (it may hold the walk lock the new worker needs)."""
+        w = getattr(self, "_coupled_worker", None)
+        if w is None or getattr(w, "_key", None) == key:
+            return
+        w._waiters.discard(id(self))
+        if not w._waiters:
+            w.request_stop()
+            _coupled_deregister(w._key, w)
+            if w.isRunning():
+                _park_zombie(w)
+        self._coupled_worker = None
+
+    def _get_or_compute_coupled(self, lattice, ref, period, results):
+        """``(cpc, bpc)`` from the memo, or ``None`` while a worker computes
+        them (its signal re-enters ``refresh_with_state``).  Raises for a
+        walk that failed on this input set."""
+        key = self._struct_cache_key(lattice, period, ref)
+        got = _coupled_lookup(key, results)
+        if got is not None:
+            self._coupled_pending_key = None
+            return got
+        self._coupled_release_current(key)
+        self._coupled_pending_key = key
+        w = _COUPLED_PENDING.get(key)
+        if w is not None and self._coupled_can_join(w, results):
+            if getattr(self, "_coupled_worker", None) is not w:
+                w.finished_signal.connect(self._on_coupled_ready)
+                w.failed_signal.connect(self._on_coupled_failed)
+                self._coupled_worker = w
+            w._waiters.add(id(self))
+            return None
+        if w is not None and not w.isRunning():
+            _coupled_deregister(key, w)     # finished; its result is memoised or failed
+        entry = _COUPLED_PER_CELL.get(key)
+        w = _CoupledWalkWorker(lattice, ref.copy(), period, key, results,
+                               cpc=(entry[0] if entry is not None else None),
+                               gen=_COUPLED_GEN[0])
+        w._waiters.add(id(self))
+        w.finished_signal.connect(self._on_coupled_ready)
+        w.failed_signal.connect(self._on_coupled_failed)
+        w.finished.connect(functools.partial(_coupled_deregister, key, w))
+        _COUPLED_PENDING[key] = w
+        self._coupled_worker = w
+        w.start()
+        return None
+
+    def _coupled_settle(self, key) -> None:
+        """Tail of the ready/failed slots: clear a satisfied pending key and
+        re-enter the refresh whenever anything was pending -- the memo now
+        answers this key, and a DIFFERENT key that became pending mid-flight
+        gets its own worker instead of stalling.  The re-entry for another
+        key is deferred one event-loop turn so the finished thread has
+        exited before the join test runs."""
+        pending = getattr(self, "_coupled_pending_key", None)
+        if pending == key:
+            self._coupled_pending_key = None
+            self.refresh_with_state()
+        elif pending is not None:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, self.refresh_with_state)
+
+    def _on_coupled_ready(self, key, gen) -> None:
+        try:
+            self._coupled_settle(key)
+        except RuntimeError:                                 # C++ side gone
+            pass
+
+    def _on_coupled_failed(self, key, msg, gen) -> None:
+        try:
+            self._coupled_settle(key)      # the worker memoised the failure itself
+        except RuntimeError:
+            pass
+
+    def _struct_followup(self) -> None:
+        """QThread.finished of a σ₀ worker that computed a key the user has
+        since moved away from: dispatch the pending key now."""
+        try:
+            w = getattr(self, "_struct_followup_for", None)
+            if w is not None and w.isRunning():
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(20, self._struct_followup)   # not exited yet
+                return
+            self._struct_followup_for = None
+            if getattr(self, "_pending_key", None) is not None:
+                self.refresh_with_state()
+        except RuntimeError:                                 # C++ side gone
+            pass
+
+    def _coupled_invalidate(self) -> None:
+        _coupled_invalidate_all()
+
+    def _recompute(self, *_args) -> None:
+        """The Recompute button: drop every memo (σ₀ and the shared
+        coupled walks), then refresh."""
+        self._struct_cache.clear()
+        self._coupled_invalidate()
+        self.refresh_with_state()
+
+
+class _PhaseAdvancePopup(_CoupledWalkMixin, _PopupPlot):
     """Cumulative μ(s) plots — structure σ₀ from periodic Twiss
     propagation, beam σ from envelope-output β(s).
 
@@ -2661,7 +2980,7 @@ class _PhaseAdvancePopup(_PopupPlot):
         self._combo.currentIndexChanged.connect(self.refresh_with_state)
         pr.addWidget(self._combo, stretch=1)
         recompute = QPushButton("Recompute")
-        recompute.clicked.connect(self.refresh_with_state)
+        recompute.clicked.connect(self._recompute)
         pr.addWidget(recompute)
         self._info = QLabel("")
         self._info.setStyleSheet(
@@ -2775,6 +3094,7 @@ class _PhaseAdvancePopup(_PopupPlot):
         the parent tab's loop got to us first.  Hidden popups skip: a
         just-invalidated σ₀ cache would otherwise spawn a ~30 s
         _StructWorker off-screen; showEvent re-refreshes on reopen."""
+        _coupled_drop_results(results)     # before the guard: hidden popups too
         if not self.isVisible():
             return
         self.refresh(results)
@@ -2784,12 +3104,14 @@ class _PhaseAdvancePopup(_PopupPlot):
         ``state.matrix_cache`` is replaced by AppState itself; we just
         drop the local σ₀ memo."""
         self._struct_cache.clear()
+        self._coupled_invalidate()
         self.refresh_with_state()
 
     def _on_lattice_changed(self, *_args) -> None:
         """Lattice mutation → drop σ₀ cache and re-detect periods.
         ``state.matrix_cache`` is replaced by AppState itself."""
         self._struct_cache.clear()
+        self._coupled_invalidate()
         self._populate_periods()
         self.refresh_with_state()
 
@@ -2839,7 +3161,16 @@ class _PhaseAdvancePopup(_PopupPlot):
         # Cache miss — kick off (or already running) background worker.
         # Track the active key to ignore stale results.
         self._pending_key = key
-        if getattr(self, "_worker", None) is not None and self._worker.isRunning():
+        w = getattr(self, "_worker", None)
+        if w is not None and w.isRunning():
+            # A worker for another key is still running and its ready slot
+            # only refreshes for its own key: come back for THIS key once
+            # that thread has exited (QThread.finished), never by polling
+            # isRunning() a loop turn later -- the thread may not have
+            # exited yet and the popup would wait on "Computing…" for good.
+            if getattr(self, "_struct_followup_for", None) is not w:
+                self._struct_followup_for = w
+                w.finished.connect(self._struct_followup)
             return None
         self._worker = _StructWorker(
             lattice, ref, period, key,
@@ -2858,6 +3189,8 @@ class _PhaseAdvancePopup(_PopupPlot):
         if getattr(self, "_pending_key", None) == key:
             self._pending_key = None
             self.refresh_with_state()
+        # a different pending key is re-dispatched by _struct_followup once
+        # this worker's thread has exited (see _get_or_compute_struct)
 
     def _on_struct_failed(self, key, msg) -> None:
         if getattr(self, "_pending_key", None) == key:
@@ -2993,16 +3326,17 @@ class _PhaseAdvancePopup(_PopupPlot):
         # a visible popup still gets the note.
         if sigma0.get("coupled_xy") and self.isVisible():
             try:
-                from linac_gen.analysis.phase_advance import (
-                    coupled_phase_advance_per_cell,
-                )
-                cpc = coupled_phase_advance_per_cell(lattice, ref, period)
-                I_med = float(np.nanmedian(cpc["mu_I_deg"]))
-                II_med = float(np.nanmedian(cpc["mu_II_deg"]))
-                notes.append(
-                    f"xy coupled — eigenmode tunes: "
-                    f"μ_I={I_med:.2f}°, μ_II={II_med:.2f}° per cell"
-                )
+                got = self._get_or_compute_coupled(lattice, ref, period, None)
+                if got is None:
+                    notes.append("xy coupled — eigenmode tunes computing in background…")
+                else:
+                    cpc, _bpc = got
+                    I_med = float(np.nanmedian(cpc["mu_I_deg"]))
+                    II_med = float(np.nanmedian(cpc["mu_II_deg"]))
+                    notes.append(
+                        f"xy coupled — eigenmode tunes: "
+                        f"μ_I={I_med:.2f}°, μ_II={II_med:.2f}° per cell"
+                    )
             except Exception:                                # noqa: BLE001
                 notes.append("xy coupled — σ₀_x/y unavailable; σ₀_z still valid")
 
@@ -3032,9 +3366,15 @@ class _PhaseAdvancePopup(_PopupPlot):
                 s_env = np.asarray(results.s, dtype=float)
                 start_idx = int(np.searchsorted(s_env, s_struct[period.start]))
                 start_idx = max(0, min(start_idx, s_env.size - 1))
-                bcurves = beam_phase_advance_along_s(results, start_index=start_idx)
+                bcurves, beam_note, unresolved = _beam_mu_curves(
+                    results, lattice, cfg, start_index=start_idx)
+                notes.append(beam_note)
                 s_b = np.asarray(bcurves["s"])
                 for plane in ("x", "y", "z"):
+                    _style_beam_curve(self._rows[plane]["cb"], unresolved[plane],
+                                      "#a3e635", 2.0)
+                    _style_beam_curve(self._rows[plane]["cb_pp"], unresolved[plane],
+                                      "#a3e635", 2.0, symbol=True)
                     mu = np.asarray(bcurves[f"mu_{plane}_deg"], dtype=float)
                     if np.any(np.isfinite(mu)):
                         self._rows[plane]["cb"].setData(s_b, mu)
@@ -3211,6 +3551,63 @@ def _companion_probe_results(lattice, cfg):
     return None
 
 
+def _beam_mu_curves(results, lattice, cfg, *, start_index: int = 0):
+    """``beam_phase_advance_along_s`` for a popup: the run's own probe maps
+    when it has them, else the cached companion probe's maps (MP results),
+    else the record-grid trapezoid — plus the note the popup shows.
+
+    Returns ``(bcurves, note, unresolved)``: ``unresolved`` maps each plane
+    to True when its curve is a trapezoid on a grid coarser than 20 samples
+    per 2π — the element-exit grid of a run without substeps is 12–38 % high
+    through metre-long cavities (fnalscl, 2026-09-13), so those markers are
+    drawn with the secondary dotted pen and labelled, never as a solid
+    value.  Verdicts are per plane: the z "phase" of a DC or RF-free beam
+    steps by hundreds of degrees per row and must not grey out x/y."""
+    from linac_gen.analysis.phase_advance import beam_phase_advance_along_s
+    maps_from = None
+    if not getattr(results, "probe_M", None) and lattice is not None and cfg is not None:
+        maps_from = _companion_probe_results(lattice, cfg)
+    bcurves = beam_phase_advance_along_s(results, start_index=start_index,
+                                         maps_from=maps_from)
+    none = {"x": False, "y": False, "z": False}
+    method = bcurves.get("method")
+    if method == "maps":
+        if bcurves.get("maps_source") == "companion":
+            note = ("beam μ: companion probe maps (SC linearised on the "
+                    "envelope beam — approximate for MP)")
+        else:
+            note = "beam μ: exact (probe maps)"
+        return bcurves, note, none
+    unresolved = {pl: not bcurves.get(f"resolution_ok_{pl}", True)
+                  for pl in ("x", "y", "z")}
+    bad = [pl for pl in ("x", "y", "z") if unresolved[pl]]
+    if not bad:
+        return bcurves, "beam μ: record-grid ∫ds/β (resolved)", none
+    steps = ", ".join(f"{pl} {bcurves.get(f'max_step_{pl}_deg') or 0.0:.0f}°"
+                      for pl in bad)
+    note = (f"⚠ beam μ unresolved in {'/'.join(bad)}: element-grid ∫ds/β, "
+            f"max row step {steps} — enable 'Record per-sub-step' or run an "
+            "envelope probe")
+    return bcurves, note, unresolved
+
+
+def _style_beam_curve(curve, unresolved: bool, color: str, width: float,
+                      symbol: bool = False, hollow: bool = False) -> None:
+    """Dotted grey pen while the beam curve is unresolved, the popup's own
+    pen otherwise (popups refresh repeatedly, so both directions matter).
+    ``hollow`` restores an open symbol (the tune popup's beam markers are
+    constructed with ``symbolBrush=None``)."""
+    if unresolved:
+        pen = pg.mkPen("#9ca3af", width=1.0, style=Qt.PenStyle.DotLine)
+        curve.setPen(pen)
+        if symbol:
+            curve.setSymbolBrush(None); curve.setSymbolPen("#9ca3af")
+    else:
+        curve.setPen(curve_pen(color, width=width))
+        if symbol:
+            curve.setSymbolBrush(None if hollow else color); curve.setSymbolPen(color)
+
+
 class _ProbeWorker(
         __import__("PyQt6.QtCore", fromlist=["QThread"]).QThread):
     """Background companion envelope probe (Option A for MP results):
@@ -3234,6 +3631,14 @@ class _ProbeWorker(
         self._stop.set()
 
     def run(self):
+        if not _acquire_walk_lock(self._stop.is_set):
+            return
+        try:
+            self._run_locked()
+        finally:
+            _WALK_LOCK.release()
+
+    def _run_locked(self):
         try:
             from linac_gen.analysis.phase_advance import run_phase_probe
             lat, ref, initial, current = self._args
@@ -3244,7 +3649,7 @@ class _ProbeWorker(
             self.failed.emit(str(exc))
 
 
-class _TuneDepressionPopup(_PopupPlot):
+class _TuneDepressionPopup(_CoupledWalkMixin, _PopupPlot):
     """Tune-depression η = σ / σ₀ along s, per plane.
 
     σ₀(s) is the cumulative structure phase advance from periodic Twiss
@@ -3293,7 +3698,7 @@ class _TuneDepressionPopup(_PopupPlot):
         self._combo.currentIndexChanged.connect(self.refresh_with_state)
         pr.addWidget(self._combo, stretch=1)
         recompute = QPushButton("Recompute")
-        recompute.clicked.connect(self.refresh_with_state)
+        recompute.clicked.connect(self._recompute)
         pr.addWidget(recompute)
         self._info = QLabel("")
         self._info.setStyleSheet(
@@ -3382,6 +3787,7 @@ class _TuneDepressionPopup(_PopupPlot):
         self.refresh(self._state.results if self._state else None)
 
     def _on_results_changed(self, results) -> None:
+        _coupled_drop_results(results)     # before the guard: hidden popups too
         # Hidden-popup guard: see _PhaseAdvancePopup._on_results_changed.
         if not self.isVisible():
             return
@@ -3389,10 +3795,12 @@ class _TuneDepressionPopup(_PopupPlot):
 
     def _on_beam_changed(self, *_args) -> None:
         self._struct_cache.clear()
+        self._coupled_invalidate()
         self.refresh_with_state()
 
     def _on_lattice_changed(self, *_args) -> None:
         self._struct_cache.clear()
+        self._coupled_invalidate()
         self._populate_periods()
         self.refresh_with_state()
 
@@ -3435,7 +3843,16 @@ class _TuneDepressionPopup(_PopupPlot):
         if cached is not None:
             return cached
         self._pending_key = key
-        if getattr(self, "_worker", None) is not None and self._worker.isRunning():
+        w = getattr(self, "_worker", None)
+        if w is not None and w.isRunning():
+            # A worker for another key is still running and its ready slot
+            # only refreshes for its own key: come back for THIS key once
+            # that thread has exited (QThread.finished), never by polling
+            # isRunning() a loop turn later -- the thread may not have
+            # exited yet and the popup would wait on "Computing…" for good.
+            if getattr(self, "_struct_followup_for", None) is not w:
+                self._struct_followup_for = w
+                w.finished.connect(self._struct_followup)
             return None
         self._worker = _StructWorker(
             lattice, ref, period, key,
@@ -3453,6 +3870,8 @@ class _TuneDepressionPopup(_PopupPlot):
         if getattr(self, "_pending_key", None) == key:
             self._pending_key = None
             self.refresh_with_state()
+        # a different pending key is re-dispatched by _struct_followup once
+        # this worker's thread has exited (see _get_or_compute_struct)
 
     def _on_struct_failed(self, key, msg) -> None:
         if getattr(self, "_pending_key", None) == key:
@@ -3497,18 +3916,6 @@ class _TuneDepressionPopup(_PopupPlot):
         self._probe_btn.setText("Compute channel model")
         self._probe_btn.setEnabled(True)
         self._info.setText(f"channel-model probe failed: {msg}")
-
-    def closeEvent(self, ev) -> None:                        # noqa: N802
-        # Stop the companion-probe worker too — the base handler only
-        # knows about self._worker (the sigma_0 struct worker).
-        w = self._probe_worker
-        if w is not None and w.isRunning():
-            if hasattr(w, "request_stop"):
-                w.request_stop()
-            w.requestInterruption()
-            if not w.wait(2000):
-                _park_zombie(w)
-        super().closeEvent(ev)
 
     def showEvent(self, event):                              # noqa: N802
         super().showEvent(event)
@@ -3576,11 +3983,15 @@ class _TuneDepressionPopup(_PopupPlot):
             s_env = np.asarray(results.s, dtype=float)
             start_idx = int(np.searchsorted(s_env, s_struct[period.start]))
             start_idx = max(0, min(start_idx, s_env.size - 1))
-            bcurves = beam_phase_advance_along_s(results, start_index=start_idx)
+            bcurves, beam_note, beam_unresolved = _beam_mu_curves(
+                results, lattice, cfg, start_index=start_idx)
             s_b = np.asarray(bcurves["s"], dtype=float)
         except Exception as exc:                              # noqa: BLE001
             self._info.setText(f"phase-advance failed: {exc}")
             return
+        for plane in ("x", "y", "z"):
+            _style_beam_curve(self._rows[plane]["curve"], beam_unresolved[plane],
+                              "#fbbf24", 1.2, symbol=True, hollow=True)
         if s_b.size == 0:
             # Degenerate results (zero-step run): np.clip(…, 0, -1) below
             # would yield index −1 and the β-mismatch guard would index an
@@ -3729,11 +4140,8 @@ class _TuneDepressionPopup(_PopupPlot):
         # with the SC kick at the recorded σ.  Verified against I=0:
         # η_I = η_II = 1.0 exactly when there's no space charge.
         coupled_msg = ""
+        coupled_pending = False
         try:
-            from linac_gen.analysis.phase_advance import (
-                coupled_phase_advance_per_cell,
-                coupled_beam_phase_advance_per_cell_via_M,
-            )
             # Reuse the σ₀ dict the background worker already computed instead
             # of recomputing structure_phase_advance() synchronously on the UI
             # thread — that rebuilt the full one-period transfer matrix on
@@ -3741,14 +4149,18 @@ class _TuneDepressionPopup(_PopupPlot):
             # GUI for seconds on field-map lattices, even while the popup was
             # hidden.
             s_full = sigma0
-            # The coupled per-cell walks are still heavy; only run them when the
-            # popup is actually visible (showEvent re-refreshes on open) so a
-            # hidden popup never freezes on a background refresh.
+            # The coupled per-cell walks are heavy (~20 s on a 164-cavity
+            # deck): they run in _CoupledWalkWorker, memoised across popups,
+            # and only when the popup is actually visible (showEvent
+            # re-refreshes on open) so a hidden popup never spawns one.
+            got = None
             if s_full.get("coupled_xy") and self.isVisible():
-                cpc = coupled_phase_advance_per_cell(lattice, ref, period)
-                bpc = coupled_beam_phase_advance_per_cell_via_M(
-                    lattice, ref, period, results,
-                )
+                got = self._get_or_compute_coupled(lattice, ref, period, results)
+                if got is None:
+                    coupled_pending = True
+                    coupled_msg = "computing coupled per-cell tunes in background…"
+            if got is not None:
+                cpc, bpc = got
                 s0_I  = np.asarray(cpc["mu_I_deg"],  dtype=float)
                 s0_II = np.asarray(cpc["mu_II_deg"], dtype=float)
                 s_I  = np.asarray(bpc["mu_I_deg"],  dtype=float)
@@ -3801,13 +4213,17 @@ class _TuneDepressionPopup(_PopupPlot):
             if skipped:
                 msg += "  ·  " + "  ·  ".join(skipped)
             if coupled_msg:
-                msg += "  ·  ⚠ " + coupled_msg
+                mark = "" if coupled_pending else "⚠ "
+                msg += "  ·  " + mark + coupled_msg
+            msg += "  ·  " + beam_note
             self._info.setText(msg)
             return
+        notes.append(beam_note)
         if skipped:
             notes.append("skipped — " + " / ".join(skipped))
         if coupled_msg:
-            notes.append("⚠ " + coupled_msg)
+            mark = "" if coupled_pending else "⚠ "
+            notes.append(mark + coupled_msg)
         # Stale-results banner.  None-aware (see the phase-advance
         # popup's twin block): banner only when BOTH the run current and
         # the config current are known and differ; 0.0 is data.
@@ -4261,6 +4677,14 @@ class _FootprintWorker(
         self._stop.set()
 
     def run(self):
+        if not _acquire_walk_lock(self._stop.is_set):
+            return
+        try:
+            self._run_locked()
+        finally:
+            _WALK_LOCK.release()
+
+    def _run_locked(self):
         try:
             from linac_gen.analysis.footprint import tune_footprint
             lat, ref, period, initial, current = self._args
@@ -8352,17 +8776,33 @@ class ResultsTab(QWidget):
         parked stragglers from earlier popup closes, and hand them to
         the window's bounded-wait loop."""
         out = []
-        for dlg in getattr(self, "_popups", {}).values():
-            w = getattr(dlg, "_worker", None)
-            if w is not None and hasattr(w, "isRunning") and w.isRunning():
-                if hasattr(w, "request_stop"):
-                    w.request_stop()
-                w.requestInterruption()
-                out.append(w)
+        popups = list(getattr(self, "_popups", {}).values())
+        live = [w for dlg in popups if hasattr(dlg, "_live_workers")
+                for w in dlg._live_workers()]
+        live += [w for w in _COUPLED_PENDING.values()
+                 if hasattr(w, "isRunning") and w.isRunning()]
+        for w in live:
+            if w in out:
+                continue
+            if hasattr(w, "request_stop"):
+                w.request_stop()
+            w.requestInterruption()
+            out.append(w)
         for w in list(_ZOMBIE_WORKERS):
-            if hasattr(w, "isRunning") and w.isRunning():
+            if hasattr(w, "isRunning") and w.isRunning() and w not in out:
                 out.append(w)
         return out
+
+    def cancel_background_walks(self) -> None:
+        """Called by the app before an envelope / multi-particle run: the run
+        takes the walk lock, so stop every popup walk in flight (they poll
+        their stop hook per cell) rather than make the run wait a whole walk
+        out.  results_changed refreshes the popups after the run."""
+        for dlg in getattr(self, "_popups", {}).values():
+            for w in (dlg._live_workers() if hasattr(dlg, "_live_workers") else []):
+                if hasattr(w, "request_stop"):
+                    w.request_stop()
+        _coupled_stop_pending()
 
     def plot_catalog(self):
         """[(key, label)] of every result plot card (from _SECTIONS) — the

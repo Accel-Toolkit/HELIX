@@ -15,7 +15,8 @@ def test_edge_identity_when_zero_rotation():
 
 
 def test_edge_horizontal_focusing_sign():
-    """Positive pole-face rotation focuses horizontally, defocuses vertically."""
+    """Positive pole-face rotation DEFOCUSES in the bend plane (M[1,0] = +tan β/ρ)
+    and focuses in the other plane — TraceWin's EDGE convention, read literally."""
     ref = ReferenceParticle(species=PROTON, w_kin=3.0, frequency=352.21)
     rho_mm = 500.0
     beta_deg = 20.0

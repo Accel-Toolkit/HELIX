@@ -74,3 +74,40 @@ def numerical_jacobian(track_func, ref_state, eps=None, rel_scale=None):
         out_m = track_func(state_m)
         M[:, j] = (out_p - out_m) / (2.0 * eps[j])
     return M
+
+
+def numerical_jacobian_batched(track_batch, ref_state, eps=None, rel_scale=None):
+    """:func:`numerical_jacobian` with every probe tracked in ONE call.
+
+    Same probes, same order, same arithmetic: ``track_batch(P)`` receives the
+    ``(12, 6)`` array of probe states — ``+eps_j`` then ``-eps_j`` for
+    ``j = 0..5``, built exactly as the scalar helper builds its operands —
+    and returns the ``(12, 6)`` tracked states; column ``j`` is
+    ``(Y[2j] - Y[2j+1]) / (2 eps_j)``, one correctly rounded subtraction and
+    one division per element, so every column is the same IEEE operation on
+    the same operands as before.  The field-map trackers are vectorised over
+    particles and advance the reference from on-axis quantities only, so the
+    twelve single-particle tracks become one twelve-particle track with
+    bit-identical output (tests/elements/test_fieldmap_jacobian_batched.py)
+    and roughly an order of magnitude less Python overhead per slice.
+    """
+    if eps is None:
+        eps = np.array([0.01, 0.01, 0.01, 0.01, 0.01, 0.001])
+    eps = np.asarray(eps, dtype=np.float64).copy()
+    if rel_scale is not None:
+        for j in range(6):
+            eps[j] = max(eps[j], rel_scale * abs(float(ref_state[j])))
+
+    P = np.empty((12, 6), dtype=np.float64)
+    for j in range(6):
+        state_p = ref_state.copy()
+        state_m = ref_state.copy()
+        state_p[j] += eps[j]
+        state_m[j] -= eps[j]
+        P[2 * j] = state_p
+        P[2 * j + 1] = state_m
+    Y = np.asarray(track_batch(P), dtype=np.float64)
+    M = np.zeros((6, 6))
+    for j in range(6):
+        M[:, j] = (Y[2 * j] - Y[2 * j + 1]) / (2.0 * eps[j])
+    return M

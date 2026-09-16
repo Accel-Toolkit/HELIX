@@ -22,7 +22,8 @@ python -m linac_gen twiss <input> [options]
 | `--list-cells` | flag | off | list the detected FODO cells and exit |
 | `--cell-start` | int | — | manually specify the inclusive start element index of the periodic cell (overrides the `--cell` auto-pick when auto-detection doesn't find the period you want) |
 | `--cell-end` | int | — | manually specify the inclusive end element index; required if `--cell-start` is set |
-| `--energy` | MeV | — | kinetic energy — **required for a bare `.dat`** |
+| `--tracewin-ini [INI]` | flag or path | — | bare lattice only: energy, species, frequency and Twiss from beam 1 of the deck's TraceWin `.ini` (`<deck>.ini`, or `INI`); `--energy` etc. still override (warned: `emit_z`/`beta_z` are not re-derived); refused with a `.lgproj` |
+| `--energy` | MeV | — | kinetic energy — **required for a bare `.dat`** (or `--tracewin-ini`) |
 | `--freq` | MHz | — | beam frequency |
 | `--species` | `proton` \| `deuteron` \| `H-` | — | particle species |
 | `-q`, `--quiet` | flag | off | print only the four numbers `αx βx αy βy` |

@@ -99,6 +99,26 @@ def _phase_slip(length_mm, kin: RefKinematics) -> torch.Tensor:
     return -360.0 * _t(length_mm) / denom
 
 
+def _path_length_entries(entries: dict, rho_m, L_m, kx2, kin: RefKinematics) -> None:
+    """Fill (4,0), (4,1) and (4,5) — mirrors Dipole._body_matrix's
+    ``_path_length_row``.  The row is a fixed multiple of the dispersion
+    column already in ``entries`` (the symplectic relation); only the
+    momentum compaction ``J`` is new, and it takes the same series as the
+    numpy element below |kx2 L^2| = 1e-3, where the closed form cancels."""
+    u = kx2 * L_m * L_m
+    uf = float(u.detach()) if torch.is_tensor(u) else float(u)
+    if abs(uf) < 1e-3:
+        J = L_m ** 3 * (1.0 / 6.0 - u / 120.0 + u * u / 5040.0)
+    else:
+        J = (L_m - entries[(0, 1)]) / kx2          # S1 is exactly M[0,1]
+    k_phi = 0.36 * kin.beta * kin.gamma * kin.mass / kin.wavelength
+    entries[(4, 0)] = k_phi * entries[(1, 5)]
+    entries[(4, 1)] = k_phi * entries[(0, 5)]
+    entries[(4, 5)] = (_phase_slip(L_m * 1e3, kin)
+                       + 360000.0 * (J / (rho_m * rho_m))
+                       / (kin.beta ** 3 * kin.gamma * kin.mass * kin.wavelength))
+
+
 # --- entire-function helpers (keep the quad matrix differentiable at 0) ----
 # cos(√u) and sin(√u)/√u, analytically continued to all real u.  The naive
 # numpy form sin(kL)/k with k = √|k1| has a *singular autograd gradient* at
@@ -246,15 +266,27 @@ def _dipole_edge_matrix(e_deg: float, rho_m: float) -> torch.Tensor:
     return _assemble({(1, 0): tan_e / rho_m, (3, 2): -tan_e / rho_m})
 
 
-def _dipole_body_matrix(theta_deg, rho_mm: float, field_index: float,
-                        kin: RefKinematics) -> torch.Tensor:
-    """Dipole sector-bend body (mirrors Dipole._body_matrix)."""
+def _dipole_body_matrix(theta_deg, rho_mm, field_index: float,
+                        kin: RefKinematics, length_mm: float = 0.0) -> torch.Tensor:
+    """Dipole sector-bend body (mirrors Dipole._body_matrix).
+
+    |theta| and |rho| in the trig, sign(theta) on the dispersion column
+    only, relative N -> 1 guard — line for line the numpy element.
+    """
     theta_t = _t(theta_deg)
-    if bool(theta_t == 0.0):
+    rho_t = _t(rho_mm)
+    if bool(theta_t == 0.0) or bool(rho_t == 0.0):
+        # no bending: a pipe of the magnet's own length (zero-angle card or
+        # a field error that zeroes the field)
+        if length_mm:
+            L_m = length_mm * 1e-3
+            return _assemble({(0, 1): L_m, (2, 3): L_m,
+                              (4, 5): _phase_slip(length_mm, kin)})
         return _assemble({})
-    theta = theta_t * _DEG2RAD
-    rho_m = rho_mm * 1e-3
-    L_m = abs(rho_m) * torch.abs(theta)
+    theta = torch.abs(theta_t) * _DEG2RAD
+    rho_m = torch.abs(rho_t) * 1e-3
+    L_m = rho_m * theta
+    sign = 1.0 if bool(theta_t >= 0.0) else -1.0
     N = field_index
     beta2gm = kin.beta ** 2 * kin.gamma * kin.mass
 
@@ -262,57 +294,66 @@ def _dipole_body_matrix(theta_deg, rho_mm: float, field_index: float,
         # ---- pure sector bend ----
         cos_t = torch.cos(theta)
         sin_t = torch.sin(theta)
-        return _assemble({
+        entries = {
             (0, 0): cos_t,             (0, 1): rho_m * sin_t,
             (1, 0): -sin_t / rho_m,    (1, 1): cos_t,
-            (0, 5): 1000.0 * rho_m * (1.0 - cos_t) / beta2gm,
-            (1, 5): 1000.0 * sin_t / beta2gm,
+            (0, 5): 2000.0 * sign * rho_m * torch.sin(0.5 * theta) ** 2 / beta2gm,
+            (1, 5): 1000.0 * sign * sin_t / beta2gm,
             (2, 3): L_m,
-            (4, 5): _phase_slip(L_m * 1e3, kin),
-        })
+        }
+        _path_length_entries(entries, rho_m, L_m, 1.0 / (rho_m * rho_m), kin)
+        return _assemble(entries)
 
     # ---- combined-function bend (N != 0) ----
     kx2 = (1.0 - N) / (rho_m * rho_m)
     ky2 = N / (rho_m * rho_m)
     L = L_m
-    sign = 1.0 if bool(theta_t >= 0.0) else -1.0
     entries: dict = {}
 
-    # horizontal plane
-    if kx2 > 1e-30:
-        kx = math.sqrt(kx2)
+    # bending plane — same branch logic as the numpy element: trig for the
+    # 2x2 block whenever kx2 != 0, stable 2 sin^2 form for the dispersion
+    # at small k L, parabolic limit only at kx2 == 0
+    kx2_f = float(kx2.detach()) if torch.is_tensor(kx2) else float(kx2)
+    kL2 = kx2_f * float(L.detach()) ** 2
+    if kx2_f > 0.0:
+        kx = torch.sqrt(kx2) if torch.is_tensor(kx2) else math.sqrt(kx2)
         cx = torch.cos(kx * L)
         sx = torch.sin(kx * L)
         entries[(0, 0)] = cx
         entries[(0, 1)] = sx / kx
         entries[(1, 0)] = -kx * sx
         entries[(1, 1)] = cx
-        entries[(0, 5)] = 1000.0 * (1.0 - cx) / (rho_m * kx2) / beta2gm
+        one_minus_cx = (1.0 - cx) if kL2 >= 1e-5 else 2.0 * torch.sin(0.5 * kx * L) ** 2
+        entries[(0, 5)] = 1000.0 * sign * one_minus_cx / (rho_m * kx2) / beta2gm
         entries[(1, 5)] = 1000.0 * sign * sx / (rho_m * kx) / beta2gm
-    elif kx2 < -1e-30:
-        kx = math.sqrt(-kx2)
+    elif kx2_f < 0.0:
+        kx = torch.sqrt(-kx2) if torch.is_tensor(kx2) else math.sqrt(-kx2)
         ch = torch.cosh(kx * L)
         sh = torch.sinh(kx * L)
         entries[(0, 0)] = ch
         entries[(0, 1)] = sh / kx
         entries[(1, 0)] = kx * sh
         entries[(1, 1)] = ch
-        entries[(0, 5)] = (ch - 1.0) / (rho_m * kx2) / beta2gm
-        entries[(1, 5)] = sign * sh / (rho_m * kx) / beta2gm
+        one_minus_ch = (1.0 - ch) if kL2 <= -1e-5 else -2.0 * torch.sinh(0.5 * kx * L) ** 2
+        entries[(0, 5)] = 1000.0 * sign * one_minus_ch / (rho_m * kx2) / beta2gm
+        entries[(1, 5)] = 1000.0 * sign * sh / (rho_m * kx) / beta2gm
     else:
         entries[(0, 1)] = L
+        entries[(0, 5)] = 1000.0 * sign * L * L / (2.0 * rho_m) / beta2gm
+        entries[(1, 5)] = 1000.0 * sign * L / rho_m / beta2gm
 
-    # vertical plane
-    if ky2 > 1e-30:
-        ky = math.sqrt(ky2)
+    # other plane
+    ky2_f = float(ky2.detach()) if torch.is_tensor(ky2) else float(ky2)
+    if ky2_f > 1e-30:
+        ky = torch.sqrt(ky2) if torch.is_tensor(ky2) else math.sqrt(ky2)
         cy = torch.cos(ky * L)
         sy = torch.sin(ky * L)
         entries[(2, 2)] = cy
         entries[(2, 3)] = sy / ky
         entries[(3, 2)] = -ky * sy
         entries[(3, 3)] = cy
-    elif ky2 < -1e-30:
-        ky = math.sqrt(-ky2)
+    elif ky2_f < -1e-30:
+        ky = torch.sqrt(-ky2) if torch.is_tensor(ky2) else math.sqrt(-ky2)
         ch = torch.cosh(ky * L)
         sh = torch.sinh(ky * L)
         entries[(2, 2)] = ch
@@ -322,34 +363,51 @@ def _dipole_body_matrix(theta_deg, rho_mm: float, field_index: float,
     else:
         entries[(2, 3)] = L
 
-    entries[(4, 5)] = _phase_slip(L * 1e3, kin)
+    _path_length_entries(entries, rho_m, L, kx2, kin)
     return _assemble(entries)
 
 
 def dipole_matrix(eff_angle_deg, rho_mm: float, length_mm: float,
                   e1_deg: float, e2_deg: float, field_index: float,
                   hv: int, kin: RefKinematics,
-                  ds_mm: float | None = None) -> torch.Tensor:
+                  ds_mm: float | None = None,
+                  design_angle_deg: float | None = None) -> torch.Tensor:
     """6x6 transfer matrix of a dipole (mirrors Dipole.transfer_matrix).
 
     ``eff_angle_deg`` is the effective bend angle (deg) — pass a
     ``requires_grad`` tensor to differentiate.  ``ds_mm=None`` builds the
     full element including the e1/e2 edges; a slice (``ds_mm`` given)
-    scales the angle proportionally and omits the edges.
+    scales the angle proportionally and omits the edges.  ``design_angle_deg``
+    is the geometric (card) angle: when the effective angle differs from it
+    (field error, tunable-angle override) the magnet keeps its length and
+    the bending radius scales by design/effective, as the numpy element does.
     """
     eff_angle = _t(eff_angle_deg)
     use_edges = ds_mm is None
+    rho_body = rho_mm
+    if design_angle_deg is not None and float(design_angle_deg) != 0.0:
+        eff_f = float(eff_angle.detach())
+        if eff_f == 0.0:
+            rho_body = 0.0                                          # zero field: a pipe
+        elif eff_f != float(design_angle_deg) or eff_angle.requires_grad:
+            # design/effective then multiply — the numpy element's expression;
+            # at the design point the factor is exactly 1.0 (values unchanged)
+            # but the graph still carries d(rho)/d(angle), so the tunable
+            # angle keeps the magnet length (d M23 / d angle = 0)
+            rho_body = rho_mm * (float(design_angle_deg) / eff_angle)
     if ds_mm is not None:
         theta_deg = (eff_angle * (ds_mm / length_mm)
                      if length_mm != 0.0 else _t(0.0))
+        L_part = ds_mm
     else:
         theta_deg = eff_angle
+        L_part = length_mm
 
     body_theta = torch.abs(theta_deg) if hv == 1 else theta_deg
-    M_body = _dipole_body_matrix(body_theta, rho_mm, field_index, kin)
+    M_body = _dipole_body_matrix(body_theta, rho_body, field_index, kin, length_mm=L_part)
 
     if use_edges:
-        rho_m = rho_mm * 1e-3
+        rho_m = rho_body * 1e-3
         M_ent = _dipole_edge_matrix(e1_deg, rho_m)
         M_ext = _dipole_edge_matrix(e2_deg, rho_m)
         M = M_ext @ M_body @ M_ent
@@ -364,10 +422,13 @@ def dipole_matrix(eff_angle_deg, rho_mm: float, length_mm: float,
         })
         M = P @ M @ P
         if bool(theta_deg < 0.0):
-            # Bend goes "down": dispersion in y flips sign.
+            # Bend goes "down": the dispersion in y and the path length's
+            # dependence on y flip sign; M[4,5] does not (compaction ~ h^2).
             flip = torch.ones((6, 6), dtype=F64)
             flip[2, 5] = -1.0
             flip[3, 5] = -1.0
+            flip[4, 2] = -1.0
+            flip[4, 3] = -1.0
             M = M * flip
     return M
 

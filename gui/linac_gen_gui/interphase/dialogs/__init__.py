@@ -1,4 +1,5 @@
 """Dialog popups (parameter scan, …)."""
+from linac_gen_gui.interphase.dialogs.orm_dialog import OrmCalibrationDialog
 from linac_gen_gui.interphase.dialogs.parameter_scan import ParameterScanDialog
 
-__all__ = ["ParameterScanDialog"]
+__all__ = ["OrmCalibrationDialog", "ParameterScanDialog"]

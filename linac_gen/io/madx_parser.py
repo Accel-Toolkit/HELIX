@@ -478,7 +478,11 @@ def _build_element(name: str, etype: str, attrs: dict, brho: float,
     if etype == "sextupole":
         # k2 [1/m³], integrated k2l = k2·l (HELIX/MAD-X knl convention).
         k2l = _gf(attrs, "k2") * _gf(attrs, "l")
-        mp = Multipole(name=name, knl=[0.0, 0.0, k2l], aperture=aperture_mm)
+        # tilt [rad] -> tilt_deg (same sense as MULTIPOLE / QUADRUPOLE); a
+        # bare ``tilt`` is the sextupole's natural skew, pi/6
+        tilt_deg = _tilt_rad(attrs, math.pi / 6.0) * _RAD_TO_DEG
+        mp = Multipole(name=name, knl=[0.0, 0.0, k2l], aperture=aperture_mm,
+                       tilt_deg=tilt_deg)
         return _drift_pad(mp, l_mm, name)
 
     if etype == "multipole":
@@ -486,10 +490,14 @@ def _build_element(name: str, etype: str, attrs: dict, brho: float,
         ksl = attrs.get("ksl", []) or []
         knl = [float(x) for x in knl] if isinstance(knl, list) else []
         ksl = [float(x) for x in ksl] if isinstance(ksl, list) else []
-        # HELIX's Multipole.tilt_deg rotates in the opposite sense to
-        # MAD-X's tilt (see madx_writer) — negate so the optics match.
+        # MAD-X tilt [rad] -> Multipole.tilt_deg: the same rotation sense
+        # (positive = the sense of Quadrupole.skew_angle).  A bare ``tilt``
+        # flag has no natural angle for a general multipole and is ignored.
         tilt_raw = attrs.get("tilt", 0.0)
-        tilt_deg = 0.0 if isinstance(tilt_raw, bool) else -float(tilt_raw or 0.0) * _RAD_TO_DEG
+        if tilt_raw is True:
+            warnings.append(f"MAD-X: {name}: a bare 'tilt' on a MULTIPOLE has no "
+                            "natural angle for a general multipole — ignored")
+        tilt_deg = 0.0 if isinstance(tilt_raw, bool) else float(tilt_raw or 0.0) * _RAD_TO_DEG
         mp = Multipole(name=name, knl=knl or [0.0], ksl=ksl or [0.0],
                        aperture=aperture_mm, tilt_deg=tilt_deg)
         return _drift_pad(mp, l_mm, name)

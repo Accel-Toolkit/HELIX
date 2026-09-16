@@ -17,6 +17,8 @@ Subcommands:
   the rest of HELIX never needs it);
 * ``export`` — write the lattice in another code's format (MAD-X
   ``SEQUENCE``, the exact inverse of the MAD-X importer);
+* ``twini`` — TraceWin project options file (``.ini``): the converted
+  beam, a decode report, or a ``.lgproj`` for the deck;
 * ``match`` — delegates to the matcher (``python -m linac_gen.matching``).
 
 All of it is GUI-free and drives the same engines the GUI uses.
@@ -59,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
     from linac_gen.cli import multiobjective as mo_cmd
     from linac_gen.cli import failures as fail_cmd
     from linac_gen.cli import export as export_cmd
+    from linac_gen.cli import orm as orm_cmd
+    from linac_gen.cli import tracewin_ini as twini_cmd
 
     run_cmd.add_arguments(sub.add_parser(
         "run", help="run one headless simulation"))
@@ -84,6 +88,12 @@ def main(argv: list[str] | None = None) -> int:
     export_cmd.add_arguments(sub.add_parser(
         "export", help="write the lattice in another code's format "
                        "(MAD-X sequence)"))
+    orm_cmd.add_arguments(sub.add_parser(
+        "orm", help="orbit-response matrix — compare a measurement with the "
+                    "model, LOCO-style quad/trim/BPM calibration, deck export"))
+    twini_cmd.add_arguments(sub.add_parser(
+        "twini", help="TraceWin project options file (.ini) — converted "
+                      "beam, decode report, or a .lgproj for the deck"))
     sub.add_parser("match", add_help=False,
                    help="run the matcher (delegates to linac_gen.matching)")
 
@@ -108,6 +118,10 @@ def main(argv: list[str] | None = None) -> int:
         return assist_cmd.run(args)
     if args.command == "export":
         return export_cmd.run(args)
+    if args.command == "orm":
+        return orm_cmd.run(args)
+    if args.command == "twini":
+        return twini_cmd.run(args)
     return 2
 
 

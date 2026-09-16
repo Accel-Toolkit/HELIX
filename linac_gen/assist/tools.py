@@ -53,6 +53,9 @@ class WorkContext:
     results: object = None
     results_path: str = ""
     calc_dir: str = "."
+    #: last calibration produced by ``orm_calibrate`` (mode="fit") — what
+    #: ``orm_apply`` applies when no calibration file is given.
+    orm_calibration: object = None
 
     # Overridable hooks (GUI adapter reroutes through AppState setters)
     def set_lattice(self, lattice, path: str) -> None:
@@ -1917,27 +1920,136 @@ def _compare_tw(ctx, tracewin_file: str, mass_mev: float = 939.294308,
                _ctx_provenance(ctx))
 
 
-# ---------------------------------------------------------------------------
-# MUTATE tools (always confirmed)
-# ---------------------------------------------------------------------------
-@_tool("load_lattice",
-       "Load a lattice file (.dat/.madx/.lat/.lte natively; .bmad/.jl/"
-       ".pals.yaml through lattix) or .lgproj project into the session "
-       "(a project also loads its beam).",
+def _finite_or_none(v):
+    """JSON-safe number: NaN / inf become None (strict clients reject
+    bare NaN tokens)."""
+    import math as _math
+    if isinstance(v, float) and not _math.isfinite(v):
+        return None
+    return v
+
+
+@_tool("inspect_tracewin_ini",
+       "Decode a TraceWin project options file (<project>.ini) without "
+       "touching the session: layout generation, project name, the "
+       "particle-table row and its HELIX species, the converted input "
+       "beam (HELIX units: energy MeV, current mA, normalised emittances "
+       "pi mm mrad, emit_z pi deg MeV, beta_z deg/MeV, alpha_z sign "
+       "flipped), run settings identified but not applied (PICNIC meshes, "
+       "threads), unidentified non-zero slots, TraceWin options not "
+       "decoded, and the warnings.  Use load_lattice with tracewin_ini to "
+       "actually adopt the beam.",
        {"type": "object",
-        "properties": {"path": {"type": "string"}},
+        "properties": {"path": {"type": "string"},
+                       "beam": {"type": "integer", "enum": [1, 2],
+                                "description": "TraceWin input beam (default 1)"},
+                       "species": {"type": "string",
+                                   "enum": ["proton", "deuteron", "H-"],
+                                   "description": "override the particle-"
+                                                  "table match"}},
         "required": ["path"]},
-       "mutate")
-def _load_lattice(ctx, path: str):
+       "read")
+def _inspect_tracewin_ini(ctx, path: str, beam: int = 1, species=None):
+    from dataclasses import asdict as _asdict
     from pathlib import Path as _P
+    from linac_gen.io.tracewin_ini import (NOT_DECODED, load_tracewin_ini,
+                                           report, species_for,
+                                           to_beam_config)
     try:
         path = _local_path(path)
     except ValueError as exc:
         return _refused(exc)
     if not _P(path).exists():
         return _err(f"{path} not found")
+    if beam is None:
+        beam = 1
+    if isinstance(beam, bool) or beam not in (1, 2):
+        return _refused(f"beam must be 1 or 2 (got {beam!r})")
+    beam = int(beam)
+    if species is not None and species not in ("proton", "deuteron", "H-"):
+        return _refused(f"species must be one of proton, deuteron, H- "
+                        f"(got {species!r})")
+    try:
+        ini = load_tracewin_ini(path)
+    except ValueError as exc:
+        return _refused(exc)
+    rec = ini.particle_for_beam(beam)
+    sp, sp_warn = species_for(rec)
+    data = {
+        "file": str(path), "layout": ini.version, "size": ini.size,
+        "project_name": ini.fields.get("project_name", ""),
+        "beam_index": beam,
+        "particle": ({"index": rec.index, "name": rec.name,
+                      "mass_MeV": rec.mass_MeV, "charge": rec.charge,
+                      "helix_species": sp} if rec is not None else None),
+        "raw_fields": {k: _finite_or_none(ini.fields[f"{k}{beam}"]) for k in
+                       ("freq", "current", "energy", "etnx", "etny", "eps_z",
+                        "alpx", "betx", "alpy", "bety", "alpz", "betz",
+                        "nbr_part", "particle_index")},
+    }
+    warns = list(ini.warnings)
+    try:
+        cfg, cw = to_beam_config(ini, beam=beam, species=species,
+                                 lattice=ctx.lattice)
+        data["beam"] = _asdict(cfg)
+        data["not_convertible"] = None
+        warns += list(cw)
+    except ValueError as exc:
+        data["beam"] = None
+        data["not_convertible"] = str(exc)
+        if sp_warn:
+            warns.append(sp_warn)
+    data["identified_not_applied"] = ini.identified_not_applied()
+    data["unknown_slots"] = {k: _finite_or_none(v) for k, v in ini.unknown.items()}
+    data["not_decoded"] = list(NOT_DECODED)
+    data["report"] = report(ini, beam=beam, species=species, lattice=ctx.lattice)
+    return _ok(data, {"path": str(path)}, warns)
+
+
+def _is_project_file(path) -> bool:
+    return str(path).lower().endswith((".lgproj", ".lgproj.json"))
+
+
+# ---------------------------------------------------------------------------
+# MUTATE tools (always confirmed)
+# ---------------------------------------------------------------------------
+@_tool("load_lattice",
+       "Load a lattice file (.dat/.madx/.lat/.lte natively; .bmad/.jl/"
+       ".pals.yaml through lattix) or .lgproj project into the session "
+       "(a project also loads its beam).  For a bare lattice, "
+       "tracewin_ini='auto' (the sibling <deck>.ini) or a path also "
+       "loads beam 1 of the deck's TraceWin options file, converted to "
+       "HELIX units (alpha_z sign flipped); a project refuses it — its "
+       "saved beam always wins.",
+       {"type": "object",
+        "properties": {"path": {"type": "string"},
+                       "tracewin_ini": {
+                           "type": "string",
+                           "description": "'auto' for <deck>.ini next to "
+                                          "the lattice, or the .ini path; "
+                                          "bare lattice files only"}},
+        "required": ["path"]},
+       "mutate")
+def _load_lattice(ctx, path: str, tracewin_ini=None):
+    from pathlib import Path as _P
+    if tracewin_ini is not None and not isinstance(tracewin_ini, (str, bool)):
+        return _refused(f"tracewin_ini must be 'auto' or the .ini path "
+                        f"(got {tracewin_ini!r})")
+    try:
+        path = _local_path(path)
+        if isinstance(tracewin_ini, str) and tracewin_ini.strip().lower() != "auto":
+            tracewin_ini = _local_path(tracewin_ini)
+    except ValueError as exc:
+        return _refused(exc)
+    if not _P(path).exists():
+        return _err(f"{path} not found")
+    if _is_project_file(path) and tracewin_ini:
+        return _refused("a project's saved beam always wins — tracewin_ini "
+                        "applies to a bare lattice file only (convert the "
+                        ".ini with `python -m linac_gen twini` and save a "
+                        "new project instead)")
     def _go():
-        if str(path).endswith(".lgproj"):
+        if _is_project_file(path):
             from linac_gen.cli.common import load_lattice
             from linac_gen.io.project import load_project
             proj = load_project(path)
@@ -1949,14 +2061,42 @@ def _load_lattice(ctx, path: str):
     if refusal:
         return refusal
     lat, lat_path, beam = out
+    beam_source = "project" if beam is not None else None
+    ini_name = None
+    if tracewin_ini:
+        from linac_gen.core.config import BeamConfig
+        from linac_gen.io.tracewin_ini import (load_tracewin_ini,
+                                               resolve_tracewin_ini,
+                                               to_beam_config)
+        try:
+            ini_path = resolve_tracewin_ini(path, tracewin_ini)
+            ini = load_tracewin_ini(ini_path)
+            base = ctx.beam_config if isinstance(ctx.beam_config, BeamConfig) else None
+            beam, ini_warns = to_beam_config(ini, lattice=lat, base=base)
+        except FileNotFoundError as exc:
+            return _err(f"{exc} not found")
+        except ValueError as exc:
+            return _refused(exc)
+        warns = list(warns) + list(ini.warnings) + list(ini_warns)
+        beam_source, ini_name = "tracewin_ini", ini_path.name
     ctx.set_lattice(lat, lat_path)
     if beam is not None:
         ctx.set_beam_config(beam)
-    return _ok({"n_elements": len(lat.elements),
-                "beam_loaded": beam is not None,
-                "parse_warnings": list(getattr(lat, "parse_warnings",
-                                               []))[:10]},
-               {"lattice_path": lat_path}, warns)
+    data = {"n_elements": len(lat.elements),
+            "beam_loaded": beam is not None,
+            "beam_source": beam_source,
+            "parse_warnings": list(getattr(lat, "parse_warnings",
+                                           []))[:10]}
+    if ini_name:
+        data["tracewin_ini"] = ini_name
+        data["beam"] = {k: getattr(beam, k) for k in
+                        ("species", "energy", "frequency", "current",
+                         "n_particles", "emit_nx", "alpha_x", "beta_x",
+                         "emit_ny", "alpha_y", "beta_y", "emit_z", "alpha_z",
+                         "beta_z", "continuous")}
+    return _ok(data, {"lattice_path": lat_path,
+                      **({"tracewin_ini": str(ini_path)} if ini_name else {})},
+               warns)
 
 
 @_tool("load_results",

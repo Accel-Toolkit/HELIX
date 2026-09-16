@@ -92,7 +92,9 @@ class EnvelopeResults:
     element_maps_bare: List = field(default_factory=list)  # (6,6) per element
     probe_elem_idx: List[int] = field(default_factory=list)  # element of each slice
     probe_is_sc: List[bool] = field(default_factory=list)    # SC kick slice?
-    probe_s: List[float] = field(default_factory=list)       # ref.s after slice [mm]
+    probe_s: List[float] = field(default_factory=list)       # ref.s at the slice START [mm]
+    # (pushed before the reference advances; inside the space-charge
+    #  transfer-map branch every slice of an element carries its entrance s)
     probe_M: List = field(default_factory=list)              # (6,6) slice maps
     current_mA: float = 0.0                              # SC beam current at run time
     continuous: bool = False                              # True if DC (2-D SC), False if bunched
@@ -924,15 +926,18 @@ class EnvelopeSolver:
             # for the centroid (and for coupled Σ seeds).
             R_in = Misalignment.tilt_rotation_matrix(tilt)
             sigma = R_in @ sigma @ R_in.T
-            if getattr(self, "_c", None) is not None:
-                self._c = R_in @ self._c
+            # The rotation is a map applied to Σ: record it in the phase
+            # probe (and rotate the centroid in the same place) so the
+            # per-element maps are lab-frame, like _with_tilt in matrix
+            # mode.  Before 2026-09-13 the probe held the rotated-frame
+            # slices only.
+            self._probe_push(R_in)
         sigma = self._propagate_element_aligned(element, sigma)
         if has_tilt:
             from linac_gen.elements.mixins import Misalignment
             R_out = Misalignment.tilt_rotation_matrix(-tilt)
             sigma = R_out @ sigma @ R_out.T
-            if getattr(self, "_c", None) is not None:
-                self._c = R_out @ self._c
+            self._probe_push(R_out)
         if has_shift:
             self._c[0] += dx
             self._c[2] += dy

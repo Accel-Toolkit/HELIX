@@ -75,6 +75,15 @@ repeats manually before importing.
 | `APERTURE` | dx dy aperture_type | [Aperture](../03_elements/12_aperture.md) |
 | `MARKER` | name | [Marker](../03_elements/13_marker.md) |
 
+**Labels.** A card may carry a TraceWin label (`Q01: QUAD …`, `D01T : THIN_STEERING …`,
+`D01BPM:DIAG_POSITION …`).  The parser keeps the raw label on every element the
+line creates as `element.label` (duplicates allowed — fnalscl labels both halves
+of its first trim `D01T`) while `element.name` stays the generated unique
+identifier (`QUAD_001`, `STEER_001`; BPM markers are named after their label,
+de-duplicated).  The writer emits the label again on single-line cards, so a
+saved deck keeps the device names the control system uses; unlabeled decks are
+written without labels.
+
 ## Error directives
 
 See [Errors → ERROR_* directives](../08_errors/02_error_directives.md)
@@ -201,7 +210,7 @@ the `BEAM` command; `USE, SEQUENCE=…`.
 | `RBEND` | `Edge` + `Dipole` + `Edge` (edges pick up ±angle/2; same extras as `SBEND`). `l` is the straight chord under MAD-X's default `OPTION, RBARC=true` and the arc is `l·(θ/2)/sin(θ/2)`; `OPTION, RBARC=false` (LHC-style files) makes `l` the arc length |
 | `KICKER` / `HKICKER` / `VKICKER` | `Steerer` (kick angles → ∫B·dl through the charge-signed Bρ, so an H⁻ deck kicks the same way MAD-X does) |
 | `RCOLLIMATOR` / `ECOLLIMATOR` | `Aperture` (rectangular / circular; `xsize`, `ysize` are half-apertures) |
-| `SEXTUPOLE` / `MULTIPOLE` | `Multipole` (`tilt` → `tilt_deg`, negated: `Multipole.tilt_deg` rotates in the opposite sense to MAD-X's `tilt` and to `Quadrupole.skew_angle`) |
+| `SEXTUPOLE` / `MULTIPOLE` | `Multipole` (`MULTIPOLE tilt` → `tilt_deg`, same rotation sense as MAD-X's `tilt` and `Quadrupole.skew_angle`; a `SEXTUPOLE tilt` is not imported) |
 | `MATRIX` | `MatrixElement` (`rm11…rm66`, `kick1…kick6` converted from MAD-X's canonical basis at the local reference energy; a `kick6` becomes a ΔW offset on every particle — HELIX's reference stays at the `BEAM` energy) |
 | `RFCAVITY` | `RFGap` (`volt` in MV; `lag` follows the MAD-X definition — reference gain `V·sin(2π·lag)`, **not** multiplied by the charge, whereas HELIX gains `q·V·T·cos φs` — so the synchronous phase is `360·lag − 90°`, plus 180° when `volt` and the charge have opposite signs; TTF = 1) |
 | `SOLENOID` | `Solenoid` (`ks` → field via Bρ) |
@@ -278,7 +287,7 @@ charge=…` since MAD-X has no named particle for them):
 | `Solenoid` | `SOLENOID` (`ks = B/Bρ`) |
 | `RFGap` | `RFCAVITY, l=0` (`volt = sign(q)·V·TTF` — MAD-X does not multiply the RF kick by the charge and has no transit-time factor, so the sign carries the species and a TTF ≠ 1 is folded into `volt` with a warning; `lag = (φs + 90°)/360°`, the inverse of the import rule; `freq` in MHz) |
 | `Steerer` (magnetic) | `KICKER` (`hkick`/`vkick` from ∫B·dl and the signed Bρ; electric steerers are not representable) |
-| `Multipole` | `MULTIPOLE, knl={…}, ksl={…}, tilt` (negated, see the import row) |
+| `Multipole` | `MULTIPOLE, knl={…}, ksl={…}, tilt` (same sense, see the import row) |
 | `Aperture` | `RCOLLIMATOR` / `ECOLLIMATOR` with both `xsize`/`ysize` (MAD-X `TRACK` losses) and `apertype`/`aperture` (its `APERTURE` module); the rectangular family (types 0, 3, 4, 5) is rectangular, type 1 circular; pepperpot and ring are not representable |
 | `Marker` / BPM marker | `MARKER` / `MONITOR` |
 | `FREQ`, `SET_*`, `ADJUST_*`, `DIAG_*`, `LATTICE`, `SPACE_CHARGE_COMP`, … | a `! HELIX: …` comment at the element's position — nothing vanishes silently |
@@ -490,10 +499,153 @@ element indices are shifted by one).
 > source; the New Project wizard materialises such a deck as
 > `<name>.dat` inside the project.
 
+## Importing TraceWin project settings (`.ini`)
+
+A TraceWin project is a `.dat` deck **and** a `<project>.ini` — the
+binary options file that holds what was typed into TraceWin's *Main*
+and *Beam* panels: particle, energy, frequency, current, macro-particle
+count, the normalised emittances and the Twiss parameters of both input
+beams, the PICNIC meshes.  HELIX decodes it, so a deck can start from
+the beam it was designed for instead of the stock `BeamConfig`
+default (3 MeV proton) — the mistake behind more than one "why is the
+800 MeV line lost at 2 MeV" run.
+
+### When to import it, and how
+
+Use the `.ini` whenever you have a TraceWin **project** — a deck *and*
+its options file, typically a folder handed over from a TraceWin user
+or exported from TraceWin — and you want HELIX to start from the beam
+that deck was designed for.  Do not look for one when you only have a
+bare `.dat` (a deck written by hand, by HELIX, or converted from
+MAD-X/MAD8/Elegant carries no `.ini`), and do not expect it to be read
+when you open a `.lgproj`: a saved project already holds the beam you
+chose, and it always wins.
+
+| Situation | Route | What happens |
+|---|---|---|
+| You open a TraceWin `.dat` in the GUI and `<deck>.ini` sits next to it | **File → Open Lattice…** | HELIX asks *Import its beam?* — **Yes** fills the Beam tab and makes it the session beam; **No** keeps the current beam ([Lattice tab](../10_gui/02_lattice_tab.md)) |
+| The deck is already open, or the `.ini` lives elsewhere / under another name | **Beam tab → Import TraceWin .ini…** | pick the file; the form is replaced and the project marked dirty ([Beam tab](../10_gui/03_beam_tab.md#importing-a-tracewin-ini-project-beam)) |
+| You are creating a HELIX project from a TraceWin deck | **File → New Project… → Import an existing lattice** | tick *Also import the beam from the TraceWin .ini next to the deck*; the `.ini` is copied with the deck and the `.lgproj` is written with its beam ([workflows](../10_gui/08_workflows.md#i-have-a-tracewin-project-dat-ini-and-want-its-beam-in-helix)) |
+| You want a HELIX project file from the shell | `python -m linac_gen twini deck.ini --lgproj` | writes `deck.lgproj` next to the `.ini`, pointing at `deck.dat` |
+| You want one headless run / scan / study without a project | `python -m linac_gen run deck.dat --tracewin-ini …` (also scan, batch, twiss, backtrack, failures, mo, export, orm) | the beam is read for that command only; `--energy` etc. still override |
+| You only want to see what the file says | `python -m linac_gen twini deck.ini --report` or the assistant's `inspect_tracewin_ini` | nothing is loaded or written |
+
+**Step by step (command line):**
+
+1. Look before you load — the report lists what will be applied, what
+   is recorded only, and what the file does not describe:
+
+    ```text
+    python -m linac_gen twini deck.ini --report
+    ```
+
+    Check the particle row (an ion or a `My_particle` slot has no HELIX
+    species — pass `--species`), the energy and frequency, and the
+    *Warnings* block (a `FREQ` mismatch with the deck, a DC beam, a
+    renamed file).
+2. Either turn the pair into a HELIX project once —
+
+    ```text
+    python -m linac_gen twini deck.ini --lgproj          # deck.lgproj next to the .ini
+    ```
+
+    — and work from `deck.lgproj` from then on (GUI **File → Open
+    Project…**, or any CLI command with the `.lgproj` as input); or use
+    the `.ini` for a single command:
+
+    ```text
+    python -m linac_gen run deck.dat --tracewin-ini --mode envelope --out runs
+    ```
+
+3. Set what the `.ini` does not carry: the distribution type and
+   cut-off, a DC beam's energy spread, centroid offsets.  On the CLI
+   `--beam distribution=gaussian --beam cutoff=3`; in a project, edit
+   the Beam tab and **Save Project**.
+4. Run.  The first `FREQ` card of the deck is compared with the beam
+   frequency and any difference is warned about; HELIX rescales the
+   longitudinal plane at the card.
+
+**After an import, check** the Beam tab (or the printed summary): the
+species, energy and current are the project's; `alpha_z` already
+carries HELIX's sign (do not flip it again); a DC project shows
+**Continuous beam** ticked; a value outside the form's range (say
+5 000 000 particles) was clamped and reported; the console lists every
+warning.  Then **Save Project** — until you do, the imported beam lives
+only in the session.
+
+### Commands
+
+```text
+python -m linac_gen twini deck.ini                 # the converted beam + warnings
+python -m linac_gen twini deck.ini --report        # every decoded slot: applied / recorded / unknown / not decoded
+python -m linac_gen twini deck.ini --json          # machine-readable
+python -m linac_gen twini deck.ini --lgproj        # write deck.lgproj next to the .ini
+python -m linac_gen twini deck.ini --lgproj my.lgproj --lattice other.dat --beam 2 --species H- --force
+```
+
+`twini` prints the converted beam, and with `--lgproj` writes a project
+file — the same format the GUI saves — that points at the sibling
+`deck.dat` (or `--lattice`).  The deck is parsed for the check that its
+first `FREQ` card matches the beam frequency.  The same conversion is
+one call in Python:
+
+```{.python data-needs="tests/io/fixtures/tracewin_ini/ads.ini"}
+from linac_gen.io.tracewin_ini import load_tracewin_ini, to_beam_config, report
+ini = load_tracewin_ini("tests/io/fixtures/tracewin_ini/ads.ini")
+beam, warnings = to_beam_config(ini)      # beam 1 → BeamConfig in HELIX units
+print(beam.species, beam.energy, beam.emit_nx, beam.alpha_z, beam.beta_z)
+print(report(ini))                        # applied / recorded / unknown / not decoded
+```
+
+**Precedence.** A `.lgproj` always wins: its beam is what you saved, and
+the `.ini` is read only when you ask for it (`twini`, or the
+`--tracewin-ini` option on the CLI runners).  Nothing reads a `.ini`
+silently.  Scalar overrides (`--energy`, `--freq`, `--species`) still
+apply on top of the imported beam, with a warning: `emit_z` and
+`beta_z` were converted at the `.ini` energy, frequency and species and
+are not re-derived for the overridden values.
+
+**Applied to the beam** (every slot *verified* against at least two
+independent projects, the LightWin `ads.ini` ↔ σ-matrix identity and a
+TraceWin run — see [Appendix G](../appendices/G_tracewin_ini_format.md)
+for the offsets and the evidence): species from the particle-table row
+(proton, deuteron, H-), energy, frequency, current, `n_particles`,
+`emit_nx`/`emit_ny` (normalised, π mm mrad), `alpha_x`/`beta_x`,
+`alpha_y`/`beta_y`, and the longitudinal plane converted into HELIX's
+(Δφ, ΔW) units:
+
+| HELIX | from the `.ini` |
+|---|---|
+| `emit_z` (π deg MeV) | `eps_z1` · 360 · f · mc² / c |
+| `beta_z` (deg/MeV) | `betz1` · 360 · f / ((βγ)³ · c · mc²) |
+| `alpha_z` | **−`alpz1`** — the usual TraceWin sign flip, applied once, here |
+
+For the ADS sample: 3e-7 π m rad → 0.0338 π deg MeV, 2.5932 m/rad →
+37.11 deg/MeV, α_z +0.17661 → −0.17661.
+
+**Identified, not applied:** thread count and the PICNIC r/z and x/y
+meshes are *probable* slots and, more to the point, not HELIX's
+space-charge grid — they are printed in the report and recorded under
+`convergence.tracewin_ini` of a written project, never applied.
+
+**Degrades explicitly, never silently:** a DC beam (`eps_z1` = 0, LEBT
+projects) → `continuous = True` with a warning that the energy spread
+is not decoded; a particle row with no HELIX species (an ion, a
+`My_particle` slot) → your `--species` or `proton`, with a warning that
+names the row and says the `.ini` rest mass was not used; a bunched beam
+with `betz1` = 0, an unpopulated beam 2, a zero transverse emittance →
+refused; a file of a size other than the two known layouts (31 624 and
+44 824 bytes) or a wrong magic → refused with the known sizes named (a
+layout tag that disagrees with the size — TraceWin's own `*.old.ini` —
+is a warning, not a refusal).  The distribution type,
+duty cycle, energy spread, centroid offsets and `.dst` path are *not
+decoded*; the report lists them so you set them yourself.
+
 ## Cross-references
 
 * [Keyword cheatsheet](../appendices/B_keyword_cheatsheet.md) —
   one-page printable.
+* [Appendix G — the TraceWin `.ini` format](../appendices/G_tracewin_ini_format.md).
 * [Element catalog](../03_elements/00_overview.md).
 * [Matching SET/ADJUST](../07_matching/02_set_adjust.md).
 * [Errors directives](../08_errors/02_error_directives.md).

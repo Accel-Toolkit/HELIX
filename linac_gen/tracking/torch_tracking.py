@@ -20,10 +20,12 @@ import warnings
 
 import torch
 
+from linac_gen.elements.base import PassiveElement
 from linac_gen.elements.dipole import Dipole
 from linac_gen.elements.drift import Drift
 from linac_gen.elements.edge import Edge
 from linac_gen.elements.lattice_commands import LatticeCommand
+from linac_gen.elements.multipole import Multipole
 from linac_gen.elements.quadrupole import Quadrupole
 from linac_gen.elements.solenoid import Solenoid
 from linac_gen.tracking.torch_matrices import (
@@ -101,7 +103,7 @@ def element_matrix_torch(element, kin: RefKinematics, *,
                  else element.effective_angle)
         return dipole_matrix(eff_a, element.rho, element.length,
                              element.e1, element.e2, element.field_index,
-                             element.hv, kin)
+                             element.hv, kin, design_angle_deg=element.angle)
 
     if isinstance(element, Edge):
         return edge_matrix(element.pole_rotation, element.rho,
@@ -219,7 +221,12 @@ def compute_transfer_matrix_torch(lattice, ref, start: int = 0,
         # Σ, sign-flipping the coupled plane of the composed map.
         # dx / dy are no-ops in Sigma propagation (Sigma is centroid-
         # invariant); only tilt couples into the matrix.
-        tilt = getattr(element, "tilt_deg", 0.0)
+        # Multipole applies its own dx/dy/tilt inside apply_kick and a
+        # PassiveElement carries no misalignment — the same exclusion as
+        # the MP tracker, the backtracker and the envelope solver, so a
+        # future torch Multipole arm cannot be rotated twice.
+        tilt = (0.0 if isinstance(element, (PassiveElement, Multipole))
+                else getattr(element, "tilt_deg", 0.0))
         if abs(float(tilt)) > 1e-12:
             R_in = tilt_rotation_matrix_torch(tilt)
             R_out = tilt_rotation_matrix_torch(-tilt)

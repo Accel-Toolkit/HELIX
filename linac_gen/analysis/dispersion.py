@@ -79,7 +79,7 @@ def dispersion_along_s(lattice, ref, *, eta0=None,
     """
     from linac_gen.analysis.phase_advance import _check_stop
     from linac_gen.elements.base import FieldMapElement, ThinKickElement
-    from linac_gen.tracking.matrix_tracking import get_element_matrix
+    from linac_gen.tracking.matrix_tracking import get_element_matrix, _with_tilt
 
     n = len(lattice.elements)
     s_arr = np.zeros(n + 1)
@@ -112,7 +112,7 @@ def dispersion_along_s(lattice, ref, *, eta0=None,
     for i, el in enumerate(lattice.elements):
         _check_stop(should_stop)
         try:
-            m6 = get_element_matrix(el, rc, cache=cache)
+            m6 = _with_tilt(el, get_element_matrix(el, rc, cache=cache))
         except Exception:                                 # noqa: BLE001
             # Unsupported element — break the chain; downstream stays
             # NaN but the s grid is still filled below.

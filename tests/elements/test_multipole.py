@@ -481,3 +481,40 @@ class TestMultipoleMultiOrder:
             beam_q.particles[:, 3] + beam_s.particles[:, 3],
             rtol=1e-12,
         )
+
+
+# ---------------------------------------------------------------------------
+# kick_matrix is the Jacobian of apply_kick (2026-09-06: the sin 2θ terms of
+# the tilted linear block had the wrong sign, so matrix/envelope mode coupled
+# a tilted multipole the opposite way to particle tracking)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("knl1, ksl1, tilt", [
+    (1.0, 0.0, 22.5), (1.0, 0.0, -37.0), (0.0, 0.8, 30.0),
+    (1.0, 0.6, 17.5), (1.0, 0.6, 45.0), (0.7, -0.4, 90.0)])
+def test_kick_matrix_is_jacobian_of_apply_kick(knl1, ksl1, tilt):
+    ref = _ref()
+    m = Multipole("m", knl=[0.0, knl1], ksl=[0.0, ksl1], tilt_deg=tilt)
+    K = m.kick_matrix(ref.copy())
+    # the n = 2 kick is exactly linear in (x, y): unit offsets give the columns
+    for col, (x, y) in ((0, (1.0, 0.0)), (2, (0.0, 1.0))):
+        beam = _beam_at(x, y)
+        m.apply_kick(beam)
+        dxp, dyp = beam.particles[0, 1], beam.particles[0, 3]
+        assert dxp == pytest.approx(K[1, col], abs=1e-12)
+        assert dyp == pytest.approx(K[3, col], abs=1e-12)
+    # sanity: the tilted normal quad really couples the planes
+    if knl1 and tilt not in (0.0, 90.0):
+        assert abs(K[1, 2]) > 1e-3 and K[1, 2] == pytest.approx(K[3, 0], abs=1e-12)
+
+
+def test_tilt_45_normal_quad_kick_matrix_equals_skew_quad_sense():
+    """A normal quad tilted by +45 deg is a pure skew quad with the SAME
+    sign as a Quadrupole rotated by skew_angle = +45 deg."""
+    ref = _ref()
+    m = Multipole("m", knl=[0.0, 0.01 / ref.brho], ksl=[0.0], tilt_deg=45.0)
+    q = Quadrupole("q", length=10.0, gradient=1.0, skew_angle=45.0)
+    Km, Mq = m.kick_matrix(ref.copy()), q.transfer_matrix(ref.copy())
+    assert Km[1, 0] == pytest.approx(0.0, abs=1e-12)          # no normal part left
+    assert np.sign(Km[1, 2]) == np.sign(Mq[1, 2]) != 0
+    assert np.sign(Km[3, 0]) == np.sign(Mq[3, 0]) != 0

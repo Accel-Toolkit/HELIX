@@ -302,16 +302,6 @@ TOP: LINE=(SEC)
 
 @pytest.mark.skipif(not (_BTL_LAT.exists() and _BTL_DAT.exists()),
                     reason="BTL v0703 files not present")
-@pytest.mark.xfail(strict=True, reason=(
-    "FINDING 2026-09-03 (MAD-X oracle): examples/pipii/btl/btl_2025v0703.dat "
-    "was converted with convert_BTL2025v0703.py, which (a) ignores the sign "
-    "of TILT=-pi/2 (a global vertical mirror, harmless for optics) and (b) "
-    "writes the EDGE angle as the SIGNED theta/2, so the negative-angle "
-    "vertical bends BVDD and ORB1 get FOCUSING edges (R43 = -3.3e-3 / "
-    "-1.0e-2 per magnet instead of ~0 for a rectangular magnet; end-to-end "
-    "BTL 4x4 changes by 0.70).  The MAD8 importer now follows the MAD-X-"
-    "verified convention (beta = sign(theta)*e).  Regenerate the deck with "
-    "the corrected script, then drop this marker."))
 def test_btl_anchor_lockstep():
     from linac_gen.io.tracewin_parser import parse_tracewin
     from linac_gen.analysis.period_detect import detect_periods
@@ -330,9 +320,19 @@ def test_btl_anchor_lockstep():
     assert t8 == pytest.approx(307969.918, abs=1e-2)
     assert t8 == pytest.approx(td, abs=1e-3)
 
-    # transport-element lockstep at the transfer-matrix level
+    # transport-element lockstep at the transfer-matrix level.  The MAD8
+    # importer folds TILT=-pi/2 into the angle sign (MAD-X-verified: the
+    # bend goes towards -y); the .dat keeps the .lat's angle sign in
+    # TraceWin's convention, so the two are vertical mirrors of each
+    # other — compare through S = diag(1, 1, -1, -1, 1, 1), which commutes
+    # with every y-symmetric element and flips a vertical bend's
+    # dispersion column.  (Until 2026-09-06 the deck also carried the
+    # SIGNED theta/2 on the EDGE cards of BVDD and ORB1, i.e. edge-
+    # focusing rectangular magnets; TraceWin reads the EDGE angle
+    # literally, so the deck — not the Edge element — was wrong.)
     ref = ReferenceParticle(species=H_MINUS, w_kin=800.0, frequency=162.5)
     kinds = (Drift, Quadrupole, Dipole, Edge)
+    S = np.diag([1.0, 1.0, -1.0, -1.0, 1.0, 1.0])
 
     def transport(els):
         return [e for e in els if isinstance(e, kinds)]
@@ -343,9 +343,9 @@ def test_btl_anchor_lockstep():
         if isinstance(x, Drift):
             assert x.length == pytest.approx(y.length, abs=1e-3)
         else:
-            mx = x.transfer_matrix(ref)
+            mx = S @ x.transfer_matrix(ref) @ S
             my = y.transfer_matrix(ref)
-            assert np.abs(mx - my).max() < 1e-8
+            assert np.abs(mx - my).max() < 1e-8, getattr(y, "name", "?")
 
     # the 10 hand-verified periodicity brackets, bit-equal sets
     p8 = sorted((p.n_repeats, p.label)

@@ -232,6 +232,58 @@ beam-state dependent, and returns validity flags rather than a bare number:
 the recorder Jacobian and the 1/γ² longitudinal drift factor — not the
 deg/MeV β, which is off by ~685× at PIP-II injection if used directly.
 
+### Two ways to integrate the beam phase — `method`
+
+Both `beam_phase_advance` and `beam_phase_advance_along_s` take
+`method="auto" | "maps" | "trapezoid"` (default `"auto"`):
+
+* **`maps`** — `beam_phase_advance_from_maps`: for every element the beam
+  ellipse is re-seeded from the recorded Σ at the element entrance and
+  walked through the maps the solver actually applied to Σ inside that
+  element (the phase probe's `probe_M` slices — Strang halves, SC kicks,
+  edges, freq-jump `D`, tilt rotations), summing `|atan2(m₁₂, m₁₁β − m₁₂α)|`
+  per slice exactly like the structure walk.  A beam matched to a cell
+  reproduces the cell's depressed eigenphase to round-off on *any* record
+  grid (Floquet).  Interior substep rows of the along-s curve are linearly
+  interpolated inside their element (`interpolated_rows`); every element
+  exit row — hence every per-cell and per-period number — is exact.
+* **`trapezoid`** — ∫ds/β on the record grid.  This is TraceWin's own
+  kx/ky/kz convention (endpoint-density average per element), so the
+  TraceWin-outputs writer keeps it.  On an element-exit grid (a run without
+  *Record per-sub-step*, or any multi-particle run) it is **12–38 % too high
+  through 1.4–2.1 m cavities** even for a perfectly matched beam (fnalscl,
+  116–405 MeV: cell 1 +12 % x / +14 % y, cell 13 +30 % / +38 %); with substep
+  recording through those cavities it is exact to 1e-5, but drifts at I = 0
+  get no substeps and x–y-coupled interiors integrate a projected β, so the
+  substep trapezoid is not exact in general.  The routine now reports
+  `max_step_{x,y,z}_deg` and `resolution_ok_{x,y,z}` (False when a single row
+  step exceeds 18°, i.e. fewer than 20 samples per 2π; `resolution_ok` and
+  `max_step_deg` summarise x and y — the z "phase" of a DC or RF-free beam is
+  never resolvable), and the popups draw an unresolved plane dotted and grey
+  with a note instead of a solid marker.
+
+`auto` takes the maps when the results carry a probe (every GUI envelope run
+with the matrix solver does; the Sacherer solver records none) and falls back
+to the trapezoid otherwise.  Multi-particle results have
+Σ but no maps: pass the companion envelope probe as `maps_from=` (the popups
+do this from their cache) — its space-charge slices are linearised on the
+*envelope* beam, so the result is labelled approximate for MP.  Both
+functions return `method` and `maps_source` (`"own"` / `"companion"`).
+
+The `sigma_over_sigma0_{x,y,z}` denominator is the oriented branch of the
+structure tune in x and y and 360° − that branch in z: the (Δφ, ΔW) pair has
+the opposite handedness (a drift's phase slip makes m₁₂ < 0), so the old rule,
+which divided z by the branch itself, made a matched beam read 0.36 instead
+of ≈ 1.  A "nearest branch" rule would be wrong in x/y for periods above
+180° with a depressed beam below it, so it is not used.
+
+`structure_phase_advance_along_s` now replays the reference particle exactly
+like `compute_transfer_matrix` (RF phase advanced through drifts and
+magnets, stateful cavities reset): on decks whose cavity matrices depend on
+the arrival phase (absolute-phase NCELLS, SET_SYNC_PHASE field maps) the old
+walk evaluated them at a wrong phase and the per-cell σ₀ diverged (fnalscl
+cell 1: 135° for an eigenphase of 50.7°).
+
 ## Branch conventions
 
 Phase can be quoted three ways; HELIX exposes all three explicitly so η is
@@ -274,6 +326,10 @@ contiguous span of each repeat.  Always iterate cells with `p.spans()`
 distributed, a fixed stride lands on the wrong boundaries.
 
 ## GUI
+
+Beam curves and markers in both popups come from `beam_phase_advance_along_s(method="auto")`;
+the info line says which method produced them ("exact (probe maps)", "companion probe maps",
+or an "unresolved" warning with the largest row step when only a coarse trapezoid was possible).
 
 The **Results** tab carries the **Phase advance σ₀ · σ** popup (channel
 tunes + along-s curves, coupled → eigenmodes), the **tune-depression**

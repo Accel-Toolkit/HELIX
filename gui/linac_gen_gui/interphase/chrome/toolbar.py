@@ -46,6 +46,7 @@ class Toolbar(QFrame):
     open_transfer_matrix_requested = pyqtSignal()
     open_sigma_matrix_requested = pyqtSignal()
     open_parameter_scan_requested = pyqtSignal()
+    open_orm_requested = pyqtSignal()
     open_docs_requested      = pyqtSignal()
     open_about_requested     = pyqtSignal()
     check_updates_requested  = pyqtSignal()
@@ -131,6 +132,7 @@ class Toolbar(QFrame):
             ("Show Transfer Matrix…",  self.open_transfer_matrix_requested.emit),
             ("Show Sigma Matrix…",     self.open_sigma_matrix_requested.emit),
             ("Parameter Scan…",        self.open_parameter_scan_requested.emit),
+            ("Orbit-Response Calibration (LOCO)…", self.open_orm_requested.emit),
         ]))
         # Retained QActions so the app can retitle / sync them later
         self._update_action = QAction("Check for Updates…", self)

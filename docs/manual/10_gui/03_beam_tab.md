@@ -45,6 +45,8 @@ values.
 * **Regenerate preview** — refresh the four preview panels.
 * **Reset defaults** — restore every field to its default value.
 * **Import .dst…** — see next section.
+* **Import TraceWin .ini…** — the beam of a TraceWin project options
+  file; see [below](#importing-a-tracewin-ini-project-beam).
 
 ## Importing a `.dst` distribution
 
@@ -56,6 +58,29 @@ simulation then reads the *actual particles* from the file
 (`source="file"`) instead of regenerating from Twiss.  A file chip
 appears next to the button naming the active `.dst`, with a
 **clear** link that reverts to generate-from-Twiss mode.
+
+## Importing a TraceWin `.ini` project beam
+
+The **Import TraceWin .ini…** button reads `<project>.ini`, the binary
+options file TraceWin saves next to a project's `.dat` with what was
+typed into its *Main*/*Beam* panels.  Input beam 1 replaces the form:
+species (from the file's particle-table row), energy, frequency,
+current, particle count, the normalised emittances and the Twiss
+parameters, converted to HELIX units — `alpha_z` is negated once, the
+usual TraceWin convention ([Appendix E](../appendices/E_migrating_from_tw.md)).
+Fields the file does not describe (distribution type, cut-off, DC
+energy spread, centroids) keep their current values; a DC project
+(`eps_z` = 0) switches the form to **continuous**; a particle the file
+defines that HELIX has no species for falls back to the combo's
+selection, with a warning in the console; a value outside a field's
+range (say 5 000 000 particles) is clamped by the form and reported.  The
+imported beam is applied
+to the app state at once (it becomes the session beam) and the project
+is marked dirty; the source stays *generate*.  The same import is
+offered automatically when **Open Lattice…** finds a `<deck>.ini` next
+to the deck, and the New Project wizard has a checkbox for it — see
+[Importing TraceWin project settings](../06_running/02_tracewin_dat.md#importing-tracewin-project-settings-ini)
+for what is decoded, and what is not.
 
 ## DC vs bunched mode
 

@@ -48,6 +48,7 @@ takes precedence over its fixed value at that point.
 
 | Option | Argument | Meaning |
 |---|---|---|
+| `--tracewin-ini [INI]` | flag or path | bare lattice only: every point starts from beam 1 of the deck's TraceWin `.ini` (`<deck>.ini`, or `INI`); the fixed and swept overrides apply on top (energy/frequency/species overrides are warned about — `emit_z`/`beta_z` are not re-derived); refused with a `.lgproj` |
 | `--energy` | MeV | reference kinetic energy |
 | `--current` | mA | beam peak current |
 | `--freq` | MHz | RF frequency |

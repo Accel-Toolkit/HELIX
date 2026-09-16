@@ -611,6 +611,11 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                                 "the shift is ignored."
                             )
 
+                # Elements added above (a flushed SUPERPOSE cluster, restored
+                # SHIFT orphans) belong to earlier lines: the deck label of
+                # THIS line is stamped only on what the card itself adds.
+                n_before_card = len(lattice.elements)
+
                 # ── Control cards ──────────────────────────────────────────
                 if keyword == "END":
                     break
@@ -1260,6 +1265,16 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                     if strict:
                         raise ValueError(msg)
                     metadata["warnings"].append(msg)
+
+                # ── Deck label ─────────────────────────────────────────
+                # ``Q01: QUAD …`` / ``D01T: THIN_STEERING …``: stamp the
+                # RAW label on whatever this line added so device names
+                # survive parsing (duplicates allowed — fnalscl carries
+                # ``D01T`` twice; ``name`` stays the generated unique id,
+                # DIAG_POSITION markers keep their de-duplicated name).
+                if label is not None and len(lattice.elements) > n_before_card:
+                    for _e in lattice.elements[n_before_card:]:
+                        _e.label = label
 
                 # ── SHIFT_IN_FIELD_MAP capture ─────────────────────────
                 # Pull the diagnostic Marker just added after a SHIFT

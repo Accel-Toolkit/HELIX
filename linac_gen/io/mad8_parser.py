@@ -328,10 +328,12 @@ def _build_mad8_element(f: _Mad8File, name: str, brho_signed: float,
             if isinstance(el, Quadrupole):
                 el.skew_angle = float(attrs["tilt"]) * _RAD_TO_DEG
     if etype in ("sbend", "rbend"):
-        # MAD8 encodes vertical bends as TILT=±π/2; _build_element drops
-        # TILT, and its ρ = L/θ carries the angle's sign.  HELIX/TraceWin
-        # convention is ρ > 0, sign in the angle, plane in ``hv`` — the
-        # vertical edge matrix genuinely differs if either is left as-is.
+        # MAD8 encodes vertical bends as TILT=±π/2.  The shared
+        # _build_element already folds ±π/2 into ``hv`` and the angle sign
+        # (TILT=-π/2 bends towards -y, MAD-X-verified) and emits ρ > 0;
+        # the pass below only warns about other tilts and re-asserts the
+        # HELIX/TraceWin convention (ρ > 0, sign in the angle, plane in
+        # ``hv``) so a future builder change cannot silently break it.
         tilt = float(attrs.get("tilt", 0.0) or 0.0)
         vertical = abs(abs(tilt) - math.pi / 2.0) < 1e-6
         if not vertical and abs(tilt) > 1e-9:

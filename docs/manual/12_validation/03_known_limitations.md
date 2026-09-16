@@ -45,6 +45,63 @@ studies that used cavity amplitude or bend-field errors.)
 
 See [Element-level errors](../08_errors/03_element_errors.md).
 
+### No longitudinal normal mode for a lattice with bends
+
+Since 2026-09-07 a bend couples the transverse and longitudinal planes
+through its path-length row, which is correct physics — and it means the
+2×2 (Δφ, ΔW) block of such a lattice is no longer its longitudinal mode.
+`compute_twiss(M, "z")` therefore **raises** `ValueError` ("coupled to
+plane z") for any lattice containing a bend, at the default
+`coupling_tol=1e-8`; a BTL cell reaches an off-plane sum of 7.4e-3 and
+the MEBT-to-foil line 5.8e-1.  Extracting the true mode would require
+transforming the dispersion away first, which HELIX does not do.
+
+Nothing that used to be reported is lost.  Across the twenty shipped
+decks — every period `detect_periods` finds, twenty-nine of them with a
+bend, plus every whole-lattice matrix — μ_x, μ_y, μ_z and β_z are
+identical before and after: 157 values equal, none gained, none lost.
+The reason is that a bend-containing period in a transport line has a
+*shear* longitudinal block (M₄₄ = M₅₅ = 1, M₅₄ = 0), so cos μ = 1 and it
+was already refused as unstable; only the message changed.  The
+tolerance can only bite where a period holds RF **and** a bend, which no
+shipped deck does.  Passing `coupling_tol=` explicitly still returns the
+projected 2×2 value for callers who want it knowing what it is — that is
+what `linac_gen/analysis/phase_advance.py` does at its coupled-lattice
+call sites.  Pinned in
+`tests/tracking/test_path_length_row.py::test_compute_twiss_z_refuses_a_bend_lattice_and_offers_the_projection`.
+
+A second consequence: the reported longitudinal emittance through a
+dispersive region is a *projection* of a genuinely correlated
+distribution and grows sharply — ×93 on `examples/bend_line.dat` in
+envelope mode — while the six-dimensional phase-space volume is
+conserved, because the map is symplectic.  Read such a number together
+with the symplecticity check in the same test file before reporting a
+blow-up.
+
+### Tilt misalignments in matrix-mode analyses
+
+Since 2026-09-06 the composed transfer matrix (`compute_transfer_matrix`,
+i.e. matrix mode, `run --mode matrix`, the periodic-Twiss solve of the
+whole line), the dispersion-along-s walk and the phase-advance walk all
+conjugate every element's matrix by its `tilt_deg`, as the multi-particle
+tracker, the envelope solver and the torch matrix path always did.  The
+cell-wise periodic dispersion (`matching/periodic.py`) still calls
+`get_element_matrix` directly and sees each element untilted.  Nominal
+lattices carry no `tilt_deg`, so only error studies that inspect that
+quantity are affected.
+
+### `Dipole.e1` / `e2` act on the full-element matrix only
+
+The pole-face angles stored on a `Dipole` are added as thin-lens edge
+matrices when the element's *full* transfer matrix is requested (matrix
+mode, the envelope solver's element step).  The multi-particle tracker
+and the envelope space-charge sub-stepping slice the bend body and never
+apply them.  Lattices read from `.dat`, MAD-X, MAD8 or Elegant files are
+unaffected — their pole faces are separate `Edge` elements, honoured in
+every mode — so only Python-built lattices that set `e1`/`e2` directly
+see a mode-dependent difference.  Use `Edge` elements for
+mode-independent optics.
+
 ### `SUPERPOSE_MAP` v1 scope
 
 Straight-axis field-map superposition is implemented

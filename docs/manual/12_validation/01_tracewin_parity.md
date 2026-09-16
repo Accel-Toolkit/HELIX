@@ -14,7 +14,7 @@ to differ.
 | Quadrupole (with g3..g6) | Yes | Yes | ~1e-9 | thin Multipole kicks |
 | Solenoid (hard-edge) | Yes | Yes | bit-exact | linear matrix |
 | Solenoid (field map) | Yes | Yes | < 0.5 % | RK4; default step density |
-| Dipole (sector / rect with edges) | Yes | Yes | < 0.5 % | hv=1 fix 2026-05-07 |
+| Dipole (sector / rect with edges) | Yes | Yes | < 0.5 % | hv=1 fix 2026-05-07; path-length row and momentum compaction 2026-09-07, pinned against TraceWin's own exported matrices for all 36 BTL bends |
 | RFGap | Yes | Yes | < 1 % | matches partran's GAP |
 | FieldMap (1-D / 2-D) | Yes | Yes | < 0.5 % | every TraceWin geom code |
 | FieldMap3D | Yes | Yes | < 1 % | KD/DKD integrators |

@@ -22,6 +22,7 @@ _METRICS = ("sigma_x", "sigma_y", "sigma_phi", "sigma_w", "emit_x", "emit_y",
 def add_arguments(p) -> None:
     """Populate the ``scan`` sub-parser."""
     p.add_argument("input", help="a .lgproj project or a lattice file (.dat, .madx, .lat, .lte; .bmad/.jl/.pals.yaml via lattix)")
+    common.add_tracewin_ini_argument(p)
     p.add_argument("--vary", action="append", default=[], required=True,
                    metavar="VAR=start:stop:step",
                    help="variable to sweep (repeatable → Cartesian product); "
@@ -137,7 +138,8 @@ def run(args) -> int:
     # apply_fieldmap_settings; integrator/interp remain parent-only class
     # attributes (pre-existing limitation of the spawn pool).
     try:
-        _lat, _beam, conv = common.load_input(args.input)
+        _lat, _beam, conv = common.load_input(
+            args.input, tracewin_ini=args.tracewin_ini)
         common.apply_fieldmap_settings(conv, {})
     except Exception:                                  # noqa: BLE001
         pass                       # per-point load reports real errors
@@ -159,7 +161,8 @@ def run(args) -> int:
             points.append(common.build_scan_point(
                 args.input, beam_overrides=beam_ov, element_overrides=elem_ov,
                 sc_overrides=fixed_sc, mode=args.mode,
-                env_solver=args.env_solver, seed=args.seed, cli=cli_ov))
+                env_solver=args.env_solver, seed=args.seed, cli=cli_ov,
+                tracewin_ini=args.tracewin_ini))
         except (ValueError, KeyError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2

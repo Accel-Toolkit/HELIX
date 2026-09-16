@@ -56,6 +56,11 @@ indicator), and a **Font** size spinbox.  The **Simulate** menu also
 holds **Backtrack Distribution…** — reconstruct the upstream beam from
 the last MP run's exit state or from a measured exit-plane `.dst` (see
 the [workflow](08_workflows.md#i-want-to-reconstruct-the-input-beam-from-an-exit-distribution)).
+The **Tools** menu holds the assistant, the Python console, the transfer-
+and sigma-matrix views, **Parameter Scan…** and **Orbit-Response Calibration
+(LOCO)…** — load a measured orbit-response matrix, compare it with the model
+and recalibrate the quads/trims/BPMs (see the CLI page
+[`orm`](../06_running/13_cli_orm.md)).
 
 ## Tabs
 

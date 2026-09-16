@@ -44,7 +44,7 @@ from linac_gen.elements.base import FieldMapElement
 from linac_gen.elements.field_map import FieldMap, _C_LIGHT
 from linac_gen.elements.field_map_3d import FieldMap3D
 from linac_gen.elements.mixins import FieldError, Misalignment
-from linac_gen.tracking.rk4 import numerical_jacobian
+from linac_gen.tracking.rk4 import numerical_jacobian_batched
 
 __all__ = ["SuperposedFieldMap"]
 
@@ -679,18 +679,20 @@ class SuperposedFieldMap(FieldMapElement, Misalignment, FieldError):
 
         saved = self._save_walk_state()
 
-        def _track_single(state):
+        def _track_batch(P):
+            # one ref copy and one beam for all twelve probes — see
+            # numerical_jacobian_batched for why this is bit-identical
             ref_copy = ref.copy()
-            b = Beam(ref=ref_copy, n_particles=1, current=0.0)
-            b.particles[0, :] = state
+            b = Beam(ref=ref_copy, n_particles=P.shape[0], current=0.0)
+            b.particles[:, :] = P
             self._step_idx = 0
             self._z_cursor = 0.0
             for _ in range(n):
                 self.track_rk4(b, ds)
-            return b.particles[0, :].copy()
+            return b.particles.copy()
 
         try:
-            M = numerical_jacobian(_track_single, np.zeros(6))
+            M = numerical_jacobian_batched(_track_batch, np.zeros(6))
         finally:
             self._restore_walk_state(saved)
         return M
@@ -712,19 +714,21 @@ class SuperposedFieldMap(FieldMapElement, Misalignment, FieldError):
         z_from = self._z_cursor if _z_from_mm is None else float(_z_from_mm)
         saved = self._save_walk_state()
 
-        def _track_single(state):
+        def _track_batch(P):
+            # one ref copy and one beam for all twelve probes — see
+            # numerical_jacobian_batched for why this is bit-identical
             ref_copy = ref.copy()
-            b = Beam(ref=ref_copy, n_particles=1, current=0.0)
-            b.particles[0, :] = state
+            b = Beam(ref=ref_copy, n_particles=P.shape[0], current=0.0)
+            b.particles[:, :] = P
             self._restore_walk_state(saved)
             self._z_cursor = z_from
             self._step_idx = saved[0]
             for _ in range(n_sub):
                 self.track_rk4(b, sub_ds)
-            return b.particles[0, :].copy()
+            return b.particles.copy()
 
         try:
-            M = numerical_jacobian(_track_single, np.zeros(6))
+            M = numerical_jacobian_batched(_track_batch, np.zeros(6))
         finally:
             self._restore_walk_state(saved)
         # Advance the walk cursor past this slice (envelope SC loop

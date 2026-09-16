@@ -190,8 +190,12 @@ def test_twiss_cli_whole_mode(capsys):
     assert rc == 0
     nums = capsys.readouterr().out.split()
     # Re-pinned for the H⁻ ion-mass fix (938.272 → 939.294 MeV): the 0.05%
-    # Bρ shift moves the matched β by ~0.5%.
-    assert float(nums[1]) == pytest.approx(6.135, abs=0.01)
+    # Bρ shift moves the matched β by ~0.5% (6.135).  Re-pinned again on
+    # 2026-09-06 when the four EDGE cards of BVDD/ORB1 got their correct
+    # sign (+|θ|/2): the whole-line periodic solve spans the dogleg and the
+    # hv=1 edges act in x too, so β_x moved 6.135 → 5.946 (−3.1 %).  The
+    # cell-mode values (13.814 / 5.384, upstream of the dogleg) are unchanged.
+    assert float(nums[1]) == pytest.approx(5.946, abs=0.01)
 
 
 @needs("examples/pipii/btl/btl.dat")

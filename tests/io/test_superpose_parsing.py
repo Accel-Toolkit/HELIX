@@ -295,7 +295,7 @@ def test_shift_round_trip_byte_idempotent(maps):
     out1 = maps / "shift_rt1.dat"
     write_tracewin(lat, str(out1))
     text = out1.read_text(encoding="utf-8")
-    assert "SHIFT_IN_FIELD_MAP 200\nDIAG_SIZE 2" in text
+    assert "SHIFT_IN_FIELD_MAP 200\nDIA1: DIAG_SIZE 2" in text     # the interior marker keeps its deck label
     lat2, meta2 = parse_tracewin(str(out1))
     assert meta2["warnings"] == []
     sup2 = next(e for e in lat2.elements

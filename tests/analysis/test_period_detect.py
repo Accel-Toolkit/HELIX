@@ -103,3 +103,23 @@ def test_periodic_structure_slice_mirrors_first_cell():
     assert [type(e).__name__ for e in cell] == [
         "Drift", "Quadrupole", "Drift", "Quadrupole"
     ]
+
+
+def test_steerer_counts_toward_lattice_cell(tmp_path):
+    """A THIN_STEERING inside a cell is a significant element (decided
+    2026-09-13): ``LATTICE 5 0`` over four D-Q-steerer-D-Q cells resolves
+    to 4 cells of 5.  If steerers were skipped (the old docstring's
+    reading of TraceWin), the 16 remaining elements would give 3 cells
+    of 5 plus a one-element transition."""
+    cell = "DRIFT 100 10\nQUAD 50 10 10\nTHIN_STEERING 0 0 10 0\nDRIFT 100 10\nQUAD 50 -10 10\n"
+    text = "FREQ 162.5\nLATTICE 5 0\n" + cell * 4 + "LATTICE_END\nEND\n"
+    fp = tmp_path / "steer.dat"
+    fp.write_text(text)
+    lat, _ = parse_tracewin(str(fp))
+    cards = [p for p in detect_periods(lat) if p.source == "lattice_card"]
+    assert cards, "LATTICE-card detector should fire"
+    assert cards[0].n_repeats == 4
+    assert cards[0].inner_period_length == 5
+    assert "transition" not in cards[0].label
+    from linac_gen.elements.steerer import Steerer
+    assert any(isinstance(e, Steerer) for e in lat.elements)

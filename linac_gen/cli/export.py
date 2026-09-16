@@ -32,6 +32,7 @@ def add_arguments(p) -> None:
     p.add_argument("input", help="a .lgproj project or a .dat/.madx/.lat/"
                                  ".lte/.bmad/.jl/.pals.yaml lattice")
     p.add_argument("output", help="output file (.madx / .seq)")
+    common.add_tracewin_ini_argument(p)
     p.add_argument("--format", choices=FORMATS, default=None,
                    help="output format (default: from the output suffix)")
     p.add_argument("--energy", type=float,
@@ -72,19 +73,23 @@ def run(args) -> int:
               "overwritten; choose another name", file=sys.stderr)
         return 2
     is_project = src.suffix.lower() == ".lgproj"
-    if not is_project and args.energy is None:
+    if not is_project and args.energy is None and not args.tracewin_ini:
         print("error: a bare lattice carries no beam energy and the "
-              "rigidity fixes every k1/ks — pass --energy (MeV)",
-              file=sys.stderr)
+              "rigidity fixes every k1/ks — pass --energy (MeV) or "
+              "--tracewin-ini", file=sys.stderr)
         return 2
     try:
-        lattice, beam_cfg, _conv = common.load_input(str(src))
+        lattice, beam_cfg, _conv = common.load_input(
+            str(src), tracewin_ini=args.tracewin_ini)
         if args.energy is not None:
             beam_cfg.energy = args.energy
         if args.freq is not None:
             beam_cfg.frequency = args.freq
         if args.species is not None:
             beam_cfg.species = args.species
+        common.note_tracewin_ini_overrides(
+            args.tracewin_ini, {"energy": args.energy, "freq": args.freq,
+                                "species": args.species})
         if beam_cfg.species not in ("proton", "deuteron", "H-"):
             raise ValueError(f"unknown species {beam_cfg.species!r} "
                              "(proton / deuteron / H-)")

@@ -56,6 +56,7 @@ JSON — either a bare list of jobs, or an object with a `"jobs"` key:
 | `input` | **yes** | a `.lgproj` project or a `.dat` / `.madx` lattice |
 | `mode` | no | `envelope` (default) or `mp` — any value other than `envelope` runs multi-particle (there is no `matrix` job mode; use [`run --mode matrix`](07_cli_run.md) for that) |
 | `beam` | no | object of `BeamConfig` overrides |
+| `tracewin_ini` | no | `true` / `"auto"` (the deck's sibling `.ini`) or a path (relative to the CWD, then to the job file): beam 1 of the TraceWin options file for a bare-lattice `input`, applied before `beam`; refused with a `.lgproj` — [Importing TraceWin project settings](02_tracewin_dat.md#importing-tracewin-project-settings-ini) |
 | `set` | no | object of element-parameter overrides (`"ELEM.attr": value`) |
 | `sc` | no | object of `SpaceChargeConfig` overrides |
 | `env_solver` | no | `matrix` (default) / `sacherer` |

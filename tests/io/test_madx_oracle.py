@@ -228,3 +228,30 @@ def test_linearised_field_map_matches_madx_track(tmp_path, regime):
         assert dW == 0.0
     else:
         assert dW != 0.0
+
+
+# ---------------------------------------------------------------------------
+# Combined-function / negative-angle bends (fix of 2026-09-06)
+# ---------------------------------------------------------------------------
+from tests.dataguard import needs as _needs  # noqa: E402
+
+
+@_needs("examples/pipii/bal/bal_branch.dat")
+def test_bal_branch_dispersion_matches_real_madx(tmp_path):
+    """The PIP-II BAL branch is the one shipped line with a hyperbolic
+    combined-function bend (BQDD, n = 5757.7) and a negative-angle
+    horizontal bend (BQFD, n = -408.5): the whole 4x6 block including the
+    dispersion column must equal MAD-X's cumulative R-matrix for the
+    exported line.  Before 2026-09-06 BQDD's dispersion was 1000x too
+    small and BQFD's had the wrong sign."""
+    from linac_gen.tracking.longitudinal_coords import matrix_to_madx
+    lat = parse_tracewin(str(REPO / "examples/pipii/bal/bal_branch.dat"))[0]
+    ref = build_ref(BeamConfig(species="H-", energy=800.0, frequency=162.5))
+    out = tmp_path / "bal_branch.madx"
+    write_madx(lat, out, ref)
+    R, s_end = _madx_end_rmatrix(out)
+    M = matrix_to_madx(np.asarray(compute_transfer_matrix(lat, copy.deepcopy(ref))), ref)
+    L = sum(float(getattr(e, "length", 0.0) or 0.0) for e in lat.elements)
+    assert s_end == pytest.approx(L * 1e-3, rel=1e-12)
+    np.testing.assert_allclose(M[:4, :6], R[:4, :6], rtol=1e-8, atol=1e-10)
+    assert abs(R[0, 5]) > 1e-3          # the line is dispersive: a real check

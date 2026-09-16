@@ -29,6 +29,7 @@ or a `.lgproj` project.
 
 | Option | Argument | Meaning |
 |---|---|---|
+| `--tracewin-ini [INI]` | flag or path | bare lattice only: start from beam 1 of the deck's TraceWin `.ini` options file (`<deck>.ini` next to it, or `INI`) — the overrides below still apply on top (an `--energy`/`--freq`/`--species` override is warned about: `emit_z`/`beta_z` are not re-derived); a `.lgproj` input refuses it, its saved beam wins.  [Importing TraceWin project settings](02_tracewin_dat.md#importing-tracewin-project-settings-ini) |
 | `--energy` | MeV | kinetic energy |
 | `--current` | mA | beam current |
 | `--freq` | MHz | beam frequency |

@@ -281,7 +281,10 @@ def write_partran_out(
         from linac_gen.analysis.phase_advance import (
             beam_phase_advance_along_s,
         )
-        _mu_curves = beam_phase_advance_along_s(results)
+        # TW's kx/ky/kz are endpoint-density averages (verified against a
+        # genuine partran1.out) — keep the record-grid trapezoid here; the
+        # exact map-based μ is for the analyses, not for this column.
+        _mu_curves = beam_phase_advance_along_s(results, method="trapezoid")
     except Exception:                                        # noqa: BLE001
         _mu_curves = None
 

@@ -132,6 +132,29 @@ def get_element_matrix(element, ref_copy: ReferenceParticle,
     return M
 
 
+def _with_tilt(element, M_elem: np.ndarray) -> np.ndarray:
+    """Conjugate an element's aligned matrix by its ``tilt_deg`` misalignment.
+
+    Entry rotation ``R(+tilt)``, exit ``R(-tilt)`` — the MP tracker's
+    per-particle wrap, the envelope solver's Σ wrap and the torch matrix
+    path use the same pair; until 2026-09-06 this numpy composition alone
+    tracked every element untilted.  ``Multipole`` applies its own
+    dx/dy/tilt inside ``apply_kick`` and a ``PassiveElement`` carries no
+    misalignment, so both are left alone (same exclusion everywhere).
+    ``dx``/``dy`` do not enter a transfer matrix.
+    """
+    from linac_gen.elements.multipole import Multipole
+    if isinstance(element, (PassiveElement, Multipole)):
+        return M_elem
+    tilt = float(getattr(element, "tilt_deg", 0.0) or 0.0)
+    if abs(tilt) <= 1e-12:
+        return M_elem
+    from linac_gen.elements.mixins import Misalignment
+    R_in = Misalignment.tilt_rotation_matrix(tilt)
+    R_out = Misalignment.tilt_rotation_matrix(-tilt)
+    return R_out @ M_elem @ R_in
+
+
 def compute_transfer_matrix(lattice: Lattice, ref: ReferenceParticle,
                             start: int = 0, end: int | None = None,
                             *, cache: dict | None = None) -> np.ndarray:
@@ -177,6 +200,7 @@ def compute_transfer_matrix(lattice: Lattice, ref: ReferenceParticle,
         if isinstance(element, FieldMapElement):
             element.reset_run_state()        # see the pre-``start`` replay note
         M_elem = get_element_matrix(element, ref_copy, cache=cache)
+        M_elem = _with_tilt(element, M_elem)
         M = M_elem @ M
         if isinstance(element, FieldMapElement):
             element.advance_ref(ref_copy)

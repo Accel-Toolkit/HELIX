@@ -136,7 +136,8 @@ class FailureStudy:
                  mode: str = "mp", env_solver: str = "matrix",
                  seed: int = 42, cli: dict | None = None,
                  weights: dict | None = None,
-                 lost_threshold_pct: float = 1.0):
+                 lost_threshold_pct: float = 1.0,
+                 tracewin_ini=None):
         """Two modes:
 
         * **path mode** (CLI): pass ``lattice_path`` + ``beam_overrides``;
@@ -157,12 +158,16 @@ class FailureStudy:
         self.cli = cli
         self.weights = weights
         self.lost_threshold_pct = lost_threshold_pct
+        # Path mode only: beam 1 of the deck's TraceWin .ini (see
+        # cli.common.build_scan_point); a .lgproj input refuses it.
+        self.tracewin_ini = tracewin_ini
 
     def _point(self, element_overrides):
         return build_scan_point(
             self.lattice_path, beam_overrides=self.beam_overrides,
             element_overrides=element_overrides, mode=self.mode,
-            env_solver=self.env_solver, seed=self.seed, cli=self.cli)
+            env_solver=self.env_solver, seed=self.seed, cli=self.cli,
+            tracewin_ini=self.tracewin_ini)
 
     def _inmem_metrics(self, element_overrides) -> dict:
         work = copy.deepcopy(self.lattice)

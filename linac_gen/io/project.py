@@ -11,12 +11,13 @@ by newer or older GUI versions.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 from linac_gen.core.config import BeamConfig
 
-__all__ = ["ProjectConfig", "load_project"]
+__all__ = ["ProjectConfig", "load_project", "write_project"]
 
 
 @dataclass
@@ -97,3 +98,56 @@ def load_project(path: str | Path) -> ProjectConfig:
         convergence=dict(data.get("convergence", {})),
         source_path=str(p),
     )
+
+
+def write_project(path: str | Path, *, lattice_path: str | Path,
+                  beam: BeamConfig, convergence: dict | None = None,
+                  extra: dict | None = None, overwrite: bool = False) -> Path:
+    """Write a ``.lgproj`` file without the GUI (the same schema the GUI's
+    Save writes: ``__kind__``/``__version__``, ``lattice_path``, ``beam``,
+    ``convergence``).
+
+    ``lattice_path`` and the beam's ``distribution_file`` are stored
+    relative to the project directory whenever a meaningful relative form
+    exists (:func:`linac_gen.io.portable_paths.best_relpath`), so the
+    project relocates with its deck; otherwise the absolute path is kept.
+    ``extra`` merges further top-level keys (e.g. ``calc_dir``).
+
+    Raises
+    ------
+    FileExistsError
+        ``path`` exists and ``overwrite`` is false.
+    """
+    from dataclasses import asdict
+    from linac_gen.io.portable_paths import best_relpath
+
+    p = Path(path)
+    if p.exists() and not overwrite:
+        raise FileExistsError(f"{p} exists (pass overwrite=True to replace it)")
+    # abspath, not resolve(): best_relpath abspath's the target, and a
+    # symlinked directory (macOS /tmp -> /private/tmp) must relativise
+    # the same way on both sides — the GUI's _collect_project_dict does
+    # the same.
+    anchor = os.path.abspath(p.parent)
+
+    def _portable(q):
+        if not q:
+            return q
+        rel, _ok = best_relpath(str(q), anchor)   # absolute when not portable
+        return rel
+
+    data: dict = {
+        "__kind__": "linac_gen_project",
+        "__version__": 1,
+        "lattice_path": _portable(str(lattice_path)),
+    }
+    b = asdict(beam)
+    if b.get("distribution_file"):
+        b["distribution_file"] = _portable(b["distribution_file"])
+    data["beam"] = b
+    data["convergence"] = dict(convergence or {})
+    if extra:
+        data.update(extra)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return p

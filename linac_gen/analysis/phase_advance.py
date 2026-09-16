@@ -23,7 +23,7 @@ from typing import Optional
 import numpy as np
 
 from linac_gen.analysis.period_detect import PeriodicStructure
-from linac_gen.tracking.matrix_tracking import (
+from linac_gen.tracking.matrix_tracking import (_with_tilt, 
     compute_transfer_matrix, compute_twiss,
 )
 
@@ -444,7 +444,7 @@ def coupled_beam_phase_advance_per_cell(results,
 
 def coupled_beam_phase_advance_per_cell_via_M(
     lattice, ref, period: PeriodicStructure, results,
-    *, cache: dict | None = None,
+    *, cache: dict | None = None, should_stop=None,
 ) -> dict:
     """Per-cell depressed eigenmode tunes σ_I, σ_II via the depressed
     one-period transfer matrix.
@@ -489,6 +489,7 @@ def coupled_beam_phase_advance_per_cell_via_M(
         SC_TILT_REL_EPS as _SC_TILT_EPS,
     )
 
+    _check_stop(should_stop)
     # --- Preferred: exact probe-based monodromies -----------------------
     if getattr(results, "element_maps_dep", None):
         ch = channel_phase_advance(results, period)
@@ -556,12 +557,7 @@ def coupled_beam_phase_advance_per_cell_via_M(
     # Replay the reference particle to the period entry.
     rc = ref.copy()
     for el in lattice.elements[:period.start]:
-        if isinstance(el, FieldMapElement):
-            el.advance_ref(rc)
-        else:
-            rc.s += el.length
-            if isinstance(el, ThinKickElement):
-                el.advance_ref(rc)
+        _advance_ref_like_matrix_walk(el, rc)
 
     # Cell spans from ``period.spans()`` — explicit per-repeat element
     # ranges built by walking *significant* elements (legacy constant
@@ -577,12 +573,15 @@ def coupled_beam_phase_advance_per_cell_via_M(
         M_dep = np.eye(6)
         span_a, span_b = cell_spans[k]
         for i in range(span_a, span_b):
+            # the legacy replay rebuilds every element matrix (field maps
+            # included) — poll per element, outside the try below
+            _check_stop(should_stop)
             sig_row = _entry_sigma_row(i)
             if i >= len(lattice.elements) or sig_row >= len(sm):
                 break
             el = lattice.elements[i]
             try:
-                M_bare = get_element_matrix(el, rc, cache=cache)
+                M_bare = _with_tilt(el, get_element_matrix(el, rc, cache=cache))
             except Exception:                                 # noqa: BLE001
                 M_bare = np.eye(6)
             ds = float(el.length) if el.length else 0.0
@@ -623,12 +622,7 @@ def coupled_beam_phase_advance_per_cell_via_M(
             M_step = M_sc @ M_bare
             M_dep = M_step @ M_dep
             # Advance ref through the element (matches matrix_tracking).
-            if isinstance(el, FieldMapElement):
-                el.advance_ref(rc)
-            else:
-                rc.s += el.length
-                if isinstance(el, ThinKickElement):
-                    el.advance_ref(rc)
+            _advance_ref_like_matrix_walk(el, rc)
 
         # Extract eigenmode tunes from the 4×4 transverse depressed map.
         M4 = M_dep[:4, :4]
@@ -692,12 +686,7 @@ def coupled_phase_advance_along_s(lattice, ref,
     from linac_gen.elements.base import FieldMapElement, ThinKickElement
     rc = ref.copy()
     for el in lattice.elements[:period.start]:
-        if isinstance(el, FieldMapElement):
-            el.advance_ref(rc)
-        else:
-            rc.s += el.length
-            if isinstance(el, ThinKickElement):
-                el.advance_ref(rc)
+        _advance_ref_like_matrix_walk(el, rc)
     s_at_period_start = float(rc.s)
 
     s_cells = np.zeros(n_reps + 1)
@@ -733,12 +722,7 @@ def coupled_phase_advance_along_s(lattice, ref,
         # Advance reference particle through the cell to update s.
         for i in range(span_a, span_b):
             el = lattice.elements[i]
-            if isinstance(el, FieldMapElement):
-                el.advance_ref(rc)
-            else:
-                rc.s += el.length
-                if isinstance(el, ThinKickElement):
-                    el.advance_ref(rc)
+            _advance_ref_like_matrix_walk(el, rc)
         s_cells[k + 1] = float(rc.s)
 
     return {
@@ -752,7 +736,8 @@ def coupled_phase_advance_along_s(lattice, ref,
 
 def coupled_phase_advance_per_cell(lattice, ref,
                                      period: PeriodicStructure,
-                                     *, cache: dict | None = None) -> dict:
+                                     *, cache: dict | None = None,
+                                     should_stop=None) -> dict:
     """Per-cell eigenmode μ_I, μ_II for every repeat of a coupled period.
 
     Splits the period span into ``n_repeats`` consecutive cells of
@@ -780,7 +765,12 @@ def coupled_phase_advance_per_cell(lattice, ref,
     mu_II = np.full(n, np.nan)
     s_I = np.zeros(n, dtype=bool)
     s_II = np.zeros(n, dtype=bool)
+    from linac_gen.core.cancelled import OperationCancelled
     for k in range(min(n, len(cell_spans))):
+        # Polled OUTSIDE the per-cell try below: OperationCancelled is an
+        # Exception, and inside it a cancel would be swallowed into
+        # ``continue`` and a NaN-filled dict returned as if valid.
+        _check_stop(should_stop)
         span_a, span_b = cell_spans[k]
         cell = PeriodicStructure(
             start=span_a,
@@ -797,6 +787,8 @@ def coupled_phase_advance_per_cell(lattice, ref,
             mu_II[k] = res["mu_II_deg"]
             s_I[k] = res["stable_I"]
             s_II[k] = res["stable_II"]
+        except OperationCancelled:
+            raise    # never masquerade as "this cell failed"
         except Exception:                                    # noqa: BLE001
             continue
     return {
@@ -1125,6 +1117,8 @@ def beam_phase_advance(
     results, period: PeriodicStructure, *,
     sigma0: Optional[dict] = None,
     matched_tol: float = 0.05,
+    method: str = "auto",
+    maps_from=None,
 ) -> dict:
     """Compute σ_x, σ_y for one period from a matched envelope run.
 
@@ -1278,6 +1272,40 @@ def beam_phase_advance(
     samples_per_period = (n_valid / (mu_max / 360.0)) if mu_max > 0 else float("inf")
     resolution_ok = bool(samples_per_period >= 20.0)
 
+    # Exact values from the probe's slice maps when they exist (see
+    # beam_phase_advance_from_maps): the per-period difference of the
+    # map-accumulated curve at the period's exit rows replaces the
+    # grid-dependent trapezoid; the mismatch / BMAG / coupling checks
+    # above stay as they are (they read Σ rows, not the integral).
+    method_used = "trapezoid"
+    maps_source = None
+    n_slices = None
+    if method not in ("auto", "maps", "trapezoid"):
+        raise ValueError(f"method must be 'auto', 'maps' or 'trapezoid', got {method!r}")
+    if method in ("auto", "maps"):
+        try:
+            curves = beam_phase_advance_from_maps(
+                results, maps_from=maps_from, start_index=0)
+        except ValueError:
+            if method == "maps":
+                raise
+        else:
+            def _diff(key):
+                arr = curves[key]
+                a = float(arr[s_start_idx]); b = float(arr[s_end_idx])
+                return (b - a) if (math.isfinite(a) and math.isfinite(b)) else None
+            dx, dy, dz = _diff("mu_x_deg"), _diff("mu_y_deg"), _diff("mu_z_deg")
+            if dx is not None and dy is not None:
+                mu_x, mu_y = dx, dy
+                if dz is not None:
+                    mu_z = dz
+                method_used = "maps"
+                maps_source = curves["maps_source"]
+                n_slices = curves["n_slices"]
+                resolution_ok = True
+                if curves["projected_only"]:
+                    projected_only = True
+
     out = {
         "mu_x_deg": mu_x,
         "mu_y_deg": mu_y,
@@ -1298,15 +1326,36 @@ def beam_phase_advance(
         "n_skipped_x": n_skip_x,
         "n_skipped_y": n_skip_y,
         "n_total": int(mask_x.size),
+        "method": method_used,
+        "maps_source": maps_source,
+        "n_slices": n_slices,
     }
     if sigma0 is not None:
         for plane in ("x", "y", "z"):
             # Branch-consistent denominator: the beam integral is an
-            # unwrapped magnitude; prefer the oriented branch value
-            # (equal to the principal one below 180°).
-            mu_struct = (sigma0.get(f"mu_{plane}_branch_deg")
-                         or sigma0.get(f"mu_{plane}_deg"))
+            # unwrapped magnitude, so divide by whichever branch of the
+            # structure tune — the principal value or its 360° mirror —
+            # it actually followed.  (The former "oriented branch"
+            # choice was 360° − μ for every z plane, because the drift
+            # slip makes m12 < 0 there: a matched beam read 0.36.)
+            # The beam integral is an unsigned rotation magnitude, so the
+            # denominator is the structure tune's oriented branch — the
+            # value compute_twiss orients by the sign of m12.  x/y: the
+            # branch is the magnitude directly (a drift has m12 > 0).  z:
+            # the (Δφ, ΔW) pair has the opposite handedness (a drift's
+            # slip gives m12 < 0), so the magnitude is 360° − branch —
+            # in BOTH regimes (μ < 180°: branch = 360 − μ; μ > 180°:
+            # m12 > 0, branch = 360 − μ again).  The old code divided z
+            # by the branch itself, so a matched beam read 0.36; a
+            # "nearest of {μ, 360 − μ}" rule is wrong for x/y whenever
+            # the period exceeds 180° and the beam is depressed below it.
             mu_beam = out[f"mu_{plane}_deg"]
+            branch = sigma0.get(f"mu_{plane}_branch_deg")
+            folded = sigma0.get(f"mu_{plane}_deg")
+            if plane == "z" and branch is not None and 0.0 < float(branch) < 360.0:
+                mu_struct = 360.0 - float(branch)
+            else:
+                mu_struct = branch or folded
             if mu_struct and mu_beam is not None and mu_struct > 0:
                 out[f"sigma_over_sigma0_{plane}"] = mu_beam / mu_struct
             else:
@@ -1361,20 +1410,10 @@ def _energy_change(lattice, ref, start: int, end_incl: int) -> tuple[float, floa
     rc = ref.copy()
     # Replay before the period.
     for el in lattice.elements[:start]:
-        if isinstance(el, FieldMapElement):
-            el.advance_ref(rc)
-        else:
-            rc.s += el.length
-            if isinstance(el, ThinKickElement):
-                el.advance_ref(rc)
+        _advance_ref_like_matrix_walk(el, rc)
     w_in = float(rc.w_kin)
     for el in lattice.elements[start:end_incl + 1]:
-        if isinstance(el, FieldMapElement):
-            el.advance_ref(rc)
-        else:
-            rc.s += el.length
-            if isinstance(el, ThinKickElement):
-                el.advance_ref(rc)
+        _advance_ref_like_matrix_walk(el, rc)
     w_out = float(rc.w_kin)
     return w_in, w_out
 
@@ -1382,6 +1421,74 @@ def _energy_change(lattice, ref, start: int, end_incl: int) -> tuple[float, floa
 # ---------------------------------------------------------------------------
 # Along-s phase advance (μ as a function of position)
 # ---------------------------------------------------------------------------
+def _twiss_propagate_2x2(c11, c12, c21, c22, alpha, beta):
+    """Twiss-propagate one 2×2 block; return ``(alpha_new, beta_new, dmu)``.
+
+    Module-level so the beam walk (:func:`beam_phase_advance_from_maps`)
+    and the structure walk (:func:`structure_phase_advance_along_s`) share
+    ONE propagator.  ``tracking.matrix_tracking.propagate_twiss`` has the
+    same β/α body without the phase increment and the β > 0 guard.
+
+    Phase increment uses ``atan2(c12, c11·β - c12·α)`` for quadrant
+    correctness then takes its absolute value, so the cumulative
+    μ(s) is monotonically positive — the standard MAD-X / PTC /
+    TraceWin convention for "phase advance accumulated along s".
+
+    For a stable matched cell, ``Σ |Δμ|`` over one period equals
+    ``acos(½ tr(M_period))`` — i.e. it agrees with the unsigned
+    period-Twiss extraction.  In our 6×6 basis the longitudinal
+    block has ``c12 < 0`` for drifts (phase slip) and the bare
+    ``atan2`` would accumulate a negative cumulative; the
+    ``abs`` keeps the convention uniform across planes.
+
+    Accelerating blocks (det ≠ 1): the geometric emittance scales
+    by det, so β/α must be divided by it (mirrors
+    ``propagate_twiss``).  The phase increment is unaffected —
+    ``atan2(k·a, k·b) == atan2(a, b)`` for the conformal scale
+    k = √det > 0 — but without the β/α correction every DOWNSTREAM
+    increment would be biased.
+    """
+    g = (1.0 + alpha * alpha) / beta if beta > 0 else 0.0
+    beta_new = c11 * c11 * beta - 2.0 * c11 * c12 * alpha + c12 * c12 * g
+    alpha_new = (
+        -c11 * c21 * beta
+        + (c11 * c22 + c12 * c21) * alpha
+        - c12 * c22 * g
+    )
+    det = c11 * c22 - c12 * c21
+    if det > 0.0 and abs(det - 1.0) > 1e-9:
+        beta_new /= det
+        alpha_new /= det
+    denom = c11 * beta - c12 * alpha
+    if c12 == 0.0 and denom == 0.0:
+        dmu = 0.0
+    else:
+        dmu = abs(math.atan2(c12, denom))
+    return alpha_new, beta_new, dmu
+
+
+
+def _advance_ref_like_matrix_walk(el, rc) -> None:
+    """Advance the reference particle through ``el`` exactly as
+    ``compute_transfer_matrix`` does: stateful elements start from a clean
+    slate and advance themselves; everything else advances ``s`` AND the
+    RF phase ``phi_s``.  The analysis walks used to advance only ``s``, so
+    a cavity whose matrix depends on the arrival phase — NCELLS with
+    absolute phases, SET_SYNC_PHASE field maps — was evaluated at a wrong
+    phase and the per-cell σ₀ of the structure walk diverged (fnalscl
+    cell 1 read 135° for an eigenphase of 50.7°; β_x ran to 1e16)."""
+    from linac_gen.elements.base import FieldMapElement, ThinKickElement
+    if isinstance(el, FieldMapElement):
+        el.reset_run_state()
+        el.advance_ref(rc)
+    else:
+        rc.s += el.length
+        if el.length > 0:
+            rc.phi_s += 360.0 * el.length / (rc.beta * rc.wavelength)
+        if isinstance(el, ThinKickElement):
+            el.advance_ref(rc)
+
+
 def structure_phase_advance_along_s(lattice, ref, period: PeriodicStructure,
                                        seed: dict | None = None,
                                        *, cache: dict | None = None,
@@ -1462,24 +1569,14 @@ def structure_phase_advance_along_s(lattice, ref, period: PeriodicStructure,
     # *from the period entry onward*; before that, leave NaN.
     rc = ref.copy()
     for el in lattice.elements[:period.start]:
-        if isinstance(el, FieldMapElement):
-            el.advance_ref(rc)
-        else:
-            rc.s += el.length
-            if isinstance(el, ThinKickElement):
-                el.advance_ref(rc)
+        _advance_ref_like_matrix_walk(el, rc)
     s_at_period_start = float(rc.s)
 
     # Pre-fill the s grid (always defined regardless of seed availability).
     rc2 = ref.copy()
     s_arr[0] = float(rc2.s)
     for i, el in enumerate(lattice.elements):
-        if isinstance(el, FieldMapElement):
-            el.advance_ref(rc2)
-        else:
-            rc2.s += el.length
-            if isinstance(el, ThinKickElement):
-                el.advance_ref(rc2)
+        _advance_ref_like_matrix_walk(el, rc2)
         s_arr[i + 1] = float(rc2.s)
 
     # If a plane's seed is missing (coupled, unstable), its curves stay
@@ -1513,58 +1610,17 @@ def structure_phase_advance_along_s(lattice, ref, period: PeriodicStructure,
     rc3 = ref.copy()
     # Replay before the period entry to set energy correctly.
     for el in lattice.elements[:period.start]:
-        if isinstance(el, FieldMapElement):
-            el.advance_ref(rc3)
-        else:
-            rc3.s += el.length
-            if isinstance(el, ThinKickElement):
-                el.advance_ref(rc3)
+        _advance_ref_like_matrix_walk(el, rc3)
 
-    def _propagate(c11, c12, c21, c22, alpha, beta):
-        """Twiss-propagate one 2×2 block; return ``(alpha_new, beta_new, dmu)``.
-
-        Phase increment uses ``atan2(c12, c11·β - c12·α)`` for quadrant
-        correctness then takes its absolute value, so the cumulative
-        μ(s) is monotonically positive — the standard MAD-X / PTC /
-        TraceWin convention for "phase advance accumulated along s".
-
-        For a stable matched cell, ``Σ |Δμ|`` over one period equals
-        ``acos(½ tr(M_period))`` — i.e. it agrees with the unsigned
-        period-Twiss extraction.  In our 6×6 basis the longitudinal
-        block has ``c12 < 0`` for drifts (phase slip) and the bare
-        ``atan2`` would accumulate a negative cumulative; the
-        ``abs`` keeps the convention uniform across planes.
-
-        Accelerating blocks (det ≠ 1): the geometric emittance scales
-        by det, so β/α must be divided by it (mirrors
-        ``propagate_twiss``).  The phase increment is unaffected —
-        ``atan2(k·a, k·b) == atan2(a, b)`` for the conformal scale
-        k = √det > 0 — but without the β/α correction every DOWNSTREAM
-        increment would be biased.
-        """
-        g = (1.0 + alpha * alpha) / beta if beta > 0 else 0.0
-        beta_new = c11 * c11 * beta - 2.0 * c11 * c12 * alpha + c12 * c12 * g
-        alpha_new = (
-            -c11 * c21 * beta
-            + (c11 * c22 + c12 * c21) * alpha
-            - c12 * c22 * g
-        )
-        det = c11 * c22 - c12 * c21
-        if det > 0.0 and abs(det - 1.0) > 1e-9:
-            beta_new /= det
-            alpha_new /= det
-        denom = c11 * beta - c12 * alpha
-        if c12 == 0.0 and denom == 0.0:
-            dmu = 0.0
-        else:
-            dmu = abs(math.atan2(c12, denom))
-        return alpha_new, beta_new, dmu
+    _propagate = _twiss_propagate_2x2
 
     for i in range(period.start, n):
         _check_stop(should_stop)
         el = lattice.elements[i]
         try:
-            M = get_element_matrix(el, rc3, cache=cache)
+            if isinstance(el, FieldMapElement):
+                el.reset_run_state()        # clean slate, as compute_transfer_matrix
+            M = _with_tilt(el, get_element_matrix(el, rc3, cache=cache))
         except Exception:                                     # noqa: BLE001
             # Unsupported element — break the chain; downstream stays NaN.
             break
@@ -1592,12 +1648,7 @@ def structure_phase_advance_along_s(lattice, ref, period: PeriodicStructure,
             mu_z[i + 1] = math.degrees(muz)
 
         # Advance the reference particle through the element.
-        if isinstance(el, FieldMapElement):
-            el.advance_ref(rc3)
-        else:
-            rc3.s += el.length
-            if isinstance(el, ThinKickElement):
-                el.advance_ref(rc3)
+        _advance_ref_like_matrix_walk(el, rc3)
 
     # Clear pre-period samples (Twiss undefined there).
     for j in range(period.start):
@@ -1775,7 +1826,158 @@ def _beta_z_from_sigma(results) -> "np.ndarray | None":
     return None
 
 
-def beam_phase_advance_along_s(results, *, start_index: int = 0) -> dict:
+
+def beam_phase_advance_from_maps(results, *, maps_from=None,
+                                 start_index: int = 0) -> dict:
+    """Cumulative beam phase advance μ(s) accumulated through the phase
+    probe's slice maps — exact on any record grid.
+
+    For every element the beam ellipse is re-seeded from the recorded
+    Σ at the element entrance (``sigma_matrix[element_exit_idx[j-1]]``)
+    and walked through the maps the solver applied to Σ inside that
+    element (``probe_M`` slices, Strang halves, SC kicks, edges,
+    freq-jump D, tilt rotations — in application order), summing
+    ``|atan2(m12, m11·β − m12·α)|`` per slice exactly like the
+    structure walk.  A beam matched to a cell therefore reproduces the
+    cell's depressed eigenphase (``compute_twiss(M_dep, plane)``) to
+    round-off — Floquet's theorem — independent of how many rows were
+    recorded; the trapezoid ∫ds/β on an element-exit grid is 12–38 %
+    high through 1.4–2.1 m cavities (fnalscl, 2026-09-13).
+
+    ``maps_from`` supplies the slices from another probe-bearing run on
+    the same lattice (the GUI's companion envelope probe for MP
+    results, whose recorder carries Σ but no maps); its space-charge
+    slices are linearised on THAT run's beam, so the result is exact
+    for envelope results and an approximation for MP.
+
+    Rows: μ is exact at every element exit row; interior (substep)
+    rows are linearly interpolated in s within their element and
+    counted in ``interpolated_rows`` — per-cell and per-period values
+    read only exit rows, so they are exact.  The z plane is walked in
+    the native (Δφ, ΔW) block, the coordinates of ``compute_twiss(M,
+    "z")``.
+
+    Raises ``ValueError`` when no usable maps exist (results without a
+    probe, legacy files, a companion whose element count differs).
+
+    Returns ``s`` (mm), ``mu_x_deg`` / ``mu_y_deg`` / ``mu_z_deg`` (NaN
+    before ``start_index``, 0 at it), ``method="maps"``,
+    ``maps_source`` (``"own"`` / ``"companion"``), ``resolution_ok``
+    (True), ``max_step_deg`` (None), ``n_slices``,
+    ``n_skipped_x/y/z`` (ELEMENTS whose entrance Σ had no valid
+    ellipse — lost beam, DC longitudinal; the per-period
+    ``beam_phase_advance`` counts skipped ROWS under the same key
+    name), ``interpolated_rows``,
+    ``projected_only`` (an entrance Σ was x–y coupled).
+    """
+    import numpy as np
+    src = maps_from if maps_from is not None else results
+    p_m = getattr(src, "probe_M", None)
+    p_idx = getattr(src, "probe_elem_idx", None)
+    if not p_m or not p_idx or len(p_m) != len(p_idx):
+        raise ValueError("no probe maps (run the envelope with phase_probe=True)")
+    exit_idx = list(getattr(results, "element_exit_idx", None) or [])
+    src_exit = list(getattr(src, "element_exit_idx", None) or [])
+    if not exit_idx or len(src_exit) != len(exit_idx):
+        raise ValueError("probe maps do not match the results' element count")
+    sm = getattr(results, "sigma_matrix", None)
+    s = np.asarray(results.s, dtype=float)
+    n = s.size
+    if sm is None or len(sm) != n or n == 0:
+        raise ValueError("results carry no per-row sigma matrices")
+    n_el = len(exit_idx)
+    slices = [[] for _ in range(n_el)]
+    for k, j in enumerate(p_idx):
+        if 0 <= j < n_el:
+            slices[j].append(k)
+
+    blocks = {"x": (0, 1), "y": (2, 3), "z": (4, 5)}
+    mu_rows = {pl: np.full(n, np.nan) for pl in blocks}
+    mu_acc = {pl: 0.0 for pl in blocks}
+    n_skipped = {pl: 0 for pl in blocks}
+    for pl in blocks:
+        mu_rows[pl][0] = 0.0
+    interpolated = 0
+    projected_only = False
+    for j in range(n_el):
+        r_in = 0 if j == 0 else int(exit_idx[j - 1])
+        r_out = int(exit_idx[j])
+        if not (0 <= r_in < n and r_in <= r_out < n):
+            continue
+        S = np.asarray(sm[r_in], dtype=float)
+        denom = math.sqrt(max(float(S[0, 0] * S[2, 2]), 1e-30))
+        if float(np.abs(S[0:2, 2:4]).max()) > 0.05 * denom:
+            projected_only = True
+        if not projected_only:
+            # A solenoid (or tilted element) couples x and y inside the
+            # element even when the recorded boundary Σ is round and
+            # decoupled: the per-plane 2×2 walk is then a PROJECTED
+            # phase, not a normal-mode one — flag it from the maps.
+            for k in slices[j]:
+                M = np.asarray(p_m[k], dtype=float)
+                scale = max(1.0, float(np.abs(M[0:4, 0:4]).max()))
+                if float(np.abs(M[0:2, 2:4]).max()) > 1e-9 * scale:
+                    projected_only = True
+                    break
+        for pl, (i0, i1) in blocks.items():
+            b11 = float(S[i0, i0]); b12 = float(S[i0, i1]); b22 = float(S[i1, i1])
+            det = b11 * b22 - b12 * b12
+            if not (det > 0.0 and b11 > 0.0):
+                n_skipped[pl] += 1              # no ellipse to walk (lost beam, DC z)
+                continue
+            eps = math.sqrt(det)
+            beta = b11 / eps
+            alpha = -b12 / eps
+            acc = mu_acc[pl]
+            for k in slices[j]:
+                M = p_m[k]
+                alpha, beta, dmu = _twiss_propagate_2x2(
+                    float(M[i0, i0]), float(M[i0, i1]),
+                    float(M[i1, i0]), float(M[i1, i1]), alpha, beta)
+                acc += dmu
+            mu_acc[pl] = acc
+        for pl in blocks:
+            mu_rows[pl][r_out] = math.degrees(mu_acc[pl])
+            if r_out > r_in + 1:
+                s0 = s[r_in]; s1 = s[r_out]
+                m0 = mu_rows[pl][r_in]; m1 = mu_rows[pl][r_out]
+                span = s1 - s0
+                for r in range(r_in + 1, r_out):
+                    f = (s[r] - s0) / span if span > 0 else 0.0
+                    mu_rows[pl][r] = m0 + f * (m1 - m0)
+        if r_out > r_in + 1:
+            interpolated += r_out - r_in - 1
+
+    si = max(0, min(int(start_index), n - 1))
+    for pl in blocks:
+        mu = mu_rows[pl]
+        ref = mu[si]
+        if np.isfinite(ref):
+            mu -= ref
+        if si > 0:
+            mu[:si] = np.nan
+    return {
+        "s": s,
+        "mu_x_deg": mu_rows["x"],
+        "mu_y_deg": mu_rows["y"],
+        "mu_z_deg": mu_rows["z"],
+        "method": "maps",
+        "maps_source": "own" if src is results else "companion",
+        "resolution_ok": True,
+        "resolution_ok_x": True, "resolution_ok_y": True, "resolution_ok_z": True,
+        "max_step_deg": None,
+        "max_step_x_deg": None, "max_step_y_deg": None, "max_step_z_deg": None,
+        "n_slices": int(len(p_m)),
+        "n_skipped_x": n_skipped["x"],
+        "n_skipped_y": n_skipped["y"],
+        "n_skipped_z": n_skipped["z"],
+        "interpolated_rows": int(interpolated),
+        "projected_only": bool(projected_only),
+    }
+
+
+def beam_phase_advance_along_s(results, *, start_index: int = 0,
+                               method: str = "auto", maps_from=None) -> dict:
     """Cumulative beam phase advance μ(s) from envelope results.
 
     ``μ(s) = ∫₀^s ds' / β_beam(s')`` — a standard cumulative-trapezoid
@@ -1787,15 +1989,41 @@ def beam_phase_advance_along_s(results, *, start_index: int = 0) -> dict:
     integration starts at index ``start_index`` (set this to the
     period entry to align the curve with the matched-beam Twiss).
 
+    ``method``: ``"maps"`` accumulates the phase through the probe's
+    slice maps (:func:`beam_phase_advance_from_maps` — exact on any
+    record grid, needs a probe-bearing run or ``maps_from``);
+    ``"trapezoid"`` is the ∫ds/β integral on the record grid (TraceWin's
+    kx/ky/kz convention — biased on element-exit grids through long
+    elements); ``"auto"`` (default) takes the maps when they exist and
+    falls back to the trapezoid otherwise.  ``maps_from`` supplies the
+    slices from another probe-bearing run on the same lattice (MP
+    results + companion envelope probe).
+
     Returns
     -------
     dict
         ``s`` (mm), ``mu_x_deg``, ``mu_y_deg``, ``mu_z_deg`` — same
         length as the envelope's s-grid, with NaN before
         ``start_index``.  Planes for which β couldn't be extracted
-        return all-NaN.
+        return all-NaN.  Diagnostics: ``method`` (``"maps"`` /
+        ``"trapezoid"``), ``maps_source``, ``max_step_deg`` (largest
+        single-row |Δμ| of the trapezoid, None for maps) and
+        ``resolution_ok`` (False when the trapezoid grid is coarser
+        than 20 samples per 2π in x or y, i.e. a row step above 18°;
+        per-plane ``max_step_{x,y,z}_deg`` / ``resolution_ok_{x,y,z}``
+        are reported too — the z verdict is kept separate because the z
+        "phase" of a DC or RF-free beam is not resolvable at all).
     """
     import numpy as np
+    if method not in ("auto", "maps", "trapezoid"):
+        raise ValueError(f"method must be 'auto', 'maps' or 'trapezoid', got {method!r}")
+    if method in ("auto", "maps"):
+        try:
+            return beam_phase_advance_from_maps(
+                results, maps_from=maps_from, start_index=start_index)
+        except ValueError:
+            if method == "maps":
+                raise
     s = np.asarray(results.s, dtype=float)
     bx = np.asarray(results.beta_x, dtype=float)
     by = np.asarray(results.beta_y, dtype=float)
@@ -1820,9 +2048,32 @@ def beam_phase_advance_along_s(results, *, start_index: int = 0) -> dict:
             mu[:start_index] = np.nan
         return mu
 
-    return {
+    out = {
         "s": s,
         "mu_x_deg": _accum(bx),
         "mu_y_deg": _accum(by),
         "mu_z_deg": _accum(bz),
+        "method": "trapezoid",
+        "maps_source": None,
     }
+    # Resolution of the record grid: the largest single-row phase step.
+    # Above 18° (fewer than 20 samples per 2π — the per-period rule in
+    # beam_phase_advance) the trapezoid through thick elements is
+    # quantitatively unreliable: +12–38 % through 1.4–2.1 m cavities.
+    # Per plane: the z "phase" of a DC or RF-free beam steps by hundreds of
+    # degrees per row and must not grey out x/y (fodo_cell with substeps:
+    # x 9°, y 9°, z 422°).  ``max_step_deg`` / ``resolution_ok`` summarise
+    # the transverse planes; the z verdict is its own key.
+    for pl in ("x", "y", "z"):
+        mu = out[f"mu_{pl}_deg"]
+        fin = np.isfinite(mu)
+        step = 0.0
+        if fin.sum() >= 2:
+            steps = np.abs(np.diff(mu[fin]))
+            if steps.size:
+                step = float(np.nanmax(steps))
+        out[f"max_step_{pl}_deg"] = step
+        out[f"resolution_ok_{pl}"] = bool(step <= 18.0)
+    out["max_step_deg"] = max(out["max_step_x_deg"], out["max_step_y_deg"])
+    out["resolution_ok"] = bool(out["resolution_ok_x"] and out["resolution_ok_y"])
+    return out

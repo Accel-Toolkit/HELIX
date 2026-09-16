@@ -147,6 +147,7 @@ nav:
       - 'CLI: study': 06_running/12_cli_study.md
       - 'CLI: twiss': 06_running/10_cli_twiss.md
       - 'CLI: backtrack': 06_running/11_cli_backtrack.md
+      - 'CLI: orm': 06_running/13_cli_orm.md
   - Matching:
       - Overview: 07_matching/01_overview.md
       - SET / ADJUST cards: 07_matching/02_set_adjust.md
@@ -164,6 +165,7 @@ nav:
       - Running studies: 08_errors/05_running_studies.md
       - Interpreting results: 08_errors/06_interpreting.md
       - Orbit correction: 08_errors/07_correction.md
+      - Orbit-response calibration (LOCO): 08_errors/08_orm_calibration.md
   - Diagnostics:
       - Recorder fields: 09_diagnostics/01_recorder.md
       - Emittances: 09_diagnostics/02_emittances.md
@@ -215,3 +217,4 @@ nav:
       - D. Troubleshooting: appendices/D_troubleshooting.md
       - E. Migrating from TraceWin: appendices/E_migrating_from_tw.md
       - F. Contributing: appendices/F_contributing.md
+      - G. TraceWin .ini format: appendices/G_tracewin_ini_format.md

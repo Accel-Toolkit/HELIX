@@ -12,6 +12,60 @@ Task-oriented quick reference: "I want to do X, where do I click?"
    **Run Multi-particle**.
 5. **Results tab** → click any tile.
 
+## "I have a TraceWin project (.dat + .ini) and want its beam in HELIX"
+
+TraceWin keeps the input beam you typed into its *Main*/*Beam* panels
+in `<project>.ini`, next to the deck.  Three routes; all three end with
+the beam in the Beam tab as the session beam, the project marked dirty,
+and every conversion warning in the console.
+
+**Route A — open the deck and say yes** (a TraceWin project folder,
+first look):
+
+1. **File → Open Lattice…** (Ctrl+O) → pick `<project>.dat`.
+2. HELIX finds `<project>.ini` next to it and asks *Import its beam
+   into the Beam tab?  This replaces the current beam settings.*  Click
+   **Yes**.  (**No** keeps whatever beam you had — nothing is read
+   silently, and opening a `.lgproj` never asks.)
+3. **Beam tab** → check species, energy, frequency, current, particle
+   count, ε and Twiss.  `alpha_z` already has HELIX's sign.  A LEBT
+   project (no longitudinal emittance) arrives with **Continuous beam**
+   ticked; set the DC energy spread yourself.
+4. Set what the file does not carry — distribution type, cut-off,
+   centroids — then **Apply** if you changed anything.
+5. **File → Save Project** so the `.lgproj` carries the beam; from now
+   on open the project, not the deck.
+
+**Route B — the deck is already open, or the `.ini` lives elsewhere:**
+
+1. **Beam tab → Import TraceWin .ini…** → pick the file (any name,
+   any folder).
+2. Read the status line next to the button (species, energy,
+   frequency, current, particle count, and a warning count) and the
+   console.
+3. Continue with steps 4–5 of route A.
+
+**Route C — a new HELIX project from a TraceWin deck:**
+
+1. **File → New Project…** (Ctrl+N) → name and location → **Import an
+   existing lattice** → browse to `<project>.dat`.
+2. The checkbox **Also import the beam from the TraceWin .ini next to
+   the deck** lights up when a sibling `.ini` exists; tick it.  With
+   *Copy the lattice into the project folder* the `.ini` is copied
+   alongside.
+3. **OK** — the project opens with the imported beam and its `.lgproj`
+   is already written.
+
+**When something does not fit:** a user-defined particle in the file
+(an ion, a `My_particle` slot) has no HELIX species — the import keeps
+the species selected in the Beam tab and says so in the console; pick
+the right one first.  A value outside a field's range is clamped and
+reported.  The PICNIC mesh sizes are recorded in the project file but
+not applied — HELIX's space-charge grid is set on the Numerics tab.
+For a second TraceWin input beam, or a deck whose `.ini` you want to
+use for one headless run only, use the CLI (`twini --beam 2`,
+`--tracewin-ini`): see [Importing TraceWin project settings](../06_running/02_tracewin_dat.md#importing-tracewin-project-settings-ini).
+
 ## "I want to match Twiss to a target"
 
 The matcher's variables and constraints come **exclusively** from
@@ -57,8 +111,10 @@ them.  The realistic flow:
 2. Pick a name and a location — a folder `<name>/` is created there.
 3. Choose the starting point: a **blank lattice** (one editable
    drift), **import** an existing `.dat` (copied into the folder by
-   default so the project stays portable), or a bundled **example**
-   (FODO cell, solenoid channel, DTL section).
+   default so the project stays portable; when a TraceWin `<deck>.ini`
+   sits next to it, a checkbox also imports that project's beam — see
+   [Beam tab](03_beam_tab.md#importing-a-tracewin-ini-project-beam)),
+   or a bundled **example** (FODO cell, solenoid channel, DTL section).
 4. The project opens immediately; simulation outputs land in
    `<name>/runs/`, so the whole folder can be moved, archived or
    version-controlled as one unit.  **File → Save Project** updates

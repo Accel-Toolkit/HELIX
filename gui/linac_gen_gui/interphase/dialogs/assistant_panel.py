@@ -118,7 +118,24 @@ def _make_context(state, calc_dir: str, nav=None):
             _settings().remove(_SETTINGS_LAST_PROJECT)
 
         def set_beam_config(self, cfg):
-            self._state.set_beam_config(cfg)
+            # Tools run off the GUI thread; the beam must land in the
+            # Beam-tab FORM, not only in AppState: Save Project serialises
+            # the widgets (_collect_project_dict) and every Apply / Reset
+            # rebuilds the state from them, so a state-only write would
+            # be saved as — and silently reverted to — the old beam (the
+            # 2026-07-16 "beam left at defaults" class).  The form's
+            # set_beam_config pushes to the state itself (quiet apply).
+            def _do():
+                app = (getattr(self._nav, "_app", None)
+                       if self._nav is not None else None)
+                form = getattr(app, "beam_tab", None)
+                if form is not None:
+                    form.set_beam_config(cfg)
+                    self._state.mark_project_dirty()
+                else:
+                    self._state.set_beam_config(cfg)
+                return {"ok": True}
+            self._gui_sync(_do, {"cancelled": False})
 
         def set_results(self, results, path=""):
             self._results_path = path

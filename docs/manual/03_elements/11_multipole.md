@@ -110,7 +110,7 @@ linac_gen.elements.multipole.Multipole(
 | `ksl` | None (→ []) | 1/mⁱ at index i | skew counterparts (rotated by π/2n) |
 | `aperture` | 0.0 | mm | round-aperture radius; 0 = no check |
 | `dx`, `dy` | 0.0 | mm | transverse offsets — plain attributes (no Misalignment mixin); the kick is evaluated at `(x − dx, y − dy)`, producing feed-down |
-| `tilt_deg` | 0.0 | deg | rotation about z, applied around the kick |
+| `tilt_deg` | 0.0 | deg | rotation about the beam axis, applied around the kick — the same sense as `Quadrupole.skew_angle` and MAD-X `tilt`; the linear (n = 2) block sees the normal/skew strengths rotated by 2θ, `(k₁L)_n·cos 2θ + (k₁L)_s·sin 2θ` / `−(k₁L)_n·sin 2θ + (k₁L)_s·cos 2θ` (until 2026-09-06 the linearised matrix carried the opposite sign on the sin 2θ terms, so matrix and envelope mode coupled a tilted multipole the opposite way to particle tracking; the MAD-X converter used to compensate and no longer does) |
 
 Convenience **factory functions** (they return a configured
 `Multipole`, not subclass instances):

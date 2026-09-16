@@ -24,6 +24,15 @@ box:
 
 Just open the `.dat` in the GUI (Ctrl+O) and click Run.
 
+* The project's **input beam** too: TraceWin keeps it in the binary
+  `<project>.ini` next to the deck, and HELIX reads that file — the GUI
+  offers the import when it opens a deck with a sibling `.ini` (and the
+  Beam tab has an **Import TraceWin .ini…** button), the CLI takes
+  `--tracewin-ini` on every input-taking command, and
+  `python -m linac_gen twini deck.ini --lgproj` turns the pair into a
+  HELIX project.  See [Importing TraceWin project settings](../06_running/02_tracewin_dat.md#importing-tracewin-project-settings-ini)
+  and [Appendix G](G_tracewin_ini_format.md) for what is decoded.
+
 ## Conventions and units
 
 * Length units: **mm** — this is HELIX's internal convention for
@@ -44,6 +53,9 @@ Just open the `.dat` in the GUI (Ctrl+O) and click Run.
     | | TraceWin input | HELIX `alpha_z` |
     |---|---|---|
     | Example (PIP-II HB650) | −0.50 | **+0.50** |
+
+    The `.ini` importer applies this negation for you (once, in the
+    reader) — do not flip the imported `alpha_z` again.
 
     Getting this sign wrong leaves energy, transmission and the transverse
     envelope untouched but *damps the synchrotron mismatch oscillation* —

@@ -43,6 +43,12 @@ Three paths:
 * **File menu → Open Lattice…**.
 * **Ctrl+O**.
 
+When a TraceWin `<deck>.ini` (the project options file) sits next to
+the opened `.dat`, HELIX asks whether to import its beam into the
+[Beam tab](03_beam_tab.md#importing-a-tracewin-ini-project-beam);
+**No** keeps the current beam.  Opening a `.lgproj` never asks — the
+project's saved beam wins.
+
 The dialog accepts TraceWin `.dat` files, MAD-X `.madx` / `.seq`,
 MAD8 `.lat` / `.flat` and Elegant `.lte` files, and — through the
 optional lattix translator — Bmad `.bmad`, SciBmad `.jl` / `.scibmad`

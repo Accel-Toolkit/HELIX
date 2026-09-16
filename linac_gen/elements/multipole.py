@@ -132,17 +132,25 @@ class Multipole(ThinKickElement):
         here.
         """
         M = np.eye(6)
-        # Effective normal/skew k1L after tilt: a rotation by θ converts
-        # (k1L_n, k1L_s) → (k1L_n·cos2θ - k1L_s·sin2θ,  k1L_n·sin2θ + k1L_s·cos2θ).
+        # Effective normal/skew k1L after tilt — the Jacobian of
+        # ``_kick_mrad``: the kick is evaluated in the element frame
+        # z_e = e^{-iθ} z and rotated back, so the lab-frame complex
+        # strength is (b + i a)·e^{-2iθ}, i.e.
+        #   (k1L_n, k1L_s) → (k1L_n·cos2θ + k1L_s·sin2θ,  -k1L_n·sin2θ + k1L_s·cos2θ).
         # The factor 2 in the angle reflects that the n-th multipole
-        # rotates by n·θ under a frame rotation by θ.
+        # rotates by n·θ under a frame rotation by θ.  This is the same
+        # sense as Quadrupole.skew_angle, the tracker's tilt wrap and
+        # MAD-X's ``tilt`` (pinned in tests/elements/test_multipole.py and
+        # tests/io/test_madx_conventions.py); until 2026-09-06 the sign of
+        # the sin2θ terms was reversed here, so matrix/envelope mode
+        # coupled a tilted multipole the opposite way to particle tracking.
         k1L_n = self.knl[1] if len(self.knl) >= 2 else 0.0
         k1L_s = self.ksl[1] if len(self.ksl) >= 2 else 0.0
         if self.tilt_deg != 0.0 and (k1L_n != 0.0 or k1L_s != 0.0):
             two_theta = math.radians(2.0 * self.tilt_deg)
             c2, s2 = math.cos(two_theta), math.sin(two_theta)
-            k1L_eff_n = k1L_n * c2 - k1L_s * s2
-            k1L_eff_s = k1L_n * s2 + k1L_s * c2
+            k1L_eff_n = k1L_n * c2 + k1L_s * s2
+            k1L_eff_s = -k1L_n * s2 + k1L_s * c2
         else:
             k1L_eff_n, k1L_eff_s = k1L_n, k1L_s
 

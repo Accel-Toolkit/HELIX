@@ -303,11 +303,15 @@ def win(qapp, monkeypatch, gui_message_boxes):
         t0 = _time.time()
         while _time.time() - t0 < timeout_s:
             qapp.processEvents()
-            wk = getattr(dlg, "_worker", None)
-            pw = getattr(dlg, "_probe_worker", None)
-            busy = ((wk is not None and wk.isRunning())
-                    or (pw is not None and pw.isRunning()))
-            if not busy and getattr(dlg, "_pending_key", None) is None:
+            if hasattr(dlg, "_busy"):
+                busy = dlg._busy()          # iterates _PopupPlot._WORKER_ATTRS
+            else:
+                wk = getattr(dlg, "_worker", None)
+                pw = getattr(dlg, "_probe_worker", None)
+                busy = ((wk is not None and wk.isRunning())
+                        or (pw is not None and pw.isRunning())
+                        or getattr(dlg, "_pending_key", None) is not None)
+            if not busy:
                 break
             _time.sleep(0.05)
         _pump(0.5)
