@@ -17,6 +17,9 @@ from linac_gen.reliability.spec import (PRESETS, ReliabilitySpec, default_spec, 
                                         save_spec, spec_sha256)
 from linac_gen.reliability.summary import read_csv
 
+import importlib.util as _ilu
+_HAS_MPL = _ilu.find_spec("matplotlib") is not None      # figures are optional
+
 REPO = Path(__file__).resolve().parents[2]
 DEMO = REPO / "examples" / "reliability_demo"
 
@@ -87,7 +90,8 @@ def test_create_plans_every_leg_and_run_completes(campaign):
                  "legs/faults/faults.csv", "legs/faults/compensation.csv", "legs/faults/criticality_map.csv",
                  "legs/imperfections/seeds.csv", "legs/imperfections/faults_on_seeds.csv",
                  "legs/foil/foil.csv", "legs/availability/availability.csv",
-                 "legs/availability/blocks.csv", "figures/criticality_by_case.png"):
+                 "legs/availability/blocks.csv") + (
+                     ("figures/criticality_by_case.png",) if _HAS_MPL else ()):
         assert (c.dir / name).exists(), name
     pins = json.loads((c.dir / "pins.json").read_text())
     assert set(pins["env"]["kinds"]) == {"GAP_001", "GAP_002", "GAP_003", "GAP_004"}
@@ -146,9 +150,11 @@ def test_seeds_faults_on_seeds_foil_and_availability(campaign):
     assert all(0.0 < float(r["availability_mean"]) < 1.0 for r in av)
     assert (c.dir / "legs/availability/blocks.csv").read_text().startswith("# Reliability block diagram")
     html = (c.dir / "report.html").read_text(encoding="utf-8")
-    assert "data:image/png;base64," in html and "Leg B" in html and "<script" not in html
-    img = html.split("data:image/png;base64,")[1].split('"')[0]
-    assert base64.b64decode(img)[:8] == b"\x89PNG\r\n\x1a\n"
+    assert "Leg B" in html and "<script" not in html
+    if _HAS_MPL:                         # figures need the optional matplotlib
+        assert "data:image/png;base64," in html
+        img = html.split("data:image/png;base64,")[1].split('"')[0]
+        assert base64.b64decode(img)[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 def test_resume_is_a_noop_and_retry_failed_requeues(campaign):

@@ -218,9 +218,18 @@ def _demo_checks(ck: _Checks, work: Path, progress, should_stop) -> dict:
     ck.exact("legB.campaign.variants", sorted(r["variant"] for r in av), ["srf_fdr", "srf_sns"])
     # -- report
     html = (cdir / "report.html").read_text(encoding="utf-8")
-    ck.add("report.embedded_png", "data:image/png;base64," in html, "data URI PNG", "present" if
-           "data:image/png;base64," in html else "absent")
+    if importlib.util.find_spec("matplotlib") is None:
+        # figures are optional: without matplotlib the report is text + tables
+        ck.rows.append({"name": "report.embedded_png", "status": "SKIP",
+                        "expected": "data URI PNG", "got": "matplotlib not installed",
+                        "tol": None, "note": "pip install matplotlib for figures"})
+    else:
+        ck.add("report.embedded_png", "data:image/png;base64," in html, "data URI PNG",
+               "present" if "data:image/png;base64," in html else "absent")
     return values
+
+
+_OPTIMIZER_KEYS = ("legA|compensate|",)
 
 
 def _baseline_compare(ck: _Checks, values: dict) -> None:
@@ -243,6 +252,17 @@ def _baseline_compare(ck: _Checks, values: dict) -> None:
         if exact:
             ok = bool(np.array_equal(a, b, equal_nan=True))
             ck.add(f"baseline.{k}", ok, "bit-identical", "identical" if ok else "differs", "exact")
+        elif k.startswith(_OPTIMIZER_KEYS):
+            # an optimiser's end point: its path through the cost landscape
+            # moves with the platform's last-digit arithmetic, so across
+            # machines it is compared at a physical tolerance (the recovery
+            # itself is a truth check above); bit-exact under
+            # HELIX_BASELINE_EXACT=1 on the machine that wrote the fixture
+            scale = max(1.0, float(np.nanmax(np.abs(b))) if b.size else 1.0)
+            ok = bool(np.allclose(a, b, rtol=1e-4, atol=1e-4 * scale, equal_nan=True))
+            rel = float(np.nanmax(np.abs(a - b)) / scale) if b.size else 0.0
+            ck.add(f"baseline.{k}", ok, "within 1e-4 (optimiser end point)",
+                   f"max rel diff {rel:.1e}", "rtol 1e-4")
         else:
             atol = 1e-12 * max(1.0, float(np.nanmax(np.abs(b))) if b.size else 1.0)
             ok = bool(np.allclose(a, b, rtol=1e-14, atol=atol, equal_nan=True))
