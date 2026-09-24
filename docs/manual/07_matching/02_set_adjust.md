@@ -209,6 +209,28 @@ cavity off-crest.
 
 Residual: `weight × max(0, energy_mev − W_kin_out)`.
 
+### `SET_PHASE_OUT phase_deg weight tol_deg`
+
+HELIX extension (no TraceWin counterpart): the reference particle's RF-clock
+phase at the end of the line (`EnvelopeResults.ref_phi_s` / the recorder's
+`ref_phi_s`, degrees at the reference frequency) is held at `phase_deg`.
+Written by the Reliability Study mode from the nominal run's exit clock, so
+that a fault compensation that restores the exit energy also restores the
+arrival time at the treaty point and the RF downstream stays in phase.
+
+| Pos | Field | Type | Units | Default | Required | Description |
+|---|---|---|---|---|---|---|
+| 1 | `phase_deg` | float | deg | 0.0 | yes | target exit clock phase |
+| 2 | `weight` | float | — | 1.0 | no | multiplier; `0` skips the constraint |
+| 3 | `tol_deg` | float | deg | 0.0 | no | dead band around the target |
+
+Residual: `weight × max(0, |wrap180(φ_out − phase_deg)| − tol_deg) / 360`.
+Results without a clock history make the card inert with one warning.
+
+```
+SET_PHASE_OUT 2602.06 5.0 0.5
+```
+
 ```
 SET_KE_OUT_MIN 5.0 10.0
 ```

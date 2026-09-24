@@ -19,6 +19,10 @@ Subcommands:
   ``SEQUENCE``, the exact inverse of the MAD-X importer);
 * ``twini`` — TraceWin project options file (``.ini``): the converted
   beam, a decode report, or a ``.lgproj`` for the deck;
+* ``reliability`` — the Reliability Study mode: fault tolerance with
+  compensation, imperfections with faults on error seeds, foil scenarios
+  and availability as one resumable campaign with a report; job export /
+  import and a built-in self-test;
 * ``match`` — delegates to the matcher (``python -m linac_gen.matching``).
 
 All of it is GUI-free and drives the same engines the GUI uses.
@@ -63,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     from linac_gen.cli import export as export_cmd
     from linac_gen.cli import orm as orm_cmd
     from linac_gen.cli import tracewin_ini as twini_cmd
+    from linac_gen.cli import reliability as rel_cmd
 
     run_cmd.add_arguments(sub.add_parser(
         "run", help="run one headless simulation"))
@@ -94,6 +99,10 @@ def main(argv: list[str] | None = None) -> int:
     twini_cmd.add_arguments(sub.add_parser(
         "twini", help="TraceWin project options file (.ini) — converted "
                       "beam, decode report, or a .lgproj for the deck"))
+    rel_cmd.add_arguments(sub.add_parser(
+        "reliability", help="Reliability Study mode — faults + compensation, imperfections, "
+                            "foil, availability as one resumable campaign with a report; "
+                            "job export/import; self-test"))
     sub.add_parser("match", add_help=False,
                    help="run the matcher (delegates to linac_gen.matching)")
 
@@ -122,6 +131,8 @@ def main(argv: list[str] | None = None) -> int:
         return orm_cmd.run(args)
     if args.command == "twini":
         return twini_cmd.run(args)
+    if args.command == "reliability":
+        return rel_cmd.run(args)
     return 2
 
 

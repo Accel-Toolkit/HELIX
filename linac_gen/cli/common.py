@@ -74,7 +74,7 @@ def parse_assignments(items) -> dict:
 # ---------------------------------------------------------------------------
 # input loading
 # ---------------------------------------------------------------------------
-def load_lattice(path):
+def load_lattice(path, *, fallback_beam=None):
     """Parse a lattice file → ``Lattice``: TraceWin ``.dat``, MAD-X
     ``.madx``/``.seq``, MAD8 ``.lat``/``.flat``, Elegant ``.lte`` natively;
     Bmad ``.bmad``, SciBmad ``.jl``/``.scibmad``, PALS ``.pals.yaml``/
@@ -82,10 +82,12 @@ def load_lattice(path):
     translator (see :mod:`linac_gen.io.formats`).
     Parse warnings (downgraded cards, dropped elements,
     approximations, an unrecognised suffix parsed as TraceWin) are echoed
-    to stderr — they used to be silently discarded on every CLI path."""
+    to stderr — they used to be silently discarded on every CLI path.
+    ``fallback_beam`` supplies a MAD8 file's rigidity when the file declares
+    none (see :func:`linac_gen.io.formats.parse_lattice_file`)."""
     import sys
     from linac_gen.io.formats import parse_lattice_file
-    lat, meta = parse_lattice_file(str(path))
+    lat, meta = parse_lattice_file(str(path), fallback_beam=fallback_beam)
     warns = meta.get("warnings", []) if isinstance(meta, dict) else []
     for w in warns:
         print(f"parse warning: {w}", file=sys.stderr)
@@ -112,7 +114,8 @@ def load_input(path, *, tracewin_ini=None):
             raise ValueError(_TW_INI_PROJECT_MSG.format(name=p.name))
         from linac_gen.io.project import load_project
         proj = load_project(p)
-        return load_lattice(proj.lattice_path), proj.beam, proj.convergence
+        return (load_lattice(proj.lattice_path, fallback_beam=proj.beam),
+                proj.beam, proj.convergence)
     from linac_gen.core.config import BeamConfig
     lat = load_lattice(str(p))
     if tracewin_ini:
@@ -614,6 +617,10 @@ def build_scan_point(input_path, *, beam_overrides=None, element_overrides=(),
         beam_cfg = (beam_from_tracewin_ini(p, tracewin_ini) if tracewin_ini
                     else BeamConfig())
 
+    # The beam a rigidity-less MAD8 deck is converted with: the project's,
+    # captured BEFORE the --beam overrides (a scan over energy must not
+    # rescale the magnets); none for a bare lattice (load_input refuses too).
+    lattice_beam = asdict(beam_cfg) if p.suffix.lower() == ".lgproj" else {}
     apply_beam_overrides(beam_cfg, beam_overrides or {})
     note_tracewin_ini_overrides(tracewin_ini, beam_overrides)
 
@@ -652,6 +659,7 @@ def build_scan_point(input_path, *, beam_overrides=None, element_overrides=(),
         element_overrides=tuple(element_overrides),
         sc_overrides=tuple(sc_kw.items()),
         drift_single_push=single,
+        lattice_beam=lattice_beam,
     )
 
 

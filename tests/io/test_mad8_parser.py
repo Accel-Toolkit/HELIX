@@ -435,3 +435,782 @@ USE, SEQUENCE=seq;
     quads = [e for e in lat.elements
              if type(e).__name__ == "Quadrupole"]
     assert quads and quads[0].gradient < 0        # sign(q) flip for H-
+
+
+# ===========================================================================
+# 2026-09-24 language overhaul: functions, constants, `;`, `&` tails,
+# CONSTANT/SET, abbreviations, inheritance, nested groups, line arguments,
+# SEQUENCE, CALL, USE, BEAM species/energy, fallback rigidity, element
+# coverage.  External anchors (MAD-X through cpymad) at the end.
+# ===========================================================================
+
+def _elems(lat, cls=None):
+    return [e for e in lat.elements
+            if cls is None or type(e).__name__ == cls]
+
+
+def test_functions_constants_and_powers(tmp_path):
+    """SQRT & co. used to be looked up as parameters ('unknown identifier
+    SQRT') — the BAL exports failed on it.  A negative parameter raised to
+    a power used to be substituted as text (-1.5**2 = -2.25)."""
+    text = """BRHO := 4.881
+A := -1.5
+P := A^2
+S := SQRT(16.0) + ABS(-1) + MAX(2, 3) + MIN(2, 3) + LOG(EXP(1.0))
+T := SIN(PI/2) + COS(0) + TAN(0) + ASIN(1)*2/PI + ATAN(0)
+U := 1.0D-3*1000 + 90*RADDEG*DEGRAD/90
+M := PMASS*1000 + EMASS*0 + CLIGHT*0 + TWOPI*0
+D1: DRIFT, L=P
+D2: DRIFT, L=S
+D3: DRIFT, L=T
+D4: DRIFT, L=U
+D5: DRIFT, L=M/1000
+TOP: LINE=(D1, D2, D3, D4, D5)
+"""
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    L = [e.length for e in lat.elements]
+    assert L[0] == pytest.approx(2250.0)                 # (-1.5)^2, not -2.25
+    assert L[1] == pytest.approx(4000.0 + 1000 + 3000 + 2000 + 1000)
+    assert L[2] == pytest.approx(3000.0)
+    assert L[3] == pytest.approx(2000.0)
+    assert L[4] == pytest.approx(938.27231)              # MAD8's PMASS
+    assert not [w for w in meta["warnings"] if "could not be evaluated" in w]
+
+
+def test_random_functions_evaluate_at_mean_with_warning(tmp_path):
+    text = """BRHO := 4.881
+D1: DRIFT, L=1 + 0.1*GAUSS() + 0.2*(RANF() - 0.5)
+TOP: LINE=(D1)
+"""
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    assert lat.elements[0].length == pytest.approx(1000.0)
+    assert sum("random function" in w for w in meta["warnings"]) == 2
+
+
+def test_unknown_function_is_reported(tmp_path):
+    text = """BRHO := 4.881
+D1: DRIFT, L=USER1(2)
+TOP: LINE=(D1)
+"""
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    assert any("unsupported function" in w for w in meta["warnings"])
+    with pytest.raises(ValueError, match="unsupported function"):
+        parse_mad8(_write(tmp_path, text), strict=True)
+
+
+def test_semicolons_and_ampersand_tail(tmp_path):
+    """`;` separates statements; text after `&` on a line is ignored (MAD8
+    rule — the Main Injector deck writes `K400_SPOOL,&)`)."""
+    text = """BRHO := 4.881; LA := 0.5
+A: DRIFT, L=LA; B: DRIFT, L=2*LA
+TOP: LINE=(A, B,&) this text is ignored
+   A, B)
+"""
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    assert [e.length for e in lat.elements] == [500.0, 1000.0, 500.0, 1000.0]
+
+
+def test_comment_block_constant_set(tmp_path):
+    text = """BRHO := 4.881
+COMMENT
+  X: DRIFT, L=99
+ENDCOMMENT
+LC: CONSTANT = 0.25
+SET, LS, 0.75
+A: DRIFT, L=LC
+B: DRIFT, L=LS
+TOP: LINE=(A, B)
+"""
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    assert [e.length for e in lat.elements] == [250.0, 750.0]
+
+
+def test_abbreviations_inheritance_and_attribute_change(tmp_path):
+    text = """BRHO := 4.881
+QF: QUAD, L=0.2, K1=1.0
+QF2: QF, K1=2.0
+QF3: QF2
+QF3, K1=3.0
+SX: SEXT, L=0.2, K2=1.5
+TOP: LINE=(QF, QF2, QF3, SX)
+"""
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    q = _elems(lat, "Quadrupole")
+    assert [e.length for e in q] == [200.0] * 3          # L inherited
+    assert [e.gradient for e in q] == pytest.approx([-4.881, -9.762, -14.643])
+    assert _elems(lat, "Multipole")[0].knl[2] == pytest.approx(0.3)
+    assert not [w for w in meta["warnings"] if "unsupported" in w]
+
+
+def test_type_attribute_is_not_arithmetic(tmp_path):
+    text = """BRHO := 4.881
+Q1: QUADRUPOLE, TYPE=IQB, L=0.2, K1=1.0
+M1: MARKER, TYPE="CELL BOUNDARY"
+TOP: LINE=(Q1, M1)
+"""
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    assert not [w for w in meta["warnings"] if ".type" in w.lower()]
+
+
+def test_nested_groups_reflection_and_line_arguments(tmp_path):
+    text = """BRHO := 4.881
+A: DRIFT, L=0.1
+B: DRIFT, L=0.2
+C: DRIFT, L=0.3
+D: DRIFT, L=0.4
+CELL(X, Y): LINE=(X, D, Y)
+TOP: LINE=(2*(A, -(B, C)), CELL(C, A), -CELL(B, 2*A))
+"""
+    lat, _ = parse_mad8(_write(tmp_path, text))
+    names = [e.name for e in lat.elements]
+    assert names == ["A", "C", "B", "A", "C", "B",
+                     "C", "D", "A",
+                     "A", "A", "D", "B"]
+
+
+def test_use_selects_the_line(tmp_path):
+    text = """BRHO := 4.881
+A: DRIFT, L=0.1
+B: DRIFT, L=0.2
+SHORT: LINE=(A)
+LONG: LINE=(A, B, A, B)
+USE, SHORT
+"""
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    assert meta["title"] == "SHORT" and len(lat.elements) == 1
+    assert not [w for w in meta["warnings"] if "top-level" in w]
+    lat, meta = parse_mad8(_write(tmp_path, text), line="LONG")
+    assert meta["title"] == "LONG" and len(lat.elements) == 4
+
+
+def test_sequence_placement(tmp_path):
+    text = """BRHO := 4.881
+Q1: QUADRUPOLE, L=0.2, K1=1.0
+M1: MARKER
+S: SEQUENCE, REFER=CENTRE
+Q1, AT=1.0
+QA: QUADRUPOLE, L=0.4, K1=-1.0, AT=2.0
+M1, AT=0.5, FROM=QA
+ENDSEQUENCE, AT=3.0
+"""
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    got = [(type(e).__name__, round(e.length, 9)) for e in lat.elements]
+    assert got == [("Drift", 900.0), ("Quadrupole", 200.0), ("Drift", 700.0),
+                   ("Quadrupole", 400.0), ("Drift", 300.0), ("Marker", 0.0),
+                   ("Drift", 500.0)]
+
+
+def test_call_includes_a_file(tmp_path):
+    (tmp_path / "defs.mad8").write_text(
+        "BRHO := 4.881\nQF: QUADRUPOLE, L=0.2, K1=1.0\nRETURN\n"
+        "NEVER: DRIFT, L=9\n")
+    text = """CALL, FILENAME=defs.mad8
+D1: DRIFT, L=0.5
+TOP: LINE=(D1, QF)
+"""
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    assert [type(e).__name__ for e in lat.elements] == ["Drift", "Quadrupole"]
+    assert meta["called_files"] and meta["called_files"][0].endswith("defs.mad8")
+
+
+def test_action_commands_summarised_not_per_statement(tmp_path):
+    text = """BRHO := 4.881
+D1: DRIFT, L=0.5
+TOP: LINE=(D1)
+USE, TOP
+TWISS, COUPLE
+SELECT, FLAG=ERROR, RANGE=D1
+EALIGN, DX=0.001
+MATCH, LINE=TOP
+VARY, NAME=X
+ENDMATCH
+"""
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    assert not [w for w in meta["warnings"] if "unrecognised" in w]
+    assert any("EALIGN" in w and "nominal machine" in w for w in meta["warnings"])
+
+
+# ---------------------------------------------------------------------------
+# BEAM / rigidity
+# ---------------------------------------------------------------------------
+
+def test_beam_mass_and_charge_resolve_hminus(tmp_path):
+    """BEAM with MASS/CHARGE but no PARTICLE (lattix's H⁻ export) used to be
+    read as a proton — every gradient came out with the wrong sign."""
+    text = """BEAM, MASS=0.93929408606, CHARGE=-1, ENERGY=1.73881631804175
+Q1: QUADRUPOLE, L=0.2, K1=1.0
+TOP: LINE=(Q1)
+"""
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    assert meta["reference"].species.name == "H-"
+    assert meta["rigidity_source"] == "beam"
+    assert lat.elements[0].gradient == pytest.approx(-4.8810, abs=1e-4)
+
+
+def test_beam_expression_semicolon_and_pmass(tmp_path):
+    text = "BEAM, PARTICLE=proton, Energy=8.0+pmass;\nD1: DRIFT, L=1\nTOP: LINE=(D1)\n"
+    _lat, meta = parse_mad8(_write(tmp_path, text))
+    assert meta["reference"].species.name == "proton"
+    assert meta["reference"].w_kin == pytest.approx(8000.0, abs=1e-3)
+
+
+def test_labelled_beam_statement(tmp_path):
+    text = "B0: BEAM, PARTICLE=PROTON, ENERGY=1.938272\nD1: DRIFT, L=1\nTOP: LINE=(D1)\n"
+    _lat, meta = parse_mad8(_write(tmp_path, text))
+    assert meta["reference"].w_kin == pytest.approx(1000.0, abs=1e-3)
+
+
+def test_electron_beam_keeps_its_rigidity(tmp_path):
+    """An electron lattice: magnets use the electron's own Bρ; the tracking
+    reference is a proton at that rigidity (said in a warning)."""
+    from linac_gen.io.madx_parser import _brho
+    text = """BEAM, PARTICLE=ELECTRON, ENERGY=10.0
+Q1: QUADRUPOLE, L=0.2, K1=1.0
+TOP: LINE=(Q1)
+"""
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    m_e = 0.51099906e-3
+    brho_e = math.sqrt(10.0 ** 2 - m_e ** 2) * 1e9 / 2.99792458e8
+    assert _brho(meta["reference"]) == pytest.approx(brho_e, rel=1e-12)
+    assert lat.elements[0].gradient == pytest.approx(brho_e, rel=1e-12)
+    assert any("not a HELIX species" in w for w in meta["warnings"])
+
+
+def test_fallback_beam_only_when_file_has_no_rigidity(tmp_path):
+    text = "Q1: QUADRUPOLE, L=0.2, K1=1.0\nTOP: LINE=(Q1)\n"
+    lat, meta = parse_mad8(_write(tmp_path, text), fallback_beam=("H-", 800.0))
+    assert meta["rigidity_source"] == "fallback_beam"
+    assert lat.elements[0].gradient == pytest.approx(-4.8829, abs=1e-4)
+    assert any("declares no rigidity" in w for w in meta["warnings"])
+    # a BRHO in the file wins over the fallback's energy; the fallback still
+    # names the species (the beam that will be tracked): proton sign here
+    lat, meta = parse_mad8(_write(tmp_path, "BRHO := 4.881\n" + text),
+                           fallback_beam=("proton", 3.0))
+    assert meta["rigidity_source"] == "brho_parameter"
+    assert meta["reference"].species.name == "proton"
+    assert lat.elements[0].gradient == pytest.approx(4.881)
+
+
+def test_brho_unit_slip_is_refused(tmp_path):
+    """The BAL exports' BRHO := P0/C*1.0E11 (P0 in MeV/c, C in cm/s) is
+    4883 T·m — 1000x.  Used silently it would scale every magnet 1000x."""
+    text = """E0 := 8.0E2
+MASS_HMINUS := 9.39294E2
+C := 2.997925E10
+P0 := SQRT(E0*(2.0*MASS_HMINUS+E0))
+BRHO := P0/C*1.0E11
+Q1: QUADRUPOLE, L=0.2, K1=1.0
+TOP: LINE=(Q1)
+"""
+    with pytest.raises(ValueError, match="impossible for H"):
+        parse_mad8(_write(tmp_path, text))
+    lat, meta = parse_mad8(_write(tmp_path, text), fallback_beam=("H-", 800.0))
+    assert meta["rigidity_source"] == "fallback_beam"
+    assert lat.elements[0].gradient == pytest.approx(-4.8829, abs=1e-4)
+    # an explicit rigidity wins, without complaint
+    lat, meta = parse_mad8(_write(tmp_path, text), brho=4.8829)
+    assert meta["rigidity_source"] == "argument"
+
+
+def test_dispatcher_passes_the_fallback_beam(tmp_path):
+    from linac_gen.core.config import BeamConfig
+    from linac_gen.io.formats import parse_lattice_file
+    p = _write(tmp_path, "Q1: QUADRUPOLE, L=0.2, K1=1.0\nTOP: LINE=(Q1)\n",
+               name="x.mad8")
+    with pytest.raises(ValueError, match="rigidity"):
+        parse_lattice_file(p)
+    lat, meta = parse_lattice_file(p, fallback_beam=BeamConfig(species="H-", energy=800.0))
+    assert meta["rigidity_source"] == "fallback_beam"
+
+
+# ---------------------------------------------------------------------------
+# Element coverage
+# ---------------------------------------------------------------------------
+
+def test_unsupported_class_keeps_its_length(tmp_path):
+    text = """BRHO := 4.881
+EL: ELENS, L=0.5, CURRENT=1
+EZ: ELENS, L=0
+TOP: LINE=(EL, EZ)
+"""
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    assert [(type(e).__name__, e.length) for e in lat.elements] == [
+        ("Drift", 500.0), ("Marker", 0.0)]
+    assert any("unsupported type 'elens'" in w for w in meta["warnings"])
+
+
+def test_octupole_and_mad8_multipole_orders(tmp_path):
+    text = """BRHO := 4.881
+OC: OCTUPOLE, L=0.2, K3=2.5
+MP: MULTIPOLE, K1L=0.1, T1, K2L=0.4, T2=0.1
+TOP: LINE=(OC, MP)
+"""
+    lat, _ = parse_mad8(_write(tmp_path, text))
+    oc, mp = _elems(lat, "Multipole")
+    assert [e.length for e in lat.elements[:3]] == [100.0, 0.0, 100.0]
+    assert oc.knl == pytest.approx([0, 0, 0, 0.5])
+    # bare T1 = pi/4: a normal quad turned into a NEGATIVE skew quad (MAD-X)
+    assert mp.knl[1] == pytest.approx(0.0, abs=1e-15)
+    assert mp.ksl[1] == pytest.approx(-0.1)
+    assert mp.knl[2] == pytest.approx(0.4 * math.cos(0.3))
+    assert mp.ksl[2] == pytest.approx(-0.4 * math.sin(0.3))
+
+
+def test_zero_angle_bend_with_k1_is_a_quadrupole(tmp_path):
+    text = "BRHO := 4.881\nQB: SBEND, L=0.6, ANGLE=0.0, K1=1.5\nTOP: LINE=(QB)\n"
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    (q,) = lat.elements
+    assert type(q).__name__ == "Quadrupole"
+    assert q.gradient == pytest.approx(-1.5 * 4.881)
+    assert not [w for w in meta["warnings"] if "focusing is lost" in w]
+
+
+def test_bare_quad_tilt_is_45_degrees(tmp_path):
+    text = "BRHO := 4.881\nQS: QUADRUPOLE, L=0.2, K1=1.0, TILT\nTOP: LINE=(QS)\n"
+    lat, _ = parse_mad8(_write(tmp_path, text))
+    assert lat.elements[0].skew_angle == pytest.approx(45.0)
+
+
+def test_kicker_with_a_kick_becomes_a_steerer(tmp_path):
+    from linac_gen.elements.steerer import Steerer
+    text = """BRHO := 4.881
+KZ: HKICKER, L=0.06, KICK=0.0
+KS: KICKER, L=0.1, HKICK=0.001, VKICK=-0.002, TILT=0.3
+TOP: LINE=(KZ, KS)
+"""
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    assert [type(e).__name__ for e in lat.elements] == [
+        "Marker", "Drift", "Drift", "Steerer", "Drift"]
+    st = _elems(lat, "Steerer")[0]
+    dxp, dyp = st._kick_mrad(meta["reference"])
+    c, s = math.cos(0.3), math.sin(0.3)
+    assert dxp == pytest.approx((0.001 * c + 0.002 * s) * 1e3, rel=1e-12)
+    assert dyp == pytest.approx((0.001 * s - 0.002 * c) * 1e3, rel=1e-12)
+
+
+def test_rf_cavity_frequency_from_harmon_or_drift(tmp_path):
+    from linac_gen.core.constants import C_LIGHT
+    text = """BEAM, PARTICLE=PROTON, ENERGY=1.938272
+CAV: RFCAVITY, L=0.4, VOLT=0.1, LAG=0.25, HARMON=4
+DEAD: RFCAVITY, L=0.4, VOLT=0.0
+D1: DRIFT, L=9.2
+TOP: LINE=(CAV, DEAD, D1)
+"""
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    gap = _elems(lat, "RFGap")[0]
+    ref = meta["reference"]
+    beta = ref.bg / math.sqrt(1 + ref.bg ** 2)
+    assert gap.frequency == pytest.approx(4 * beta * C_LIGHT / 10.0 / 1e6, rel=1e-12)
+    dead = [e for e in lat.elements if e.name == "DEAD"]
+    assert len(dead) == 1 and type(dead[0]).__name__ == "Drift"
+    assert dead[0].length == pytest.approx(400.0)
+
+
+def test_lcavity_uses_local_rigidity_downstream(tmp_path):
+    """MAD8 LCAVITY changes the reference energy; strengths after it are
+    normalised to the local momentum."""
+    from linac_gen.core.particle import PROTON
+    from linac_gen.core.reference import ReferenceParticle
+    from linac_gen.io.madx_parser import _brho
+    text = """BEAM, PARTICLE=PROTON, ENERGY=1.938272
+Q0: QUADRUPOLE, L=0.2, K1=1.0
+LC: LCAVITY, L=1.0, DELTAE=200.0, PHI0=0.0, FREQ=650
+Q1: QUADRUPOLE, L=0.2, K1=1.0
+TOP: LINE=(Q0, LC, Q1)
+"""
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    q0, q1 = _elems(lat, "Quadrupole")
+    gap = _elems(lat, "RFGap")[0]
+    assert gap.voltage == pytest.approx(200.0) and gap.phase == pytest.approx(0.0)
+    r_out = ReferenceParticle(species=PROTON, w_kin=meta["reference"].w_kin + 200.0,
+                              frequency=650.0)
+    assert q0.gradient == pytest.approx(_brho(meta["reference"]), rel=1e-12)
+    assert q1.gradient == pytest.approx(_brho(r_out), rel=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# External anchors: MAD-X (cpymad) reading the same optics
+# ---------------------------------------------------------------------------
+
+_ORACLE_MAD8 = """BEAM, PARTICLE=PROTON, ENERGY=1.738272
+LQ := 0.25
+KF := SQRT(2.25)*0.4
+KD := -(KF^2)^0.5
+D1: DRIFT, L=0.5
+D2: DRIFT, L=D1[L]*0.6
+QF: QUAD, L=LQ, K1=KF
+QD: QF, K1=KD
+SX: SEXT, L=0.2, K2=1.5
+OC: OCT, L=0.2, K3=2.5
+B1: SBEND, L=1.0, ANGLE=0.1, E1=0.03, E2=0.07, HGAP=0.02, FINT=0.5
+BV: RBEND, L=1.05, ANGLE=0.0416, TILT=-1.5707963267949
+SOL: SOLENOID, L=0.4, KS=0.3
+QB: SBEND, L=0.3, ANGLE=0, K1=0.8
+MP: MULTIPOLE, K1L=0.1, T1=0.3
+KZ: HKICKER, L=0.06, KICK=0
+MON: MONITOR, L=0.1
+CELL(X, Y): LINE=(X, D1, Y, D2)
+TOP: LINE=(2*(QF, D1, -(QD, D2, SX)), CELL(QD, OC), B1, D1, BV, SOL, &
+     D2, QB, MP, KZ, MON, D1)
+USE, TOP
+"""
+# The same optics written by hand in MAD-X (expanded line, evaluated
+# numbers, MAD-X's tilted-multipole form): nothing shared with the MAD8
+# front end.  OPTION, RBARC=FALSE = MAD8's arc-length RBEND.
+_ORACLE_MADX = """option, rbarc=false;
+beam, particle=proton, energy=1.738272;
+D1: DRIFT, L=0.5; D2: DRIFT, L=0.3;
+QF: QUADRUPOLE, L=0.25, K1=0.6; QD: QUADRUPOLE, L=0.25, K1=-0.6;
+SX: SEXTUPOLE, L=0.2, K2=1.5; OC: OCTUPOLE, L=0.2, K3=2.5;
+B1: SBEND, L=1.0, ANGLE=0.1, E1=0.03, E2=0.07, HGAP=0.02, FINT=0.5;
+BV: RBEND, L=1.05, ANGLE=0.0416, TILT=-1.5707963267949;
+SOL: SOLENOID, L=0.4, KS=0.3;
+QB: SBEND, L=0.3, ANGLE=0, K1=0.8;
+MP: MULTIPOLE, KNL={0, 0.1}, TILT=0.3;
+KZ: HKICKER, L=0.06, KICK=0; MON: MONITOR, L=0.1;
+TOP: LINE=(QF,D1,SX,D2,QD, QF,D1,SX,D2,QD, QD,D1,OC,D2,
+           B1,D1,BV,SOL,D2,QB,MP,KZ,MON,D1);
+use, period=TOP;
+"""
+
+
+def test_madx_oracle_transfer_matrix(tmp_path):
+    """Language features + element conventions end to end: the 4x4
+    transverse map of the MAD8 import equals MAD-X's own map of the same
+    optics (coupled: solenoid, vertical bend, skew component)."""
+    madx = pytest.importorskip("cpymad.madx")
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+    lat, meta = parse_mad8(_write(tmp_path, _ORACLE_MAD8))
+    Rh = np.asarray(compute_transfer_matrix(lat, meta["reference"].copy()))[:4, :4]
+    m = madx.Madx(stdout=False)
+    try:
+        m.input(_ORACLE_MADX)
+        tw = m.twiss(betx=10, bety=10, rmatrix=True)
+        Rm = np.array([[tw[f"re{i}{j}"][-1] for j in range(1, 5)]
+                       for i in range(1, 5)])
+        L_madx = tw.s[-1]
+    finally:
+        m.quit()
+    assert sum(e.length for e in lat.elements) / 1000 == pytest.approx(L_madx, abs=1e-12)
+    assert np.abs(Rh - Rm).max() < 1e-10
+    assert abs(Rh[0, 2]) + abs(Rh[2, 0]) > 1e-3           # genuinely coupled
+
+
+@pytest.mark.parametrize("n, k, t", [(1, 0.7, 0.2), (1, 0.7, None),
+                                      (2, 3.0, 0.15), (2, 3.0, None),
+                                      (3, 40.0, 0.1)])
+def test_madx_oracle_multipole_tilt(tmp_path, n, k, t):
+    """MAD8 KnL/Tn → HELIX knl/ksl gives MAD-X's kick of the same
+    multipole rotated by Tn (bare Tn = pi/(2(n+1)))."""
+    madx = pytest.importorskip("cpymad.madx")
+    from linac_gen.core.beam import Beam
+    x0, y0 = 0.003, -0.002
+    tt = "" if t is None else f"={t}"
+    lat, meta = parse_mad8(_write(tmp_path, (
+        f"BEAM, PARTICLE=PROTON, ENERGY=1.938272\nMP: MULTIPOLE, K{n}L={k}, T{n}{tt}\n"
+        "TOP: LINE=(MP)\n")))
+    mp = _elems(lat, "Multipole")[0]
+    b = Beam(meta["reference"].copy(), 1, 0.0)
+    b.particles[:] = 0.0
+    b.particles[0, 0], b.particles[0, 2] = x0 * 1e3, y0 * 1e3
+    _alive, dxp, dyp = mp._kick_mrad(b)
+    tilt = math.pi / (2 * (n + 1)) if t is None else t
+    knl = ",".join(["0"] * n + [repr(k)])
+    m = madx.Madx(stdout=False)
+    try:
+        m.input(f"beam, particle=proton, energy=1.938272; MP: MULTIPOLE, "
+                f"KNL={{{knl}}}, TILT={tilt!r}; D: DRIFT, L=0; "
+                "TOP: LINE=(MP, D); use, period=TOP;")
+        tw = m.twiss(betx=1, bety=1, x=x0, y=y0)
+        px, py = tw.px[-1], tw.py[-1]
+    finally:
+        m.quit()
+    assert float(np.ravel(dxp)[0]) * 1e-3 == pytest.approx(px, rel=1e-12, abs=1e-18)
+    assert float(np.ravel(dyp)[0]) * 1e-3 == pytest.approx(py, rel=1e-12, abs=1e-18)
+
+
+def test_madx_oracle_kicker_tilt(tmp_path):
+    madx = pytest.importorskip("cpymad.madx")
+    from linac_gen.elements.steerer import Steerer
+    attrs = "HKICK=0.001, VKICK=-0.002, TILT=0.3"
+    lat, meta = parse_mad8(_write(tmp_path, (
+        f"BEAM, PARTICLE=PROTON, ENERGY=1.738\nK: KICKER, L=0, {attrs}\n"
+        "TOP: LINE=(K)\n")))
+    st = _elems(lat, "Steerer")[0]
+    dxp, dyp = st._kick_mrad(meta["reference"])
+    m = madx.Madx(stdout=False)
+    try:
+        m.input(f"beam, particle=proton, energy=1.738; K: KICKER, L=0, {attrs}; "
+                "D: DRIFT, L=0; TOP: LINE=(K, D); use, period=TOP;")
+        tw = m.twiss(betx=1, bety=1)
+        px, py = tw.px[-1], tw.py[-1]
+    finally:
+        m.quit()
+    assert dxp * 1e-3 == pytest.approx(px, rel=1e-12)
+    assert dyp * 1e-3 == pytest.approx(py, rel=1e-12)
+
+
+_BAL_2026 = _REPO / "BAL2026V0916.FLAT"
+
+
+@pytest.mark.skipif(not _BAL_2026.exists(), reason="BAL2026V0916.FLAT not present")
+def test_bal_2026_imports_and_matches_madx():
+    """The file the SQRT fix was for: with the session beam as fallback it
+    imports; the whole line's transverse map equals MAD-X's reading of the
+    same file (statements terminated, attribute refs spelled NAME->ATTR,
+    definitions made deferred — MAD8 evaluates lazily)."""
+    import re
+    lat, meta = parse_mad8(str(_BAL_2026), fallback_beam=("H-", 800.0))
+    assert meta["rigidity_source"] == "fallback_beam"
+    assert sum(e.length for e in lat.elements) / 1000 == pytest.approx(44.91200377975, abs=1e-9)
+    madx = pytest.importorskip("cpymad.madx")
+    from linac_gen.io.mad8_parser import _statements
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+    params, rest = [], []
+    for st in _statements(_BAL_2026.read_text(encoding="latin-1")):
+        if st.upper().startswith("RETURN"):
+            break
+        if re.match(r"^[A-Za-z_][\w.]*'", st):
+            continue                               # QX' := … is not MAD-X
+        st = re.sub(r"([A-Za-z_][\w.]*)\[\s*(\w+)\s*\]", r"\1->\2", st)
+        if re.match(r"^[A-Za-z_][\w.]*\s*:?=", st):
+            params.append(re.sub(r"^([A-Za-z_][\w.]*)\s*:?=", r"\1 :=", st) + ";")
+        else:
+            rest.append(re.sub(r"(?<=[,:])\s*(\w+)\s*=(?!=)", r" \1 :=", st)
+                        if "LINE" not in st.upper() else st)
+    src = "\n".join(params + [r + ";" for r in rest])
+    root = meta["title"]
+    Rh = np.asarray(compute_transfer_matrix(lat, meta["reference"].copy()))[:4, :4]
+    m = madx.Madx(stdout=False)
+    try:
+        m.input("option, rbarc=false; beam, particle=proton, energy=1.738;\n" + src)
+        m.input(f"use, period={root};")
+        tw = m.twiss(betx=10, bety=10, rmatrix=True)
+        Rm = np.array([[tw[f"re{i}{j}"][-1] for j in range(1, 5)]
+                       for i in range(1, 5)])
+    finally:
+        m.quit()
+    assert np.abs(Rh - Rm).max() < 1e-8
+
+
+def test_sequence_refer_entry_and_from(tmp_path):
+    """FROM is relative to the earlier member's CENTRE, whatever REFER is
+    (MAD-X's rule — test_madx_oracle_sequence_from pins it)."""
+    text = """BRHO := 4.881
+QA: QUADRUPOLE, L=0.4, K1=1.0
+QB: QUADRUPOLE, L=0.2, K1=-1.0
+S: SEQUENCE, REFER=ENTRY, L=3.0
+QA, AT=1.0
+QB, AT=1.0, FROM=QA
+ENDSEQUENCE
+"""
+    lat, _ = parse_mad8(_write(tmp_path, text))
+    got = [(type(e).__name__, round(e.length, 9)) for e in lat.elements]
+    # QA occupies 1.0–1.4 (centre 1.2); QB's entry at 1.2 + 1.0 → 2.2–2.4
+    assert got == [("Drift", 1000.0), ("Quadrupole", 400.0), ("Drift", 800.0),
+                   ("Quadrupole", 200.0), ("Drift", 600.0)]
+
+
+def test_bare_call_keeps_file_name_case_and_inst_abbreviation(tmp_path):
+    (tmp_path / "Defs_MixedCase.mad8").write_text(
+        "BRHO := 4.881\nIN1: INST, L=0.2\n")
+    text = "CALL, Defs_MixedCase.mad8\nTOP: LINE=(IN1)\n"
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    assert sum(e.length for e in lat.elements) == pytest.approx(200.0)
+    assert not [w for w in meta["warnings"] if "unsupported" in w or "not found" in w]
+
+
+# ---------------------------------------------------------------------------
+# Adversarial-review round (2026-09-24)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("refer", ["ENTRY", "CENTRE", "EXIT"])
+def test_madx_oracle_sequence_from(tmp_path, refer):
+    """SEQUENCE placement with REFER and FROM against MAD-X's own survey."""
+    madx = pytest.importorskip("cpymad.madx")
+    body = f"""Q1: QUADRUPOLE, L=0.2, K1=1.0
+Q2: QUADRUPOLE, L=0.4, K1=-1.0
+M1: MARKER
+S: SEQUENCE, REFER={refer}, L=6.0
+Q1, AT=1.0
+Q2, AT=3.0
+M1, AT=0.5, FROM=Q2
+ENDSEQUENCE
+"""
+    lat, _ = parse_mad8(_write(tmp_path, "BRHO := 4.881\n" + body))
+    s, pos = 0.0, {}
+    for e in lat.elements:
+        s += e.length
+        pos[e.name] = s / 1000.0
+    madx_src = body.replace("\n", ";\n").replace("ENDSEQUENCE;", "ENDSEQUENCE;")
+    m = madx.Madx(stdout=False)
+    try:
+        m.input("beam, particle=proton, energy=1.738;\n" + madx_src + "use, sequence=S;")
+        tw = m.twiss(betx=1, bety=1)
+        s_m = {n.split(":")[0].upper(): v for n, v in zip(tw.name, tw.s)}
+    finally:
+        m.quit()
+    for name in ("Q1", "Q2", "M1"):
+        assert pos[name] == pytest.approx(s_m[name], abs=1e-12), name
+
+
+@pytest.mark.parametrize("tilt", ["TILT=1.5707963267949", "TILT=0.785398163397448",
+                                  "TILT=0.3"])
+def test_madx_oracle_zero_angle_bend_keeps_tilt(tmp_path, tilt):
+    madx = pytest.importorskip("cpymad.madx")
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+    el = f"B0: SBEND, L=1.0, ANGLE=0, K1=0.5, {tilt}"
+    lat, meta = parse_mad8(_write(tmp_path, (
+        f"BEAM, PARTICLE=PROTON, ENERGY=1.738\n{el}\nTOP: LINE=(B0)\n")))
+    Rh = np.asarray(compute_transfer_matrix(lat, meta["reference"].copy()))[:4, :4]
+    m = madx.Madx(stdout=False)
+    try:
+        m.input(f"beam, particle=proton, energy=1.738; {el}; TOP: LINE=(B0); "
+                "use, period=TOP;")
+        tw = m.twiss(betx=1, bety=1, rmatrix=True)
+        Rm = np.array([[tw[f"re{i}{j}"][-1] for j in range(1, 5)]
+                       for i in range(1, 5)])
+    finally:
+        m.quit()
+    assert np.abs(Rh - Rm).max() < 1e-12
+
+
+def test_zero_angle_bend_bare_tilt_is_half_pi(tmp_path):
+    """MAD8: a bare TILT on a bend means π/2 (MAD-X reads it as 0, so this
+    case is pinned against the explicit value instead)."""
+    lat_b, _ = parse_mad8(_write(tmp_path, (
+        "BRHO := 4.881\nB0: SBEND, L=1, ANGLE=0, K1=0.5, TILT\nTOP: LINE=(B0)\n")))
+    lat_e, _ = parse_mad8(_write(tmp_path, (
+        "BRHO := 4.881\nB0: SBEND, L=1, ANGLE=0, K1=0.5, TILT=1.5707963267948966\n"
+        "TOP: LINE=(B0)\n")))
+    assert lat_b.elements[0].skew_angle == pytest.approx(lat_e.elements[0].skew_angle)
+    assert lat_b.elements[0].skew_angle == pytest.approx(90.0)
+
+
+def test_zero_angle_bend_k2_still_warns(tmp_path):
+    text = "BRHO := 4.881\nB0: SBEND, L=1, ANGLE=0, K1=0.5, K2=3.0\nTOP: LINE=(B0)\n"
+    _lat, meta = parse_mad8(_write(tmp_path, text))
+    assert any("B0.K2" in w for w in meta["warnings"])
+
+
+def test_lcavity_electron_follows_the_electron_momentum(tmp_path):
+    from linac_gen.io.madx_parser import _brho
+    text = """BEAM, PARTICLE=ELECTRON, ENERGY=1.0
+LC: LCAVITY, L=1.0, DELTAE=100.0, PHI0=0.0, FREQ=1300
+Q1: QUADRUPOLE, L=0.2, K1=1.0
+TOP: LINE=(LC, Q1)
+"""
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    q1 = _elems(lat, "Quadrupole")[0]
+    m_e = 0.51099906                                   # MeV
+    pc = math.sqrt(1100.0 ** 2 - m_e ** 2)
+    assert q1.gradient == pytest.approx(pc * 1e6 / 2.99792458e8, rel=1e-12)
+    assert any("substituted BEAM species" in w for w in meta["warnings"])
+
+
+def test_beam_derived_attribute_reference(tmp_path):
+    text = """BEAM, PARTICLE=PROTON, ENERGY=2.0
+D1: DRIFT, L=BEAM[PC]
+D2: DRIFT, L=BEAM[GAMMA]
+TOP: LINE=(D1, D2)
+"""
+    lat, _ = parse_mad8(_write(tmp_path, text))
+    m = 0.93827231
+    assert lat.elements[0].length == pytest.approx(math.sqrt(4.0 - m * m) * 1000, rel=1e-12)
+    assert lat.elements[1].length == pytest.approx(2.0 / m * 1000, rel=1e-12)
+
+
+def test_brho_species_follows_the_fallback_beam(tmp_path):
+    """A 400 T·m BRHO is impossible for H⁻ but fine for a 120 GeV proton:
+    with a proton project beam it must be used, with the proton sign."""
+    text = "BRHO := 400\nQ1: QUADRUPOLE, L=0.2, K1=0.01\nTOP: LINE=(Q1)\n"
+    lat, meta = parse_mad8(_write(tmp_path, text), fallback_beam=("proton", 8000.0))
+    assert meta["rigidity_source"] == "brho_parameter"
+    assert meta["reference"].species.name == "proton"
+    assert lat.elements[0].gradient == pytest.approx(4.0)
+    with pytest.raises(ValueError, match="impossible for H"):
+        parse_mad8(_write(tmp_path, text))           # no beam: H⁻ lineage
+
+
+def test_beam_without_particle_or_energy_is_not_a_rigidity(tmp_path):
+    text = """BRHO := 4.881
+BEAM, EX=1E-6, EY=1E-6
+Q1: QUADRUPOLE, L=0.2, K1=1.0
+TOP: LINE=(Q1)
+"""
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    assert meta["rigidity_source"] == "brho_parameter"
+    assert lat.elements[0].gradient == pytest.approx(-4.881)
+
+
+def test_leading_zeros_quoted_commas_set_attribute_and_bad_unused_line(tmp_path):
+    text = """BRHO := 4.881
+D1: DRIFT, L=010*0.1, TYPE="A, B"
+QF: QUADRUPOLE, L=0.2, K1=1.0
+SET, QF[K1], 2.0
+CELL(X, Y): LINE=(X, Y)
+JUNK: LINE=(CELL(QF))
+TOP: LINE=(D1, QF, D1, QF, D1, QF)
+"""
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    assert meta["title"] == "TOP"
+    assert lat.elements[0].length == pytest.approx(1000.0)
+    assert _elems(lat, "Quadrupole")[0].gradient == pytest.approx(-9.762)
+    assert not [w for w in meta["warnings"] if "could not be evaluated" in w
+                or "unrecognised" in w]
+    assert any("JUNK" in w and "cannot be expanded" in w for w in meta["warnings"])
+
+
+def test_cli_scan_points_carry_the_project_beam(tmp_path):
+    """Scan workers convert a rigidity-less MAD8 deck with the project's
+    beam as saved, never the per-point overridden beam; a bare lattice has
+    none (it refuses, as `run` does)."""
+    import json
+    from linac_gen.cli.common import build_scan_point
+    from linac_gen.parallel.scan_pool import _parse_lattice_for_scan
+    deck = tmp_path / "x.mad8"
+    deck.write_text("Q1: QUADRUPOLE, L=0.2, K1=1.0\nTOP: LINE=(Q1)\n")
+    proj = tmp_path / "x.lgproj"
+    proj.write_text(json.dumps({"__kind__": "linac_gen_project", "__version__": 1,
+                                "lattice_path": "x.mad8",
+                                "beam": {"species": "H-", "energy": 800.0}}))
+    pt = build_scan_point(str(proj), beam_overrides={"energy": "100"})
+    assert pt.beam_config["energy"] == pytest.approx(100.0)
+    assert pt.lattice_beam["energy"] == pytest.approx(800.0)
+    lat = _parse_lattice_for_scan(pt.lattice_path, pt.lattice_beam)
+    assert lat.elements[0].gradient == pytest.approx(-4.8829, abs=1e-4)
+    bare = build_scan_point(str(deck))
+    assert bare.lattice_beam == {}
+    with pytest.raises(ValueError, match="rigidity"):
+        _parse_lattice_for_scan(bare.lattice_path, bare.lattice_beam or None)
+
+
+def test_beam_self_reference_and_circular_beam(tmp_path):
+    ok = """BEAM, PARTICLE=PROTON, ENERGY=BEAM[MASS]+0.8
+Q1: QUADRUPOLE, L=0.2, K1=1.0
+TOP: LINE=(Q1)
+"""
+    _lat, meta = parse_mad8(_write(tmp_path, ok))
+    assert meta["reference"].w_kin == pytest.approx(800.0, abs=1e-3)
+    bad = ok.replace("ENERGY=BEAM[MASS]+0.8", "PC=BEAM[ENERGY]")
+    with pytest.raises(ValueError, match="BEAM"):
+        parse_mad8(_write(tmp_path, bad))
+
+
+def test_apostrophe_identifier_with_zero_digits(tmp_path):
+    text = "BRHO := 4.881\nQ'01 := 0.3\nQF: QUADRUPOLE, L=0.5, K1=Q'01\nTOP: LINE=(QF)\n"
+    lat, _ = parse_mad8(_write(tmp_path, text))
+    assert lat.elements[0].gradient == pytest.approx(-0.3 * 4.881)
+
+
+def test_charge_only_beam_does_not_override_brho(tmp_path):
+    text = "BRHO := 4.881\nBEAM, CHARGE=-1\nQ1: QUADRUPOLE, L=0.2, K1=1.0\nTOP: LINE=(Q1)\n"
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    assert meta["rigidity_source"] == "brho_parameter"
+    assert lat.elements[0].gradient == pytest.approx(-4.881)
+
+
+def test_lattice_remembers_its_import_beam(tmp_path):
+    lat, meta = parse_mad8(_write(tmp_path, "Q1: QUADRUPOLE, L=0.2, K1=1.0\nTOP: LINE=(Q1)\n"),
+                           fallback_beam=("H-", 800.0))
+    assert lat.mad8_import_beam == {"species": "H-", "energy": pytest.approx(800.0)}

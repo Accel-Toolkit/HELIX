@@ -523,9 +523,11 @@ def write_tracewin(lattice, filepath, frequency=None):
                 # byte-identically.
                 strag = getattr(elem, "straggling", "auto")
                 strag_tok = f" {strag}" if strag != "auto" else ""
+                opts = getattr(elem, "option_tokens", lambda: [])()
+                opt_tok = (" " + " ".join(opts)) if opts else ""
                 fh.write(
                     f"; HELIX_FOIL {elem.name} {elem.material} "
-                    f"{elem.thickness_ug_cm2}{strag_tok}\n"
+                    f"{elem.thickness_ug_cm2}{strag_tok}{opt_tok}\n"
                 )
 
             elif isinstance(elem, ScGridDirective):

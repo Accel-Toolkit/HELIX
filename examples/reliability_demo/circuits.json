@@ -1,0 +1,45 @@
+{
+  "__kind__": "linac_gen_reliability_circuits",
+  "__version__": 1,
+  "groups": {
+    "cryomodule": {
+      "CM1": [
+        "GAP_001",
+        "GAP_002"
+      ],
+      "CM2": [
+        "GAP_003",
+        "GAP_004"
+      ]
+    },
+    "rf_station": {
+      "RF1": [
+        "GAP_001"
+      ],
+      "RF2": [
+        "GAP_002"
+      ],
+      "RF3": [
+        "GAP_003"
+      ],
+      "RF4": [
+        "GAP_004"
+      ]
+    },
+    "doublet": {},
+    "arc_bus": {},
+    "spares": []
+  },
+  "sections": [
+    {
+      "name": "LINAC",
+      "end": "GAP_004"
+    },
+    {
+      "name": "TAIL",
+      "end": "FOIL_001"
+    }
+  ],
+  "treaty_element": "BPM_003",
+  "foil_element": "FOIL_001"
+}

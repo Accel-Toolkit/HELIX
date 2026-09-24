@@ -67,6 +67,7 @@ class EnvelopeResults:
     ref_beta: List[float] = field(default_factory=list)
     ref_gamma: List[float] = field(default_factory=list)
     ref_frequency: List[float] = field(default_factory=list)  # MHz, per-step
+    ref_phi_s: List[float] = field(default_factory=list)      # reference RF clock (deg at ref_frequency)
     sigma_matrix: List = field(default_factory=list)     # list of (6, 6) arrays
     element_names: List[str] = field(default_factory=list)
     # Record index of the row holding element j's EXIT state.  With
@@ -847,6 +848,7 @@ class EnvelopeSolver:
         results.ref_beta.append(ref.beta)
         results.ref_gamma.append(ref.gamma)
         results.ref_frequency.append(float(getattr(ref, "frequency", 0.0)))
+        results.ref_phi_s.append(float(ref.phi_s))
         c = getattr(self, "_c", None)
         # No centroid state = shell solvers (backtrack) calling _record
         # without run(): append NOTHING.  A short/empty list is the

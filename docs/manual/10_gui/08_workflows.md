@@ -185,6 +185,21 @@ PIC space charge.  See
 
 CLI equivalent: [`python -m linac_gen backtrack`](../06_running/11_cli_backtrack.md).
 
+## "I want to know which failures this linac tolerates"
+
+Save the lattice, then **Tools → Reliability Study…**: pick the `quick`
+preset, point the circuit map at a `circuits.json` (or generate one from the
+deck and edit it), give leg C an error budget (or take the Error Study tab's
+entries), choose the worker count and **Start**.  The Run tab follows the
+legs; the Results tab lists every fault case worst first, the compensations
+and their rule verdict, the seeds, the availability and the foil scenarios,
+and the report.  Select a compensation and **Apply compensator settings** to
+put its settings on the session lattice as one undoable edit.  The same
+campaign can be exported to another machine and imported back with the CLI
+(**Export job…** / **Import results…** in the window, or `python -m linac_gen
+reliability export / import`); **Resume…** shows any campaign folder in the
+window.  See [Reliability Study window](10_reliability_dialog.md).
+
 ## Cross-references
 
 * [Quick start](../01_getting_started/03_quick_start.md)

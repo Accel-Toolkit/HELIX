@@ -313,7 +313,9 @@ class NewProjectDialog(QDialog):
         (a half-written *dst* is removed so the folder cleanup can run)."""
         from linac_gen.io.tracewin_writer import write_tracewin
         try:
-            lattice, meta = parse_lattice_file(str(src))
+            session = getattr(self.parent(), "state", None)
+            lattice, meta = parse_lattice_file(
+                str(src), fallback_beam=getattr(session, "beam_config", None))
             write_tracewin(lattice, str(dst))
         except Exception as exc:
             try:

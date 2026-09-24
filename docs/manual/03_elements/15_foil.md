@@ -18,6 +18,7 @@ comment-prefixed extension that stays invisible to TraceWin:
 |---|---|
 | `material` | `C`, `Be`, `Al`, `Cu`, `Mo`, or `W` (chemical symbol) |
 | `thickness_ug_cm2` | areal density in μg/cm² (PIP-II strippers: 300–700) |
+| optional tail | `[auto|landau|gaussian] [strip_model=two_step] [dedx_model=bethe] [dx=… dy=…] [extent_mm=x,y] [seed=N]` — written only when non-default (see [Foil scenarios](../16_reliability/05_foil.md)) |
 
 The foil is a zero-length [ThinKickElement](00_overview.md): it applies
 its kick at one s-position and adds no length to the lattice.
@@ -77,7 +78,11 @@ linac_gen.elements.foil.Foil(
 | `material` | `"C"` | — | one of C / Be / Al / Cu / Mo / W |
 | `thickness_ug_cm2` | 600.0 | μg/cm² | areal density |
 | `aperture` | 0.0 | mm | round aperture (0 = none) |
-| `seed` | `None` | — | fix for reproducible scattering |
+| `seed` | `None` | — | fix for reproducible scattering; a property — setting it rebuilds the generator |
+| `strip_model` | `"off"` | — | `"two_step"`: H⁻ → H⁰ → p with cross sections calibrated to the PIP-II anchors; unconverted ions on `Beam.unstripped_table` (not a loss) |
+| `dedx_model` | `"mip"` | — | `"bethe"`: β-dependent Bethe mean loss instead of the MIP floor |
+| `dx`, `dy` | 0.0 | mm | foil offset (the tracker/envelope wrap translates the beam into the foil frame) |
+| `extent_mm` | `None` | mm | half-size (one value or `(x, y)`); particles outside miss the foil |
 
 The material database (radiation length X₀ and minimum-ionising
 dE/dx) is taken from PDG 2024.

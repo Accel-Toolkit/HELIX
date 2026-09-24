@@ -387,7 +387,7 @@ def test_new_project_failure_cleanup_removes_the_copied_ini(win, tmp_path, monke
 
     monkeypatch.setattr(np_mod, "NewProjectDialog", _Stub)
 
-    def _boom(_fp):
+    def _boom(_fp, **_kw):
         raise RuntimeError("synthetic parse failure")
     monkeypatch.setattr(app_mod, "_parse_lattice_file", _boom)
     win._new_project()

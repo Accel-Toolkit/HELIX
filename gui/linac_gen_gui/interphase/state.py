@@ -69,6 +69,9 @@ class AppState(QObject):
         # Orbit-response calibration dialog session (measured inputs,
         # device map, last calibration) — survives closing the dialog.
         self.orm_session: dict = {}
+        # Reliability Study dialog session (last campaign folder, report
+        # path, stale flag) — survives closing the dialog.
+        self.reliability_session: dict = {}
         # Optional TraceWin partran.out overlay for side-by-side
         # comparison.  ``None`` until the user opens a file via the
         # Results-tab "Compare with TraceWin" action.  Stored as a

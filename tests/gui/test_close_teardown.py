@@ -124,3 +124,14 @@ def test_new_window_resets_shutdown_latch(qapp):
     finally:
         w.close()
         w.deleteLater()
+
+
+def test_close_collects_reliability_dialog_worker(win, mini_lattice, monkeypatch):
+    """The Reliability Study dialog's shutdown_begin() is swept on close."""
+    calls = []
+    win.state.set_lattice(mini_lattice, None)
+    win._open_reliability_study()
+    dlg = win._reliability_dlg
+    monkeypatch.setattr(dlg, "shutdown_begin", lambda: (calls.append("reliability"), [])[1])
+    win.close()
+    assert calls == ["reliability"]

@@ -13,7 +13,7 @@ from linac_gen.failures.compensation import (
     CompensationConfig, CompensationResult, compensate, select_zone)
 from linac_gen.failures.criticality import criticality_score
 from linac_gen.failures.element_filter import (
-    ALL_TYPES, classify, failable_elements, valid_kinds)
+    ALL_TYPES, EXTRA_TYPES, classify, failable_elements, valid_kinds)
 from linac_gen.failures.failure_mode import (
     FailureKind, FailureMode, can_fail, is_cavity)
 from linac_gen.failures.scenario import FailureScenario, enumerate_scenarios
@@ -22,7 +22,7 @@ from linac_gen.failures.study import (
 
 __all__ = [
     "FailureKind", "FailureMode", "can_fail", "is_cavity",
-    "classify", "failable_elements", "valid_kinds", "ALL_TYPES",
+    "classify", "failable_elements", "valid_kinds", "ALL_TYPES", "EXTRA_TYPES",
     "FailureScenario", "enumerate_scenarios",
     "criticality_score",
     "FailureStudy", "FailureStudyResults", "ScenarioImpact",

@@ -339,6 +339,9 @@ class _ScanWorker(QThread):
                 seed=42,
                 use_gpu=self.use_gpu,
                 drift_single_push=self.fixed_drift_single_push,
+                # a MAD8 deck re-parsed by the worker keeps the rigidity it
+                # was loaded with, whatever the Beam tab says now
+                lattice_beam=getattr(self.lattice, "mad8_import_beam", None),
             ))
 
         total = len(points)

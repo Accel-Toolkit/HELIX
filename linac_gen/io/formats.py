@@ -19,7 +19,7 @@ from pathlib import Path
 NATIVE_SUFFIXES: dict[str, str] = {
     ".dat": "tracewin",
     ".madx": "madx", ".seq": "madx",
-    ".lat": "mad8", ".flat": "mad8",
+    ".lat": "mad8", ".flat": "mad8", ".mad8": "mad8",
     ".lte": "elegant",
 }
 #: suffixes delegated to lattix (double suffixes are matched with ``endswith``)
@@ -32,10 +32,10 @@ IMPORT_SUFFIXES: tuple[str, ...] = tuple(NATIVE_SUFFIXES) + LATTIX_SUFFIXES
 
 #: dialog filter, one entry per family (used by the GUI open dialog and the wizard)
 DIALOG_FILTER = (
-    "Lattice files (*.dat *.madx *.seq *.lat *.flat *.lte *.bmad *.jl *.scibmad "
+    "Lattice files (*.dat *.madx *.seq *.lat *.flat *.mad8 *.lte *.bmad *.jl *.scibmad "
     "*.pals.yaml *.pals.yml *.pals.json *.lattix.json);;"
     "TraceWin (*.dat);;MAD-X (*.madx *.seq);;"
-    "MAD8 (*.lat *.flat);;Elegant (*.lte);;"
+    "MAD8 (*.lat *.flat *.mad8);;Elegant (*.lte);;"
     "Bmad (*.bmad);;SciBmad (*.jl *.scibmad);;"
     "PALS (*.pals.yaml *.pals.yml *.pals.json);;lattix JSON (*.lattix.json);;"
     "All Files (*)"
@@ -59,12 +59,18 @@ def is_foreign_source(path) -> bool:
     return import_format(path) not in (None, "tracewin")
 
 
-def parse_lattice_file(path, *, warn_unknown: bool = True):
+def parse_lattice_file(path, *, warn_unknown: bool = True, fallback_beam=None):
     """Extension-dispatched parse → ``(lattice, metadata)``.
 
     ``metadata["warnings"]`` is a list of strings on every path.  A suffix
     nobody claims is parsed as TraceWin — with a warning in the list, since
     a MAD/Bmad deck fed to the TraceWin parser mis-parses silently.
+
+    ``fallback_beam`` (a ``BeamConfig`` or its dict) is handed to the MAD8
+    importer, which uses it for the magnet rigidity ONLY when the file
+    declares none (no BEAM statement, no usable BRHO) — with a warning and
+    ``metadata["rigidity_source"] == "fallback_beam"``.  Other formats
+    ignore it.
     """
     fp = str(path)
     fmt = import_format(fp)
@@ -73,7 +79,7 @@ def parse_lattice_file(path, *, warn_unknown: bool = True):
         lat, meta = parse_madx(fp)[:2]
     elif fmt == "mad8":
         from linac_gen.io.mad8_parser import parse_mad8
-        lat, meta = parse_mad8(fp)[:2]
+        lat, meta = parse_mad8(fp, fallback_beam=fallback_beam)[:2]
     elif fmt == "elegant":
         from linac_gen.io.elegant_parser import parse_elegant
         lat, meta = parse_elegant(fp)[:2]

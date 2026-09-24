@@ -253,6 +253,10 @@ class Simulation:
         # each macroparticle carries I_avg/n_macro of beam current.
         self._results.loss_table = self.beam.loss_table
         self._results.n_macro = int(self.beam.lost.size)
+        # Stripper-foil bookkeeping (Foil strip_model / extent): the ions
+        # a foil left unconverted or that missed it.  Empty for every
+        # run without such a foil — the HDF5 writer then adds no group.
+        self._results.unstripped_table = self.beam.unstripped_table
         return self._results
 
     def run_backtrack(self, *, entrance_ref=None, start: int = 0,

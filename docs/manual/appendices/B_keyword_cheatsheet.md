@@ -81,6 +81,7 @@ coupled semantics are not simulated.
 | `SET_SEPARATION k sx sy` | beam-separation target |
 | `SET_ADV kxot kyot` | phase-advance conditioning |
 | `SET_KE_OUT_MIN E_MeV weight` | output kinetic-energy floor |
+| `SET_PHASE_OUT phase_deg weight tol_deg` | reference arrival phase at the exit (HELIX extension) |
 | `MIN_EMIT_GROWTH plane weight` | minimise per-plane ε growth |
 | `MIN_EMIT_4D_GROWTH weight tol_4d tol_z` | minimise 4-D ε growth |
 | `MIN_TRANSMISSION threshold_pct weight` | transmission floor |

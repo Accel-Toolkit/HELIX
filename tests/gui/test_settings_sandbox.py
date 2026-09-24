@@ -23,6 +23,8 @@ from linac_gen_gui.interphase.app_settings import make_settings  # noqa: E402
     ("HELIX", "linac_gen_gui"),       # convergence/surrogates panel state
     ("linac_gen", "linac_gen_gui"),   # results-tab popups
     ("Helix", "HELIX"),               # beam tab
+    ("HELIX", "OrmCalibration"),      # ORM dialog
+    ("HELIX", "ReliabilityStudy"),    # Reliability Study dialog
 ])
 def test_qsettings_are_sandboxed(org, app):
     sandbox = os.environ.get("HELIX_QSETTINGS_DIR")

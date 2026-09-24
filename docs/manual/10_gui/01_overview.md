@@ -57,10 +57,12 @@ holds **Backtrack Distribution…** — reconstruct the upstream beam from
 the last MP run's exit state or from a measured exit-plane `.dst` (see
 the [workflow](08_workflows.md#i-want-to-reconstruct-the-input-beam-from-an-exit-distribution)).
 The **Tools** menu holds the assistant, the Python console, the transfer-
-and sigma-matrix views, **Parameter Scan…** and **Orbit-Response Calibration
+and sigma-matrix views, **Parameter Scan…**, **Orbit-Response Calibration
 (LOCO)…** — load a measured orbit-response matrix, compare it with the model
 and recalibrate the quads/trims/BPMs (see the CLI page
-[`orm`](../06_running/13_cli_orm.md)).
+[`orm`](../06_running/13_cli_orm.md)) — and **Reliability Study…**, the
+window front of the Reliability Study mode (see
+[Reliability Study window](10_reliability_dialog.md)).
 
 ## Tabs
 

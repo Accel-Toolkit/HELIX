@@ -58,6 +58,7 @@ import warnings
 import numpy as np
 
 from linac_gen.core.constants import M_ELECTRON
+from linac_gen.core.particle import H_MINUS
 from linac_gen.elements.base import ThinKickElement
 
 
@@ -86,6 +87,55 @@ _MATERIALS: dict[str, dict[str, float]] = {
 }
 
 _STRAGGLING_MODES = ("auto", "landau", "gaussian")
+_STRIP_MODELS = ("off", "two_step")
+_DEDX_MODELS = ("mip", "bethe")
+
+# Bethe constant K = 4π N_A r_e² m_e c² (MeV cm²/mol), PDG.
+_K_BETHE = 0.307075
+_N_AVOGADRO = 6.02214076e23
+
+# Two-step charge-exchange model H⁻ → H⁰ → p on carbon: cross sections
+# σ(-1→0) and σ(0→+1) in cm² per atom at 800 MeV, CALIBRATED (not
+# measured here) so that the stripped fraction reproduces the two PIP-II
+# design anchors — 99.956 % at 600 µg/cm² and 99.1 % at 380 µg/cm² (FDR
+# §9.4.1.3) — and scaled to other energies as 1/β² relative to 800 MeV
+# (the Bethe-like fall of the electron-loss cross sections with velocity;
+# Gulley et al., PRA 53, 3201 (1996) measure 6.76e-19 / 2.64e-19 cm² at
+# 800 MeV, close to the values solved from the anchors).  Other
+# materials scale the carbon values by sqrt(Z/6), a convention, not
+# data; treat any non-carbon stripping fraction as indicative.
+_STRIP_ANCHORS = ((600.0, 0.99956), (380.0, 0.991))
+_STRIP_BETA_800 = math.sqrt(1.0 - 1.0 / (1.0 + 800.0 / H_MINUS.mass) ** 2)   # β of an 800 MeV H⁻
+
+
+def _solve_strip_cross_sections() -> tuple[float, float]:
+    """(σ_-10, σ_01) in cm² per carbon atom reproducing _STRIP_ANCHORS
+    exactly (2-D Newton on the two-step stripped fraction)."""
+    a_c = _MATERIALS["C"]["A"]
+
+    def f_p(s10, s01, ug):
+        n = ug * 1e-6 / a_c * _N_AVOGADRO
+        e10, e01 = math.exp(-s10 * n), math.exp(-s01 * n)
+        h0 = s10 / (s10 - s01) * (e01 - e10)
+        return 1.0 - e10 - h0
+
+    s10, s01 = 6.76e-19, 2.64e-19
+    for _ in range(60):
+        r = [f_p(s10, s01, ug) - want for ug, want in _STRIP_ANCHORS]
+        if max(abs(v) for v in r) < 1e-14:
+            break
+        h = 1e-24
+        j = [[(f_p(s10 + h, s01, ug) - f_p(s10, s01, ug)) / h,
+              (f_p(s10, s01 + h, ug) - f_p(s10, s01, ug)) / h]
+             for ug, _w in _STRIP_ANCHORS]
+        det = j[0][0] * j[1][1] - j[0][1] * j[1][0]
+        d10 = (r[0] * j[1][1] - r[1] * j[0][1]) / det
+        d01 = (j[0][0] * r[1] - j[1][0] * r[0]) / det
+        s10, s01 = s10 - d10, s01 - d01
+    return float(s10), float(s01)
+
+
+_STRIP_SIGMA_800 = _solve_strip_cross_sections()
 
 # Mode (most probable value) of scipy.stats.landau's standard pdf,
 # located numerically (scipy 1.17: argmax of landau.pdf to 1e-5).
@@ -167,7 +217,8 @@ class Foil(ThinKickElement):
     seed : int or None, optional
         Seed for the per-particle random kick generator.  ``None`` (default)
         means each call draws from a fresh non-deterministic stream — fine
-        for production but use a fixed seed in tests.
+        for production but use a fixed seed in tests.  A property: setting
+        it (also through ``--set FOIL.seed=…``) rebuilds the generator.
     straggling : str, optional
         Energy-loss straggling model: ``"auto"`` (default — dispatch on
         the Vavilov thickness parameter kappa = xi/T_max, see
@@ -175,6 +226,24 @@ class Foil(ThinKickElement):
         thin-absorber Landau shape), or ``"gaussian"`` (force the Bohr
         Gaussian — the pre-2026 behaviour, kept for backward
         compatibility).
+    strip_model : str, optional
+        ``"off"`` (default — a passive scatterer, the historical element)
+        or ``"two_step"``: an H⁻ beam is converted H⁻ → H⁰ → p with the
+        calibrated cross sections of :meth:`stripping_fractions`; the
+        ions left as H⁻ / H⁰ are recorded on the beam's
+        ``unstripped_table`` (they stay alive — not a loss).  Inert for
+        a positive species.
+    dedx_model : str, optional
+        Mean ionisation loss: ``"mip"`` (default — the tabulated
+        minimum-ionising rate, a floor below ~2 GeV) or ``"bethe"`` (the
+        β-dependent Bethe formula without density/shell corrections).
+    dx, dy : float, optional
+        Foil offset (mm) — the tracker/envelope wrap translates the beam
+        into the foil frame like any other misaligned element.
+    extent_mm : None | float | (float, float), optional
+        Foil half-size (mm; one value = square).  ``None`` = infinite.
+        With an extent, particles outside it MISS the foil: no kick, no
+        loss, recorded as ``"missed"`` on ``unstripped_table``.
     """
 
     # kick_matrix is constant identity (the MEAN map of zero-mean random
@@ -189,7 +258,11 @@ class Foil(ThinKickElement):
                  thickness_ug_cm2: float = 600.0,
                  aperture: float = 0.0,
                  seed: int | None = None,
-                 straggling: str = "auto") -> None:
+                 straggling: str = "auto",
+                 strip_model: str = "off",
+                 dedx_model: str = "mip",
+                 dx: float = 0.0, dy: float = 0.0,
+                 extent_mm=None) -> None:
         super().__init__(name=name, aperture=aperture)
         if material not in _MATERIALS:
             raise ValueError(
@@ -201,12 +274,70 @@ class Foil(ThinKickElement):
                 f"Foil straggling {straggling!r} not in supported set "
                 f"{list(_STRAGGLING_MODES)}"
             )
+        if strip_model not in _STRIP_MODELS:
+            raise ValueError(
+                f"Foil strip_model {strip_model!r} not in supported set "
+                f"{list(_STRIP_MODELS)}")
+        if dedx_model not in _DEDX_MODELS:
+            raise ValueError(
+                f"Foil dedx_model {dedx_model!r} not in supported set "
+                f"{list(_DEDX_MODELS)}")
         self.material = material
         self.thickness_ug_cm2 = float(thickness_ug_cm2)
         self.straggling = straggling
+        self.strip_model = strip_model
+        self.dedx_model = dedx_model
+        self.dx = float(dx)
+        self.dy = float(dy)
+        self._extent_mm = None
+        self.extent_mm = extent_mm
         # ``np.random.default_rng(None)`` already seeds from the OS entropy
         # pool — exactly what we want when ``seed`` is None.
-        self._rng = np.random.default_rng(seed)
+        self._seed = None
+        self.seed = seed
+
+    @staticmethod
+    def _norm_extent(extent):
+        """None, a number (square), a pair, or the deck / override string
+        ``"x,y"`` / ``"x"`` → ``None`` or ``(half_x, half_y)``."""
+        if extent is None:
+            return None
+        if isinstance(extent, str):
+            s = extent.strip()
+            if s.lower() in ("", "none"):
+                return None
+            parts = [float(v) for v in s.split(",")]
+            extent = parts[0] if len(parts) == 1 else parts[:2]
+        if isinstance(extent, (int, float)):
+            ex = ey = float(extent)
+        else:
+            ex, ey = (float(v) for v in extent)
+        if ex <= 0.0 or ey <= 0.0:
+            raise ValueError(f"Foil extent_mm must be positive, got {extent!r}")
+        return (ex, ey)
+
+    @property
+    def extent_mm(self):
+        """Foil half-size (mm) as ``(half_x, half_y)`` or None; the setter
+        accepts a number, a pair or the ``"x,y"`` string an override or the
+        deck line carries."""
+        return self._extent_mm
+
+    @extent_mm.setter
+    def extent_mm(self, value) -> None:
+        self._extent_mm = self._norm_extent(value)
+
+    @property
+    def seed(self):
+        """Seed of the per-particle kick generator (None = unseeded)."""
+        return self._seed
+
+    @seed.setter
+    def seed(self, value) -> None:
+        if value is not None:
+            value = int(value)
+        self._seed = value
+        self._rng = np.random.default_rng(value)
 
     # -- physics helpers ----------------------------------------------------
     #
@@ -273,7 +404,61 @@ class Foil(ThinKickElement):
         x_g_cm2 = self.thickness_ug_cm2 * 1e-6
         # |charge|² scaling on dE/dx (Bethe-Bloch).
         z_proj = abs(ref.species.charge)
+        if getattr(self, "dedx_model", "mip") == "bethe":
+            return float(self._bethe_dedx_MeVcm2_g(ref) * x_g_cm2)
         return float(mat["dEdx_min_MeVcm2_g"] * x_g_cm2 * z_proj ** 2)
+
+    def _bethe_dedx_MeVcm2_g(self, beam_or_ref) -> float:
+        """Mean stopping power (MeV cm²/g) from the Bethe formula
+        [PDG Eq. 34.5] without density or shell corrections:
+        ``K z² (Z/A) / β² [½ ln(2 m_e c² β²γ² T_max / I²) − β²]``."""
+        ref = self._ref_of(beam_or_ref)
+        mat = _MATERIALS[self.material]
+        beta2 = ref.beta * ref.beta
+        if beta2 <= 0.0:
+            return 0.0
+        z_proj = abs(ref.species.charge)
+        t_max = self._t_max_MeV(ref)
+        i_mev = mat["I_eV"] * 1e-6
+        arg = 2.0 * M_ELECTRON * ref.bg * ref.bg * t_max / (i_mev * i_mev)
+        val = (_K_BETHE * z_proj ** 2 * mat["Z"] / mat["A"] / beta2
+               * (0.5 * math.log(arg) - beta2))
+        return float(max(val, 0.0))
+
+    # ---- charge exchange -------------------------------------------------
+    def strip_cross_sections_cm2(self, beam_or_ref) -> tuple[float, float]:
+        """(σ_-10, σ_01) per atom at the reference velocity — the carbon
+        values calibrated to the PIP-II anchors, scaled 1/β², and by
+        sqrt(Z/6) for other materials (a convention)."""
+        ref = self._ref_of(beam_or_ref)
+        beta = ref.beta
+        if beta <= 0.0:
+            return (0.0, 0.0)
+        s10, s01 = _STRIP_SIGMA_800
+        scale = (_STRIP_BETA_800 / beta) ** 2
+        z_scale = math.sqrt(_MATERIALS[self.material]["Z"] / 6.0)
+        return (s10 * scale * z_scale, s01 * scale * z_scale)
+
+    def stripping_fractions(self, beam_or_ref, thickness_ug_cm2=None):
+        """``(f_p, f_H0, f_Hminus)`` of a negative-ion beam after the foil
+        (two-step model; a positive species returns ``(1, 0, 0)``).
+        ``thickness_ug_cm2`` overrides the element's thickness (curves)."""
+        ref = self._ref_of(beam_or_ref)
+        if ref.species.charge >= 0:
+            return (1.0, 0.0, 0.0)
+        x = self.thickness_ug_cm2 if thickness_ug_cm2 is None else float(thickness_ug_cm2)
+        if x <= 0.0:
+            return (0.0, 0.0, 1.0)
+        n_atoms = x * 1e-6 / _MATERIALS[self.material]["A"] * _N_AVOGADRO
+        s10, s01 = self.strip_cross_sections_cm2(ref)
+        e10 = math.exp(-s10 * n_atoms)
+        e01 = math.exp(-s01 * n_atoms)
+        if abs(s10 - s01) < 1e-30:
+            h0 = s10 * n_atoms * e10
+        else:
+            h0 = s10 / (s10 - s01) * (e01 - e10)
+        f_p = max(0.0, 1.0 - e10 - h0)
+        return (f_p, float(h0), float(e10))
 
     def _energy_loss_sigma_MeV(self, beam_or_ref) -> float:
         """Gaussian-approximation straggling width (Bohr's formula).
@@ -527,10 +712,29 @@ class Foil(ThinKickElement):
     # -- ThinKickElement API -----------------------------------------------
 
     def apply_kick(self, beam) -> None:
-        """Apply stochastic scattering + ionisation loss to alive particles."""
+        """Apply stochastic scattering + ionisation loss to alive particles.
+
+        With an ``extent_mm`` only the particles inside the foil (in the
+        foil frame the tracker translated them into) are kicked; the rest
+        are recorded as ``"missed"``.  With ``strip_model="two_step"`` on
+        a negative-ion beam, one uniform draw per hit particle — AFTER the
+        scattering and loss draws, so the historical kicks are unchanged
+        for a given seed — assigns its charge state; H⁰ and H⁻ survivors
+        are recorded on ``beam.unstripped_table`` and stay alive.
+        """
         alive = beam.alive_mask
-        n_alive = int(np.count_nonzero(alive))
-        if n_alive == 0:
+        hit = alive
+        extent = getattr(self, "extent_mm", None)
+        if extent is not None:
+            ex, ey = extent
+            inside = ((np.abs(beam.particles[:, 0]) <= ex)
+                      & (np.abs(beam.particles[:, 2]) <= ey))
+            hit = alive & inside
+            missed = np.flatnonzero(alive & ~inside)
+            if missed.size:
+                beam.record_unstripped(missed, "missed", self.name)
+        n_hit = int(np.count_nonzero(hit))
+        if n_hit == 0:
             return
 
         theta_rms = self._highland_theta_rms(beam)            # radians
@@ -539,17 +743,29 @@ class Foil(ThinKickElement):
         # Highland gives plane-projected scatter: independent draws on xp,yp
         # (the small-angle plane projection of an isotropic 3-D Gaussian).
         if theta_rms > 0.0:
-            d_xp = self._rng.normal(0.0, theta_rms, size=n_alive)
-            d_yp = self._rng.normal(0.0, theta_rms, size=n_alive)
+            d_xp = self._rng.normal(0.0, theta_rms, size=n_hit)
+            d_yp = self._rng.normal(0.0, theta_rms, size=n_hit)
             # xp / yp are stored in **mrad** (HELIX convention — same as
             # Steerer's ``* 1e3``).  Convert radians → mrad.
-            beam.particles[alive, 1] += d_xp * 1e3
-            beam.particles[alive, 3] += d_yp * 1e3
+            beam.particles[hit, 1] += d_xp * 1e3
+            beam.particles[hit, 3] += d_yp * 1e3
 
         if self.thickness_ug_cm2 > 0.0:
-            losses = self._sample_energy_loss_MeV(beam.ref, n_alive)
+            losses = self._sample_energy_loss_MeV(beam.ref, n_hit)
             # dw is stored in MeV; a LOSS decreases dw.
-            beam.particles[alive, 5] -= losses
+            beam.particles[hit, 5] -= losses
+
+        if (getattr(self, "strip_model", "off") == "two_step"
+                and beam.ref.species.charge < 0):
+            f_p, f_h0, _f_hm = self.stripping_fractions(beam.ref)
+            u = self._rng.uniform(0.0, 1.0, size=n_hit)
+            ids = np.flatnonzero(hit)
+            h0 = ids[(u >= f_p) & (u < f_p + f_h0)]
+            hm = ids[u >= f_p + f_h0]
+            if h0.size:
+                beam.record_unstripped(h0, "H0", self.name)
+            if hm.size:
+                beam.record_unstripped(hm, "H-", self.name)
 
     def kick_matrix(self, ref) -> np.ndarray:
         """Identity — the MEAN map of zero-mean random kicks.
@@ -592,6 +808,44 @@ class Foil(ThinKickElement):
         return D, self._mean_energy_loss_MeV(ref)
 
     # -- diagnostics --------------------------------------------------------
+
+    def option_tokens(self) -> list[str]:
+        """The non-default ``key=value`` tokens of the deck line
+        (``; HELIX_FOIL name material thickness [straggling] [key=value…]``)."""
+        toks: list[str] = []
+        if getattr(self, "strip_model", "off") != "off":
+            toks.append(f"strip_model={self.strip_model}")
+        if getattr(self, "dedx_model", "mip") != "mip":
+            toks.append(f"dedx_model={self.dedx_model}")
+        if getattr(self, "dx", 0.0):
+            toks.append(f"dx={self.dx!r}")
+        if getattr(self, "dy", 0.0):
+            toks.append(f"dy={self.dy!r}")
+        ext = getattr(self, "extent_mm", None)
+        if ext is not None:
+            toks.append(f"extent_mm={ext[0]!r},{ext[1]!r}")
+        if getattr(self, "seed", None) is not None:
+            toks.append(f"seed={int(self.seed)}")
+        return toks
+
+    def apply_option_token(self, key: str, value: str) -> None:
+        """Set one ``key=value`` option from a deck line (parser side)."""
+        if key == "strip_model":
+            if value not in _STRIP_MODELS:
+                raise ValueError(f"Foil strip_model {value!r} not in {list(_STRIP_MODELS)}")
+            self.strip_model = value
+        elif key == "dedx_model":
+            if value not in _DEDX_MODELS:
+                raise ValueError(f"Foil dedx_model {value!r} not in {list(_DEDX_MODELS)}")
+            self.dedx_model = value
+        elif key in ("dx", "dy"):
+            setattr(self, key, float(value))
+        elif key == "extent_mm":
+            self.extent_mm = value
+        elif key == "seed":
+            self.seed = int(float(value))
+        else:
+            raise ValueError(f"Foil: unknown option {key!r}")
 
     def __repr__(self) -> str:
         return (

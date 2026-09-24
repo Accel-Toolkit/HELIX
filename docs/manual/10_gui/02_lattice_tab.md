@@ -50,7 +50,7 @@ the opened `.dat`, HELIX asks whether to import its beam into the
 project's saved beam wins.
 
 The dialog accepts TraceWin `.dat` files, MAD-X `.madx` / `.seq`,
-MAD8 `.lat` / `.flat` and Elegant `.lte` files, and — through the
+MAD8 `.lat` / `.flat` / `.mad8` and Elegant `.lte` files, and — through the
 optional lattix translator — Bmad `.bmad`, SciBmad `.jl` / `.scibmad`
 and PALS `.pals.yaml` / `.pals.json` files; the file extension selects
 the parser (see [Importing MAD-X

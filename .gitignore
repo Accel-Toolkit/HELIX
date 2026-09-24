@@ -125,3 +125,7 @@ examples/orm_demo/synthetic_forma/
 examples/piplattice/fnalscl_orm_fitted*
 examples/piplattice/*orbit_response_matrix.*
 examples/piplattice/fnalscl_orm_trim_calibration.csv
+
+# Reliability Study campaign folders and run logs written next to an example (inputs stay tracked)
+examples/**/reliability/*/
+examples/**/reliability/*.log

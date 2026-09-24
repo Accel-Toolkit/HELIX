@@ -14,6 +14,19 @@ LOSS_DTYPE = np.dtype([
     ("element_name", "U32"),
 ])
 
+#: Per-particle record of ions a stripper foil did NOT convert (state
+#: ``"H-"`` / ``"H0"``) or that missed the foil (``"missed"``).  A separate
+#: table from the loss record on purpose: these particles are not lost in
+#: the line, so transmission and the loss-power accounting stay honest.
+UNSTRIPPED_DTYPE = np.dtype([
+    ("particle_id", np.int32),
+    ("x", np.float64),
+    ("y", np.float64),
+    ("energy", np.float64),
+    ("state", "U8"),
+    ("element_name", "U32"),
+])
+
 class Beam:
     def __init__(self, ref: ReferenceParticle, n_particles: int, current: float,
                  duty_cycle: float = 100.0):
@@ -39,6 +52,7 @@ class Beam:
         self.particles = np.zeros((n_particles, 6), dtype=np.float64)
         self.lost = np.zeros(n_particles, dtype=bool)
         self._loss_list: list = []
+        self._unstripped_list: list = []
         # DC / continuous-beam flag.  ``False`` means a normal bunched
         # beam — all existing code paths assume this.  ``True`` means
         # pre-RFQ ion-source / LEBT: uniform phase, 4-D tracking, 2-D
@@ -117,3 +131,23 @@ class Beam:
         if not self._loss_list:
             return np.array([], dtype=LOSS_DTYPE)
         return np.array(self._loss_list, dtype=LOSS_DTYPE)
+
+    def record_unstripped(self, particle_ids, state: str,
+                          element_name: str) -> None:
+        """Record alive particles a foil left unconverted (``state``
+        ``"H-"`` / ``"H0"``) or that missed it (``"missed"``); they stay
+        alive — see :data:`UNSTRIPPED_DTYPE`."""
+        ids = np.asarray(particle_ids, dtype=np.int64)
+        if ids.size == 0:
+            return
+        w = self.ref.w_kin
+        for pid in ids:
+            p = self.particles[pid]
+            self._unstripped_list.append(
+                (int(pid), p[X], p[Y], w + p[DW], state, element_name))
+
+    @property
+    def unstripped_table(self) -> np.ndarray:
+        if not self._unstripped_list:
+            return np.array([], dtype=UNSTRIPPED_DTYPE)
+        return np.array(self._unstripped_list, dtype=UNSTRIPPED_DTYPE)

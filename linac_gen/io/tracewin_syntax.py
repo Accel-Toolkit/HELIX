@@ -242,6 +242,11 @@ SCHEMA: dict[str, Optional[list[Field]]] = {
         Field("energy_mev", float, required=True),
         Field("weight",     float, default=1.0),
     ],
+    "SET_PHASE_OUT": [                            # HELIX extension
+        Field("phase_deg",  float, required=True),  # reference clock at the exit (deg)
+        Field("weight",     float, default=1.0),
+        Field("tol_deg",    float, default=0.0),
+    ],
     "MIN_TRANSMISSION": [
         Field("threshold_pct", float, default=99.0),
         Field("weight",        float, default=1.0),

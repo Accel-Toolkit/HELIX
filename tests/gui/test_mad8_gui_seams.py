@@ -59,3 +59,22 @@ def test_lattice_tab_reload_dispatch(qapp):
     from linac_gen_gui.interphase.app import _parse_lattice_file
     lat, _ = _parse_lattice_file(str(BTL_LAT))
     assert len(lat.elements) == 1125
+
+
+def test_startup_restore_uses_last_session_beam(win, tmp_path):
+    """A rigidity-less MAD8 lattice restored at start-up must be converted
+    with the LAST SESSION'S beam (restored right after it), not the Beam
+    tab's ~2 MeV start-up default — that mis-scaled every magnet 23x."""
+    import json
+    from linac_gen_gui.interphase import app as app_mod
+    deck = tmp_path / "norig.mad8"
+    deck.write_text("Q1: QUADRUPOLE, L=0.2, K1=1.0\nTOP: LINE=(Q1)\n")
+    s = app_mod._settings()
+    s.setValue(app_mod._SETTINGS_LAST_LATTICE, str(deck))
+    s.setValue(app_mod._SETTINGS_SESSION_BEAM,
+               json.dumps({"species": "H-", "energy": 800.0}))
+    assert win.state.beam_config.energy < 10.0        # the start-up default
+    win._restore_last_lattice()
+    assert win.state.lattice_path == str(deck)
+    q = [e for e in win.state.lattice.elements if type(e).__name__ == "Quadrupole"][0]
+    assert q.gradient == pytest.approx(-4.8829, abs=1e-4)

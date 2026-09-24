@@ -578,6 +578,33 @@ class SetKeOutMin(LatticeCommand):
         return [_fmt(self.energy_mev), _fmt(self.weight)]
 
 
+class SetPhaseOut(LatticeCommand):
+    """``SET_PHASE_OUT phase_deg weight tol_deg`` — reference arrival phase
+    at the exit (HELIX extension; no TraceWin counterpart).
+
+    Targets the reference RF clock at the end of the line
+    (``ref.phi_s``, degrees at the reference frequency — what
+    ``EnvelopeResults.ref_phi_s`` / the recorder's ``ref_phi_s`` end on).
+    Residual ``max(0, |wrap180(phi_out − phase_deg)| − tol_deg) / 360``,
+    so a fault compensation that restores the exit energy also restores
+    the arrival TIME at the treaty point and the RF downstream stays in
+    phase.  Written by the reliability engine from the nominal run's exit
+    clock; also usable by hand in a deck.
+    """
+
+    KEYWORD = "SET_PHASE_OUT"
+
+    def __init__(self, name: str, phase_deg: float = 0.0,
+                 weight: float = 1.0, tol_deg: float = 0.0):
+        super().__init__(name=name)
+        self.phase_deg = float(phase_deg)
+        self.weight = float(weight)
+        self.tol_deg = float(tol_deg)
+
+    def to_tracewin_args(self) -> List[str]:
+        return [_fmt(self.phase_deg), _fmt(self.weight), _fmt(self.tol_deg)]
+
+
 # ---------------------------------------------------------------------------
 # ADJUST-family (matcher variables)
 # ---------------------------------------------------------------------------
@@ -709,6 +736,7 @@ COMMAND_CLASSES: dict = {
         SetSize, SetSizeMax, SetSizeMin,
         SetBeamPhaseAdv, SetSeparation, SetAdv,
         MinEmitGrowth, MinEmit4DGrowth, MinTransmission, SetKeOutMin,
+        SetPhaseOut,
         Adjust, AdjustSteerer, AdjustSteererBx, AdjustSteererBy,
         AdjustBeamTwiss, AdjustBeamCentroid, AdjustBeamEmit,
         AdjustBeamCurrent,
@@ -724,6 +752,7 @@ __all__ = [
     "SetSize", "SetSizeMax", "SetSizeMin",
     "SetBeamPhaseAdv", "SetSeparation", "SetAdv",
     "MinEmitGrowth", "MinEmit4DGrowth", "MinTransmission", "SetKeOutMin",
+    "SetPhaseOut",
     "Adjust", "AdjustSteerer", "AdjustSteererBx", "AdjustSteererBy",
     "AdjustBeamTwiss", "AdjustBeamCentroid", "AdjustBeamEmit",
     "AdjustBeamCurrent",

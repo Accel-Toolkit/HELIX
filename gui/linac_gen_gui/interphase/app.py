@@ -77,7 +77,7 @@ from linac_gen.io.formats import (  # noqa: E402
 )
 
 
-def _parse_lattice_file(fp: str):
+def _parse_lattice_file(fp: str, fallback_beam=None):
     """Extension-dispatched lattice parse → ``(lattice, metadata)``.
 
     One shared implementation for the GUI load paths (open dialog,
@@ -85,8 +85,11 @@ def _parse_lattice_file(fp: str):
     the CLI uses (``linac_gen.io.formats.parse_lattice_file``), so a new
     format only has to be wired once.  Bmad / SciBmad / PALS / lattix
     JSON go through the optional ``lattix`` translator.
+
+    ``fallback_beam`` (the session's or the project's beam) gives a MAD8
+    file that declares no rigidity its magnet scaling — with a warning.
     """
-    return _parse_lattice_file_impl(fp)
+    return _parse_lattice_file_impl(fp, fallback_beam=fallback_beam)
 _FONT_MIN, _FONT_MAX     = 9, 22
 
 
@@ -536,6 +539,7 @@ class InterphaseWindow(QMainWindow):
             _settings().value(_SETTINGS_UPDATE_CHECK, True, type=bool))
         self._toolbar.open_parameter_scan_requested.connect(self._open_parameter_scan)
         self._toolbar.open_orm_requested.connect(self._open_orm_calibration)
+        self._toolbar.open_reliability_requested.connect(self._open_reliability_study)
         self._toolbar.stop_requested.connect(self._stop_active_worker)
         self._toolbar.font_size_changed.connect(self._apply_font_size)
         self._toolbar.export_tracewin_requested.connect(self._export_tracewin)
@@ -880,6 +884,13 @@ class InterphaseWindow(QMainWindow):
             except Exception:
                 pass
             workers.append(ow)
+        rel_dlg = getattr(self, "_reliability_dlg", None)
+        begin = getattr(rel_dlg, "shutdown_begin", None)
+        if callable(begin):
+            try:
+                workers.extend(begin() or [])
+            except Exception:
+                pass
         # Long-retired workers parked to avoid GC of a live QThread — hand
         # them to the same bounded wait / os._exit path, or interpreter
         # teardown destroys a running thread and qFatal-aborts on quit.
@@ -990,7 +1001,8 @@ class InterphaseWindow(QMainWindow):
             # (.lat/.flat) and Elegant (.lte) → the in-house subset
             # parsers; Bmad/SciBmad/PALS → lattix; everything else →
             # the TraceWin parser.
-            lattice, meta = _parse_lattice_file(fp)
+            lattice, meta = _parse_lattice_file(
+                fp, fallback_beam=self.state.beam_config)
             self.state.set_lattice(lattice, fp)
             s.setValue(_SETTINGS_LAST_LATTICE, fp)
             s.setValue(_SETTINGS_LAST_DIR, str(Path(fp).parent))
@@ -998,6 +1010,11 @@ class InterphaseWindow(QMainWindow):
             # remembered project so the next launch restores this lattice.
             s.remove(_SETTINGS_LAST_PROJECT)
             msg = f"Loaded {len(lattice.elements)} elements"
+            if isinstance(meta, dict) and meta.get("rigidity_source") == "fallback_beam":
+                ref = meta.get("reference")
+                msg += ("  ·  the file declares no beam rigidity — magnets scaled "
+                        f"with the Beam tab ({ref.species.name}, "
+                        f"{ref.w_kin:.6g} MeV)" if ref is not None else "")
             warnings = meta.get("warnings", []) if isinstance(meta, dict) else []
             if warnings:
                 msg += f"  ·  {len(warnings)} warning(s) — see console"
@@ -1125,10 +1142,27 @@ class InterphaseWindow(QMainWindow):
             # Route by extension, exactly as _open_lattice does — restoring a
             # remembered .madx/.seq/.lat lattice through the TraceWin parser
             # mis-parsed it and then wiped the saved path in the except below.
-            lattice, _meta = _parse_lattice_file(fp)
+            # A MAD8 file without its own rigidity is converted with the
+            # LAST SESSION'S beam (restored right after this) — not the Beam
+            # tab's start-up default, which would mis-scale every magnet.
+            fb = self.state.beam_config
+            raw = _settings().value(_SETTINGS_SESSION_BEAM)
+            if raw and isinstance(raw, str):
+                try:
+                    import json
+                    fb = json.loads(raw)
+                except ValueError:
+                    pass
+            lattice, _meta = _parse_lattice_file(fp, fallback_beam=fb)
             self.state.set_lattice(lattice, fp)
+            note = ""
+            if isinstance(_meta, dict) and _meta.get("rigidity_source") == "fallback_beam":
+                ref = _meta.get("reference")
+                note = ("  ·  the file declares no beam rigidity — magnets scaled "
+                        f"with {ref.species.name} at {ref.w_kin:.6g} MeV"
+                        if ref is not None else "")
             self.state.status_message.emit(
-                f"Restored {os.path.basename(fp)} — {len(lattice.elements)} elements")
+                f"Restored {os.path.basename(fp)} — {len(lattice.elements)} elements{note}")
         except Exception:
             # Stale entry: clear it so we don't keep retrying on every launch.
             s.remove(_SETTINGS_LAST_LATTICE)
@@ -1470,7 +1504,10 @@ class InterphaseWindow(QMainWindow):
                     # Route by extension, as _open_lattice does — a project
                     # referencing a .madx/.seq/.lat lattice otherwise
                     # mis-loaded through the TraceWin parser.
-                    lattice, _ = _parse_lattice_file(resolved)
+                    _pbeam = data.get("beam")
+                    lattice, _ = _parse_lattice_file(
+                        resolved, fallback_beam=_pbeam if isinstance(_pbeam, dict)
+                        else self.state.beam_config)
                     self._detach_workers_for_new_lattice()
                     self.state.set_lattice(lattice, resolved)
                 except Exception as exc:
@@ -1894,7 +1931,8 @@ class InterphaseWindow(QMainWindow):
             return
         try:
             self._detach_workers_for_new_lattice()
-            lattice, meta = _parse_lattice_file(res["lattice_path"])
+            lattice, meta = _parse_lattice_file(
+                res["lattice_path"], fallback_beam=self.state.beam_config)
             self.state.set_lattice(lattice, res["lattice_path"])
             # Warnings from materialising a foreign deck (the wizard parsed
             # it and wrote <name>.dat) come first; the .dat re-parse rarely
@@ -3141,6 +3179,30 @@ class InterphaseWindow(QMainWindow):
             from linac_gen_gui.interphase.dialogs import OrmCalibrationDialog
             dlg = OrmCalibrationDialog(self, self.state)
             self._orm_dlg = dlg
+        dlg.show(); dlg.raise_(); dlg.activateWindow()
+
+    def _open_reliability_study(self) -> None:
+        """Tools → Reliability Study… — single non-modal instance."""
+        if self.state.lattice is None:
+            QMessageBox.warning(self, "Reliability Study", "Load a lattice first."); return
+        dlg = getattr(self, "_reliability_dlg", None)
+        if dlg is not None and not dlg.isVisible():
+            running = [w for w in (getattr(dlg, "_worker", None), getattr(dlg, "_selftest_worker", None))
+                       if w is not None and hasattr(w, "isRunning") and w.isRunning()]
+            if not running:
+                for sig, slot in ((self.state.lattice_changed, dlg._on_lattice_changed),
+                                  (self.state.beam_config_changed, dlg._on_beam_changed)):
+                    try:
+                        sig.disconnect(slot)
+                    except (TypeError, RuntimeError):
+                        pass
+                dlg.deleteLater()
+                dlg = None
+            # else: a campaign is still winding down inside the closed dialog — reuse it
+        if dlg is None:
+            from linac_gen_gui.interphase.dialogs import ReliabilityStudyDialog
+            dlg = ReliabilityStudyDialog(self, self.state)
+            self._reliability_dlg = dlg
         dlg.show(); dlg.raise_(); dlg.activateWindow()
 
     def _open_about(self) -> None:

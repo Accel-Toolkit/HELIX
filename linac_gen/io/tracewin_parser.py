@@ -415,7 +415,8 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
     # absent means the element default ("auto" — kappa-regime dispatch).
     _HELIX_FOIL = re.compile(
         r"^\s*;\s*HELIX_FOIL\s+(\S+)\s+(\S+)\s+([\d.eE+-]+)"
-        r"(?:\s+(auto|landau|gaussian))?\s*(?:;.*)?$"
+        r"(?:\s+(auto|landau|gaussian))?((?:\s+[A-Za-z_]+=[^\s;]+)*)"
+        r"\s*(?:;.*)?$"
     )
     # ``; HELIX_SC_GRID <extent_sigma>`` — HELIX-specific comment card:
     # from this position onward the 3-D bunched PIC solver uses the given
@@ -453,12 +454,22 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
             m = _HELIX_FOIL.match(raw_line)
             if m:
                 from linac_gen.elements.foil import Foil
-                lattice.add(Foil(
+                foil = Foil(
                     name=m.group(1),
                     material=m.group(2),
                     thickness_ug_cm2=float(m.group(3)),
                     straggling=m.group(4) or "auto",
-                ))
+                )
+                # Optional ``key=value`` tail (strip_model, dedx_model,
+                # dx, dy, extent_mm, seed) — the writer emits only the
+                # non-default ones, so old lines round-trip unchanged.
+                for tok in (m.group(5) or "").split():
+                    key, _, val = tok.partition("=")
+                    try:
+                        foil.apply_option_token(key, val)
+                    except ValueError as exc:
+                        raise ValueError(f"Line {line_num}: {exc}") from exc
+                lattice.add(foil)
                 continue
             # ``; HELIX_SC_GRID …`` — zero-length PIC grid-extent directive.
             m = _HELIX_SC_GRID.match(raw_line)

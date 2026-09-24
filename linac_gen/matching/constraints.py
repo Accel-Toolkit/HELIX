@@ -45,7 +45,7 @@ from linac_gen.elements.lattice_commands import (
     Adjust, LatticeCommand,
     MinEmit4DGrowth, MinEmitGrowth, MinTransmission, SetAchromat,
     SetAdv, SetBeamPhaseAdv,
-    SetKeOutMin, SetPosition, SetSeparation, SetSize, SetSizeMax,
+    SetKeOutMin, SetPhaseOut, SetPosition, SetSeparation, SetSize, SetSizeMax,
     SetSizeMin, SetTwiss,
 )
 
@@ -689,6 +689,32 @@ def _make_set_ke_out_min_evaluator(cmd: SetKeOutMin):
     return evaluator
 
 
+_SET_PHASE_OUT_WARNED = False
+
+
+def _make_set_phase_out_evaluator(cmd: SetPhaseOut):
+    """Reference arrival phase at the exit: ``max(0, |wrap180(phi_out −
+    target)| − tol) / 360`` (one residual, fixed length).  Results that
+    carry no ``ref_phi_s`` history (a solver that does not record the
+    reference clock) make the card INERT with one warning.
+    """
+    def evaluator(results, lattice):
+        global _SET_PHASE_OUT_WARNED
+        phi = getattr(results, "ref_phi_s", None)
+        if phi is None or len(phi) == 0:
+            if not _SET_PHASE_OUT_WARNED:
+                import sys
+                print("[match] SET_PHASE_OUT found but results carry no "
+                      "ref_phi_s history.  Constraint is INERT -- the "
+                      "envelope solver and the multiparticle recorder both "
+                      "record the reference clock.", file=sys.stderr)
+                _SET_PHASE_OUT_WARNED = True
+            return np.array([0.0])
+        d = (float(phi[-1]) - cmd.phase_deg + 180.0) % 360.0 - 180.0
+        return np.array([max(0.0, abs(d) - cmd.tol_deg) / 360.0])
+    return evaluator
+
+
 _MIN_TRANSMISSION_ENV_WARNED = False
 
 
@@ -940,6 +966,15 @@ def collect_constraints(lattice) -> List[Constraint]:
             out.append(Constraint(
                 label=f"SET_KE_OUT_MIN:{elem.energy_mev:g}MeV",
                 evaluator=_make_set_ke_out_min_evaluator(elem),
+                weight=elem.weight, source=elem,
+            ))
+
+        elif isinstance(elem, SetPhaseOut):
+            if elem.weight == 0.0:
+                continue
+            out.append(Constraint(
+                label=f"SET_PHASE_OUT:{elem.phase_deg:g}deg",
+                evaluator=_make_set_phase_out_evaluator(elem),
                 weight=elem.weight, source=elem,
             ))
 

@@ -348,37 +348,97 @@ MAD-X outright rather than erroring).
 > HELIX → MAD-X round trip with the same Twiss (`tests/io/
 > test_madx_oracle.py`; the tests skip when `cpymad` is not installed).
 
-## Importing MAD8 flat files (`.lat`)
+## Importing MAD8 lattices (`.lat`, `.flat`, `.mad8`)
 
-HELIX also reads **MAD8 flat / SAVELINE lattices** (`.lat` / `.flat`),
-the dialect used by the PIP-II BTL exports — `Open Lattice…` in the
-GUI, or:
+HELIX reads **MAD8 lattices** (`.lat` / `.flat` / `.mad8`): SAVELINE
+flat files such as the PIP-II BTL and BAL exports, hand-written decks,
+and MAD8 files written by other codes.  Use `Open Lattice…` in the GUI,
+any CLI command, or:
 
 ```{.python data-needs="BTL2025v0703.lat"}
 from linac_gen.io.mad8_parser import parse_mad8
 lattice, meta = parse_mad8("BTL2025v0703.lat")   # → (Lattice, metadata)
 ```
 
-**Supported:** `!` comments and `&` continuations; deferred parameters
-`name := expr` (and `name = expr`) with references to other parameters
-and `NAME[ATTR]` element-attribute references; element definitions
-`name: TYPE, attr=expr, …`; `name: LINE = (A, B, -C, 2*D)` with
-recursive expansion, reversal, and integer repetition.  The element
-mapping matches the MAD-X table above, plus: `KICKER` / `HKICKER` /
-`VKICKER` → `Marker` + full-length body `Drift` (geometry preserved;
-non-zero kicks warn), plain `MONITOR` → non-BPM `Marker`, a `TILT` on
-a quadrupole → `skew_angle`, and `TILT=±π/2` on a bend → a vertical
-bend (`hv=1`).
+**Language.**
+
+- `!` comments and `&` continuations. As in MAD8, text after the `&` on the same line is ignored.
+- `;` separates statements on one line.
+- `COMMENT` … `ENDCOMMENT` blocks.
+- `CALL, FILENAME=…` reads another file (the path is taken relative to the calling file first).
+- `RETURN` and `STOP`.
+- Parameters: `name := expr`, `name = expr`, `name: CONSTANT = expr` and `SET, name, expr`. They are evaluated when first used, so their order in the file does not matter. If a name is defined twice, the last definition wins and a warning lists it.
+- Expressions: `+ − * / ^`, Fortran `D` exponents and `NAME[ATTR]` references to element attributes (also `BEAM[…]`).
+  - Functions: the MAD8 set `SQRT LOG EXP SIN COS TAN ASIN ABS MAX MIN`, plus `ACOS ATAN SINH COSH TANH LOG10`.
+  - Constants, with MAD8's values: `PI TWOPI DEGRAD RADDEG E EMASS PMASS CLIGHT`.
+  - `RANF()`, `GAUSS()` and `TGAUSS()` take their mean value, with a warning. HELIX imports the nominal machine.
+- Elements: `name: CLASS, attr=expr, …`.
+  - MAD8 keyword abbreviations work (`QUAD`, `SEXT`, `RFCAV`, …).
+  - Class inheritance works (`QF2: QF, K1=…`), and so do attribute changes (`QF, K1=…`).
+  - Word attributes such as `TYPE=…` are kept out of the arithmetic.
+- Beam lines: `name: LINE = (…)` with `-NAME`, `N*NAME`, nested groups `N*(A, -(B, C))`, and lines with arguments (`CELL(X, Y): LINE = (X, D, Y)` used as `CELL(QF, QD)`).
+- `name: SEQUENCE[, REFER=…, L=…]` … `ENDSEQUENCE[, AT=…]` with `AT` / `FROM` placement (`FROM` counts from the earlier member's centre, as MAD-X does). The drifts between members are generated.
+- `USE, name` selects the beam line. Without it, the importer takes the largest line that no other line references, and warns. `parse_mad8(..., line="NAME")` overrides both.
+- Action commands (`TWISS`, `MATCH` … `ENDMATCH`, `SELECT`, `EALIGN`, …) are skipped and listed in one warning. Misalignment and field-error commands (`EALIGN`, `EFIELD`, …) are **not** applied. Model errors with the Error Study instead.
+
+**Elements.** The element mapping follows the MAD-X table above, plus these MAD8 cases:
+
+| MAD8 | HELIX |
+|---|---|
+| `KICKER` / `HKICKER` / `VKICKER` with zero kick | `Marker` + a `Drift` of the full length (the BTL/BAL corrector layout) |
+| the same with a kick | `Steerer` between half-length drifts. `TILT` rotates the kick. |
+| plain `MONITOR` (also `IMONITOR`, `WIRE`, `PROFILE`, …) | non-BPM `Marker` + body `Drift` |
+| `H/VMONITOR` | BPM marker |
+| `TILT` on a quadrupole | `skew_angle` (a bare `TILT` = 45°) |
+| `TILT=±π/2` on a bend | a vertical bend (`hv=1`) |
+| `OCTUPOLE` | thin `Multipole` (k3·L) between half-length drifts |
+| `MULTIPOLE, KnL=…, Tn=…` | `knl[n] = KnL·cos((n+1)Tn)`, `ksl[n] = −KnL·sin((n+1)Tn)`. A bare `Tn` = π/(2(n+1)). |
+| zero-angle `SBEND`/`RBEND` with `K1` | `Quadrupole` (exact: with no curvature the bend map is the quadrupole map) |
+| `RFCAVITY` with `HARMON` | frequency = HARMON·βc/C, where C is the length of the line used |
+| `RFCAVITY` with neither `HARMON` nor `FREQ` | a `Drift` of its length (the cavity has no frequency) |
+| `LCAVITY` (`DELTAE` MeV, `PHI0` in turns, `FREQ` MHz) | `RFGap` with gain DELTAE·cos 2πPHI0. Magnets after it are converted with the local rigidity. |
+| `LUMP, LINE=…` | the referenced line, expanded in place |
+| anything else (`ELSEPARATOR`, `WIGGLER`, `BEAMBEAM`, `SROT`, …) | a `Drift` of its length, or a `Marker` when L = 0. One warning per class says the field is not modelled. |
+
+A multipole's dipole term `K0L` is applied as an orbit kick about a
+straight reference, as the HELIX MAD-X importer also does. MAD-X instead
+bends the reference orbit by `K0L`. A file with a non-zero `K0L` gets a
+warning that says so.
 
 **Rigidity and charge sign.**  MAD strengths are normalized
-(K1 = (q/p)·∂B/∂x); HELIX stores the lab-frame gradient, so the
-conversion is **G = sign(q)·K1·|Bρ|** — for H⁻ every gradient sign
-flips relative to a proton import.  Bρ is resolved in order from the
-`brho=` argument, a `BRHO := …` parameter in the file, or a `BEAM`
-statement; if none is available the import **fails loudly** (a wrong
-Bρ would silently mis-scale every magnet).  The species defaults to
-H⁻ (`species="proton"` to override).  A warning always states the
-assumed reference — set the Beam tab to match before running.
+(K1 = (q/p)·∂B/∂x). HELIX stores the lab-frame gradient, so the
+conversion is **G = sign(q)·K1·|Bρ|**. For H⁻ every gradient sign
+flips relative to a proton import. Bρ comes from, in this order:
+
+1. a `BEAM` statement that names the particle or its energy: `PARTICLE` and/or `MASS` + `CHARGE`, with `ENERGY` (total, GeV), `PC` or `GAMMA`. MAD8's defaults apply: positron, 1 GeV. A `BEAM` that carries only emittances or `NPART` is not a rigidity source. `BEAM[PC]`, `BEAM[GAMMA]` and the other derived quantities can be referenced in expressions.
+2. the `brho=` argument.
+3. a `BRHO := …` parameter in the file. Its species is the `species=` argument, else the fallback beam's species, else H⁻. For H⁻ it is refused when it implies an impossible energy (above 20 GeV). Some BAL exports write `P0/C*1.0E11` with P0 in MeV/c and c in cm/s, which is 1000 times too large.
+4. the **fallback beam**: the project's beam, or the Beam tab when a bare lattice is opened in the GUI. It is used only when the file declares no usable rigidity, and a warning (plus a note in the GUI status bar) says so.
+
+With none of these the import **fails loudly**: a wrong Bρ would
+silently mis-scale every magnet. The CLI only has a fallback when it is
+given a project (`.lgproj`), and a scan converts the magnets with the
+project's beam as saved, never with the per-point `--beam` overrides.
+At GUI start-up a restored lattice uses the last session's beam. A `BEAM` particle that
+HELIX does not model (electron, positron, antiproton, …) keeps its own
+rigidity for the magnets, and the tracking reference becomes a proton
+at that rigidity. The magnetic optics then match MAD8, and a warning
+states the substitution. After an `LCAVITY` the magnets follow the real
+particle's momentum; a tracked proton through the same cavity would not,
+and a warning says so. A warning always states the reference used,
+so set the Beam tab to match before running.
+
+**Checked against MAD-X.** On every corpus lattice MAD-X can read, the
+imported transverse transfer matrix matches MAD-X's reading of the same
+file to ≤ 6·10⁻⁸, and to 10⁻¹⁰ or better on most. For this comparison
+RF voltages and kicks are zeroed in both codes: MAD-X's twiss neither
+accelerates the reference nor linearises about a kicked orbit the way
+HELIX's matrix does. The files checked are the Fermilab Main Injector
+(fractional tunes 0.4252865423 / 0.4152846703 in both codes), the CSNS RCS, two
+SNS ring decks, the PIP-II BAL, BTL2022, an electron-lens FODO series
+and a 10 GeV electron ring written with keyword abbreviations and
+nested groups. `tests/io/test_mad8_parser.py` carries the MAD-X
+comparisons; they skip when `cpymad` is not installed.
 
 **Automatic periodicity.**  The `.lat` LINE hierarchy declares the
 machine's cell structure, which a flat TraceWin file loses.  The

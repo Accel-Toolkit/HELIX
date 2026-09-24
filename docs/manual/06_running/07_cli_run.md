@@ -8,7 +8,7 @@ simulation, and writes the results.
 python -m linac_gen run <input> [options]
 ```
 
-`<input>` is a `.dat` / `.madx` / `.seq` / `.lat` / `.flat` / `.lte`
+`<input>` is a `.dat` / `.madx` / `.seq` / `.lat` / `.flat` / `.mad8` / `.lte`
 lattice (or, with the optional lattix translator, a `.bmad` / `.jl` /
 `.pals.yaml` one — see [Importing Bmad, SciBmad and PALS
 lattices](02_tracewin_dat.md#importing-bmad-scibmad-and-pals-lattices-via-lattix))

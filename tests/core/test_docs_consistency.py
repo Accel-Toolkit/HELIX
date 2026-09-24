@@ -277,7 +277,7 @@ def test_tracewin_ini_import_documented():
     # the --tracewin-ini option on the CLI pages and the input model
     for page in ("07_cli_run.md", "08_cli_scan.md", "09_cli_batch.md",
                  "10_cli_twiss.md", "11_cli_backtrack.md", "13_cli_orm.md",
-                 "06_batch_cli.md"):
+                 "14_cli_reliability.md", "06_batch_cli.md"):
         txt = _read(f"docs/manual/06_running/{page}")
         assert "--tracewin-ini" in txt or "`tracewin_ini`" in txt, (
             f"{page} omits --tracewin-ini")

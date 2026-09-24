@@ -323,6 +323,7 @@ def save_results_hdf5(recorder, filepath: str, beam_config=None,
         # (from the envelope solver) lacks it.  Use getattr so envelope-only
         # results dump cleanly to HDF5 without an AttributeError.
         snaps = getattr(recorder, "_snapshots", None) or {}
+        masks = getattr(recorder, "_snapshot_masks", None) or {}
         if snaps:
             parts = f.create_group("particles")
             for i, (s_pos, (particles, ref_state)) in enumerate(
@@ -330,6 +331,11 @@ def save_results_hdf5(recorder, filepath: str, beam_config=None,
             ):
                 grp = parts.create_group(f"s_{i:04d}")
                 grp.create_dataset("data", data=particles)
+                # the per-snapshot lost mask (True = lost at that s), so a
+                # reader can restrict a snapshot to the alive particles
+                mask = masks.get(s_pos)
+                if mask is not None:
+                    grp.create_dataset("lost", data=np.asarray(mask, dtype=bool))
                 grp.attrs["s"]     = s_pos
                 grp.attrs["w_kin"] = ref_state.w_kin
                 grp.attrs["phi_s"] = ref_state.phi_s
@@ -342,6 +348,11 @@ def save_results_hdf5(recorder, filepath: str, beam_config=None,
         # reloaded runs; n_macro is the LAUNCHED macroparticle count (each
         # carries I_avg/n_macro of beam current).
         losses = getattr(recorder, "loss_table", None)
+        # the LAUNCHED macroparticle count at the root as well: the losses/
+        # group (and its n_macro) exists only when something was lost, and
+        # a lossless run still needs it for power densities
+        if getattr(recorder, "n_macro", None):
+            f.attrs["n_macro"] = int(recorder.n_macro)
         if losses is not None and np.asarray(losses).size:
             lt = np.asarray(losses)
             lg = f.create_group("losses")
@@ -350,6 +361,19 @@ def save_results_hdf5(recorder, filepath: str, beam_config=None,
             names = np.asarray(lt["element_name"]).astype("S32")
             lg.create_dataset("element_name", data=names)
             lg.attrs["n_macro"] = int(getattr(recorder, "n_macro", 0))
+
+        # ── stripper-foil record (Foil strip_model / extent) ─────────────────
+        # Written only when non-empty, so every file without such a foil is
+        # byte-identical to before this group existed.
+        unstripped = getattr(recorder, "unstripped_table", None)
+        if unstripped is not None and np.asarray(unstripped).size:
+            ut = np.asarray(unstripped)
+            ug = f.create_group("unstripped")
+            for key in ("particle_id", "x", "y", "energy"):
+                ug.create_dataset(key, data=np.asarray(ut[key]))
+            ug.create_dataset("state", data=np.asarray(ut["state"]).astype("S8"))
+            ug.create_dataset("element_name",
+                              data=np.asarray(ut["element_name"]).astype("S32"))
 
         # ── beam config ───────────────────────────────────────────────────────
         if beam_config is not None:
@@ -416,4 +440,16 @@ def load_results_hdf5(filepath: str) -> dict:
             lt["element_name"] = lg["element_name"][:].astype("U32")
             results["loss_table"] = lt
             results["n_macro"] = int(lg.attrs.get("n_macro", 0))
+        if "n_macro" in f.attrs:
+            results["n_macro"] = int(f.attrs["n_macro"])
+        if "unstripped" in f:
+            from linac_gen.core.beam import UNSTRIPPED_DTYPE
+            ug = f["unstripped"]
+            n = ug["x"].shape[0]
+            ut = np.zeros(n, dtype=UNSTRIPPED_DTYPE)
+            for key in ("particle_id", "x", "y", "energy"):
+                ut[key] = ug[key][:]
+            ut["state"] = ug["state"][:].astype("U8")
+            ut["element_name"] = ug["element_name"][:].astype("U32")
+            results["unstripped_table"] = ut
     return results

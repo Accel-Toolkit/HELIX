@@ -269,7 +269,7 @@ class HybridReplayRunner:
         from linac_gen.parallel.scan_pool import _parse_lattice_for_scan
         fp_live = lattice_fingerprint(self.lattice)
         fp_file = lattice_fingerprint(_parse_lattice_for_scan(
-            str(self.lattice_path)))
+            str(self.lattice_path), beam_config))
         if fp_live != fp_file:
             raise ValueError(
                 f"lattice fingerprint mismatch: live lattice is "

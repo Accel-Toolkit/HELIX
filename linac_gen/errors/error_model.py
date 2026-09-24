@@ -30,6 +30,60 @@ class ErrorDef:
     element_kind: str | None = None
 
 
+@dataclass
+class SeedDraw:
+    """One seed's draws in transportable form (:meth:`ErrorStudy.draw_overrides`).
+
+    ``overrides`` — ``((f"@{index}.{attr}", value), …)`` reproducing every
+    changed element attribute on a fresh copy of the design lattice
+    through :func:`linac_gen.cli.common.apply_element_override`;
+    ``beam_config`` — the per-seed ``BeamConfig`` copy; ``lattice`` — the
+    errored copy itself (for in-process consumers; drop it before
+    pickling); ``untransportable`` — ``((element, parameter), …)`` draws
+    that landed on an attribute the design element does not carry
+    (``_apply_errors``'s alignment ``setattr`` fallback on e.g. a
+    marker), which the override transport cannot express; ``applied`` /
+    ``beam_applied`` — the seed's provenance log entries.
+    """
+    seed: int
+    overrides: tuple
+    beam_config: object
+    lattice: object = field(default=None, repr=False)
+    untransportable: tuple = ()
+    applied: list = field(default_factory=list)
+    beam_applied: list = field(default_factory=list)
+
+
+_MISSING = object()
+
+
+def lattice_overrides(design, errored) -> tuple[tuple, tuple]:
+    """Diff two same-shape lattices into ``@index.attr`` overrides.
+
+    Every public numeric attribute (int/float, not bool) of an element
+    of ``errored`` that differs from the same attribute of the
+    corresponding ``design`` element becomes ``(f"@{i+1}.{attr}",
+    float(value))``.  Attributes the design element lacks are reported
+    in the second tuple as ``(element_name, attr)`` instead of emitted.
+    """
+    overrides: list = []
+    untransportable: list = []
+    if len(design.elements) != len(errored.elements):
+        raise ValueError("lattice_overrides: element counts differ "
+                         f"({len(design.elements)} vs {len(errored.elements)})")
+    for i, (a, b) in enumerate(zip(design.elements, errored.elements)):
+        va = vars(a)
+        for k, v in vars(b).items():
+            if k.startswith("_") or isinstance(v, bool) or not isinstance(v, (int, float)):
+                continue
+            old = va.get(k, _MISSING)
+            if old is _MISSING:
+                untransportable.append((getattr(b, "name", f"@{i + 1}"), k))
+            elif old != v:
+                overrides.append((f"@{i + 1}.{k}", float(v)))
+    return tuple(overrides), tuple(untransportable)
+
+
 def element_kind(elem) -> str:
     """Classify an element for :attr:`ErrorDef.element_kind` matching.
 
@@ -477,6 +531,37 @@ class ErrorStudy:
                 stacklevel=2,
             )
         return results
+
+    def draw_overrides(self, seed: int) -> SeedDraw:
+        """One seed's draws as transportable overrides (reliability
+        campaigns run seeds through the scan pool).
+
+        Calls the unchanged :meth:`_apply_errors` and
+        :meth:`_apply_beam_errors` — the RNG streams, the kind gate and
+        the provenance logs are exactly those of :meth:`run` — and diffs
+        the errored copy against the design lattice with
+        :func:`lattice_overrides`.  Draws the transport cannot express
+        are listed in ``untransportable`` and warned about once per
+        study.
+        """
+        lattice_copy = self._apply_errors(seed)
+        beam_cfg = self._apply_beam_errors(seed)
+        overrides, untransportable = lattice_overrides(self.lattice, lattice_copy)
+        if untransportable and not getattr(self, "_warned_untransportable", False):
+            self._warned_untransportable = True
+            warnings.warn(
+                "ErrorStudy.draw_overrides: "
+                f"{len(untransportable)} draw(s) landed on attributes the "
+                "design elements do not carry (e.g. dx on a marker) and "
+                "cannot be transported as overrides: "
+                + ", ".join(f"{n}.{p}" for n, p in untransportable[:6])
+                + (" …" if len(untransportable) > 6 else ""),
+                stacklevel=2)
+        return SeedDraw(
+            seed=int(seed), overrides=overrides, beam_config=beam_cfg,
+            lattice=lattice_copy, untransportable=untransportable,
+            applied=list(self.applied_log.get(int(seed), [])),
+            beam_applied=list(self.beam_applied_log.get(int(seed), [])))
 
     def _apply_beam_errors(self, seed: int):
         """Return a deep-copy of the BeamConfig with beam errors applied.

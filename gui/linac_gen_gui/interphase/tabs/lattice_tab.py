@@ -519,7 +519,8 @@ class LatticeTab(QWidget):
             # TraceWin label syntax and would mis-parse silently).
             from linac_gen_gui.interphase.app import _parse_lattice_file
             lp = self.state.lattice_path
-            lat, _ = _parse_lattice_file(lp)
+            lat, _ = _parse_lattice_file(
+                lp, fallback_beam=self.state.beam_config)
             self.state.set_lattice(lat, lp)
         except Exception as exc:
             QMessageBox.critical(self, "Reload failed", str(exc))

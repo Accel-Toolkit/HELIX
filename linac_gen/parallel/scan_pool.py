@@ -62,16 +62,33 @@ class ScanPoint:
     capture_errors: bool = False    # True: a raised point returns an
     #                                 {"error", "traceback"} row instead
     #                                 of killing the whole pool
+    # --- reliability-campaign extensions (additive; every existing caller
+    #     leaves the defaults and the worker is bit-identical to before) ---
+    snapshot_elements: tuple = ()   # element NAMES whose exit phase space
+    #                                 is snapshotted (mp mode; lands in the
+    #                                 HDF5 ``particles/`` group)
+    lattice_beam: dict | None = None  # the beam a MAD8 deck with no rigidity
+    #                                 of its own is converted with: None =
+    #                                 beam_config (GUI/assistant/replay points,
+    #                                 whose beam never varies across a scan);
+    #                                 {} = none (a bare CLI lattice refuses, as
+    #                                 `run` does); build_scan_point sets the
+    #                                 project beam BEFORE --beam overrides so
+    #                                 an energy scan never rescales magnets
+    loss_metrics: bool = False      # True: the row also carries the loss-
+    #                                 power scalars of _loss_metrics()
 
 
-def _parse_lattice_for_scan(path: str):
+def _parse_lattice_for_scan(path: str, beam_config=None):
     """Parse a lattice file → ``Lattice`` in a worker process, through the same
     suffix dispatcher as the CLI and the GUI (``linac_gen.io.formats``): a
     private copy here once sent ``.jl`` / ``.bmad`` decks to the TraceWin
     parser, silently.  Warnings are the parent's business (it parsed the
-    same file first)."""
+    same file first).  ``beam_config`` is the point's beam: a MAD8 file with
+    no rigidity of its own takes it from there, as the parent did."""
     from linac_gen.io.formats import parse_lattice_file
-    return parse_lattice_file(path, warn_unknown=False)[0]
+    return parse_lattice_file(path, warn_unknown=False,
+                              fallback_beam=beam_config)[0]
 
 
 def _scan_metrics(res, elapsed: float) -> dict:
@@ -139,6 +156,44 @@ def _scan_metrics(res, elapsed: float) -> dict:
     return out
 
 
+LOSS_METRIC_KEYS = ("loss_w_total", "loss_w_per_m_peak",
+                    "loss_w_per_m_peak_s_m", "n_lost")
+
+
+def _loss_metrics(res, cfg) -> dict:
+    """Loss-power scalars for a results object (opt-in through
+    ``ScanPoint.loss_metrics``): the total lost beam power, the peak
+    lineal loss density over 1 m bins and the bin centre it sits at, and
+    the lost-macroparticle count — all at the beam's current × duty
+    cycle (``BeamConfig.duty_cycle``), so a project saved at 1.1 % duty
+    reports watts, not the CW figure.  Every key is ``None`` when the
+    results carry no loss record (the envelope solver, or a run whose
+    ``n_macro`` is unknown) so a row's key-set stays fixed per point."""
+    lt = getattr(res, "loss_table", None)
+    n_macro = getattr(res, "n_macro", None)
+    if lt is None or not n_macro:
+        return {k: None for k in LOSS_METRIC_KEYS}
+    import numpy as np
+    from linac_gen.analysis.loss_power import (loss_power_profile,
+                                               loss_power_summary)
+    s_arr = getattr(res, "s", None)
+    s_end = float(s_arr[-1]) if s_arr is not None and len(s_arr) else 0.0
+    summ = loss_power_summary(lt, current_mA=float(cfg.current),
+                              duty_pct=float(cfg.duty_cycle),
+                              n_macro=int(n_macro))
+    centers, wpm = loss_power_profile(lt, current_mA=float(cfg.current),
+                                      duty_pct=float(cfg.duty_cycle),
+                                      n_macro=int(n_macro),
+                                      s_end_mm=max(s_end, 1.0))
+    j = int(np.argmax(wpm))
+    return {
+        "loss_w_total": float(summ["lost_w"]),
+        "loss_w_per_m_peak": float(wpm[j]),
+        "loss_w_per_m_peak_s_m": float(centers[j]) * 1e-3,
+        "n_lost": int(summ["n_lost"]),
+    }
+
+
 def _run_one_point_worker(point: ScanPoint) -> dict:
     """Sub-process entry point.  Rebuilds everything from serialisable inputs.
 
@@ -158,7 +213,10 @@ def _run_one_point_worker(point: ScanPoint) -> dict:
         from linac_gen.core.simulation import Simulation
         from linac_gen.distributions.factory import create_beam
 
-        lattice = _parse_lattice_for_scan(point.lattice_path)
+        lattice = _parse_lattice_for_scan(
+            point.lattice_path,
+            point.beam_config if point.lattice_beam is None
+            else (point.lattice_beam or None))
         lattice.step_config = StepConfig(
             integration_steps_per_metre=float(point.step1),
             sc_steps_per_metre=float(point.step2),
@@ -189,7 +247,11 @@ def _run_one_point_worker(point: ScanPoint) -> dict:
                     use_gpu=point.use_gpu,
                     **dict(point.sc_overrides),
                 )
-            res = Simulation(lattice, beam, space_charge=sc).run()
+            res = Simulation(
+                lattice, beam, space_charge=sc,
+                snapshot_elements=(list(point.snapshot_elements)
+                                   if point.snapshot_elements else None),
+            ).run()
         elapsed = time.time() - t0
 
         if point.out_path:
@@ -204,6 +266,8 @@ def _run_one_point_worker(point: ScanPoint) -> dict:
             os.replace(tmp, point.out_path)
 
         metrics = _scan_metrics(res, elapsed)
+        if point.loss_metrics:
+            metrics.update(_loss_metrics(res, cfg))
         metrics["error"] = None
         if point.out_path:
             metrics["results_path"] = str(point.out_path)

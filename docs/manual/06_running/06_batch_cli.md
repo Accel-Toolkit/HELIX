@@ -23,6 +23,7 @@ python -m linac_gen <subcommand> …
 | `assist` | AI assistant chat (optional — local or cloud LLM; the rest of HELIX never needs it) | [Assistant](../14_assistant/01_assistant.md) |
 | `export` | write the lattice in another code's format — MAD-X `SEQUENCE`, the exact inverse of the MAD-X importer | [Exporting to MAD-X](02_tracewin_dat.md#exporting-to-mad-x) |
 | `orm` | orbit-response matrix — compare a measurement with the model, LOCO-style calibration of quads, trims and BPM gains, recalibrated-deck export | [CLI: orm](13_cli_orm.md) |
+| `reliability` | Reliability Study mode — fault tolerance with compensation, imperfections with faults on error seeds, foil scenarios and availability as one resumable campaign with a report; job export/import; self-test | [CLI: reliability](14_cli_reliability.md) |
 | `twini` | TraceWin project options file (`.ini`) — the converted beam, a decode report, or a `.lgproj` for the deck | [Importing TraceWin project settings](02_tracewin_dat.md#importing-tracewin-project-settings-ini) |
 
 ## The input model
@@ -30,7 +31,7 @@ python -m linac_gen <subcommand> …
 Every subcommand takes an **input** that is either:
 
 * a **lattice file** — `.dat` (TraceWin), `.madx` / `.seq` (MAD-X),
-  `.lat` / `.flat` (MAD8), `.lte` (Elegant), or — through the optional
+  `.lat` / `.flat` / `.mad8` (MAD8), `.lte` (Elegant), or — through the optional
   lattix translator — `.bmad` (Bmad), `.jl` / `.scibmad` (SciBmad) and
   `.pals.yaml` / `.pals.json` (PALS);
   the beam then starts from `BeamConfig` defaults — or, with

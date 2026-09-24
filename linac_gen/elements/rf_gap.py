@@ -36,8 +36,21 @@ class RFGap(ThinKickElement, Misalignment, FieldError):
     # phase branch is in effect.
     _cache_keys: tuple[str, ...] = (
         "voltage", "voltage_rel", "phase", "phase_offset",
-        "frequency", "frequency_offset", "ttf", "p_flag",
+        "frequency", "frequency_offset", "ttf", "p_flag", "sync_phase_pin",
     )
+
+    # Frozen-phase mode (reliability campaigns; linac_gen/reliability/pins.py).
+    # ``sync_phase_pin`` = the reference RF-clock phase (``ref.phi_s``, deg
+    # at the reference frequency) at this gap's ENTRANCE on a design pass.
+    # While it is set, the gap fires at the design RF phase instead of at
+    # the deck's synchronous phase: a reference that arrives off-design
+    # (an upstream cavity down) sees the clock slip as a phase error,
+    # exactly as a field-map cavity does through its ψ pin.  None (the
+    # class default) = today's arithmetic, untouched; ``_entry_phi_s`` is
+    # the clock the last pass saw, which the harvester reads.  Unlike
+    # TraceWin's ``p_flag``, this is not a deck setting.
+    sync_phase_pin: float | None = None
+    _entry_phi_s: float | None = None
 
     # Multibunch hybrid-replay channel (linac_gen/train/replay.py):
     # static transverse HOM kick [mrad] consumed once at element ENTRY
@@ -80,6 +93,21 @@ class RFGap(ThinKickElement, Misalignment, FieldError):
     def effective_frequency(self) -> float:
         return self.frequency + self.frequency_offset
 
+    def _operating_phase(self, ref) -> float:
+        """The phase the gap fires at (deg): the effective synchronous
+        phase, plus — only while ``sync_phase_pin`` is set — the reference
+        clock's slip against the design pass, wrapped to ±180°.  The clock
+        and the pin are in degrees at the reference frequency; a gap whose
+        frequency differs from the reference clock's at its entrance is
+        refused by the pin harvest (``linac_gen.reliability.pins``), so no
+        scaling is applied here — the two engines switch the reference
+        frequency at different points of a per-element jump."""
+        pin = self.sync_phase_pin
+        if pin is None:
+            return self.effective_phase
+        slip = float(ref.phi_s) - float(pin)
+        return self.effective_phase + ((slip + 180.0) % 360.0 - 180.0)
+
     def apply_kick(self, beam) -> None:
         """Apply energy kick, adiabatic damping, and RF defocusing to beam."""
         ref = beam.ref
@@ -87,8 +115,9 @@ class RFGap(ThinKickElement, Misalignment, FieldError):
         mass = ref.species.mass        # MeV/c^2
         # Effective values include per-seed cavity errors (voltage_rel,
         # phase_offset, frequency_offset).  All physics below uses them.
+        self._entry_phi_s = float(ref.phi_s)
         eff_V = self.effective_voltage
-        eff_phase = self.effective_phase
+        eff_phase = self._operating_phase(ref)
         eff_freq = self.effective_frequency
 
         phi_s_rad = eff_phase * np.pi / 180.0
@@ -167,7 +196,7 @@ class RFGap(ThinKickElement, Misalignment, FieldError):
         charge = ref.species.charge
         mass = ref.species.mass
         eff_V = self.effective_voltage
-        eff_phase = self.effective_phase
+        eff_phase = self._operating_phase(ref_entry)   # the entrance clock
         eff_freq = self.effective_frequency
 
         phi_s_rad = eff_phase * np.pi / 180.0
@@ -204,7 +233,8 @@ class RFGap(ThinKickElement, Misalignment, FieldError):
     def advance_ref(self, ref) -> None:
         """Update reference energy and frequency for envelope/matrix tracking."""
         charge = ref.species.charge
-        phi_s_rad = self.effective_phase * np.pi / 180.0
+        self._entry_phi_s = float(ref.phi_s)
+        phi_s_rad = self._operating_phase(ref) * np.pi / 180.0
         dW_sync = charge * self.effective_voltage * self.ttf * np.cos(phi_s_rad)
         ref.w_kin += dW_sync
         if self.effective_frequency != ref.frequency:
@@ -220,7 +250,7 @@ class RFGap(ThinKickElement, Misalignment, FieldError):
         charge = ref.species.charge
         mass = ref.species.mass
         eff_V = self.effective_voltage
-        eff_phase = self.effective_phase
+        eff_phase = self._operating_phase(ref)
         eff_freq = self.effective_frequency
         phi_s_rad = eff_phase * np.pi / 180.0
 

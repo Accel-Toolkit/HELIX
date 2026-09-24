@@ -19,13 +19,16 @@ from linac_gen.cli.common import (apply_element_override, make_sc_config,
                                    make_step_config, result_summary,
                                    run_envelope_sim, run_mp_sim)
 from linac_gen.elements.lattice_commands import (Adjust, LatticeCommand,
-                                                 MinTransmission, SetKeOutMin)
-from linac_gen.failures.element_filter import failable_elements
+                                                 MinEmitGrowth, MinTransmission,
+                                                 SetKeOutMin, SetPhaseOut,
+                                                 SetSizeMax)
+from linac_gen.failures.element_filter import ALL_TYPES, failable_elements
 from linac_gen.matching import match
 from linac_gen.matching.periodic import find_fodo_cells
 
 _CATEGORY = {"cavity": "cavity", "quad": "magnet",
-             "solenoid": "magnet", "dipole": "magnet"}
+             "solenoid": "magnet", "dipole": "magnet",
+             "spare": "cavity"}          # an unpowered cavity compensates cavities
 
 # element class -> [(param_idx, attr, role)]  (param_idx per _PARAM_INDEX_MAP)
 _COMP_PARAMS = {
@@ -41,7 +44,7 @@ _CONSTRAINT_KW = {
     "SET_TWISS", "SET_KE_OUT_MIN", "MIN_TRANSMISSION", "MIN_EMIT_GROWTH",
     "MIN_EMIT_4D_GROWTH", "SET_SIZE", "SET_SIZE_MAX", "SET_SIZE_MIN",
     "SET_BEAM_PHASE_ADV", "SET_ADV", "SET_POSITION", "SET_ACHROMAT",
-    "SET_SEPARATION",
+    "SET_SEPARATION", "SET_PHASE_OUT",
 }
 
 
@@ -59,6 +62,29 @@ class CompensationConfig:
     recover_tol_energy_mev: float = 0.05
     transmission_margin_pct: float = 0.5
     space_charge: bool = False
+    # --- reliability extensions (every default reproduces the behaviour
+    #     above exactly) ---
+    extra_types: tuple = ()              # e.g. ("spare",): unpowered field
+    #                                      maps become k_out_of_n / manual
+    #                                      candidates (category "cavity")
+    family_of: dict | None = None        # element name -> family label
+    amp_bounds_by_family: dict | None = None   # family -> (lo, hi) x the
+    #                                      family's NOMINAL amplitude (the
+    #                                      signed median of its powered
+    #                                      members) instead of x current —
+    #                                      the RF headroom rule; a spare
+    #                                      (current 0) gets (lo, hi) x nominal
+    objectives: dict | None = None       # None = SET_KE_OUT_MIN (+ MIN_
+    #                                      TRANSMISSION in mp).  Keys:
+    #                                      ke_out_min (bool), ke_weight,
+    #                                      transmission (bool), size_max
+    #                                      {x_mm, y_mm, weight} over the line,
+    #                                      phase_out {phase_deg, weight,
+    #                                      tol_deg} = the nominal exit clock,
+    #                                      emit_growth (bool, MIN_EMIT_GROWTH
+    #                                      x/y/z — a magnet fault leaves the
+    #                                      energy untouched, so without it a
+    #                                      magnet compensation is a no-op)
 
 
 @dataclass
@@ -100,8 +126,15 @@ def _noncmd_index(lattice) -> dict[str, int]:
 
 
 def select_zone(lattice, failed_names, cfg: CompensationConfig) -> list[str]:
-    """Return compensator element NAMES (excludes the failed elements)."""
-    label_of = {n: lbl for (n, lbl, _c) in failable_elements(lattice)}
+    """Return compensator element NAMES (excludes the failed elements).
+
+    ``cfg.extra_types`` widens the candidate pool with the reliability
+    vocabulary (``"spare"`` unpowered cavities); classes without a matcher
+    knob in ``_COMP_PARAMS`` (a multi-gap ``NCells``, a ``Steerer``) are
+    never candidates."""
+    types = tuple(ALL_TYPES) + tuple(cfg.extra_types or ())
+    label_of = {n: lbl for (n, lbl, c) in failable_elements(lattice, types)
+                if c in _COMP_PARAMS}
     pos = _positions(lattice)
     failed = set(failed_names)
     chosen: list[str] = []
@@ -142,6 +175,93 @@ def select_zone(lattice, failed_names, cfg: CompensationConfig) -> list[str]:
     else:
         raise ValueError(f"unknown strategy {cfg.strategy!r}")
     return chosen
+
+
+def family_nominals(lattice, cfg: CompensationConfig) -> dict:
+    """``{family: signed median amplitude of its POWERED members}`` for the
+    families named in ``cfg.family_of`` (``{}`` when no families)."""
+    if not cfg.family_of:
+        return {}
+    import statistics
+    vals: dict[str, list[float]] = {}
+    for e in lattice.elements:
+        nm = getattr(e, "name", None)
+        fam = cfg.family_of.get(nm) if nm else None
+        if fam is None:
+            continue
+        amp = next((attr for (_p, attr, role)
+                    in _COMP_PARAMS.get(type(e).__name__, []) if role == "amp"),
+                   None)
+        if amp is None:
+            continue
+        v = float(getattr(e, amp))
+        if v != 0.0:
+            vals.setdefault(fam, []).append(v)
+    return {fam: float(statistics.median(v)) for fam, v in vals.items()}
+
+
+def amp_bounds(cfg: CompensationConfig, name: str, cur: float,
+               nominals: dict) -> tuple[float, float]:
+    """The matcher's amplitude window for one compensator.
+
+    With a family headroom rule (``cfg.family_of`` + ``amp_bounds_by_family``)
+    the window is ``(lo, hi) x`` the family's nominal amplitude, so an
+    unpowered spare (``cur == 0``) can be brought up to the family's
+    headroom; otherwise the historical ``cfg.amp_bounds x current`` rule
+    with its ``cur == 0`` guard."""
+    fam = (cfg.family_of or {}).get(name)
+    fb = (cfg.amp_bounds_by_family or {}).get(fam) if fam is not None else None
+    if fb is not None:
+        nominal = nominals.get(fam)
+        if nominal is None or nominal == 0.0:
+            nominal = cur
+        if nominal != 0.0:
+            a, b = float(fb[0]) * nominal, float(fb[1]) * nominal
+            vmin, vmax = min(a, b), max(a, b)
+            if vmin != vmax:
+                return vmin, vmax
+    a, b = cfg.amp_bounds[0] * cur, cfg.amp_bounds[1] * cur
+    vmin, vmax = min(a, b), max(a, b)
+    if vmin == vmax:                                  # cur == 0 guard
+        vmin, vmax = cur - 1.0, cur + 1.0
+    return vmin, vmax
+
+
+def objective_cards(cfg: CompensationConfig, baseline_metrics: dict,
+                    n_noncmd: int) -> tuple[list, list]:
+    """``(leading, trailing)`` constraint cards for a compensation match:
+    ``leading`` go before the first element (a ``SET_SIZE_MAX`` window over
+    the whole line), ``trailing`` at the end (exit energy, transmission).
+    ``cfg.objectives`` None = the historical pair."""
+    obj = cfg.objectives or {}
+    leading: list = []
+    trailing: list = []
+    e0 = baseline_metrics.get("ref_w_kin")
+    if e0 is not None and obj.get("ke_out_min", True):
+        trailing.append(SetKeOutMin(name="__COMP_KE", energy_mev=float(e0),
+                                    weight=float(obj.get("ke_weight", 10.0))))
+    t0 = baseline_metrics.get("transmission")
+    if cfg.cost_solver == "mp" and t0 is not None and obj.get("transmission", True):
+        trailing.append(MinTransmission(
+            name="__COMP_T", threshold_pct=max(0.0, t0 - cfg.transmission_margin_pct),
+            weight=50.0))
+    phase = obj.get("phase_out")
+    if phase and phase.get("phase_deg") is not None:
+        trailing.append(SetPhaseOut(
+            name="__COMP_PHI", phase_deg=float(phase["phase_deg"]),
+            weight=float(phase.get("weight", 5.0)),
+            tol_deg=float(phase.get("tol_deg", 0.0))))
+    if obj.get("emit_growth"):
+        w = float(obj.get("emit_weight", 1.0))
+        for plane in ("X", "Y", "Z"):
+            trailing.append(MinEmitGrowth(name=f"__COMP_E{plane}", plane=plane, weight=w))
+    size = obj.get("size_max")
+    if size:
+        leading.append(SetSizeMax(
+            name="__COMP_SIZE", k=float(size.get("weight", 1.0)),
+            n_elems=int(n_noncmd), x_mm=float(size.get("x_mm", 0.0)),
+            y_mm=float(size.get("y_mm", 0.0))))
+    return leading, trailing
 
 
 def _forward_metrics(lattice, beam_cfg, cost_solver: str, seed: int = 42) -> dict:
@@ -190,15 +310,13 @@ def compensate(lattice, beam_cfg, scenario, name_to_class, baseline_metrics,
     # 4. inject Adjust cards (target by 1-based non-command index — robust to
     #    duplicate name prefixes; appending commands doesn't shift the count).
     j = 0
+    nominals = family_nominals(work, cfg)
     for nm in comp_names:
         elem = comp_objs[nm]
         for (pidx, attr, role) in _COMP_PARAMS.get(type(elem).__name__, []):
             cur = float(getattr(elem, attr))
             if role == "amp":
-                a, b = cfg.amp_bounds[0] * cur, cfg.amp_bounds[1] * cur
-                vmin, vmax = min(a, b), max(a, b)
-                if vmin == vmax:                      # cur == 0 guard
-                    vmin, vmax = cur - 1.0, cur + 1.0
+                vmin, vmax = amp_bounds(cfg, nm, cur, nominals)
             else:                                     # phase
                 vmin = cur - cfg.phase_bounds_deg
                 vmax = cur + cfg.phase_bounds_deg
@@ -208,16 +326,13 @@ def compensate(lattice, beam_cfg, scenario, name_to_class, baseline_metrics,
                 link_group=0, vmin=vmin, vmax=vmax,
                 start_step=abs(vmax - vmin) * 0.1))
 
-    # 5. recovery objectives at the lattice end.
+    # 5. recovery objectives: exit energy (+ transmission in mp) at the
+    #    lattice end; an optional size ceiling over the whole line leads.
     e0 = baseline_metrics.get("ref_w_kin")
-    if e0 is not None:
-        work.elements.append(SetKeOutMin(name="__COMP_KE", energy_mev=float(e0),
-                                         weight=10.0))
     t0 = baseline_metrics.get("transmission")
-    if cfg.cost_solver == "mp" and t0 is not None:
-        work.elements.append(MinTransmission(
-            name="__COMP_T", threshold_pct=max(0.0, t0 - cfg.transmission_margin_pct),
-            weight=50.0))
+    leading, trailing = objective_cards(cfg, baseline_metrics, len(ncidx))
+    work.elements[0:0] = leading
+    work.elements.extend(trailing)
 
     # 6. match.
     beam_copy = copy.deepcopy(beam_cfg)

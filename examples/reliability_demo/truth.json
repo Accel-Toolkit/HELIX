@@ -1,0 +1,135 @@
+{
+  "__kind__": "linac_gen_reliability_truth",
+  "__version__": 1,
+  "constants": {
+    "m_proton_mev": 938.27208816,
+    "c_light": 299792458.0,
+    "frequency_mhz": 162.5,
+    "lambda_mm": 1844.8766646153847,
+    "w_inj_mev": 20.0
+  },
+  "nominal": {
+    "w_after_gaps_mev": 23.71955384992511,
+    "w_end_envelope_mev": 23.71850684992511,
+    "w_end_mp_ref_mev": 23.71955384992511,
+    "w_after_gap_mev": {
+      "GAP_001": 20.72504622962932,
+      "GAP_002": 21.65223008419611,
+      "GAP_003": 22.591922704982018,
+      "GAP_004": 23.71955384992511
+    },
+    "clock_at_gap_entrance_deg": {
+      "GAP_001": 576.074660592017,
+      "GAP_002": 1283.8598997164074,
+      "GAP_003": 1976.8252673876093,
+      "GAP_004": 2248.383956678339
+    },
+    "note": "the envelope solver decelerates the reference by the foil's mean loss; the multiparticle tracker leaves the reference untouched (the loss rides on the particles' dw)"
+  },
+  "cavity_off_rephased": {
+    "GAP_001": {
+      "d_energy_mev": 0.7250462296293207,
+      "formula": "0.8 MV * cos(-25 deg)"
+    },
+    "GAP_002": {
+      "d_energy_mev": 0.9271838545667883,
+      "formula": "1 MV * cos(-22 deg)"
+    },
+    "GAP_003": {
+      "d_energy_mev": 0.9396926207859089,
+      "formula": "1 MV * cos(-20 deg)"
+    },
+    "GAP_004": {
+      "d_energy_mev": 1.1276311449430914,
+      "formula": "1.2 MV * cos(-20 deg)"
+    }
+  },
+  "cavity_off_frozen": {
+    "GAP_001": {
+      "d_energy_mev": 0.5426856680502397,
+      "dphi_seen_deg": {
+        "GAP_002": 12.308086615630828,
+        "GAP_003": 22.86109610851122,
+        "GAP_004": 26.457160476905756
+      }
+    },
+    "GAP_002": {
+      "d_energy_mev": 0.7985919468469369,
+      "dphi_seen_deg": {
+        "GAP_001": 0.0,
+        "GAP_003": 14.819871453188398,
+        "GAP_004": 20.023234804983986
+      }
+    },
+    "GAP_003": {
+      "d_energy_mev": 0.9048810906712212,
+      "dphi_seen_deg": {
+        "GAP_001": 0.0,
+        "GAP_002": 0.0,
+        "GAP_004": 5.62745777775126
+      }
+    },
+    "GAP_004": {
+      "d_energy_mev": 1.1276311449430914,
+      "dphi_seen_deg": {
+        "GAP_001": 0.0,
+        "GAP_002": 0.0,
+        "GAP_003": 0.0
+      }
+    }
+  },
+  "solenoid_off": {
+    "d_energy_mev": 0.0,
+    "note": "exact: a solenoid carries no RF"
+  },
+  "ranking": {
+    "top_single_cavity_rephased": "GAP_004",
+    "k1_compensators_for_GAP_004": [
+      "GAP_003",
+      "GAP_002"
+    ],
+    "note": "select_zone(k_out_of_n) takes the 2k nearest same-category elements, upstream first on ties"
+  },
+  "tolerances": {
+    "energy_rel": 1e-09,
+    "foil_rel": 1e-06
+  },
+  "foil": {
+    "element": "FOIL_001",
+    "material": "C",
+    "thickness_ug_cm2": 600.0,
+    "w_at_foil_mev": 23.71955384992511,
+    "mean_loss_mev": 0.001047,
+    "straggling": "gaussian",
+    "highland_theta_rms_mrad": 0.62610517797684,
+    "note": "mean loss = PDG minimum-ionising rate x areal density (HELIX's MIP model)"
+  },
+  "availability_closed_forms": {
+    "single_block": {
+      "mtbf_h": 100.0,
+      "mttr_h": 1.0,
+      "availability": 0.9900990099009901
+    },
+    "series_two_identical": 0.9802960494069208,
+    "parallel_two_identical": 0.9999019703950593,
+    "two_of_three_identical": 0.9997078523654737
+  },
+  "orbit_correction": {
+    "planted_dx_mm": {
+      "SOL_001": 0.2,
+      "SOL_002": -0.15,
+      "SOL_003": 0.1
+    },
+    "expect": {
+      "status": "converged",
+      "rms_ratio_max": 0.01,
+      "transmission_pct": 100.0
+    }
+  },
+  "beam": {
+    "species": "proton",
+    "energy_mev": 20.0,
+    "current_ma": 0.0,
+    "duty_cycle_pct": 1.0
+  }
+}

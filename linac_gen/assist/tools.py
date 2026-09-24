@@ -2053,7 +2053,7 @@ def _load_lattice(ctx, path: str, tracewin_ini=None):
             from linac_gen.cli.common import load_lattice
             from linac_gen.io.project import load_project
             proj = load_project(path)
-            lat = load_lattice(proj.lattice_path)
+            lat = load_lattice(proj.lattice_path, fallback_beam=proj.beam)
             return lat, str(proj.lattice_path), proj.beam
         from linac_gen.cli.common import load_lattice
         return load_lattice(path), str(path), None
@@ -2262,5 +2262,6 @@ def provider_tool_specs() -> list[dict]:
 from linac_gen.assist import tools_analysis  # noqa: E402,F401  (registry)
 from linac_gen.assist import tools_campaign  # noqa: E402,F401  (registry)
 from linac_gen.assist import tools_study     # noqa: E402,F401  (registry)
+from linac_gen.assist import tools_reliability  # noqa: E402,F401  (registry)
 from linac_gen.assist import tools_training  # noqa: E402,F401  (registry)
 from linac_gen.assist import tools_grad  # noqa: E402,F401  (registry)
