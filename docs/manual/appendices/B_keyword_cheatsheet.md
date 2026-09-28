@@ -125,7 +125,8 @@ unimplemented `ERROR_*` forms (ignored, with a visible warning),
 negative `FIELD_MAP` geometry codes (second-order flag ignored), and
 missing/rejected field-map files (dropped with a loud warning in
 permissive mode; fatal in strict — a strict parse never returns a
-lattice missing a cavity), `SUPERPOSE_MAP` clusters that mix RF
+lattice missing a cavity; a missing map on a `kb = ke = 0` card keeps
+its length, see [FieldMap](../03_elements/07_fieldmap.md)), `SUPERPOSE_MAP` clusters that mix RF
 frequencies (fall back to the legacy end-to-end layout), and
 `SHIFT_IN_FIELD_MAP` in front of a `DIAG_POSITION` that carries
 orbit-correction targets (BPMs must stay lattice elements).

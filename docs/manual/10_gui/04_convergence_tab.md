@@ -49,9 +49,17 @@ state is persisted per user across sessions:
   [Space-charge models → CSR](../05_space_charge/01_models.md)).
 * **Diagnostics & recording** — `record_substeps` checkbox;
   **Record particle density** (histogram all alive particles into a
-  2-D density grid along s); **Snapshot every N** (full 6-D particle
+  2-D density grid along s); **Record halo action scan** (count, at
+  every record point of a multi-particle run, the particles outside the
+  ellipses of the beam's own rms shape and emittance n·ε_rms in x–x′,
+  y–y′ and φ–W — the Results tab's
+  [Halo action scan](07_results_tab.md#halo-action-scan) window; on by
+  default; ≈ 20–30 ms and ≈ 12 kB per record at 10⁵ particles);
+  **Snapshot every N** (full 6-D particle
   dump every N elements; 0 = only `Marker(snapshot=True)` fires);
   density bins and density extent (±mm) for the density recording.
+  All of these are saved in the project file (`record_action_scan`
+  for the action scan).
 * **Scan controls** — **Scan N particles** (macroparticle count the
   convergence scans use) and **Parallel workers** (0 = serial; N > 1
   fans scan points across processes).

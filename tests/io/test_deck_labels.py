@@ -176,3 +176,118 @@ def test_interior_marker_label_survives_superpose_write(tmp_path):
     lat = _parse(p)
     txt = _write(lat, tmp_path / "w.dat")
     assert any(l.startswith("IM1: MARKER") for l in txt.splitlines())
+
+
+# ── labels whose name contains spaces (TraceWin manual: "SOL 1 : SOLENOID") ──
+
+def _parse_meta(tmp_path, text):
+    p = tmp_path / "d.dat"
+    p.write_text(text, encoding="latin-1")
+    with contextlib.redirect_stdout(io.StringIO()):
+        return parse_tracewin(str(p))
+
+
+def test_spaced_label_keeps_the_element(tmp_path):
+    """The manual's own example: before, ``SOL`` was read as the card and
+    the solenoid was lost."""
+    lat, meta = _parse_meta(tmp_path,
+        "SOL 1 : SOLENOID 410 0.25 100\n"
+        "QPF 2: QUAD 200 0.18 100 0\n"
+        "DRIFT 10 100 0\nEND\n")
+    kinds = [type(e).__name__ for e in lat.elements]
+    assert kinds == ["Solenoid", "Quadrupole", "Drift"], kinds
+    assert lat.elements[0].label == "SOL 1"
+    assert lat.elements[1].label == "QPF 2"
+    assert meta["warnings"] == []
+
+
+def test_label_only_lines_add_nothing_and_do_not_warn(tmp_path):
+    lat, meta = _parse_meta(tmp_path,
+        "HWR CM:\n"
+        "DRIFT 10 20 0\n"
+        "Treaty Point:\n"
+        "Dump Entrance :\n"
+        "WPM :\n"
+        "DRIFT 10 20 0\nEND\n")
+    assert [type(e).__name__ for e in lat.elements] == ["Drift", "Drift"]
+    assert meta["warnings"] == []
+    assert meta["label_lines"] == [[1, "HWR CM"], [3, "Treaty Point"],
+                                   [4, "Dump Entrance"], [5, "WPM"]]
+
+
+def test_label_only_lines_accepted_in_strict_mode(tmp_path):
+    p = tmp_path / "d.dat"
+    p.write_text("HWR CM:\nWPM :\nDRIFT 10 20 0\nEND\n", encoding="utf-8")
+    lat, _ = parse_tracewin(str(p), strict=True)
+    assert len(lat.elements) == 1
+
+
+def test_builtin_marker_labels_still_make_markers(tmp_path):
+    lat, meta = _parse_meta(tmp_path, "BPM :\nXCOR:\nDRIFT 10 20 0\nEND\n")
+    assert [type(e).__name__ for e in lat.elements] == ["Marker", "Marker", "Drift"]
+    assert lat.elements[0].is_bpm
+    assert meta["label_lines"] == []
+
+
+def test_card_lines_with_colons_are_not_labels(tmp_path):
+    """A card keyword first ⇒ never a label, even with a later colon."""
+    lat, meta = _parse_meta(tmp_path,
+        "TITLE Linac: v2\n"
+        "DRIFT 10 20 0\nEND\n")
+    assert meta["title"] == "Linac: v2"
+    assert [type(e).__name__ for e in lat.elements] == ["Drift"]
+
+
+def test_unknown_cards_still_warn(tmp_path):
+    _, meta = _parse_meta(tmp_path, "FOOBAR 1 2\nDRIFT 10 20 0\nEND\n")
+    assert any("unsupported card 'FOOBAR'" in w for w in meta["warnings"])
+
+
+def test_apostrophe_in_label_does_not_crash(tmp_path):
+    lat, meta = _parse_meta(tmp_path,
+        "Operator's Point:\nDRIFT 10 20 0\nEND\n")
+    assert [type(e).__name__ for e in lat.elements] == ["Drift"]
+    assert meta["label_lines"] == [[1, "Operator's Point"]]
+
+
+def test_dispatched_card_set_matches_the_parser_dispatch():
+    """_DISPATCHED_CARDS (the spaced-label guard) must list every card the
+    parser dispatches on literally — a new card added to the dispatch but
+    not here would be misread as a label when followed by a colon."""
+    import re
+    from linac_gen.io import tracewin_parser as tp
+    src = Path(tp.__file__).read_text(encoding="utf-8")
+    body = src[src.index("def parse_tracewin"):]
+    lits = set(re.findall(r'keyword\s*==\s*"([A-Z0-9_]+)"', body))
+    for m in re.finditer(r'keyword\s+in\s+\(([^)]*)\)', body, re.S):
+        lits |= set(re.findall(r'"([A-Z0-9_]+)"', m.group(1)))
+    assert lits == set(tp._DISPATCHED_CARDS), (
+        sorted(lits ^ set(tp._DISPATCHED_CARDS)))
+
+
+@needs("examples/MEBT_To_Foil/mebt_to_foil.dat")
+def test_pipii_location_labels_are_recorded_not_warned():
+    """The PIP-II decks carry ~50 ``HWR CM:`` / ``WPM :`` location labels;
+    they used to raise 'unsupported card' each.  Element count unchanged
+    (index-based ADJUST / --set targets depend on it)."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        lat, meta = parse_tracewin(str(REPO / "examples/MEBT_To_Foil/mebt_to_foil.dat"))
+    assert len(lat.elements) == 2872
+    assert not any("unsupported card" in w for w in meta["warnings"])
+    names = {n for _, n in meta["label_lines"]}
+    assert {"HWR CM", "SSR1 CM", "LB650 CM", "WPM"} <= names
+
+
+def test_card_like_unknown_names_still_warn(tmp_path):
+    """``PLOT_DST C:`` / ``FOO_BAR :`` look like TraceWin cards HELIX does
+    not know — they keep the 'unsupported card' warning."""
+    _, meta = _parse_meta(tmp_path, "PLOT_DST C:\nFOO_BAR :\nDRIFT 10 20 0\nEND\n")
+    assert sum("unsupported card" in w for w in meta["warnings"]) == 2
+    assert meta["label_lines"] == []
+
+
+def test_spaced_label_glued_to_its_card(tmp_path):
+    lat, meta = _parse_meta(tmp_path, "SOL 1:SOLENOID 410 0.25 100\nEND\n")
+    assert [type(e).__name__ for e in lat.elements] == ["Solenoid"]
+    assert lat.elements[0].label == "SOL 1"
+    assert meta["warnings"] == []

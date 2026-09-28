@@ -104,7 +104,7 @@ results2 = load_results_hdf5("run.h5")   # dict of arrays
 `save_results_hdf5(recorder, filepath, beam_config=None, lattice=None,
 lattice_path=None, seed=None, sc_config=None)` writes:
 
-* **`envelope/`** — 19 per-step arrays: `s`, `sigma_x`, `sigma_y`,
+* **`envelope/`** — the per-step arrays `s`, `sigma_x`, `sigma_y`,
   `sigma_phi`, `sigma_w`, `emit_x`, `emit_y`, `emit_z`, `emit_nx`,
   `emit_ny`, `alpha_x`, `beta_x`, `alpha_y`, `beta_y`, `alpha_z`,
   `beta_z` (longitudinal Twiss, 2026-07 — internal convention,
@@ -119,10 +119,44 @@ lattice_path=None, seed=None, sc_config=None)` writes:
   those legacy files (no marker) and substitutes `beam_config/current`,
   or omits `current_mA` entirely when the file has no `beam_config`
   group (unknown).
-* **`reference/`** — 5 reference-particle arrays: `w_kin`, `phi_s`,
-  `beta`, `gamma`, `bg` (loaded back as `ref_w_kin`, `ref_phi_s`, …).
+  The group also holds everything else a run records per step, so an
+  imported file fills the same Results tiles as the live run (2026-09):
+  `emit_z_mmmrad`, `emit_nz`, `emit_4d`, `emit_n1`, `emit_n2`, the
+  eigenemittances `emit_e1`–`emit_e3`, `x_max`, `y_max`,
+  `continuous_at`, `centroid` (S, 6), the full beam matrix
+  `sigma_matrix` (S, 6, 6) and `element_names` (UTF-8 strings), plus
+  the attributes `mass_mev` and `periodic_phase`.
+  `load_results_hdf5` returns `centroid`, `sigma_matrix` and
+  `element_names` as per-step lists, like a live recorder.
+* **`reference/`** — 6 reference-particle arrays: `w_kin`, `phi_s`,
+  `beta`, `gamma`, `bg` and the RF clock `frequency` (loaded back as
+  `ref_w_kin`, `ref_phi_s`, …, `ref_frequency`).
+* **`density/<axis>/`** — the recorded density vs s (`counts`,
+  (S, bins) int32, and the bin `edges`), when the run recorded it;
+  loaded as `density` / `density_edges` dicts.
+* **`tail/`** — the fractional-emittance / radial-quantile series
+  (`emit_x_q99`, …, attribute `fractions`), when recorded.
 * **`particles/`** — full phase-space snapshots, when the recorder
   holds any.
+* **`action_scan/`** — the halo action scan, when the run recorded one
+  (`Simulation(record_action_scan=True)`, the Numerics-tab checkbox or
+  `python -m linac_gen run <input> --mode mp --action-scan`; see
+  [Halo analysis → Action scan](../09_diagnostics/03_halo.md#action-scan)):
+  the grid `n` (G,), per step `n_alive`, `continuous` and `element`,
+  and per plane `x`, `y`, `z`, `x_raw`, `y_raw` the counts
+  `count_<p>` (S, G, int32, gzip-compressed — about 0.1 kB per step and
+  plane, about 1 kB per step for the whole group), `eps_<p>`,
+  `eps_n_<p>` and `n_max_<p>` (S,).  Attributes `schema_version`,
+  `definition`, `eps_units`, `planes` and, when known,
+  `periodic_phase`.  Rows align with `envelope/s`;
+  `load_results_hdf5` returns the group as the nested dict
+  `results["action_scan"]` (datasets by name, attributes under
+  `"attrs"`; members a later version may add are ignored; a group that
+  is incomplete, from a newer schema or not aligned with `s` is dropped
+  with a warning, its reason kept in `results["action_scan_error"]` and
+  shown by the Results-tab window, and the rest of the file loads).
+  Saving loaded results writes the group back unchanged.  Files without
+  the scan are unchanged.
 * **`beam_config/`** — scalar `BeamConfig` values as HDF5 attributes,
   when `beam_config` is provided.
 * **`provenance/`** — always present (honesty round, 2026-07): the
@@ -136,10 +170,15 @@ lattice_path=None, seed=None, sc_config=None)` writes:
   they have in scope automatically.  A results file now pins which
   code, which machine description and which numerics produced it.
 
-Not everything the recorder holds makes it into the archive:
-`emit_z_mmmrad`, `emit_4d`, the eigenemittances, `x_max` / `y_max`,
-`centroid`, `sigma_matrix`, `element_names` and `ref_frequency` are
-**not** stored.
+Files written before 2026-09-27 lack the per-step series above (they
+stored only the first 19): importing one leaves the tiles that need
+them — normalised ε_nz, 6-D emittance, dispersion, longitudinal Twiss,
+divergence, 4-D and eigen-emittances, IBS, magnetic stripping — empty.
+Re-run to get a complete file.  The openPMD companion file
+(`*.opmd.h5`) carries the same per-step `envelope/` series, the loss
+record and the halo action scan in its HELIX extension groups (the
+density and tail series are written to the native file only).  Large
+datasets (the beam matrices, density histograms) are gzip-compressed.
 
 Since the 2026-07 completeness round the `provenance/` group also
 records what `lattice_sha256` does **not** cover: SHA-256 hashes of the

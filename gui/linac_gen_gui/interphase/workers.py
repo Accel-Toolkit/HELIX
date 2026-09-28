@@ -145,12 +145,18 @@ class MultiparticleWorker(QThread):
                  snapshot_every_n: int | None = None,
                  snapshot_elements=None,
                  density_n_bins: int = 200,
-                 density_extent: dict | None = None):
+                 density_extent: dict | None = None,
+                 record_action_scan: bool = False):
         super().__init__()
+        # macOS default QThread stack (~544 KB) SIGBUSes numpy/OpenBLAS
+        # workspace allocations — same failure mode documented on
+        # BacktrackWorker/_MatchWorker.  16 MB matches the main thread.
+        self.setStackSize(16 * 1024 * 1024)
         self.lattice = lattice
         self.beam = beam
         self.sc = space_charge
         self.record_substeps = record_substeps
+        self.record_action_scan = bool(record_action_scan)
         self.density_axes = tuple(density_axes or ())
         self.snapshot_every_n = snapshot_every_n
         self.snapshot_elements = set(snapshot_elements or ())
@@ -199,15 +205,16 @@ class MultiparticleWorker(QThread):
                 snapshot_elements=self.snapshot_elements,
                 density_n_bins=self.density_n_bins,
                 density_extent=self.density_extent,
+                record_action_scan=self.record_action_scan,
                 progress_callback=self._on_progress,
                 should_abort=self._should_abort,
             )
             self.progress.emit(0)
             results = sim.run()
-            try:
-                results.ref_frequency = self.beam.ref.frequency
-            except Exception:
-                pass
+            # (``results.ref_frequency`` is the recorder's PER-STEP list —
+            # it used to be overwritten here with one scalar, which threw
+            # away the FREQ-jump history the IBS / σ_z conversions need and
+            # broke every consumer that indexes it per step.)
             # If the tracker saw the abort flag it returns partial results;
             # surface that to the GUI as an abort rather than a "finished" run.
             tracker_aborted = False
@@ -397,10 +404,7 @@ class BacktrackWorker(QThread):
                        if issubclass(w.category, BacktrackWarning)]
             # de-duplicate, preserve order
             results.backtrack_warnings = list(dict.fromkeys(caveats))
-            try:
-                results.ref_frequency = self.beam.ref.frequency
-            except Exception:
-                pass
+            # ref_frequency stays the per-step list (see the MP worker).
             if self._stop_event.is_set():
                 self.aborted.emit()
                 return

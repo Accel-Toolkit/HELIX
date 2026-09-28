@@ -245,20 +245,26 @@ def test_round_trip_single_pair_provenance(maps):
 
 # ── shipped-deck bit-compat ──────────────────────────────────────────────
 def test_shipped_decks_unaffected():
-    """No shipped deck uses SUPERPOSE_MAP: parsing every example must
-    produce ZERO containers and ZERO superpose-related warnings —
-    the mechanical form of the bit-compat claim."""
+    """Every example parses without superpose-related warnings, and a
+    deck with no active SUPERPOSE_MAP card produces ZERO containers —
+    the mechanical form of the bit-compat claim.  (Decks that do use
+    SUPERPOSE_MAP, e.g. the verbatim PIP-II SCL deck in
+    examples/pipii/scl_revised, are exempt from the container check.)"""
+    import re as _re
     import warnings as _w
     decks = sorted(glob.glob("examples/**/*.dat", recursive=True))
     # floor low enough for the PUBLIC checkout (PIP-II decks are not
     # distributed) while still proving a real sweep happened
     assert len(decks) > 15
+    uses = _re.compile(r"(?im)^[^;\n]*\bSUPERPOSE_MAP\b")
     for deck in decks:
         with _w.catch_warnings():
             _w.simplefilter("ignore")
             lat, meta = parse_tracewin(deck)
-        assert not any(isinstance(e, SuperposedFieldMap)
-                       for e in lat.elements), deck
+        text = open(deck, encoding="latin-1").read()
+        if not uses.search(text):
+            assert not any(isinstance(e, SuperposedFieldMap)
+                           for e in lat.elements), deck
         assert not any("SUPERPOSE" in w for w in meta["warnings"]), \
             (deck, meta["warnings"])
 
@@ -448,3 +454,132 @@ def test_shift_wrapped_plain_map_writes_plain_card(maps):
     out2 = maps / "wrap_rt2.dat"
     write_tracewin(lat2, str(out2))
     assert out1.read_text(encoding="utf-8") == out2.read_text(encoding="utf-8")
+
+
+# ── missing map on a FIELD-FREE card (kb = ke = 0) ───────────────────────
+# PIP-II decks superpose unpowered 3-D correctors (kb = 0) on every HWR/SSR
+# solenoid.  Without their map files the card carries no field — only its
+# length — so the cluster must keep its span and no "optics will be
+# wrong" warning may be raised.
+
+def test_missing_zero_amplitude_child_keeps_the_cluster(maps):
+    deck = ("SUPERPOSE_MAP 0\n"
+            "FIELD_MAP 70 300 0 16 0 0 0 0 corr_x\n"
+            "SUPERPOSE_MAP 0\n"
+            "FIELD_MAP 10 300 0 16 2.0 0 0 0 sol\n"
+            "DRIFT 10 16 0\nEND\n")
+    lat, meta = _parse(maps, deck)
+    assert [type(e).__name__ for e in lat.elements] == ["FieldMap", "Drift"]
+    assert lat.elements[0].length == 300.0
+    assert not any("dropped" in w.lower() for w in meta["warnings"])
+    assert any("corr_x" in w and "no field" in w for w in meta["warnings"])
+
+
+def test_missing_zero_amplitude_child_longer_than_the_rest(maps):
+    """The field-free child spans 400 mm, the solenoid 300 mm: the cluster
+    still spans 400 mm, so a 100 mm drift follows the solenoid."""
+    deck = ("SUPERPOSE_MAP 0\n"
+            "FIELD_MAP 10 300 0 16 2.0 0 0 0 sol\n"
+            "SUPERPOSE_MAP 0\n"
+            "FIELD_MAP 70 400 0 16 0 0 0 0 corr_x\n"
+            "DRIFT 10 16 0\nEND\n")
+    lat, _ = _parse(maps, deck)
+    assert [type(e).__name__ for e in lat.elements] == [
+        "FieldMap", "Drift", "Drift"]
+    assert [e.length for e in lat.elements] == [300.0, 100.0, 10.0]
+
+
+def test_missing_zero_amplitude_plain_card_becomes_a_drift(maps):
+    lat, meta = _parse(maps,
+        "FIELD_MAP 70 250 0 18 0 0 0 0 corr_x\nDRIFT 10 16 0\nEND\n")
+    assert [type(e).__name__ for e in lat.elements] == ["Drift", "Drift"]
+    assert lat.elements[0].length == 250.0
+    assert lat.elements[0].aperture == 18.0
+    assert not any("DROPPED" in w for w in meta["warnings"])
+
+
+def test_missing_zero_amplitude_map_strict_still_raises(maps):
+    with pytest.raises(ValueError, match="file missing"):
+        _parse(maps, "FIELD_MAP 70 250 0 18 0 0 0 0 corr_x\nEND\n",
+               strict=True)
+
+
+def _positions(lat):
+    s, out = 0.0, []
+    for e in lat.elements:
+        out.append((type(e).__name__, round(s, 6), e.length))
+        s += e.length
+    return out
+
+
+def test_all_null_cluster_closes_at_the_next_card(maps):
+    """A cluster made only of field-free missing maps still spans its
+    length AT ITS OWN POSITION — the following cards sit downstream."""
+    lat, _ = _parse(maps,
+        "SUPERPOSE_MAP 0\nFIELD_MAP 70 200 0 20 0 0 0 0 corr_x\n"
+        "DRIFT 50 20 0\nQUAD 100 5 20 0 0 0 0 0 0\nEND\n")
+    assert _positions(lat) == [("Drift", 0.0, 200.0), ("Drift", 200.0, 50.0),
+                               ("Quadrupole", 250.0, 100.0)]
+
+
+def test_all_null_cluster_does_not_merge_into_the_next_cluster(maps):
+    lat, _ = _parse(maps,
+        "SUPERPOSE_MAP 0\nFIELD_MAP 70 400 0 20 0 0 0 0 corr_x\n"
+        "DRIFT 50 20 0\n"
+        "SUPERPOSE_MAP 0\nFIELD_MAP 10 300 0 16 2.0 0 0 0 sol\n"
+        "SUPERPOSE_MAP 0\nFIELD_MAP 70 300 0 16 0 0 0 0 corr_y\n"
+        "DRIFT 10 16 0\nEND\n")
+    assert sum(e.length for e in lat.elements) == 400 + 50 + 300 + 10
+
+
+def test_shift_diagnostic_before_a_null_map_is_not_captured_later(maps):
+    """A SHIFT_IN_FIELD_MAP bound to a field-free missing map must not be
+    carried silently into the NEXT real map."""
+    lat, meta = _parse(maps,
+        "SHIFT_IN_FIELD_MAP 50\nMARKER WS1\n"
+        "FIELD_MAP 70 200 0 20 0 0 0 0 corr_x\n"
+        "FIELD_MAP 10 300 0 16 2.0 0 0 0 sol\nEND\n")
+    assert not any(isinstance(e, SuperposedFieldMap) for e in lat.elements)
+    assert any("SHIFT_IN_FIELD_MAP" in w for w in meta["warnings"])
+
+
+def test_null_map_consumes_set_sync_phase(maps):
+    lat, _ = _parse(maps,
+        "FREQ 162.5\nSET_SYNC_PHASE\n"
+        "FIELD_MAP 70 200 0 20 0 0 0 0 corr_x\n"
+        "FIELD_MAP 100 300 -30 16 0 1.0 0 0 cav\nEND\n")
+    cav = [e for e in lat.elements if isinstance(e, FieldMap)][0]
+    assert cav.p_flag == 0          # not silently switched to sync phase
+
+
+def test_missing_map_with_current_or_aperture_data_is_not_null(maps):
+    """ki / ka ≠ 0: the card carries a current or aperture map — not a
+    field-free placeholder; it is dropped loudly as before."""
+    lat, meta = _parse(maps,
+        "FIELD_MAP 70 400 0 40 0 0 1 1 corr_x\nDRIFT 10 16 0\nEND\n")
+    assert [type(e).__name__ for e in lat.elements] == ["Drift"]
+    assert any("DROPPED" in w for w in meta["warnings"])
+
+
+def test_null_position0_child_carries_the_aperture(maps):
+    lat, meta = _parse(maps,
+        "SUPERPOSE_MAP 0\nFIELD_MAP 70 300 0 25 0 0 0 0 corr_x\n"
+        "SUPERPOSE_MAP 50\nFIELD_MAP 10 200 0 16 2.0 0 0 0 sol\n"
+        "DRIFT 10 16 0\nEND\n")
+    cont = lat.elements[0]
+    assert isinstance(cont, SuperposedFieldMap)
+    assert cont.aperture == 25.0 and cont.ka == 0
+    # container = solenoid span (50 + 200); the carrier's last 50 mm follow
+    assert [(type(e).__name__, e.length) for e in lat.elements] == [
+        ("SuperposedFieldMap", 250.0), ("Drift", 50.0), ("Drift", 10.0)]
+    assert not any("no map at position 0" in w for w in meta["warnings"])
+
+
+def test_label_line_inside_a_cluster_is_transparent(maps):
+    lat, _ = _parse(maps,
+        "SUPERPOSE_MAP 0\nFIELD_MAP 10 300 0 16 2.0 0 0 0 sol\n"
+        "HWR CM:\n"
+        "SUPERPOSE_MAP 100\nFIELD_MAP 10 300 0 16 1.0 0 0 0 sol\n"
+        "DRIFT 10 16 0\nEND\n")
+    assert isinstance(lat.elements[0], SuperposedFieldMap)
+    assert sum(e.length for e in lat.elements) == 410.0

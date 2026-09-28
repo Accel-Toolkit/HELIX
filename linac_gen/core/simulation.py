@@ -21,6 +21,7 @@ class Simulation:
                  density_n_bins: int = 200,
                  density_extent: dict | None = None,
                  tail_fractions: tuple = (),
+                 record_action_scan: bool = False,
                  progress_callback=None, should_abort=None,
                  element_entry_hook=None, element_exit_hook=None,
                  pic_setup_hook=None,
@@ -84,6 +85,10 @@ class Simulation:
         # Tail-quantile recording (fractional emittances / radial
         # quantiles per step) is opt-in.  Empty -> zero overhead.
         self.tail_fractions = tuple(tail_fractions or ())
+        # Halo action scan (particles outside the n*eps_rms ellipses per
+        # step and plane — diagnostics.action_scan) is opt-in, MP only.
+        # False -> zero overhead.
+        self.record_action_scan = bool(record_action_scan)
         self.progress_callback = progress_callback
         self.should_abort = should_abort
         self.element_entry_hook = element_entry_hook
@@ -243,6 +248,8 @@ class Simulation:
             )
         if self.tail_fractions:
             tracker.recorder.configure_tail(self.tail_fractions)
+        if self.record_action_scan:
+            tracker.recorder.configure_action_scan()
         self._pic_solver = pic
         self._results = tracker.run()
         # Attach the per-particle loss record to the results: every loss

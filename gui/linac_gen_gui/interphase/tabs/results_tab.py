@@ -64,10 +64,22 @@ class _LoadedResults:
             # with plain truthiness / iteration (e.g. ``if emit_x``), which
             # a numpy array breaks with "ambiguous truth value" — that
             # exception silently aborted the post-import refresh.
-            if isinstance(v, np.ndarray) and v.ndim == 1:
+            # STRUCTURED arrays (the per-particle loss / unstripped tables)
+            # stay arrays: they are read by column (``loss_table["s"]``),
+            # which a list of records cannot do.
+            if (isinstance(v, np.ndarray) and v.ndim == 1
+                    and v.dtype.names is None):
                 v = v.tolist()
             setattr(self, k, v)
         self.source_path = source_path
+
+    def density_array(self, axis: str):
+        """Same contract as ``DiagnosticRecorder.density_array``: the
+        recorded density for ``axis`` as (n_steps, n_bins) int32, or None."""
+        cols = (getattr(self, "density", None) or {}).get(axis)
+        if not cols:
+            return None
+        return np.asarray(cols, dtype=np.int32)
 
 
 @dataclass
@@ -1286,13 +1298,20 @@ class _DensityPopup(_PopupPlot):
     The y-axis is one of the beam coordinates (x, x', y, y', φ, W); the
     x-axis is the longitudinal s.  Counts come from the recorder's
     :meth:`density_array` cache, which is populated only when the user
-    opted in via the Tracking tab's "Record particle density" toggle.
+    opted in via the Numerics tab's "Record particle density" toggle.
     A log-intensity colour map keeps the diffuse halo visible alongside
     the dense core.
 
     The popup also overlays the corresponding ±σ envelope curve and (for
     the transverse position axes) the lattice aperture profile, so the
     heatmap reads against the same context as the other envelope plots.
+
+    The recorded steps are unevenly spaced along s (many short elements
+    in one section, long drifts in another), so the heatmap is drawn on an
+    even s grid (:func:`plot_style.resample_on_even_s`): each column covers
+    the same length of beamline and shows the average of the steps inside
+    it, or the last step before it — the columns line up with the s axis
+    and with the ±σ / aperture overlays, which are drawn at the true s.
     """
 
     # Display units for each axis: (label, internal→display scale, units).
@@ -1351,7 +1370,7 @@ class _DensityPopup(_PopupPlot):
         # Hint shown when density wasn't recorded for the active run.
         self._hint = QLabel(
             "No density recorded.  Enable “Record particle density” on "
-            "the Tracking tab and re-run."
+            "the Numerics tab and re-run."
         )
         self._hint.setStyleSheet(
             f"color:{theme.TEXT_2}; padding:2px 0;"
@@ -1470,10 +1489,14 @@ class _DensityPopup(_PopupPlot):
         s = s[:n_steps]
         density = density[:n_steps, :]
 
-        # ImageItem expects (rows, cols) with row-major axisOrder.  Rows
-        # are the y-axis (bins) and cols are s — so transpose density,
-        # which is stored as (n_steps, n_bins).
-        H = density.T.astype(float)
+        # One image column per EQUAL length of s (not per recorded step:
+        # steps are unevenly spaced, so step-indexed columns would stretch
+        # dense sections and squeeze sparse ones).  ImageItem expects
+        # (rows, cols) with row-major axisOrder: rows are the bins.
+        from linac_gen_gui.interphase.plots.plot_style import (
+            resample_on_even_s)
+        cols, s_lo, s_hi = resample_on_even_s(density, s, pool="mean")
+        H = cols.T.astype(float)
         # Gaussian-smooth the heatmap so adjacent-bin transitions read as
         # a continuous distribution rather than a stair-step.  Mirrors the
         # treatment in DensityPanel (phase-space popup).  Sigma is in
@@ -1508,7 +1531,6 @@ class _DensityPopup(_PopupPlot):
         # scale to display units for the y-axis.
         y_lo = float(edges[0]) * scale
         y_hi = float(edges[-1]) * scale
-        s_lo = float(s[0]); s_hi = float(s[-1])
         self._image.setRect(pg.QtCore.QRectF(
             s_lo, y_lo, s_hi - s_lo, y_hi - y_lo,
         ))
@@ -2222,6 +2244,101 @@ def _fieldmap_bfield_channel(el):
     return None
 
 
+def _SuperposedFieldMap():
+    from linac_gen.elements.superposed_field_map import SuperposedFieldMap
+    return SuperposedFieldMap
+
+
+def _is_cluster(el) -> bool:
+    return isinstance(el, _SuperposedFieldMap())
+
+
+def _clipped_trapz(z_mm, g, lo, hi) -> float:
+    """Trapezoid of samples ``g`` at ``z_mm`` restricted to [lo, hi] mm
+    (end points interpolated when the samples reach past them), in ·m."""
+    _trap = getattr(np, "trapezoid", None) or getattr(np, "trapz")
+    z = np.asarray(z_mm, dtype=float); g = np.asarray(g, dtype=float)
+    a, b = max(lo, z[0]), min(hi, z[-1])
+    if b <= a:
+        return 0.0
+    inside = (z > a) & (z < b)
+    zz = np.concatenate(([a], z[inside], [b]))
+    gg = np.concatenate(([np.interp(a, z, g)], g[inside], [np.interp(b, z, g)]))
+    return float(_trap(gg, x=zz * 1e-3))
+
+
+def _cluster_metric(el, kind: str) -> float | None:
+    """Lattice-parameter value of a SUPERPOSE_MAP cluster.
+
+    The cluster's field is the SUM of its children, evaluated over the
+    span the container tracks ([0, length]; a child placed at negative z0
+    only counts from the entrance on).  Solenoid metrics (``"bpeak"``,
+    ``"int_b2"``) use the static-magnetic children, cavity metrics
+    (``"eacc"``, ``"vgap"``) the electric ones — a mixed cluster appears
+    on both kinds of chart.  RF children are added as phasors with their
+    card phase (``ke·E_z·e^{iθ}``), so cavities in and out of phase add or
+    cancel as the fields do.  Children with zero amplitude (the unpowered
+    PIP-II correctors on every solenoid) add nothing; when ONE child
+    contributes and it lies inside the span, the standalone function is
+    used on it, so the value equals that map's own exactly.
+
+    ∫B²·dz is split as Σ ∫B_i² (each map on its own samples) + 2 Σ ∫B_iB_j
+    (on the union grid), so it changes smoothly when a corrector is
+    powered from zero instead of jumping by the regridding error."""
+    electric = kind in ("eacc", "vgap")
+    single = {"bpeak": _fieldmap_bpeak_T, "int_b2": _fieldmap_int_b2,
+              "eacc": _fieldmap_eacc_MV_per_m, "vgap": _fieldmap_vgap_MV}[kind]
+    span = float(getattr(el, "length", 0.0))
+    parts = []
+    for z0, child in el.children:
+        e_ch = _fieldmap_efield_channel(child)
+        if electric:
+            ch = e_ch
+        else:
+            ch = None if e_ch is not None else _fieldmap_bfield_channel(child)
+        fz = _fieldmap_onaxis_fz(ch)
+        if fz is None or fz.size < 2:
+            continue
+        k = (float(getattr(child, "ke" if electric else "kb", 1.0))
+             * float(getattr(child, "scale", 1.0))
+             / float(getattr(ch, "norm_factor", 1.0) or 1.0))
+        if k == 0.0:
+            continue
+        L = float(getattr(child, "length", 0.0))
+        if L <= 0:
+            continue
+        # same geometry as the standalone functions: samples span the
+        # child's card length
+        z = float(z0) + np.linspace(0.0, L, fz.size)
+        f = k * np.asarray(fz, dtype=float)
+        if electric:
+            f = f * np.exp(1j * np.deg2rad(float(getattr(child, "phase", 0.0))))
+        parts.append((child, float(z0), z, f))
+    if not parts or span <= 0:
+        return None
+    if (len(parts) == 1 and abs(parts[0][1]) < 1e-12
+            and parts[0][0].length <= span + 1e-9):
+        return single(parts[0][0])
+    grid = np.unique(np.concatenate([z for _c, _z0, z, _f in parts]
+                                    + [np.array([0.0, span])]))
+    grid = grid[(grid >= 0.0) & (grid <= span)]
+    on_grid = [np.interp(grid, z, f.real, left=0.0, right=0.0)
+               + (1j * np.interp(grid, z, f.imag, left=0.0, right=0.0)
+                  if np.iscomplexobj(f) else 0.0)
+               for _c, _z0, z, f in parts]
+    total = np.sum(on_grid, axis=0)
+    if kind in ("bpeak", "eacc"):
+        return float(np.max(np.abs(total)))
+    if kind == "vgap":
+        return _clipped_trapz(grid, np.abs(total), 0.0, span)       # MV
+    val = sum(_clipped_trapz(z, f * f, 0.0, span) for _c, _z0, z, f in parts)
+    for i in range(len(on_grid)):
+        for j in range(i + 1, len(on_grid)):
+            val += 2.0 * _clipped_trapz(grid, on_grid[i] * on_grid[j],
+                                        0.0, span)
+    return float(val)                                                # T²·m
+
+
 def _fieldmap_eacc_MV_per_m(el) -> float | None:
     """Peak axial accelerating gradient E_acc = |ke| · max|E_z_axis| /
     |norm_factor|, in MV/m.  Returns None if no E-channel present.
@@ -2231,6 +2348,8 @@ def _fieldmap_eacc_MV_per_m(el) -> float | None:
     flip — the physical *amplitude* is always positive, and the user
     expects the plotted bar to reflect that amplitude.
     """
+    if _is_cluster(el):
+        return _cluster_metric(el, "eacc")
     ch = _fieldmap_efield_channel(el)
     fz = _fieldmap_onaxis_fz(ch)
     if fz is None or fz.size == 0:
@@ -2247,6 +2366,8 @@ def _fieldmap_vgap_MV(el) -> float | None:
     across the element length.  See :func:`_fieldmap_eacc_MV_per_m`
     for why the scaling factors are taken in absolute value.
     """
+    if _is_cluster(el):
+        return _cluster_metric(el, "vgap")
     ch = _fieldmap_efield_channel(el)
     fz = _fieldmap_onaxis_fz(ch)
     if fz is None or fz.size < 2:
@@ -2271,6 +2392,8 @@ def _fieldmap_bpeak_T(el) -> float | None:
     (RF cavity) — those belong on the E_acc chart, not this one.  See
     :func:`_fieldmap_eacc_MV_per_m` for the rationale on absolute values.
     """
+    if _is_cluster(el):
+        return _cluster_metric(el, "bpeak")
     if _fieldmap_efield_channel(el) is not None:
         return None
     ch = _fieldmap_bfield_channel(el)
@@ -2292,6 +2415,8 @@ def _fieldmap_int_b2(el) -> float | None:
     Returns None for RF cavities (those have an E channel) and for maps with no
     magnetic channel.  Scaling (kb·scale/norm) matches ``_fieldmap_bpeak_T``.
     """
+    if _is_cluster(el):
+        return _cluster_metric(el, "int_b2")
     if _fieldmap_efield_channel(el) is not None:
         return None
     ch = _fieldmap_bfield_channel(el)
@@ -8136,6 +8261,7 @@ def _lattice_param_series(state, element_types, attr=None, value_fn=None,
 def _build_series_fns(state) -> dict:
     """key → series_fn for every tile whose thumbnail is derivable."""
     from linac_gen.elements.quadrupole import Quadrupole
+    from linac_gen.elements.superposed_field_map import SuperposedFieldMap
     from linac_gen.elements.rf_gap import RFGap
     from linac_gen.elements.field_map import FieldMap
     from linac_gen.elements.field_map_3d import FieldMap3D
@@ -8374,22 +8500,26 @@ def _build_series_fns(state) -> dict:
             state, (Quadrupole,), attr="gradient",
             transform=lambda el, v: v * (float(el.length) * 1e-3)),
         "rf_volt": _lattice_param_series(
-            state, (RFGap, FieldMap, FieldMap3D, NCells), attr=None,
+            state, (RFGap, FieldMap, FieldMap3D, NCells, SuperposedFieldMap),
+            attr=None,
             value_fn=lambda el: (
                 _ncells_v0_MV(el) if isinstance(el, NCells)
                 else abs(float(el.voltage))
                 if getattr(el, "voltage", None) is not None
                 else _fieldmap_vgap_MV(el))),
         "eacc": _lattice_param_series(
-            state, (FieldMap, FieldMap3D, NCells), attr=None,
+            state, (FieldMap, FieldMap3D, NCells, SuperposedFieldMap),
+            attr=None,
             value_fn=lambda el: (
                 float(el.eot_v_per_m) * 1e-6 if isinstance(el, NCells)
                 else _fieldmap_eacc_MV_per_m(el))),
         "bpeak": _lattice_param_series(
-            state, (Solenoid, FieldMap, FieldMap3D), attr=None,
+            state, (Solenoid, FieldMap, FieldMap3D, SuperposedFieldMap),
+            attr=None,
             value_fn=_bpeak_value),
         "int_b2": _lattice_param_series(
-            state, (Solenoid, FieldMap, FieldMap3D), attr=None,
+            state, (Solenoid, FieldMap, FieldMap3D, SuperposedFieldMap),
+            attr=None,
             value_fn=_solenoid_int_b2),
         "sync_phase": _lattice_param_series(
             state, (RFGap, FieldMap, FieldMap3D, NCells), attr=None,
@@ -8445,6 +8575,8 @@ _SECTIONS: list[tuple[str, list[tuple]]] = [
             "mm",       "{:.3f}", "#f87171"),
         ("halo",        "Halo parameter H_x · H_y",  "scatter", "halo_x",
             "",         "{:.3f}", "#fde047"),
+        ("halo_scan",   "Halo action scan (n·ε_rms)", "heatmap", None,
+            "",         "{:.3g}", "#e879f9"),
     ]),
     ("ENERGY · KINEMATICS", [
         ("energy",      "Energy · γ · Transmission", "gauge",   "ref_w_kin",
@@ -8853,6 +8985,12 @@ class ResultsTab(QWidget):
             elif key == "bpms":    dlg = _BpmsPopup(self, self.state)
             elif key == "long_twiss":  dlg = _LongTwissPopup(self)
             elif key == "halo":        dlg = _HaloPopup(self)
+            elif key == "halo_scan":
+                # Own module (keeps matplotlib, used by its 3D view, out of
+                # this one); imported on first open.
+                from linac_gen_gui.interphase.tabs.halo_scan_popup import (
+                    HaloActionScanPopup)
+                dlg = HaloActionScanPopup(self, self.state)
             elif key == "partran":     dlg = _PartranComparePopup(self, self.state)
             elif key == "divergence":  dlg = _DivergencePopup(self)
             elif key == "peak":        dlg = _PeakExcursionPopup(self)
@@ -8905,7 +9043,8 @@ class ResultsTab(QWidget):
                 dlg = _LatticeParamPopup(
                     self, self.state,
                     title="RF voltage  —  V₀ [MV] per RF cavity / gap",
-                    element_types=(RFGap, FieldMap, FieldMap3D, NCells),
+                    element_types=(RFGap, FieldMap, FieldMap3D, NCells,
+                                   _SuperposedFieldMap()),
                     attr=None,
                     value_fn=_rf_volt,
                     ylabel="V₀", yunits="MV",
@@ -8922,13 +9061,15 @@ class ResultsTab(QWidget):
                 dlg = _LatticeParamPopup(
                     self, self.state,
                     title="Peak accelerating gradient  —  E_acc / EoT [MV/m] per cavity",
-                    element_types=(FieldMap, FieldMap3D, NCells), attr=None,
+                    element_types=(FieldMap, FieldMap3D, NCells,
+                                   _SuperposedFieldMap()), attr=None,
                     value_fn=_eacc,
                     ylabel="E_acc", yunits="MV/m",
                     color="#fbbf24", type_name="cavity",
                 )
             elif key == "bpeak":
                 from linac_gen.elements.field_map import FieldMap
+                from linac_gen.elements.field_map_3d import FieldMap3D
                 from linac_gen.elements.solenoid import Solenoid
                 def _bpeak(el):
                     # Lumped ``Solenoid`` stores its axis field in
@@ -8946,7 +9087,8 @@ class ResultsTab(QWidget):
                 dlg = _LatticeParamPopup(
                     self, self.state,
                     title="Peak solenoid field  —  |B_z| [T] per solenoid",
-                    element_types=(Solenoid, FieldMap), attr=None,
+                    element_types=(Solenoid, FieldMap, FieldMap3D,
+                                   _SuperposedFieldMap()), attr=None,
                     value_fn=_bpeak,
                     ylabel="|B_z|", yunits="T",
                     color="#60a5fa", type_name="solenoid",
@@ -8958,7 +9100,8 @@ class ResultsTab(QWidget):
                 dlg = _LatticeParamPopup(
                     self, self.state,
                     title="Solenoid focusing strength  —  ∫B_z²·dz [T²·m] per solenoid",
-                    element_types=(Solenoid, FieldMap, FieldMap3D), attr=None,
+                    element_types=(Solenoid, FieldMap, FieldMap3D,
+                                   _SuperposedFieldMap()), attr=None,
                     value_fn=_solenoid_int_b2,
                     ylabel="∫B_z²·dz", yunits="T²·m",
                     color="#38bdf8", type_name="solenoid",
@@ -9052,7 +9195,9 @@ class ResultsTab(QWidget):
             try:
                 if _has(sphi) and hasattr(results, "ref_beta") and hasattr(results, "ref_frequency"):
                     from linac_gen.core.constants import C_LIGHT
-                    wl_mm = C_LIGHT / (results.ref_frequency * 1e6) * 1000.0
+                    _f = results.ref_frequency
+                    _f = float(_f[-1]) if hasattr(_f, "__len__") else float(_f)
+                    wl_mm = C_LIGHT / (_f * 1e6) * 1000.0
                     sz_end = f"{sphi[-1] * results.ref_beta[-1] * wl_mm / 360.0:.3f}"
             except Exception: pass
             kpi_set(self._k_sz, sz_end)

@@ -16,7 +16,8 @@ shows "—" only when its quantity genuinely doesn't exist yet: the
 per-cell tune tiles need a probe-bearing run *and* a declared
 periodic structure (an aperiodic whole line has no tune), the halo /
 IBS / stripping tiles need a multi-particle H⁻ run, and the
-phase-space / field-map / matrix tiles have no 1-D curve to preview.
+phase-space / field-map / matrix / halo-action-scan tiles have no 1-D
+curve to preview.
 The footprint tile stays plain until you compute one in its popup.
 
 ![Results tab after an envelope run](../_build/figures/gui/results_tab.png)
@@ -49,7 +50,9 @@ Nine section headers, top to bottom:
   advance σ₀ · σ, tune depression η = σ/σ₀, **Hofmann stability
   chart**, **tune footprint (frozen SC)**, longitudinal Twiss,
   divergence σ_x' · σ_y', peak excursion X / Y_max, halo parameter
-  H_x · H_y.  The phase-advance and tune-depression popups plot the
+  H_x · H_y, and the **halo action scan (n·ε_rms)** (see
+  [below](#halo-action-scan)).  The phase-advance and tune-depression
+  popups plot the
   **channel tunes** (σ_model, primary) with the beam Δμ_rms as a
   secondary series; the Hofmann and footprint tiles are the two
   space-charge diagnostics described below.
@@ -96,6 +99,10 @@ the checkbox.
 * **PHASE SPACE · DIAGNOSTICS** — **Phase space (4-panel)** (the
   full phase-space view at any snapshot marker), density-vs-s
   heatmap, BPMs, field-map viewer (2D + cuts), cavity TTF T(β).
+  The density-vs-s heatmap is drawn against the true s: recorded steps
+  are unevenly spaced, so every column covers the same length of
+  beamline and shows the average of the steps inside it, or the last
+  step before it — it lines up with the ±σ and aperture overlays.
 
     The phase-space popup's **Beam parameters** toggle (2026-07) swaps
     the four density panels for a full parameter table of the
@@ -121,7 +128,7 @@ the checkbox.
 
 ## Raw vs Dispersion-corrected toggle {#raw-vs-dispersion-corrected}
 
-Six popups expose a **Display** dropdown at the top with two
+Seven popups expose a **Display** dropdown at the top with two
 options:
 
 * **Raw (includes dispersion)** — the σ-matrix entry as recorded.
@@ -150,6 +157,7 @@ options:
 | Twiss (α, β) | `alpha_x`, `beta_x`, `alpha_y`, `beta_y` | α_β, β_β from Σ_β,2×2 |
 | Divergence (σ_x', σ_y') | √Σ_11, √Σ_33 | √Σ_β,(1,1), √Σ_β,(3,3) |
 | Peak excursion (X_max, Y_max) | particle-tracked x_max / fallback 5·σ_x | fallback path uses 5·σ_β; MP-tracked x_max is the raw truth in both modes |
+| Halo action scan (x–x′, y–y′) | counts in the tracked (u, u′) plane | counts in the betatron plane u − (Σ_u5/Σ_55)·δW, u′ − (Σ_u′5/Σ_55)·δW, whose ε is √det(Σ_β,2×2); **the default here** (φ–W has no toggle) |
 
 **When to use each**:
 
@@ -243,6 +251,51 @@ offers a **Compute channel model** button — a companion envelope probe at
 the current Beam-tab config that fills the model curves next to the MP
 beam markers; the Hofmann chart reuses the same cached probe.
 
+## Halo action scan {#halo-action-scan}
+
+The **Halo action scan (n·ε_rms)** tile shows, for one plane at a time,
+how much of the beam lies outside the ellipses of its own rms shape
+whose emittance is n times the local rms emittance — n = 1 is the rms
+ellipse, and a particle at n reaches √n rms sizes (definition and
+reference values: [Halo analysis → Action
+scan](../09_diagnostics/03_halo.md#action-scan)).  It needs a
+multi-particle run made with **Record halo action scan** ticked on the
+Numerics tab (or a results file written by such a run); otherwise the
+window says what is missing.
+
+Controls: **plane** (x–x′, y–y′, φ–W), the **Display** toggle
+(dispersion-corrected by default, x and y only), **n max** (top of the
+n axis; *auto* = 1.1 × the 95th percentile of the outermost particle's
+n along the line, at least 20) and **lattice** (element strip).
+
+The **Map** tab:
+
+* **Map** — s horizontally, n vertically, colour = % of the particles
+  present at that s outside the ellipse (log scale, 100 % down to one
+  particle; empty cells are transparent).  The map is drawn on an even
+  s grid: a column that covers recorded steps shows the largest value
+  among them, and a column between two records holds the last step
+  recorded before it.  Solid lines mark where 1 %, 0.1 % and 0.01 % of the beam
+  remain (a level is drawn only where it is at least one particle),
+  dashed lines the same levels for a Gaussian beam (n = 9.21, 13.82,
+  18.42), and the dotted line the outermost particle.  Hovering reads
+  the exact count at the recorded step at or before the cursor and at
+  the grid value of n at or below it: s, element, % and number of
+  particles outside, the local ε_rms,n and the ellipse emittance
+  n·ε_rms,n.  Clicking moves the position.
+* **ε_n** — the normalized rms emittance of the plane along s (the
+  unit of the n axis at every position).
+* **position** slider (by recorded step), then the **slice**: % outside
+  vs n at that position with the Gaussian 100·e^(−n/2), and a readout
+  (particles present, ε_rms normalized and geometric, outermost n, the
+  n of each level against its Gaussian value).
+
+The **3D** tab draws the same data as a surface (n, s, % outside);
+drag to rotate.  **Ctrl+S** exports the plotted curves and, in addition,
+the exact recorded counts and % outside of the plane on display
+(rows = steps, columns = grid values) with the grid, ε, ε_n, n_max and
+n_alive.
+
 ## Lattice-parameter field plots {#lattice-params}
 
 The **LATTICE PARAMETERS** section plots a single scalar per element, read
@@ -270,6 +323,21 @@ beam energy. It is computed for both solenoid representations — a lumped
 `SOLENOID` (hard-edge uniform field → `B₀²·L`) and a magnetic field map
 (trapezoidal integral of the on-axis `B_z(z)²` profile, scaled by
 `kb·scale/norm`). RF cavities (field maps with an E channel) are excluded.
+
+1-D and 3-D field maps are both covered, and so are maps inside a
+`SUPERPOSE_MAP` cluster (the PIP-II HWR/SSR solenoids carry two
+superposed correctors).  A cluster is one stem whose value comes from
+the **summed** on-axis field of its children, each placed at its
+position in the cluster with its own `k·scale/norm`: the solenoid tiles
+use the static-magnetic children, the RF voltage and E_acc tiles the
+electric ones, added as phasors with each card's RF phase (so cavities
+180° apart cancel).  Only the span the cluster tracks counts (a map
+placed at a negative position contributes from the entrance on).
+Children at zero amplitude add nothing, so a solenoid with unpowered
+correctors shows exactly the solenoid's own value, and ∫B²·dz changes
+smoothly as a corrector is powered.  As for plain maps, the samples are
+spread over each card's length and the error-study amplitude factors
+are not applied — the tiles show the deck's design values.
 
 The **dipole tiles** are the one lattice-parameter pair that needs the beam:
 a `BEND` card stores only geometry (bend angle `θ` and curvature radius
@@ -322,9 +390,11 @@ drawing an empty plot, and its exit-plane W/cm² map additionally
 needs the final distribution, so it fills on live MP runs while a
 reloaded file keeps the W/m profile.  Eigenemittances are
 always recorded — there is no flag to enable them.  The error-study
-ensemble popup fills only after an Error Study run, and the
+ensemble popup fills only after an Error Study run, the
 phase-space popup needs snapshot markers (or Numerics → "Snapshot
-every N") to have data.
+every N") to have data, and the halo action scan needs Numerics →
+"Record halo action scan" and a multi-particle run (it says so in
+place; openPMD files written before 2026-09-27 do not carry it).
 
 ## Exporting to openPMD
 

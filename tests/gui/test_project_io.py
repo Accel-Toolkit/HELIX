@@ -289,3 +289,55 @@ def test_drift_single_push_project_value_uses_the_cli_coercion(win):
     win._apply_project_dict({"__kind__": "linac_gen_project",
                              "convergence": {"drift_single_push": "on"}}, silent=True)
     assert ct._drift_single_push.isChecked() is True
+
+
+def test_record_action_scan_round_trips_through_the_project(win):
+    ct = win.convergence_tab
+    assert ct._record_action_scan.isChecked() is True      # on by default
+    win._apply_project_dict({"__kind__": "linac_gen_project",
+                             "convergence": {"record_action_scan": False}},
+                            silent=True)
+    assert ct._record_action_scan.isChecked() is False     # project wins
+    win._apply_project_dict({"__kind__": "linac_gen_project",
+                             "convergence": {"record_action_scan": True}},
+                            silent=True)
+    assert ct._record_action_scan.isChecked() is True
+    assert win._collect_project_dict([], None)["convergence"][
+        "record_action_scan"] is True
+    # hand-edited strings use the CLI coercion
+    win._apply_project_dict({"__kind__": "linac_gen_project",
+                             "convergence": {"record_action_scan": "false"}},
+                            silent=True)
+    assert ct._record_action_scan.isChecked() is False
+    # a project written before the option existed leaves it where it is
+    ct._record_action_scan.setChecked(True)
+    win._apply_project_dict({"__kind__": "linac_gen_project",
+                             "convergence": {"step1_per_m": 100.0}},
+                            silent=True)
+    assert ct._record_action_scan.isChecked() is True
+
+
+@pytest.mark.parametrize("widget", ["_record_action_scan", "_record_density",
+                                    "_record_substeps"])
+def test_recording_switches_mark_the_project_dirty(win, widget):
+    """They are saved in the project, so toggling one is an unsaved change
+    (and loading a project still ends clean)."""
+    ct = win.convergence_tab
+    win.state.mark_project_clean()
+    box = getattr(ct, widget)
+    box.setChecked(not box.isChecked())
+    assert win.state.project_dirty
+    win._apply_project_dict({"__kind__": "linac_gen_project",
+                             "convergence": {widget.lstrip("_"): False}},
+                            silent=True)
+    assert not win.state.project_dirty
+
+
+def test_density_settings_mark_the_project_dirty(win):
+    ct = win.convergence_tab
+    win.state.mark_project_clean()
+    ct._density_bins.setValue(ct._density_bins.value() + 8)
+    assert win.state.project_dirty
+    win.state.mark_project_clean()
+    ct._density_extent.setValue(ct._density_extent.value() + 1.0)
+    assert win.state.project_dirty

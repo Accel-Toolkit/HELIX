@@ -291,6 +291,7 @@ class DiagnosticRecorder:
             # beam has fully been lost.
             self.record_density(beam)
             self._record_tail(alive)
+            self._record_action_scan(alive, beam.ref)
             return
 
         m = compute_moments(alive)
@@ -368,6 +369,9 @@ class DiagnosticRecorder:
         self.record_density(beam)
         # Tail quantiles (no-op when not configured — HALO-PIC M1).
         self._record_tail(alive)
+        # Halo action scan (no-op when not configured).
+        self._record_action_scan(alive, beam.ref, mean=m["mean"],
+                                 sigma=m["sigma_matrix"])
 
     # ------------------------------------------------------------------
     # 2-D density vs s
@@ -424,6 +428,54 @@ class DiagnosticRecorder:
             self.tail[f"emit_x_{k}"].append(ex[f])
             self.tail[f"emit_y_{k}"].append(ey[f])
             self.tail[f"r_{k}"].append(rq[f])
+
+    def configure_action_scan(self, grid=None) -> None:
+        """Opt in to the per-step halo action scan.
+
+        At every :meth:`record` call, and in each of the planes x, y
+        (dispersion-corrected), z = (φ, W), x_raw and y_raw, counts the
+        alive particles outside the ellipses of the beam's own rms shape
+        whose emittance is n·ε_rms, for every n of ``grid`` (default
+        :func:`~linac_gen.diagnostics.action_scan.default_action_grid`,
+        551 points up to n = 400).  See
+        :mod:`linac_gen.diagnostics.action_scan` for the definition.
+
+        Stored in :attr:`action_scan`: ``"n"`` (the grid, an ndarray) and
+        per-step lists ``count_<p>`` (int32 rows), ``eps_<p>`` (geometric;
+        mm·mrad, z in deg·MeV), ``eps_n_<p>`` (normalized, mm·mrad),
+        ``n_max_<p>`` (outermost particle) and ``n_alive`` — one entry per
+        recorded step, aligned with :attr:`s`.
+
+        Zero overhead when not configured (the default).  When configured
+        it costs O(N log G) per plane and record (≈ 20–30 ms at N = 1e5)
+        and ≈ 12 kB of memory per record.
+        """
+        from linac_gen.diagnostics.action_scan import (
+            PLANES, default_action_grid, validate_grid)
+        n = default_action_grid() if grid is None else validate_grid(grid)
+        scan: dict = {"n": n}
+        for p in PLANES:
+            for key in ("count", "eps", "eps_n", "n_max"):
+                scan[f"{key}_{p}"] = []
+        scan["n_alive"] = []
+        self.action_scan = scan
+
+    def _record_action_scan(self, alive, ref, mean=None, sigma=None) -> None:
+        scan = getattr(self, "action_scan", None)
+        if not scan:
+            return
+        from linac_gen.diagnostics.action_scan import PLANES, action_scan_row
+        # The whole row is built before anything is appended, so an
+        # exception can never leave the per-step lists misaligned.
+        row = action_scan_row(alive, scan["n"], mean=mean, sigma=sigma)
+        bg = float(ref.bg)
+        for p in PLANES:
+            e = row[f"eps_{p}"]
+            row[f"eps_n_{p}"] = (_convert_emit_z_to_mmmrad(e, ref) * bg
+                                 if p == "z" else e * bg)
+        for key, lst in scan.items():
+            if key != "n":
+                lst.append(row[key])
 
     def configure_density(self, axes=("x", "y"),
                           extent: dict | None = None,

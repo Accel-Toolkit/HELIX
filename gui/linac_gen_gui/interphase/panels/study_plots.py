@@ -12,8 +12,8 @@ the folder is the contract, not the process that filled it):
 * Overlay — σ(z)/ε(z)/… curves of selected runs read from each run's
             results.h5, legend by run tag
 
-The pure helpers (`aggregate_1d`, `detect_grid`) are module-level for
-unit testing.
+The pure helpers (`aggregate_1d`, `detect_grid`, `cell_edges`,
+`cells_on_display_grid`) are module-level for unit testing.
 """
 from __future__ import annotations
 
@@ -117,6 +117,41 @@ def aggregate_1d(records: list[dict], x_name: str, y_name: str,
         n = np.array([len(xs[x]) for x in xv])
         out[g] = (xv, ym, ys, n)
     return out
+
+
+def cell_edges(values) -> np.ndarray:
+    """Cell edges around sorted unique scan values: midpoints between
+    neighbours, the ends half a neighbouring gap out (±0.5 for a single
+    value) — so each cell is drawn over its TRUE value, even for an
+    unevenly spaced scan (e.g. 1, 2, 4, 8 -> 0.5, 1.5, 3, 6, 10)."""
+    v = np.asarray(values, dtype=float)
+    if v.size == 1:
+        return np.array([v[0] - 0.5, v[0] + 0.5])
+    mid = 0.5 * (v[1:] + v[:-1])
+    return np.r_[v[0] - (mid[0] - v[0]), mid, v[-1] + (v[-1] - mid[-1])]
+
+
+def _evenly_spaced(values) -> bool:
+    gaps = np.diff(np.asarray(values, dtype=float))
+    return gaps.size == 0 or bool(
+        np.allclose(gaps, gaps[0], rtol=1e-9, atol=0.0))
+
+
+def cells_on_display_grid(xu, yu, Z, n_px: int = 400):
+    """(image, rect) drawing Z (len(yu), len(xu)) with every cell over its
+    true extent: evenly spaced axes map one pixel per cell (the plain
+    image); an uneven axis is resampled onto ``n_px`` even pixels, each
+    holding the value of the cell it falls in.  ``image`` is (x, y)-major
+    for ImageItem; ``rect`` = (x0, y0, width, height)."""
+    ex, ey = cell_edges(xu), cell_edges(yu)
+    img = np.asarray(Z, dtype=float).T                  # (x, y)
+    if not _evenly_spaced(xu):
+        cx = ex[0] + (np.arange(n_px) + 0.5) * (ex[-1] - ex[0]) / n_px
+        img = img[np.clip(np.searchsorted(ex, cx) - 1, 0, len(xu) - 1), :]
+    if not _evenly_spaced(yu):
+        cy = ey[0] + (np.arange(n_px) + 0.5) * (ey[-1] - ey[0]) / n_px
+        img = img[:, np.clip(np.searchsorted(ey, cy) - 1, 0, len(yu) - 1)]
+    return img, (ex[0], ey[0], ex[-1] - ex[0], ey[-1] - ey[0])
 
 
 def detect_grid(records: list[dict], x_name: str, y_name: str,
@@ -354,13 +389,11 @@ class _Plot2DPanel(QWidget):
         grid = detect_grid(recs, xn, yn, zn, m.column)
         if grid is not None:
             xu, yu, Z = grid
-            img = pg.ImageItem(Z.T)
+            # every cell over its TRUE scan value (uneven scans included)
+            data, rect = cells_on_display_grid(xu, yu, Z)
+            img = pg.ImageItem(data)
             img.setColorMap(cmap)
-            dx = (xu[-1] - xu[0]) / max(len(xu) - 1, 1)
-            dy = (yu[-1] - yu[0]) / max(len(yu) - 1, 1)
-            img.setRect(pg.QtCore.QRectF(
-                xu[0] - dx / 2, yu[0] - dy / 2,
-                xu[-1] - xu[0] + dx, yu[-1] - yu[0] + dy))
+            img.setRect(pg.QtCore.QRectF(*rect))
             self.plot.addItem(img)
             zmin, zmax = np.nanmin(Z), np.nanmax(Z)
             self._cbar = pg.ColorBarItem(values=(zmin, zmax),

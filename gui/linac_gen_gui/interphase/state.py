@@ -112,8 +112,19 @@ class AppState(QObject):
         from linac_gen_gui.interphase.commands import CommandBus
         self.bus: CommandBus = CommandBus(lambda: self._lattice)
         # Re-broadcast bus-level changes through lattice_changed so views
-        # using the existing signal pick up undo/redo / param edits.
-        self.bus.changed.connect(lambda: self.lattice_changed.emit(self._lattice))
+        # using the existing signal pick up undo/redo / param edits.  A
+        # BOUND method, not a lambda: PyQt drops the connection when this
+        # AppState is destroyed, whereas a lambda kept firing into the
+        # deleted object — a queued bus change (e.g. applied by an
+        # assistant worker thread) delivered after teardown segfaulted
+        # the process (full-suite crash in test_assistant_panel, 2026-09-27).
+        self.bus.changed.connect(self._rebroadcast_bus_change)
+
+    def _rebroadcast_bus_change(self) -> None:
+        try:
+            self.lattice_changed.emit(self._lattice)
+        except RuntimeError:        # state torn down mid-delivery
+            pass
 
     # --- tab -----------------------------------------------------------
     @property

@@ -1,5 +1,7 @@
 """HDF5 results output: save/load DiagnosticRecorder data (Task 12.2)."""
 import hashlib
+import warnings
+
 import numpy as np
 import h5py
 
@@ -221,6 +223,326 @@ def _write_provenance(f, lattice_path=None, seed=None, sc_config=None,
         pass
 
 
+def _utf8_s32(name) -> bytes:
+    """``name`` as at most 32 UTF-8 bytes, cut on a character boundary."""
+    b = str(name).encode("utf-8", "replace")
+    return b if len(b) <= 32 else b[:32].decode("utf-8", "ignore").encode()
+
+
+def _write_action_scan(f, recorder) -> None:
+    """``action_scan/`` group — the opt-in halo action scan
+    (``Simulation(record_action_scan=True)``).  Written only when the run
+    recorded one, so every other file keeps exactly its former tree.
+
+    Accepts a live recorder (per-step lists) and re-saved loaded results
+    (the dict :func:`load_results_hdf5` returns, whose per-step flags and
+    names ride inside the scan).  Everything is validated before the
+    group is created: a scan not aligned with ``recorder.s`` is skipped
+    with a warning and leaves no partial group behind."""
+    scan = getattr(recorder, "action_scan", None)
+    if not scan or "n" not in scan:
+        return
+    from linac_gen.diagnostics.action_scan import (
+        DEFINITION, EPS_UNITS, PLANES, SCHEMA_VERSION)
+    n_steps = len(recorder.s)
+    grid = np.asarray(scan["n"], dtype=float).ravel()
+    planes = [p for p in PLANES if f"count_{p}" in scan]
+    data: dict = {}
+    problem = None
+    try:
+        data["n_alive"] = np.asarray(scan["n_alive"], dtype=np.int64)
+        for p in planes:
+            data[f"count_{p}"] = np.asarray(scan[f"count_{p}"],
+                                            dtype=np.int32)
+            for key in ("eps", "eps_n", "n_max"):
+                data[f"{key}_{p}"] = np.asarray(scan[f"{key}_{p}"],
+                                                dtype=float)
+    except (KeyError, TypeError, ValueError) as exc:
+        problem = f"{type(exc).__name__}: {exc}"
+    if problem is None:
+        if n_steps == 0 or not planes:
+            problem = f"{n_steps} recorded steps, planes {planes}"
+        else:
+            for key, arr in data.items():
+                want = ((n_steps, grid.size) if key.startswith("count_")
+                        else (n_steps,))
+                if arr.shape != want:
+                    problem = f"{key} has shape {arr.shape}, expected {want}"
+                    break
+    if problem is not None:
+        warnings.warn(f"action scan not written ({problem})",
+                      RuntimeWarning, stacklevel=3)
+        return
+
+    def _per_step(attr, key):
+        vals = getattr(recorder, attr, None)
+        if vals is None or len(vals) != n_steps:
+            vals = scan.get(key)
+        return vals if vals is not None and len(vals) == n_steps else None
+
+    cont = _per_step("continuous_at", "continuous")
+    names = _per_step("element_names", "element")
+    g = f.create_group("action_scan")
+    g.attrs["schema_version"] = SCHEMA_VERSION
+    g.attrs["definition"] = DEFINITION
+    g.attrs["eps_units"] = EPS_UNITS
+    g.attrs["planes"] = ",".join(planes)
+    periodic = getattr(recorder, "periodic_phase", None)
+    if periodic is None:
+        periodic = (scan.get("attrs") or {}).get("periodic_phase")
+    if periodic is not None:                     # absent = unknown
+        g.attrs["periodic_phase"] = bool(periodic)
+    g.create_dataset("n", data=grid)
+    g.create_dataset("n_alive", data=data.pop("n_alive"))
+    if cont is not None:
+        g.create_dataset("continuous", data=np.asarray(cont, dtype=bool))
+    if names is not None:
+        g.create_dataset("element", data=np.array(
+            [_utf8_s32(x) for x in names], dtype="S32"))
+    for key, arr in data.items():
+        if key.startswith("count_"):
+            g.create_dataset(key, data=arr, chunks=True, compression="gzip",
+                             compression_opts=4, shuffle=True)
+        else:
+            g.create_dataset(key, data=arr)
+
+
+def _read_action_scan(g, n_steps: int):
+    """Inverse of :func:`_write_action_scan`.
+
+    Returns ``(scan, None)`` — the known datasets by name plus the group
+    attributes under ``"attrs"`` — or ``(None, reason)`` when the group is
+    from a newer schema, incomplete or not aligned with the file's
+    ``envelope/s``.  Never raises: the rest of the file still loads.
+    Unknown members (datasets, sub-groups, attributes a later writer may
+    add) are ignored."""
+    from linac_gen.diagnostics.action_scan import PLANES, SCHEMA_VERSION
+    per_plane = ("count", "eps", "eps_n", "n_max")
+    try:
+        attrs = {}
+        for k, v in g.attrs.items():
+            try:
+                attrs[k] = v.item() if getattr(v, "size", 1) == 1 else v
+            except Exception:                               # noqa: BLE001
+                attrs[k] = v
+        version = int(attrs.get("schema_version", 1))
+        if version > SCHEMA_VERSION:
+            raise ValueError(f"schema_version {version} is newer than this "
+                             f"reader ({SCHEMA_VERSION})")
+        planes = [p for p in PLANES if f"count_{p}" in g]
+        if "n" not in g or "n_alive" not in g or not planes:
+            raise ValueError("no grid, particle counts or count datasets")
+        keys = ["n_alive", "continuous", "element"] + [
+            f"{k}_{p}" for p in planes for k in per_plane]
+        scan: dict = {"attrs": attrs, "n": np.asarray(g["n"][:], float)}
+        for key in keys:
+            if key not in g:
+                if key in ("continuous", "element"):
+                    continue                         # optional per step
+                raise ValueError(f"{key} missing")
+            ds = g[key]
+            if not isinstance(ds, h5py.Dataset) or ds.ndim == 0:
+                raise ValueError(f"{key} is not an array")
+            if key == "element":
+                scan[key] = [b.decode("utf-8", "replace") for b in ds[:]]
+            else:
+                scan[key] = ds[:]
+            if len(scan[key]) != n_steps:
+                raise ValueError(f"{key} has {len(scan[key])} rows for "
+                                 f"{n_steps} recorded steps")
+        for p in planes:
+            if scan[f"count_{p}"].ndim != 2 or \
+                    scan[f"count_{p}"].shape[1] != scan["n"].size:
+                raise ValueError(f"count_{p} does not match the grid")
+    except Exception as exc:                                # noqa: BLE001
+        reason = f"{type(exc).__name__}: {exc}"
+        warnings.warn(f"action_scan group ignored: {reason}", RuntimeWarning,
+                      stacklevel=3)
+        return None, reason
+    return scan, None
+
+
+# Per-step recorder series beyond the historical envelope set.  Numeric
+# ones are stored with their natural shape — (n,), (n, 6) for centroid,
+# (n, 6, 6) for sigma_matrix; ``element_names`` as UTF-8 strings.
+_EXTRA_PER_STEP = (
+    "emit_z_mmmrad", "emit_nz", "emit_4d", "emit_n1", "emit_n2",
+    "emit_e1", "emit_e2", "emit_e3", "x_max", "y_max",
+    "continuous_at", "centroid", "sigma_matrix", "element_names",
+)
+# Loaded back as lists (like a live recorder) rather than numpy arrays:
+# the GUI tests them with plain truthiness / iterates them per step.
+_LIST_PER_STEP = ("centroid", "sigma_matrix", "element_names")
+
+
+def _per_step(vals, n: int):
+    """``vals`` when it is a sequence with one entry per recorded step,
+    else None (a scalar, a short or a missing series is not written)."""
+    if vals is None or n == 0 or isinstance(vals, (str, bytes)):
+        return None
+    try:
+        return vals if len(vals) == n else None
+    except TypeError:
+        return None
+
+
+def _create(grp, name, arr):
+    """Dataset, gzip-compressed (with byte shuffle) when it is large —
+    the per-step 6×6 beam matrices and density histograms dominate the
+    file otherwise."""
+    arr = np.asarray(arr)
+    if arr.size >= 4096 and arr.dtype.kind in "fiub":
+        return grp.create_dataset(name, data=arr, compression="gzip",
+                                  compression_opts=4, shuffle=True)
+    return grp.create_dataset(name, data=arr)
+
+
+def _write_per_step(grp, recorder, attr: str, n: int) -> None:
+    vals = _per_step(getattr(recorder, attr, None), n)
+    if vals is None:
+        return
+    if attr == "element_names":
+        grp.create_dataset(attr, data=["" if v is None else str(v)
+                                       for v in vals],
+                           dtype=h5py.string_dtype("utf-8"))
+        return
+    try:
+        arr = np.asarray(vals, dtype=bool if attr == "continuous_at"
+                         else float)
+    except (TypeError, ValueError):
+        return                          # ragged / non-numeric: skip
+    _create(grp, attr, arr)
+
+
+def _write_run_scalars(grp, recorder) -> None:
+    """Run scalars the analyses read off the results: the particle rest
+    mass (IBS / magnetic-stripping popups, 6-D emittance and σ(Δp/p)
+    conversions — without it they fell back to a mass re-derived from
+    W/(γ−1)) and the periodic-phase flag (φ wrapping in the plots)."""
+    _mass = getattr(recorder, "mass_mev", None)
+    if _mass:
+        grp.attrs["mass_mev"] = float(_mass)
+    if hasattr(recorder, "periodic_phase"):
+        grp.attrs["periodic_phase"] = bool(recorder.periodic_phase)
+
+
+def _restore_per_step(results: dict) -> None:
+    """Per-step series stored with their natural shape → the live
+    recorder's list form (names decoded to str, flags to bool).  Shared by
+    the native and the openPMD loaders."""
+    for key in _LIST_PER_STEP:
+        if key in results:
+            vals = results[key]
+            if key == "element_names":
+                results[key] = [v.decode("utf-8") if isinstance(v, bytes)
+                                else str(v) for v in vals]
+            else:
+                results[key] = [np.asarray(v) for v in vals]
+    if "continuous_at" in results:
+        results["continuous_at"] = [bool(v) for v in results["continuous_at"]]
+
+
+def _write_run_records(grp, recorder) -> None:
+    """Per-particle loss record, stripper-foil record and halo action scan
+    under ``grp`` (the file root in the native format; the first iteration
+    group in the openPMD file) — each written only when the run has it."""
+    # ── per-particle loss record ─────────────────────────────────────────
+    # Attached by Simulation._run_mp (Beam.record_loss sites: apertures,
+    # RFQ boundary, tracker limits).  Powers the loss-power analysis on
+    # reloaded runs; n_macro is the LAUNCHED macroparticle count (each
+    # carries I_avg/n_macro of beam current).
+    losses = getattr(recorder, "loss_table", None)
+    # the LAUNCHED macroparticle count at the root as well: the losses/
+    # group (and its n_macro) exists only when something was lost, and
+    # a lossless run still needs it for power densities
+    if getattr(recorder, "n_macro", None):
+        grp.attrs["n_macro"] = int(recorder.n_macro)
+    if losses is not None and np.asarray(losses).size:
+        lt = np.asarray(losses)
+        lg = grp.create_group("losses")
+        for key in ("particle_id", "s", "x", "y", "energy"):
+            lg.create_dataset(key, data=np.asarray(lt[key]))
+        names = np.asarray(lt["element_name"]).astype("S32")
+        lg.create_dataset("element_name", data=names)
+        lg.attrs["n_macro"] = int(getattr(recorder, "n_macro", 0))
+
+    # ── stripper-foil record (Foil strip_model / extent) ─────────────────
+    # Written only when non-empty, so every file without such a foil is
+    # byte-identical to before this group existed.
+    unstripped = getattr(recorder, "unstripped_table", None)
+    if unstripped is not None and np.asarray(unstripped).size:
+        ut = np.asarray(unstripped)
+        ug = grp.create_group("unstripped")
+        for key in ("particle_id", "x", "y", "energy"):
+            ug.create_dataset(key, data=np.asarray(ut[key]))
+        ug.create_dataset("state", data=np.asarray(ut["state"]).astype("S8"))
+        ug.create_dataset("element_name",
+                          data=np.asarray(ut["element_name"]).astype("S32"))
+
+    # ── halo action scan (opt-in; only when recorded) ────────────────────
+    _write_action_scan(grp, recorder)
+
+
+def _read_run_records(grp, results: dict, n_steps: int) -> None:
+    """Inverse of :func:`_write_run_records`."""
+    if "losses" in grp:
+        from linac_gen.core.beam import LOSS_DTYPE
+        lg = grp["losses"]
+        n = lg["s"].shape[0]
+        lt = np.zeros(n, dtype=LOSS_DTYPE)
+        for key in ("particle_id", "s", "x", "y", "energy"):
+            lt[key] = lg[key][:]
+        lt["element_name"] = lg["element_name"][:].astype("U32")
+        results["loss_table"] = lt
+        results["n_macro"] = int(lg.attrs.get("n_macro", 0))
+    if "n_macro" in grp.attrs:
+        results["n_macro"] = int(grp.attrs["n_macro"])
+    if "unstripped" in grp:
+        from linac_gen.core.beam import UNSTRIPPED_DTYPE
+        ug = grp["unstripped"]
+        n = ug["x"].shape[0]
+        ut = np.zeros(n, dtype=UNSTRIPPED_DTYPE)
+        for key in ("particle_id", "x", "y", "energy"):
+            ut[key] = ug[key][:]
+        ut["state"] = ug["state"][:].astype("U8")
+        ut["element_name"] = ug["element_name"][:].astype("U32")
+        results["unstripped_table"] = ut
+    if "action_scan" in grp:
+        scan, reason = _read_action_scan(grp["action_scan"], n_steps)
+        if scan is not None:
+            results["action_scan"] = scan
+        else:                     # say why, instead of "not recorded"
+            results["action_scan_error"] = reason
+
+
+def _write_density(f, recorder, n: int) -> None:
+    """``density/<axis>``: (n_steps, n_bins) int32 counts + ``edges``."""
+    dens = getattr(recorder, "density", None) or {}
+    edges = getattr(recorder, "density_edges", None) or {}
+    axes = [a for a, cols in dens.items() if cols and len(cols) == n
+            and a in edges]
+    if not axes:
+        return
+    g = f.create_group("density")
+    for a in axes:
+        sub = g.create_group(a)
+        _create(sub, "counts", np.asarray(dens[a], dtype=np.int32))
+        sub.create_dataset("edges", data=np.asarray(edges[a], dtype=float))
+
+
+def _write_tail(f, recorder, n: int) -> None:
+    """``tail/<key>``: fractional-emittance / radial-quantile series."""
+    tail = getattr(recorder, "tail", None) or {}
+    keys = [k for k, v in tail.items() if len(v) == n]
+    if not keys:
+        return
+    g = f.create_group("tail")
+    g.attrs["fractions"] = np.asarray(
+        getattr(recorder, "tail_fractions", ()), dtype=float)
+    for k in keys:
+        g.create_dataset(k, data=np.asarray(tail[k], dtype=float))
+
+
 def save_results_hdf5(recorder, filepath: str, beam_config=None,
                       lattice=None, *, lattice_path=None, seed=None,
                       sc_config=None, input_beam_path=None) -> None:
@@ -236,6 +558,8 @@ def save_results_hdf5(recorder, filepath: str, beam_config=None,
     │   │   ├── data      (N, 6) float64 particle array
     │   │   └── attrs     s, w_kin, phi_s, beta, gamma
     │   └── …
+    ├── action_scan/      halo action scan: particles outside n·ε_rms ellipses per
+    │                     step and plane (present only when the run recorded it)
     ├── beam_config/      scalar config values as HDF5 attrs (present only when provided)
     └── provenance/       code version + git commit + numpy/h5py versions,
                           write timestamp; plus lattice SHA-256/path, beam
@@ -305,6 +629,16 @@ def save_results_hdf5(recorder, filepath: str, beam_config=None,
         if _exit_idx is not None and len(_exit_idx):
             env.create_dataset("element_exit_idx",
                                data=np.asarray(_exit_idx, dtype=np.int64))
+        # Everything else a live run carries per step, so an imported run
+        # fills the same Results tiles (longitudinal normalised and 4-D /
+        # eigen-emittances, the full 6×6 beam matrix behind the dispersion,
+        # σ-matrix and 6-D-emittance plots, centroids, peak excursions,
+        # element names).  Written only when present with one entry per
+        # recorded step.
+        _n = len(recorder.s)
+        for attr in _EXTRA_PER_STEP:
+            _write_per_step(env, recorder, attr, _n)
+        _write_run_scalars(env, recorder)
 
         # ── reference history ─────────────────────────────────────────────────
         ref_grp = f.create_group("reference")
@@ -317,6 +651,14 @@ def save_results_hdf5(recorder, filepath: str, beam_config=None,
         ):
             if hasattr(recorder, attr):
                 ref_grp.create_dataset(key, data=np.array(getattr(recorder, attr)))
+        _freq = _per_step(getattr(recorder, "ref_frequency", None), _n)
+        if _freq is not None:
+            ref_grp.create_dataset("frequency",
+                                   data=np.asarray(_freq, dtype=float))
+
+        # ── density vs s and tail quantiles (opt-in recordings) ─────────────
+        _write_density(f, recorder, _n)
+        _write_tail(f, recorder, _n)
 
         # ── particle snapshots ────────────────────────────────────────────────
         # ``_snapshots`` is a DiagnosticRecorder attribute; EnvelopeResults
@@ -342,38 +684,7 @@ def save_results_hdf5(recorder, filepath: str, beam_config=None,
                 grp.attrs["beta"]  = ref_state.beta
                 grp.attrs["gamma"] = ref_state.gamma
 
-        # ── per-particle loss record ─────────────────────────────────────────
-        # Attached by Simulation._run_mp (Beam.record_loss sites: apertures,
-        # RFQ boundary, tracker limits).  Powers the loss-power analysis on
-        # reloaded runs; n_macro is the LAUNCHED macroparticle count (each
-        # carries I_avg/n_macro of beam current).
-        losses = getattr(recorder, "loss_table", None)
-        # the LAUNCHED macroparticle count at the root as well: the losses/
-        # group (and its n_macro) exists only when something was lost, and
-        # a lossless run still needs it for power densities
-        if getattr(recorder, "n_macro", None):
-            f.attrs["n_macro"] = int(recorder.n_macro)
-        if losses is not None and np.asarray(losses).size:
-            lt = np.asarray(losses)
-            lg = f.create_group("losses")
-            for key in ("particle_id", "s", "x", "y", "energy"):
-                lg.create_dataset(key, data=np.asarray(lt[key]))
-            names = np.asarray(lt["element_name"]).astype("S32")
-            lg.create_dataset("element_name", data=names)
-            lg.attrs["n_macro"] = int(getattr(recorder, "n_macro", 0))
-
-        # ── stripper-foil record (Foil strip_model / extent) ─────────────────
-        # Written only when non-empty, so every file without such a foil is
-        # byte-identical to before this group existed.
-        unstripped = getattr(recorder, "unstripped_table", None)
-        if unstripped is not None and np.asarray(unstripped).size:
-            ut = np.asarray(unstripped)
-            ug = f.create_group("unstripped")
-            for key in ("particle_id", "x", "y", "energy"):
-                ug.create_dataset(key, data=np.asarray(ut[key]))
-            ug.create_dataset("state", data=np.asarray(ut["state"]).astype("S8"))
-            ug.create_dataset("element_name",
-                              data=np.asarray(ut["element_name"]).astype("S32"))
+        _write_run_records(f, recorder)
 
         # ── beam config ───────────────────────────────────────────────────────
         if beam_config is not None:
@@ -399,7 +710,9 @@ def load_results_hdf5(filepath: str) -> dict:
     -------
     results : dict
         Dictionary containing all envelope arrays (keyed by dataset name) and
-        all reference arrays (keyed as ``ref_<name>``).
+        all reference arrays (keyed as ``ref_<name>``); plus, when the file
+        carries one, ``action_scan`` — a dict of the ``action_scan/``
+        datasets and attrs.
     """
     results = {}
     with h5py.File(filepath, "r") as f:
@@ -430,26 +743,21 @@ def load_results_hdf5(filepath: str) -> dict:
         if "reference" in f:
             for key in f["reference"]:
                 results[f"ref_{key}"] = f["reference"][key][:]
-        if "losses" in f:
-            from linac_gen.core.beam import LOSS_DTYPE
-            lg = f["losses"]
-            n = lg["s"].shape[0]
-            lt = np.zeros(n, dtype=LOSS_DTYPE)
-            for key in ("particle_id", "s", "x", "y", "energy"):
-                lt[key] = lg[key][:]
-            lt["element_name"] = lg["element_name"][:].astype("U32")
-            results["loss_table"] = lt
-            results["n_macro"] = int(lg.attrs.get("n_macro", 0))
-        if "n_macro" in f.attrs:
-            results["n_macro"] = int(f.attrs["n_macro"])
-        if "unstripped" in f:
-            from linac_gen.core.beam import UNSTRIPPED_DTYPE
-            ug = f["unstripped"]
-            n = ug["x"].shape[0]
-            ut = np.zeros(n, dtype=UNSTRIPPED_DTYPE)
-            for key in ("particle_id", "x", "y", "energy"):
-                ut[key] = ug[key][:]
-            ut["state"] = ug["state"][:].astype("U8")
-            ut["element_name"] = ug["element_name"][:].astype("U32")
-            results["unstripped_table"] = ut
+        _n_steps = (f["envelope"]["s"].shape[0]
+                    if "envelope" in f and "s" in f["envelope"] else 0)
+        _read_run_records(f, results, _n_steps)
+        _restore_per_step(results)
+        if "density" in f:
+            dens, edges = {}, {}
+            for axis, sub in f["density"].items():
+                dens[axis] = [row for row in sub["counts"][:]]
+                edges[axis] = sub["edges"][:]
+            results["density"] = dens
+            results["density_edges"] = edges
+            results["density_axes"] = tuple(dens)
+        if "tail" in f:
+            tg = f["tail"]
+            results["tail"] = {k: tg[k][:].tolist() for k in tg}
+            results["tail_fractions"] = tuple(
+                float(x) for x in tg.attrs.get("fractions", ()))
     return results

@@ -29,6 +29,7 @@ sim = Simulation(
     snapshot_locations: list[str] | None = None,
     snapshot_every_n: int | None = None,
     record_substeps: bool = False,
+    record_action_scan: bool = False,
     progress_callback: Callable | None = None,
     should_abort: Callable[[], bool] | None = None,
 )
@@ -46,6 +47,7 @@ bt_results = sim.run_backtrack()   # backward tracking (see below)
 | `snapshot_locations` | list of element names to dump full phase space at |
 | `snapshot_every_n` | integer — every N steps |
 | `record_substeps` | True ⇒ record diagnostics at every substep (more memory) |
+| `record_action_scan` | True ⇒ record the halo action scan (particles outside n·ε_rms ellipses per step and plane, `results.action_scan`; forward multi-particle `run()` only, not `run_backtrack()` — see [Halo analysis](../09_diagnostics/03_halo.md#action-scan)) |
 | `progress_callback` | called as `cb(s_done, s_total)` for GUI progress bars |
 | `should_abort` | called every step; if returns True, simulation stops |
 

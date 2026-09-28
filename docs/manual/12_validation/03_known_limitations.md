@@ -121,6 +121,32 @@ Straight-axis field-map superposition is implemented
   alignment errors land on a container).  `ADJUST` cards targeting a
   container are warn-skipped.
 
+### Binary 2-D Cartesian field maps are refused
+
+TraceWin binary field maps are read for the 1-D, 2-D cylindrical and
+3-D Cartesian layouts the TraceWin manual documents.  The manual gives
+no binary layout for the 2-D Cartesian map, so such a file is refused
+with an error rather than decoded by guesswork; use its ASCII version.
+The GUI's add-element-from-file path (the legacy reader) decodes binary
+3-D maps and refuses binary 1-D / 2-D files with the same advice.
+
+### Labels with spaces are not written back
+
+The parser accepts labels containing spaces (`SOL 1 : SOLENOID …`) and
+keeps them as `element.label`, but `write_tracewin` emits only labels
+without whitespace or colons, so a saved deck drops a spaced label.
+Label-only lines (`HWR CM:`) add no element and are not written back.
+
+### A field-free card with a missing map is written back as a drift
+
+A `FIELD_MAP` card with `kb = ke = Ki = Ka = 0` whose map files are
+missing is kept as its length only (a drift, or the span of its
+`SUPERPOSE_MAP` cluster), so a saved deck carries a `DRIFT` in its
+place.  A `SHIFT_IN_FIELD_MAP` diagnostic bound to such a card is
+restored at the card position with a warning; one whose offset falls in
+the part of a cluster covered only by such a card is dropped with a
+warning.
+
 ### Written `.dat` field-map paths are absolute
 
 `write_tracewin` records field-map file locations as **absolute

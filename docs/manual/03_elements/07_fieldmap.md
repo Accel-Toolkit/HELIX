@@ -97,6 +97,39 @@ cylindrical B channel (digit 5) uses `.b{s,d}r` / `.b{s,d}z` (plus
 
 The aperture file (when geom 10⁴ digit is 1) is `MyCavity.ouv`.
 
+### ASCII and binary map files
+
+TraceWin writes field maps in ASCII or, after a conversion on its Chart
+page, in a **binary** form with the same file extensions.  HELIX reads
+both and detects the binary form from the file content (an ASCII map is
+plain text; a binary map starts with a 4-byte integer).  The binary
+layout is the one in the TraceWin manual — little-endian, packed:
+
+| Map | Header | Data |
+|---|---|---|
+| 1-D | `int32 nz`, `float64 zmax`, `float64 norm` | `(nz+1)` × `float32` |
+| 2-D cylindrical | `int32 nz`, `float64 zmax`, `int32 nr`, `float64 rmax`, `float64 norm` | z outer, r inner, `float32` |
+| 3-D Cartesian | `int32 nz`, `float64 zmax`, `int32 nx`, `float64 xmin`, `float64 xmax`, `int32 ny`, `float64 ymin`, `float64 ymax`, `float64 norm` | z outer, y, x inner, `float32` |
+
+The file size must match the header exactly; a truncated file is
+refused with an error naming it.  The manual gives no binary layout for
+2-D Cartesian maps, so a binary file of that type is refused rather
+than guessed — use its ASCII version.  Binary values are single
+precision: the PIP-II maps read in binary agree with their ASCII
+originals to within 1 × 10⁻⁷ of the peak field.
+
+### A missing map on a card with no field
+
+A `FIELD_MAP` card whose map files are missing is dropped from the
+lattice with a warning — its field, and therefore the downstream
+energy and optics, would be wrong.  The exception is a card with
+`kb = ke = 0` and `Ki = Ka = 0` (an unpowered corrector placeholder,
+common on PIP-II solenoids): it carries nothing but its length, so HELIX
+keeps that — as a drift, or as the span of the `SUPERPOSE_MAP` cluster
+it belongs to (at position 0 it still supplies the cluster aperture) —
+and reports the missing files once.  Strict parsing still refuses any
+missing map file.
+
 ### `FIELD_MAP_PATH` directive
 
 Field-map files often live in a separate directory.  The TraceWin

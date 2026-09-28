@@ -1462,12 +1462,17 @@ def _run_envelope(ctx, progress_callback=None, should_abort=None,
             "space_charge": {"type": "boolean", "default": True},
             "grid": {"type": "integer", "default": 32,
                      "description": "PIC grid per axis"},
-            "grid_extent": {"type": "number", "default": 5.0}},
+            "grid_extent": {"type": "number", "default": 5.0},
+            "action_scan": {"type": "boolean", "default": False,
+                            "description": "also record the halo action "
+                            "scan (particles outside the n·ε_rms ellipses "
+                            "per step and plane; Results tab → Halo action "
+                            "scan)"}},
         "required": []},
        "compute")
 def _run_mp(ctx, n_particles: int | None = None, seed: int = 42,
             space_charge: bool = True, grid: int = 32,
-            grid_extent: float = 5.0,
+            grid_extent: float = 5.0, action_scan: bool = False,
             progress_callback=None, should_abort=None,
             _assist_prov=None):
     gate = _need(ctx, "lattice", "beam_config")
@@ -1485,6 +1490,7 @@ def _run_mp(ctx, n_particles: int | None = None, seed: int = 42,
     def _go():
         beam = create_beam(cfg, seed=int(seed))
         sim = Simulation(ctx.lattice, beam, space_charge=sc,
+                         record_action_scan=bool(action_scan),
                          progress_callback=progress_callback,
                          should_abort=should_abort)
         rec = sim.run()

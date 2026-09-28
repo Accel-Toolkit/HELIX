@@ -276,3 +276,138 @@ class TestReadTracewinFieldmap:
         assert len(fd.z) > 0
         assert fd.z[0] == pytest.approx(0.0)
         assert fd.z[-1] == pytest.approx(100.0)   # Zmax=0.1 m → 100 mm
+
+
+# ---- TraceWin BINARY field maps ---------------------------------------
+# Layout per the TraceWin manual ("The field map file syntax is the
+# following in the BINARY format"): little-endian int32 / float64 header,
+# float32 data in the ASCII loop order.  Values below are float32-exact,
+# so the ASCII twin (written with repr) must read back IDENTICALLY.
+
+import struct as _struct
+
+
+def _f32(a):
+    return np.asarray(a, dtype=np.float32).astype(float)
+
+
+def _wb_1d(path, Nz, Zmax_m, norm, values):
+    with open(path, "wb") as f:
+        f.write(_struct.pack("<id", Nz, Zmax_m) + _struct.pack("<d", norm))
+        f.write(np.asarray(values, dtype="<f4").tobytes())
+
+
+def _wb_2d_cyl(path, Nz, Zmax_m, Nr, Rmax_m, norm, values):
+    with open(path, "wb") as f:
+        f.write(_struct.pack("<idid", Nz, Zmax_m, Nr, Rmax_m)
+                + _struct.pack("<d", norm))
+        f.write(np.asarray(values, dtype="<f4").ravel().tobytes())
+
+
+def _wb_3d(path, Nz, Zmax_m, Nx, Xmin_m, Xmax_m, Ny, Ymin_m, Ymax_m, norm,
+           values_zyx):
+    with open(path, "wb") as f:
+        f.write(_struct.pack("<ididdidd", Nz, Zmax_m, Nx, Xmin_m, Xmax_m,
+                             Ny, Ymin_m, Ymax_m) + _struct.pack("<d", norm))
+        f.write(np.asarray(values_zyx, dtype="<f4").ravel().tobytes())
+
+
+def _ascii_3d(path, Nz, Zmax_m, Nx, Xmin_m, Xmax_m, Ny, Ymin_m, Ymax_m, norm,
+              values_zyx):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"{Nz} {Zmax_m!r}\n{Nx} {Xmin_m!r} {Xmax_m!r}\n"
+                f"{Ny} {Ymin_m!r} {Ymax_m!r}\n{norm!r}\n")
+        for v in np.asarray(values_zyx).ravel():
+            f.write(f"{float(v)!r}\n")
+
+
+def _same_channel(a, b):
+    for k in ("x", "y", "z", "r", "Fz"):
+        va, vb = getattr(a, k, None), getattr(b, k, None)
+        assert (va is None) == (vb is None), k
+        if va is not None:
+            assert np.array_equal(va, vb), k
+    assert a.geometry == b.geometry and a.norm_factor == b.norm_factor
+
+
+class TestBinaryMaps:
+    def test_1d_binary_equals_ascii_twin(self, tmp_path):
+        vals = _f32(np.sin(np.linspace(0, np.pi, 41)) * 0.37)
+        _wb_1d(tmp_path / "m.bsz", 40, 0.3, 1.0, vals)
+        with open(tmp_path / "a.bsz", "w", encoding="utf-8") as f:
+            f.write("40 0.3\n1.0\n" + "\n".join(repr(v) for v in vals) + "\n")
+        _same_channel(read_1d_component(str(tmp_path / "a.bsz")),
+                      read_1d_component(str(tmp_path / "m.bsz")))
+
+    def test_2d_cyl_binary_equals_ascii_twin(self, tmp_path):
+        Nz, Nr = 20, 6
+        vals = _f32(np.outer(np.linspace(0, 1, Nz + 1), np.linspace(1, 2, Nr + 1)))
+        _wb_2d_cyl(tmp_path / "m.edz", Nz, 0.25, Nr, 0.012, 2.0, vals)
+        _w_2d_cyl(tmp_path / "a.edz", Nz, 0.25, Nr, 0.012, 2.0, vals)
+        a = read_2d_cyl_component(str(tmp_path / "a.edz"))
+        b = read_2d_cyl_component(str(tmp_path / "m.edz"))
+        # the ASCII fixture writer rounds to 7 digits; the grid is exact
+        assert np.array_equal(a.z, b.z) and np.array_equal(a.r, b.r)
+        assert a.Fz.shape == b.Fz.shape == (Nz + 1, Nr + 1)
+        assert np.allclose(a.Fz, b.Fz, rtol=1e-6, atol=0)
+        assert b.norm_factor == 2.0
+
+    def test_3d_binary_equals_ascii_twin(self, tmp_path):
+        Nz, Nx, Ny = 12, 4, 3
+        rng = np.random.default_rng(3)
+        vals = _f32(rng.normal(size=(Nz + 1, Ny + 1, Nx + 1)))   # z, y, x-fastest
+        hdr = (Nz, 0.3, Nx, -0.02, 0.02, Ny, -0.015, 0.015, 1.0)
+        _wb_3d(tmp_path / "m.bsx", *hdr, vals)
+        _ascii_3d(tmp_path / "a.bsx", *hdr, vals)
+        a = read_3d_cart_component(str(tmp_path / "a.bsx"))
+        b = read_3d_cart_component(str(tmp_path / "m.bsx"))
+        _same_channel(a, b)
+        assert b.Fz.shape == (Nx + 1, Ny + 1, Nz + 1)
+        # axis order: value at (x=i, y=j, z=k) is the file's [k, j, i]
+        assert b.Fz[3, 1, 7] == vals[7, 1, 3]
+
+    def test_truncated_binary_refused(self, tmp_path):
+        vals = _f32(np.ones(41))
+        _wb_1d(tmp_path / "m.bsz", 40, 0.3, 1.0, vals)
+        raw = (tmp_path / "m.bsz").read_bytes()
+        (tmp_path / "t.bsz").write_bytes(raw[:-4])
+        with pytest.raises(ValueError, match="truncated"):
+            read_1d_component(str(tmp_path / "t.bsz"))
+
+    def test_2d_cart_binary_refused_clearly(self, tmp_path):
+        (tmp_path / "m.bsx").write_bytes(
+            _struct.pack("<iddiddd", 4, -0.01, 0.01, 4, -0.01, 0.01, 1.0)
+            + np.zeros(25, "<f4").tobytes())
+        with pytest.raises(ValueError, match="2-D Cartesian"):
+            read_2d_cart_component(str(tmp_path / "m.bsx"))
+
+    def test_ascii_legacy_1d_layout_unaffected(self, tmp_path):
+        # the legacy Linac_Gen 1-D layout (N_pts / zmin zmax [cm]) is text
+        (tmp_path / "l.edz").write_text("3\n0 10\n0.0\n1.0\n0.5\n",
+                                        encoding="utf-8")
+        ch = read_1d_component(str(tmp_path / "l.edz"))
+        assert np.allclose(ch.z, [0.0, 50.0, 100.0])
+
+
+_REPO_FIELDS = __import__("pathlib").Path(__file__).resolve().parents[2] / "Fields"
+
+
+@pytest.mark.parametrize("stem,ext,reader", [
+    ("HWR-SOL-ANLMAP", "bsz", read_1d_component),
+    ("SSR13D_#72", "edz", read_3d_cart_component),
+    ("HWRDonut", "bdx", read_3d_cart_component),
+])
+def test_genuine_binary_map_matches_its_ascii_original(stem, ext, reader):
+    """External anchor: TraceWin's own ASCII→binary conversion of the
+    PIP-II maps (``<name>b``) against the ASCII originals — same grid,
+    same norm, values equal to float32 rounding."""
+    a, b = _REPO_FIELDS / f"{stem}.{ext}", _REPO_FIELDS / f"{stem}b.{ext}"
+    if not (a.exists() and b.exists()):
+        pytest.skip("undistributed PIP-II field maps absent")
+    ca, cb = reader(str(a)), reader(str(b))
+    for k in ("x", "y", "z"):
+        if getattr(ca, k) is not None:
+            assert np.array_equal(getattr(ca, k), getattr(cb, k)), k
+    assert ca.norm_factor == cb.norm_factor
+    assert ca.Fz.shape == cb.Fz.shape
+    assert np.max(np.abs(ca.Fz - cb.Fz)) <= 1e-7 * np.max(np.abs(ca.Fz))

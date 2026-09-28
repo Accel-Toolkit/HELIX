@@ -84,6 +84,20 @@ de-duplicated).  The writer emits the label again on single-line cards, so a
 saved deck keeps the device names the control system uses; unlabeled decks are
 written without labels.
 
+A label may contain spaces, as in the TraceWin manual's own example
+`SOL 1 : SOLENOID 410 0.25 100` (label `SOL 1`).  A line is read this way
+only when its first word is not a card keyword, so `TITLE Linac: v2`
+stays a title.  A label with nothing after it — `HWR CM:`,
+`Treaty Point:`, `WPM :` — marks a location: it adds no element (so
+element counts and index-based `ADJUST` / `--set` targets are
+unaffected), raises no warning, does not close an open `SUPERPOSE_MAP`
+cluster, and is listed in the parser's `metadata["label_lines"]` as
+`[line, name]`.  The built-in diagnostic names (`BPM :`, `XCOR :`,
+`ACCT :` …) still create their markers, and a name that looks like a
+card keyword (upper case with an underscore, e.g. `PLOT_DST :`) is
+still reported as an unsupported card.  The
+writer does not re-emit labels that contain spaces or colons.
+
 ## Error directives
 
 See [Errors → ERROR_* directives](../08_errors/02_error_directives.md)

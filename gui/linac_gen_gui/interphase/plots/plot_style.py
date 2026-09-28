@@ -564,3 +564,110 @@ def update_density(img: pg.ImageItem, x, y,
         x_range[0], y_range[0],
         x_range[1] - x_range[0], y_range[1] - y_range[0],
     ))
+
+
+# ---------------------------------------------------------------------------
+# Sequential colormap without the transparent low end + matplotlib dark style
+# ---------------------------------------------------------------------------
+def opaque_sequential_colormap(name: str = "magma", start: float = 0.12):
+    """``name`` resampled from ``start`` to 1 with NO alpha ramp.
+
+    For maps whose lowest level carries information (e.g. one particle
+    outside an ellipse): unlike :func:`_density_colormap` the bottom colour
+    is opaque, and skipping the near-black end keeps it visible on the
+    dark theme.  Missing data should be NaN (drawn transparent).
+    """
+    import numpy as np
+    try:
+        base = pg.colormap.get(name, source="matplotlib")
+    except Exception:
+        base = pg.colormap.get(name)
+    pos = np.linspace(0.0, 1.0, 256)
+    rgba = base.map(start + (1.0 - start) * pos, mode="byte")
+    return pg.ColorMap(pos, rgba)
+
+
+def mpl_dark_rc() -> dict:
+    """matplotlib rcParams for the Interphase dark theme — use inside
+    ``matplotlib.rc_context`` (never set globally)."""
+    return {
+        "figure.facecolor": theme.BG_1,
+        "axes.facecolor": theme.BG_INSET,
+        "axes.edgecolor": theme.BORDER_0,
+        "axes.labelcolor": theme.TEXT_1,
+        "text.color": theme.TEXT_0,
+        "xtick.color": theme.TEXT_2,
+        "ytick.color": theme.TEXT_2,
+        "grid.color": theme.BORDER_0,
+    }
+
+
+def style_mpl_3d(fig, ax) -> None:
+    """Dark panes, labels and ticks for an mplot3d ``Axes3D``."""
+    from matplotlib.colors import to_rgba
+    fig.patch.set_facecolor(theme.BG_1)
+    ax.set_facecolor(theme.BG_1)
+    pane = to_rgba(theme.BG_INSET, 1.0)
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis.set_pane_color(pane)
+        axis.label.set_color(theme.TEXT_1)
+        axis.line.set_color(theme.BORDER_1)
+    ax.tick_params(colors=theme.TEXT_2, which="both")
+    ax.title.set_color(theme.TEXT_0)
+
+
+# ---------------------------------------------------------------------------
+# Per-step data on an even s grid (heatmaps along the lattice)
+# ---------------------------------------------------------------------------
+def resample_on_even_s(values, s, *, pool: str = "max",
+                       min_cols: int = 1000, max_cols: int = 3000):
+    """Columns on an EVEN s grid from rows recorded at uneven s.
+
+    Recorder steps are unevenly spaced (many short elements in one
+    section, long drifts in another), so drawing one image column per
+    step would stretch and squeeze the s axis.  Here every display column
+    covers the same length of beamline:
+
+    * a column holding one or more recorded steps shows them combined —
+      ``pool="max"`` (NaN-ignoring maximum) or ``"mean"`` (NaN-ignoring
+      average);
+    * an empty column (between two records) holds the last step recorded
+      before it.
+
+    ``values`` is (S, K), ``s`` (S,) in the record order; repeated or
+    slightly backward s values (negative drifts) are handled through the
+    running maximum.  Returns ``(image, s0, s1)`` with ``image`` of shape
+    (n_cols, K), float32, n_cols = clip(S, min_cols, max_cols), to be drawn
+    over [s0, s1].
+    """
+    import numpy as np
+    vals = np.asarray(values, dtype=np.float32)
+    s_mono = np.maximum.accumulate(np.asarray(s, dtype=float))
+    n_steps = s_mono.size
+    s0, s1 = float(s_mono[0]), float(s_mono[-1])
+    if s1 <= s0:
+        s1 = s0 + 1.0
+    n_cols = int(np.clip(n_steps, min_cols, max_cols))
+    col = np.clip(((s_mono - s0) / (s1 - s0) * n_cols).astype(int), 0,
+                  n_cols - 1)
+    starts = np.flatnonzero(np.r_[True, np.diff(col) > 0])
+    ends = np.r_[starts[1:] - 1, n_steps - 1]      # last step per column
+    occupied = col[starts]
+    img = np.full((n_cols, vals.shape[1]), np.nan, dtype=np.float32)
+    if pool == "max":
+        img[occupied] = np.fmax.reduceat(vals, starts, axis=0)
+    elif pool == "mean":
+        valid = ~np.isnan(vals)
+        tot = np.add.reduceat(np.where(valid, vals, 0.0), starts, axis=0)
+        cnt = np.add.reduceat(valid.astype(np.int64), starts, axis=0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            img[occupied] = np.where(cnt > 0, tot / cnt, np.nan)
+    else:
+        raise ValueError(f"pool must be 'max' or 'mean', got {pool!r}")
+    slot = np.full(n_cols, -1)
+    slot[occupied] = np.arange(starts.size)
+    slot = np.maximum.accumulate(slot)
+    hold = slot >= 0
+    hold[occupied] = False
+    img[hold] = vals[ends[slot[hold]]]
+    return img, s0, s1

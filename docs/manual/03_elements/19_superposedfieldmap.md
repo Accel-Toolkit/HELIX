@@ -79,7 +79,10 @@ modes are supported — multi-particle (incl. Strang space-charge
 bundles), envelope (incl. the SC bundle loop), matrix, and backtrack.
 `n_steps` defaults to the finest child native grid resolved over the
 whole span; the magnetic-only 5000 steps/m auto-refine applies iff
-*every* child is magnetic-only.  3-D children are integrated with the
+*every* child is magnetic-only (1-D or 3-D, no electric channel) — in
+multi-particle stepping and in the envelope / matrix fitted maps alike,
+so a solenoid with unpowered 3-D correctors superposed on it matches
+the solenoid alone.  3-D children are integrated with the
 container's kick-drift walk (the global DKD selection for standalone
 `FieldMap3D` does not apply inside a cluster).
 

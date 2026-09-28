@@ -142,6 +142,60 @@ class TestAnalysisHelpers:
         assert detect_grid(recs[:-1], "g", "cur", "transmission",
                            self._col) is None
 
+    def test_cell_edges_follow_the_true_values(self, qapp):
+        import numpy as np
+
+        from linac_gen_gui.interphase.panels.study_plots import cell_edges
+        np.testing.assert_allclose(cell_edges([1.0, 2.0, 3.0]),
+                                   [0.5, 1.5, 2.5, 3.5])
+        np.testing.assert_allclose(cell_edges([1.0, 2.0, 4.0, 8.0]),
+                                   [0.5, 1.5, 3.0, 6.0, 10.0])
+        np.testing.assert_allclose(cell_edges([7.0]), [6.5, 7.5])
+
+    def _panel(self, recs):
+        from types import SimpleNamespace
+
+        from linac_gen_gui.interphase.panels.study_plots import _Plot2DPanel
+        model = SimpleNamespace(
+            param_names=["g", "cur"], value_columns=lambda: ["transmission"],
+            ok_records=lambda: recs, column=self._col)
+        panel = _Plot2DPanel(model)
+        panel.refresh_choices()
+        img = [it for it in panel.plot.getPlotItem().items
+               if type(it).__name__ == "ImageItem"][0]
+        return panel, img
+
+    def test_uneven_scan_cells_sit_at_their_values(self, qapp):
+        """g = 1, 2, 4, 8 used to be drawn evenly spaced (at 1, 3.33,
+        5.67, 8) under an axis reading 1, 2, 4, 8."""
+        recs = [self._rec(g, c, g * 10 + c)
+                for g in (1.0, 2.0, 4.0, 8.0) for c in (0.0, 5.0)]
+        panel, img = self._panel(recs)
+        rect = img.mapRectToParent(img.boundingRect())
+        assert rect.left() == 0.5 and rect.right() == 10.0
+        data = img.image                         # (x pixels, y pixels)
+
+        def z_at(g, row):
+            ix = int((g - rect.left()) / rect.width() * data.shape[0])
+            return data[ix, row]
+        assert z_at(1.6, 0) == 20.0              # inside the g = 2 cell
+        assert z_at(2.9, 0) == 20.0
+        assert z_at(3.1, 0) == 40.0              # g = 4 cell starts at 3
+        assert z_at(9.9, 1) == 85.0
+
+    def test_even_scan_draws_exactly_as_before(self, qapp):
+        import numpy as np
+        recs = [self._rec(g, c, g * 10 + c)
+                for g in (1.0, 2.0, 3.0) for c in (0.0, 5.0)]
+        panel, img = self._panel(recs)
+        rect = img.mapRectToParent(img.boundingRect())
+        # the pre-fix placement: one pixel per cell, rect grown by half a
+        # step on each side
+        assert (rect.left(), rect.right()) == (0.5, 3.5)
+        assert (rect.top(), rect.bottom()) == (-2.5, 7.5)
+        np.testing.assert_array_equal(
+            img.image, np.array([[10.0, 15.0], [20.0, 25.0], [30.0, 35.0]]))
+
 
 # ---------------------------------------------------------------------------
 # QSettings persistence (sandboxed store via HELIX_QSETTINGS_DIR)

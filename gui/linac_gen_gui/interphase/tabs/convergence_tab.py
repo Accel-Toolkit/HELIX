@@ -594,6 +594,30 @@ class ConvergenceTab(QWidget):
             "~1 MB per axis per 1000 s-steps.  Required for the Results "
             "tab's “Density vs s · heatmap” popup."
         )
+        # Halo action scan: per step and plane, the particles outside the
+        # ellipses of the beam's own rms shape and emittance n·ε_rms.  ON
+        # by default in the GUI (user request 2026-09-27; ~1 % of a
+        # field-map linac MP run) — multi-particle runs only; a project
+        # that saved it off keeps it off.  The CLI / API stay opt-in
+        # (--action-scan / record_action_scan=True).  Enables the Results
+        # tab's "Halo action scan" window.
+        self._record_action_scan = QCheckBox(
+            "Record halo action scan (x · y · φ–W)")
+        self._record_action_scan.setChecked(True)
+        self._record_action_scan.setToolTip(
+            "At every diagnostic record point of a multi-particle run, count "
+            "the particles outside the ellipses of the beam's own rms shape "
+            "whose emittance is n × ε_rms (n = 1: rms ellipse; a particle at "
+            "n reaches √n rms sizes; Gaussian: 1 % beyond n = 9.2), for n "
+            "from 0 to 400, in x–x′ and y–y′ (dispersion-corrected and raw) "
+            "and φ–W.  Required for the Results tab's “Halo action scan” "
+            "window.  Cost ≈ 20–30 ms and ≈ 12 kB of memory per record at "
+            "100k particles — about 1 % of a field-map linac run with space "
+            "charge, more on short lattices, with per-sub-step recording "
+            "or without space charge (a transfer line without space charge "
+            "measured +40–60 % and a 2.2× larger results file).  On by "
+            "default; untick it for long sweeps."
+        )
         # Snapshot every N elements / sub-steps (full 6-D particle dump).
         # 0 = no periodic snapshots.  Snapshots also fire at any
         # ``Marker(snapshot=True)`` regardless of this setting.
@@ -761,6 +785,7 @@ class ConvergenceTab(QWidget):
         sec_diag = CollapsibleSection("Diagnostics & recording")
         sec_diag.addRow(self._record_substeps)
         sec_diag.addRow(self._record_density)
+        sec_diag.addRow(self._record_action_scan)
         sec_diag.addRow("Snapshot every N",   self._snapshot_every_n)
         sec_diag.addRow("Snapshot at",        self._snapshot_elements_row)
         sec_diag.addRow("Density bins",       self._density_bins)
@@ -977,6 +1002,12 @@ class ConvergenceTab(QWidget):
         # snapshot controls are serialized into the project too
         self._snapshot_every_n.valueChanged.connect(_mark_dirty)
         self._snapshot_elements.textChanged.connect(_mark_dirty)
+        # ... and so are the recording switches and density settings
+        for _w in (self._record_substeps, self._record_density,
+                   self._record_action_scan):
+            _w.toggled.connect(_mark_dirty)
+        self._density_bins.valueChanged.connect(_mark_dirty)
+        self._density_extent.valueChanged.connect(_mark_dirty)
 
     # ------------------------------------------------------------------
     def _on_step_preset(self, text: str) -> None:

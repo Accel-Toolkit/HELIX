@@ -93,6 +93,77 @@ def _read_flat(lines: List[str], offset: int, count: int) -> np.ndarray:
     return np.asarray(flat[:count], dtype=float)
 
 
+# ---------------------------------------------------------------------------
+# TraceWin BINARY field maps
+# ---------------------------------------------------------------------------
+# TraceWin's Chart page converts ASCII maps to a binary form (manual,
+# "Magnetic or electric Field map": "The field map file syntax is the
+# following in the BINARY format").  The file keeps the ordinary
+# extension (.edz, .bsx, …) — nothing but the content says it is binary,
+# so detection is by content: an ASCII map is printable text, while every
+# binary header starts with a little-endian int32 grid count whose high
+# bytes are NUL.  Layouts (int32 / float64 header, float32 data, packed):
+#
+#   1-D      nz zmax | norm                         | (nz+1) values
+#   2-D cyl  nz zmax | nr rmax | norm               | z-outer, r-inner
+#   3-D      nz zmax | nx xmin xmax | ny ymin ymax | norm
+#                                                   | z-outer, y, x-inner
+#
+# The data follow in the same loop order as the ASCII file, so the ASCII
+# readers' reshape/transpose applies unchanged.  The manual gives no
+# binary layout for the 2-D Cartesian map; such a file is refused rather
+# than guessed.
+
+_BINARY_SNIFF_BYTES = 64
+
+
+def _is_binary_file(filepath: str) -> bool:
+    """True when the file's head holds bytes an ASCII map never contains
+    (NUL or C0 control characters other than tab / LF / VT / FF / CR)."""
+    with open(filepath, "rb") as fh:
+        head = fh.read(_BINARY_SNIFF_BYTES)
+    return any(b < 9 or 13 < b < 32 for b in head)
+
+
+def _read_binary_map(filepath: str, dim: str):
+    """Decode a TraceWin binary map.  *dim* is ``"1d"``, ``"2dcyl"`` or
+    ``"3d"``.  Returns ``(header, norm, values)``: header is the list of
+    grid numbers in file order, values a float64 array in file order.
+
+    The file size must equal the size the header implies EXACTLY — a
+    truncated or foreign binary file is refused, never half-read."""
+    import struct
+
+    with open(filepath, "rb") as fh:
+        buf = fh.read()
+    fmt = {"1d": "<id", "2dcyl": "<idid", "3d": "<ididdidd"}[dim]
+    hsize = struct.calcsize(fmt) + 8          # + float64 norm
+    if len(buf) < hsize:
+        raise ValueError(
+            f"binary field map {os.path.basename(filepath)} is shorter "
+            f"({len(buf)} bytes) than its {dim} header ({hsize} bytes)")
+    header = list(struct.unpack_from(fmt, buf, 0))
+    (norm,) = struct.unpack_from("<d", buf, struct.calcsize(fmt))
+    counts = [header[0]] + ([header[2]] if dim == "2dcyl" else
+                            [header[2], header[5]] if dim == "3d" else [])
+    if any(n < 1 or n > 10_000_000 for n in counts):
+        raise ValueError(
+            f"binary field map {os.path.basename(filepath)}: implausible "
+            f"grid counts {counts} — not a TraceWin {dim} binary map")
+    n_vals = 1
+    for n in counts:
+        n_vals *= n + 1
+    expected = hsize + 4 * n_vals
+    if len(buf) != expected:
+        raise ValueError(
+            f"binary field map {os.path.basename(filepath)}: file is "
+            f"{len(buf)} bytes but a {dim} map with grid {counts} needs "
+            f"{expected} — truncated, or not a TraceWin binary map")
+    vals = np.frombuffer(buf, dtype="<f4", count=n_vals,
+                         offset=hsize).astype(float)
+    return header, norm, vals
+
+
 @_cached_file_reader
 def read_1d_component(filepath: str) -> FieldChannel:
     """Read a 1-D TraceWin component file (``.esz``, ``.bsz``, ``.edz``,
@@ -113,7 +184,14 @@ def read_1d_component(filepath: str) -> FieldChannel:
     The legacy layout was used by historical Linac_Gen fixtures; the
     auto-detect dispatcher keeps those working without forcing users
     to rewrite their ``.edz`` files.
+
+    TraceWin BINARY 1-D maps (see :func:`_read_binary_map`) are detected
+    by content and decoded to the same channel.
     """
+    if os.path.exists(filepath) and _is_binary_file(filepath):
+        (Nz, Zmax_m), norm, vals = _read_binary_map(filepath, "1d")
+        z = np.linspace(0.0, Zmax_m * 1000.0, Nz + 1)
+        return FieldChannel(geometry=1, z=z, Fz=vals, norm_factor=norm)
     raw = _clean_lines(filepath)
     tok = raw[0].split()
     # Auto-detect: canonical has TWO tokens on line 0 (Nz Zmax), with the
@@ -156,15 +234,20 @@ def read_2d_cyl_component(filepath: str) -> FieldChannel:
 
     Inner loop on r means natural C-order reshape is (Nz+1, Nr+1)
     r-fastest.  The reader puts the raw data in ``Fz`` regardless of
-    the file's component letter; the orchestrator reassigns.
+    the file's component letter; the orchestrator reassigns.  TraceWin
+    BINARY maps are detected by content and decoded to the same channel.
     """
-    raw = _clean_lines(filepath)
-    tok0 = raw[0].split()
-    tok1 = raw[1].split()
-    Nz = int(tok0[0]);  Zmax_m = float(tok0[1])
-    Nr = int(tok1[0]);  Rmax_m = float(tok1[1])
-    norm = float(raw[2].split()[0])
-    vals = _read_flat(raw[3:], 0, (Nz + 1) * (Nr + 1))
+    if os.path.exists(filepath) and _is_binary_file(filepath):
+        (Nz, Zmax_m, Nr, Rmax_m), norm, vals = _read_binary_map(
+            filepath, "2dcyl")
+    else:
+        raw = _clean_lines(filepath)
+        tok0 = raw[0].split()
+        tok1 = raw[1].split()
+        Nz = int(tok0[0]);  Zmax_m = float(tok0[1])
+        Nr = int(tok1[0]);  Rmax_m = float(tok1[1])
+        norm = float(raw[2].split()[0])
+        vals = _read_flat(raw[3:], 0, (Nz + 1) * (Nr + 1))
     arr = vals.reshape((Nz + 1, Nr + 1))          # r-fastest C-order
     z = np.linspace(0.0, Zmax_m * 1000.0, Nz + 1)
     r = np.linspace(0.0, Rmax_m * 1000.0, Nr + 1)
@@ -185,7 +268,15 @@ def read_2d_cart_component(filepath: str) -> FieldChannel:
     x-fastest in the file → C-order reshape is (Ny+1, Nx+1).  The
     reader transposes to (Nx+1, Ny+1) so downstream users can feed
     the array into a RegularGridInterpolator with axes=(x, y).
+
+    The TraceWin manual documents no BINARY layout for this map type, so
+    a binary file is refused with a clear message instead of guessed.
     """
+    if os.path.exists(filepath) and _is_binary_file(filepath):
+        raise ValueError(
+            f"{os.path.basename(filepath)} is a binary field map, but the "
+            "TraceWin manual documents no binary layout for 2-D Cartesian "
+            "maps — use the ASCII version of this map")
     raw = _clean_lines(filepath)
     tx = raw[0].split();  Nx = int(tx[0]);  Xmin_m = float(tx[1]);  Xmax_m = float(tx[2])
     ty = raw[1].split();  Ny = int(ty[0]);  Ymin_m = float(ty[1]);  Ymax_m = float(ty[2])
@@ -215,15 +306,19 @@ def read_3d_cart_component(filepath: str) -> FieldChannel:
 
     x-fastest → C-order reshape is (Nz+1, Ny+1, Nx+1).  The reader
     transposes to (Nx+1, Ny+1, Nz+1) so callers match the scipy
-    RegularGridInterpolator axes=(x, y, z) convention.
+    RegularGridInterpolator axes=(x, y, z) convention.  TraceWin BINARY
+    maps are detected by content and decoded to the same channel.
     """
-    raw = _clean_lines(filepath)
-    tz = raw[0].split();  Nz = int(tz[0]);  Zmax_m = float(tz[1])
-    tx = raw[1].split();  Nx = int(tx[0]);  Xmin_m = float(tx[1]);  Xmax_m = float(tx[2])
-    ty = raw[2].split();  Ny = int(ty[0]);  Ymin_m = float(ty[1]);  Ymax_m = float(ty[2])
-    norm = float(raw[3].split()[0])
-    total = (Nz + 1) * (Ny + 1) * (Nx + 1)
-    vals = _read_flat(raw[4:], 0, total)
+    if os.path.exists(filepath) and _is_binary_file(filepath):
+        (Nz, Zmax_m, Nx, Xmin_m, Xmax_m, Ny, Ymin_m, Ymax_m), norm, vals = (
+            _read_binary_map(filepath, "3d"))
+    else:
+        raw = _clean_lines(filepath)
+        tz = raw[0].split();  Nz = int(tz[0]);  Zmax_m = float(tz[1])
+        tx = raw[1].split();  Nx = int(tx[0]);  Xmin_m = float(tx[1]);  Xmax_m = float(tx[2])
+        ty = raw[2].split();  Ny = int(ty[0]);  Ymin_m = float(ty[1]);  Ymax_m = float(ty[2])
+        norm = float(raw[3].split()[0])
+        vals = _read_flat(raw[4:], 0, (Nz + 1) * (Ny + 1) * (Nx + 1))
     arr = vals.reshape((Nz + 1, Ny + 1, Nx + 1)).transpose(2, 1, 0).copy()
     x = np.linspace(Xmin_m, Xmax_m, Nx + 1) * 1000.0
     y = np.linspace(Ymin_m, Ymax_m, Ny + 1) * 1000.0

@@ -638,32 +638,43 @@ class SuperposedFieldMap(FieldMapElement, Misalignment, FieldError):
     #  Fitted matrices (envelope / matrix modes)
     # ------------------------------------------------------------------ #
     def _all_children_magnetic_only_1d(self) -> bool:
-        """True iff every child is a magnetic-only 1-D map — the class
-        whose thin-slice error motivates the 0.2 mm fitted-matrix
-        refinement (mirrors FieldMap.fitted_matrix).  3-D magnetic
-        children are excluded on purpose: FieldMap3D applies no such
-        refinement, and 0.2 mm sub-steps over 3-D interpolators would
-        be pathologically slow."""
-        for _z0, child in self.children:
-            fd = child.field_data
-            if any(ch_enum.is_electric for ch_enum in fd.channels):
-                return False
-            if not all(getattr(ch, "geometry", None) == 1
-                       for ch in fd.channels.values()):
-                return False
-        return True
+        """True iff every child is a static-magnetic map (1-D on-axis or
+        3-D Cartesian, no electric channel) — the class whose thin-slice
+        error motivates the 0.2 mm fitted-matrix refinement.
+
+        This is the MP tracker's own rule
+        (``tracker._is_magnetic_only_fieldmap``, which already steps such
+        a cluster at 0.2 mm), and it matches the standalone elements:
+        ``FieldMap.fitted_matrix`` refines magnetic-only 1-D maps and
+        ``FieldMap3D.fitted_matrix`` refines every map without an
+        electric channel.  A solenoid with 3-D correctors superposed on
+        it (the PIP-II HWR/SSR idiom) therefore gets the same accuracy as
+        the solenoid alone — at the coarse native grid the envelope was
+        0.3-0.5 % wrong per HWR solenoid.  (The name is historical.)"""
+        from linac_gen.tracking.tracker import _is_magnetic_only_fieldmap
+        return all(_is_magnetic_only_fieldmap(child)
+                   for _z0, child in self.children)
+
+    # A FieldMap3D child only gains ``_phi_s_at_entrance`` once a run
+    # resets or tracks it — a fitted matrix of a freshly parsed cluster
+    # must not crash on that (nor leave the attribute behind).
+    _NO_PHASE = object()
 
     def _save_walk_state(self):
         return (self._step_idx, self._z_cursor, len(self._z_history),
                 self._phi_s_at_entrance,
-                {id(c): c._phi_s_at_entrance for _z, c in self.children})
+                {id(c): getattr(c, "_phi_s_at_entrance", self._NO_PHASE)
+                 for _z, c in self.children})
 
     def _restore_walk_state(self, state) -> None:
         (self._step_idx, self._z_cursor, hist_len,
          self._phi_s_at_entrance, snaps) = state
         del self._z_history[hist_len:]
         for _z, c in self.children:
-            c._phi_s_at_entrance = snaps[id(c)]
+            if snaps[id(c)] is self._NO_PHASE:
+                c.__dict__.pop("_phi_s_at_entrance", None)
+            else:
+                c._phi_s_at_entrance = snaps[id(c)]
 
     def fitted_matrix(self, ref) -> np.ndarray:
         """Central-difference 6×6 over the full cluster walk (mirrors

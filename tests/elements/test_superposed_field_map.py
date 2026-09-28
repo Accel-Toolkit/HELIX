@@ -359,3 +359,62 @@ def test_fitted_matrix_slice_chain_matches_full():
         cont.advance_ref_over(ref, z, z + ds)
         z += ds
     assert np.allclose(M, M_full, rtol=2e-2, atol=1e-4)
+
+
+# ── solenoid + field-free 3-D correctors (the PIP-II HWR idiom) ──────────
+# A 3-D magnetic child used to switch off the 0.2 mm solenoid refinement
+# of the envelope/matrix path (the cluster fell back to the finest child
+# grid, 0.865 mm for the PIP-II HWR correctors): 0.3-0.5 % matrix error
+# per solenoid, compounding to a 35 % projected-emittance error over the
+# PIP-II SC linac.  A zero-amplitude corrector adds exactly nothing, so
+# the cluster must reproduce the solenoid alone.
+
+def _hwr_like_cluster(tmp_path):
+    from linac_gen.io.tracewin_parser import parse_tracewin
+    # 1-D solenoid on a coarse 5 mm grid (as HWR-SOL-ANLMAP)
+    z = np.linspace(0.0, 0.3, 61)
+    bz = 1.0 / (1.0 + ((z - 0.15) / 0.05) ** 4)
+    (tmp_path / "sol.bsz").write_text(
+        "60 0.3\n1\n" + "\n".join(repr(float(v)) for v in bz) + "\n",
+        encoding="utf-8")
+    # 3-D corrector on a fine z grid (as hwrcx: 347 intervals / 0.29967 m)
+    nz, nx = 347, 4
+    vals = np.ones((nz + 1, nx + 1, nx + 1)) * 0.02
+    for comp in ("bsx", "bsy", "bsz"):
+        with open(tmp_path / f"cx.{comp}", "w", encoding="utf-8") as f:
+            f.write(f"{nz} 0.29967\n{nx} -0.016 0.016\n{nx} -0.016 0.016\n1\n")
+            f.write("\n".join("0.02" for _ in range(vals.size)) + "\n")
+    alone = tmp_path / "alone.dat"
+    alone.write_text("FIELD_MAP 10 300 0 16 2.3 0 0 0 sol\nEND\n",
+                     encoding="utf-8")
+    clus = tmp_path / "clus.dat"
+    clus.write_text("SUPERPOSE_MAP 0\nFIELD_MAP 70 300 0 16 0 0 0 0 cx\n"
+                    "SUPERPOSE_MAP 0\nFIELD_MAP 70 300 0 16 0.0 0 0 0 cx\n"
+                    "SUPERPOSE_MAP 0\nFIELD_MAP 10 300 0 16 2.3 0 0 0 sol\n"
+                    "END\n", encoding="utf-8")
+    a = parse_tracewin(str(alone))[0].elements[0]
+    c = parse_tracewin(str(clus))[0].elements[0]
+    assert isinstance(c, SuperposedFieldMap) and len(c.children) == 3
+    return a, c
+
+
+def test_zero_field_3d_children_do_not_degrade_the_solenoid_matrix(tmp_path):
+    a, c = _hwr_like_cluster(tmp_path)
+    ref = _ref(w_kin=2.12, freq=162.5)
+    Ma = a.fitted_matrix(ref.copy())
+    Mc = c.fitted_matrix(ref.copy())
+    assert np.max(np.abs(Ma - Mc)) < 1e-12, np.max(np.abs(Ma - Mc))
+
+
+def test_zero_field_3d_children_slice_chain_matches_the_solenoid(tmp_path):
+    a, c = _hwr_like_cluster(tmp_path)
+    ref = _ref(w_kin=2.12, freq=162.5)
+    out = []
+    for elem in (a, c):
+        elem.reset_run_state()
+        M = np.eye(6)
+        for _ in range(30):
+            M = elem.fitted_matrix_slice(ref.copy(), 10.0) @ M
+        out.append(M)
+    assert np.max(np.abs(out[0] - out[1])) < 1e-12, \
+        np.max(np.abs(out[0] - out[1]))

@@ -29,6 +29,19 @@ from linac_gen.io.field_map_data import FieldMapData, FieldChannel  # noqa: F401
 from linac_gen.io.tracewin_geom import Channel
 
 
+def _refuse_binary(filepath: str) -> None:
+    """The legacy 1-D/2-D text readers below cannot decode TraceWin
+    BINARY maps; say so instead of failing on an ``int()`` of binary
+    garbage.  (A ``FIELD_MAP`` card in a ``.dat`` deck reads binary maps
+    through :mod:`linac_gen.io.tracewin_fieldmap_reader`.)"""
+    from linac_gen.io.tracewin_fieldmap_reader import _is_binary_file
+    if _is_binary_file(filepath):
+        raise ValueError(
+            f"{os.path.basename(filepath)} is a TraceWin binary field map; "
+            "this reader handles ASCII maps only — load it through a "
+            "FIELD_MAP card in a .dat deck, or use the ASCII version")
+
+
 # ------------------------------------------------------------------ #
 #  Public named reader functions
 # ------------------------------------------------------------------ #
@@ -64,6 +77,7 @@ def read_edz_1d(filepath: str) -> "FieldMapData":
     """
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Field map file not found: {filepath}")
+    _refuse_binary(filepath)
     with open(filepath, "r", encoding="latin-1") as fh:
         lines = [ln.strip() for ln in fh if ln.strip()]
     return _parse_edz_1d_auto(lines)
@@ -155,6 +169,7 @@ def read_edz_2d(filepath: str, fm_type: int = 2) -> "FieldMapData":
     """
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Field map file not found: {filepath}")
+    _refuse_binary(filepath)
     with open(filepath, "r", encoding="latin-1") as fh:
         lines = [ln.strip() for ln in fh if ln.strip()]
     return _parse_edz_2d_auto(lines, fm_type)
@@ -252,6 +267,7 @@ def read_csv(filepath: str) -> "FieldMapData":
     """
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Field map file not found: {filepath}")
+    _refuse_binary(filepath)
 
     # Auto-detect delimiter: if first non-comment line contains a comma, use it
     delimiter = None
@@ -442,6 +458,7 @@ def read_field_map(filepath: str, fm_type: int = 1) -> FieldMapData:
     """
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Field map file not found: {filepath}")
+    _refuse_binary(filepath)
 
     ext = os.path.splitext(filepath)[1].lower()
 
@@ -694,6 +711,19 @@ def _read_single_3d(filepath: str) -> tuple:
     """
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"3-D field map file not found: {filepath}")
+    from linac_gen.io.tracewin_fieldmap_reader import (
+        _is_binary_file, _read_binary_map,
+    )
+    if _is_binary_file(filepath):
+        # TraceWin BINARY 3-D map: same header numbers and loop order.
+        (nz_i, zmax_m, nx_i, xmin_m, xmax_m, ny_i, ymin_m, ymax_m), norm, arr = (
+            _read_binary_map(filepath, "3d"))
+        x = np.linspace(xmin_m, xmax_m, nx_i + 1) * 1000.0
+        y = np.linspace(ymin_m, ymax_m, ny_i + 1) * 1000.0
+        z = np.linspace(0.0,    zmax_m, nz_i + 1) * 1000.0
+        values = arr.reshape((nz_i + 1, ny_i + 1, nx_i + 1)).transpose(
+            2, 1, 0).copy()
+        return x, y, z, values, norm
     with open(filepath, "r", encoding="latin-1") as fh:
         # Comments/blank lines may appear between header rows in some
         # exporters; strip them preserving order.

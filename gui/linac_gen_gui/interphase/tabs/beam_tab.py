@@ -10,7 +10,7 @@ import math
 import numpy as np
 import pyqtgraph as pg
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QLocale, Qt
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout, QGroupBox,
     QComboBox, QDoubleSpinBox, QSpinBox, QPushButton, QLabel, QCheckBox,
@@ -21,6 +21,57 @@ from linac_gen_gui.interphase.app_settings import make_settings
 from linac_gen_gui.interphase import theme
 from linac_gen_gui.interphase.icons import icon
 from linac_gen_gui.interphase.state import AppState
+
+
+class _PreciseSpinBox(QDoubleSpinBox):
+    """Spin box for beam-physics inputs that keeps the full value.
+
+    A plain QDoubleSpinBox rounds every value to its display decimals, so
+    a project beam of 4.84235 mA became 4.842 mA the moment it reached
+    the form (and was written back on Apply).  Qt rounds to a fixed
+    number of decimals at ANY setting, so this box also remembers the
+    exact value it was given: :meth:`value` returns it until the user
+    edits or steps the box (Qt's value then differs from the one recorded
+    at :meth:`setValue`, and the edited value wins).  The text shows the
+    value to ``_DECIMALS`` decimals without trailing zeros, in the widget
+    locale so typing still works."""
+
+    _DECIMALS = 10
+
+    def __init__(self):
+        super().__init__()
+        self.setDecimals(self._DECIMALS)
+        self._exact = None      # value given to setValue …
+        self._exact_q = None    # … and Qt's rounded copy of it
+        # Typing always wins, even when the typed number rounds to the
+        # stored one (a 3e-12 shown as "0" must be clearable by typing 0).
+        self.lineEdit().textEdited.connect(self._forget_exact)
+
+    def _forget_exact(self, _text=None) -> None:
+        self._exact = None
+
+    def setValue(self, value: float) -> None:
+        super().setValue(value)
+        self._exact = float(value)
+        self._exact_q = super().value()
+        if not (self.minimum() <= self._exact <= self.maximum()):
+            self._exact = None  # clamped by Qt: the clamped value wins
+
+    def value(self) -> float:
+        q = super().value()
+        if (self._exact is not None and q == self._exact_q
+                and self.minimum() <= self._exact <= self.maximum()):
+            return self._exact
+        return q
+
+    def textFromValue(self, value: float) -> str:
+        loc = QLocale(self.locale())
+        loc.setNumberOptions(QLocale.NumberOption.OmitGroupSeparator)
+        text = loc.toString(float(value), "f", self.decimals())
+        dp = loc.decimalPoint()
+        if dp in text:
+            text = text.rstrip("0").rstrip(dp)
+        return "0" if text in ("-0", "") else text
 
 
 def _group_qss() -> str:
@@ -159,9 +210,9 @@ class BeamTab(QWidget):
         g.setStyleSheet(_group_qss())
         f = QFormLayout(g)
         self._species = QComboBox(); self._species.addItems(["proton", "deuteron", "H-"])
-        self._energy  = self._spin(0.001, 10_000, 0.001, 7, " MeV")
-        self._freq    = self._spin(1, 5000, 0.001, 3, " MHz")
-        self._current = self._spin(0, 1000, 0.01, 3, " mA")
+        self._energy  = self._spin(0.001, 10_000, 0.001, 7, " MeV", precise=True)
+        self._freq    = self._spin(1, 5000, 0.001, 3, " MHz", precise=True)
+        self._current = self._spin(0, 1000, 0.01, 3, " mA", precise=True)
         self._duty    = self._spin(0.001, 100.0, 0.1, 2, " %")
         self._npart   = QSpinBox(); self._npart.setRange(100, 2_000_000); self._npart.setValue(100_000)
         self._dist    = QComboBox(); self._dist.addItems(
@@ -254,15 +305,15 @@ class BeamTab(QWidget):
         g = QGroupBox("Twiss — X / Y / Z")
         g.setStyleSheet(_group_qss())
         f = QFormLayout(g)
-        self._emit_nx = self._spin(0, 1000, 0.001, 6, " π·mm·mrad")
-        self._alpha_x = self._spin(-100, 100, 0.001, 6, "")
-        self._beta_x  = self._spin(0.001, 10_000, 0.001, 5, " mm/mrad")
-        self._emit_ny = self._spin(0, 1000, 0.001, 6, " π·mm·mrad")
-        self._alpha_y = self._spin(-100, 100, 0.001, 6, "")
-        self._beta_y  = self._spin(0.001, 10_000, 0.001, 5, " mm/mrad")
-        self._emit_z  = self._spin(0, 1000, 0.0001, 8, " deg·MeV")
-        self._alpha_z = self._spin(-100, 100, 0.001, 6, "")
-        self._beta_z  = self._spin(0.001, 100_000, 0.01, 5, " deg/MeV")
+        self._emit_nx = self._spin(0, 1000, 0.001, 6, " π·mm·mrad", precise=True)
+        self._alpha_x = self._spin(-100, 100, 0.001, 6, "", precise=True)
+        self._beta_x  = self._spin(0.001, 10_000, 0.001, 5, " mm/mrad", precise=True)
+        self._emit_ny = self._spin(0, 1000, 0.001, 6, " π·mm·mrad", precise=True)
+        self._alpha_y = self._spin(-100, 100, 0.001, 6, "", precise=True)
+        self._beta_y  = self._spin(0.001, 10_000, 0.001, 5, " mm/mrad", precise=True)
+        self._emit_z  = self._spin(0, 1000, 0.0001, 8, " deg·MeV", precise=True)
+        self._alpha_z = self._spin(-100, 100, 0.001, 6, "", precise=True)
+        self._beta_z  = self._spin(0.001, 100_000, 0.01, 5, " deg/MeV", precise=True)
         for lab, w in [("ε_nx", self._emit_nx), ("α_x", self._alpha_x), ("β_x", self._beta_x),
                        ("ε_ny", self._emit_ny), ("α_y", self._alpha_y), ("β_y", self._beta_y),
                        ("ε_z", self._emit_z),   ("α_z", self._alpha_z), ("β_z", self._beta_z)]:
@@ -277,12 +328,12 @@ class BeamTab(QWidget):
         self._d_gamma = self._ro("—")
         self._d_bg    = self._ro("—")
         f.addRow("β",  self._d_beta); f.addRow("γ", self._d_gamma); f.addRow("βγ", self._d_bg)
-        self._cx  = self._spin(-1e3, 1e3, 0.001, 6, " mm")
-        self._cxp = self._spin(-1e3, 1e3, 0.001, 6, " mrad")
-        self._cy  = self._spin(-1e3, 1e3, 0.001, 6, " mm")
-        self._cyp = self._spin(-1e3, 1e3, 0.001, 6, " mrad")
-        self._cphi = self._spin(-3600, 3600, 0.01, 4, " deg")
-        self._cdw  = self._spin(-1e4, 1e4, 0.001, 6, " MeV")
+        self._cx  = self._spin(-1e3, 1e3, 0.001, 6, " mm", precise=True)
+        self._cxp = self._spin(-1e3, 1e3, 0.001, 6, " mrad", precise=True)
+        self._cy  = self._spin(-1e3, 1e3, 0.001, 6, " mm", precise=True)
+        self._cyp = self._spin(-1e3, 1e3, 0.001, 6, " mrad", precise=True)
+        self._cphi = self._spin(-3600, 3600, 0.01, 4, " deg", precise=True)
+        self._cdw  = self._spin(-1e4, 1e4, 0.001, 6, " MeV", precise=True)
         for lab, w in [("δx", self._cx), ("δx'", self._cxp),
                        ("δy", self._cy), ("δy'", self._cyp),
                        ("δφ", self._cphi), ("δW", self._cdw)]:
@@ -290,10 +341,10 @@ class BeamTab(QWidget):
         # Input dispersion (x/y ↔ ΔW correlation, mm/MeV · mrad/MeV) —
         # the matched beam of a bending line carries these; the matching
         # dialog's Apply fills them for arc/BTL cells.
-        self._disp_x  = self._spin(-1e5, 1e5, 0.001, 6, " mm/MeV")
-        self._disp_xp = self._spin(-1e5, 1e5, 0.001, 6, " mrad/MeV")
-        self._disp_y  = self._spin(-1e5, 1e5, 0.001, 6, " mm/MeV")
-        self._disp_yp = self._spin(-1e5, 1e5, 0.001, 6, " mrad/MeV")
+        self._disp_x  = self._spin(-1e5, 1e5, 0.001, 6, " mm/MeV", precise=True)
+        self._disp_xp = self._spin(-1e5, 1e5, 0.001, 6, " mrad/MeV", precise=True)
+        self._disp_y  = self._spin(-1e5, 1e5, 0.001, 6, " mm/MeV", precise=True)
+        self._disp_yp = self._spin(-1e5, 1e5, 0.001, 6, " mrad/MeV", precise=True)
         for lab, w in [("D_x", self._disp_x), ("D_x'", self._disp_xp),
                        ("D_y", self._disp_y), ("D_y'", self._disp_yp)]:
             f.addRow(lab, w)
@@ -308,9 +359,15 @@ class BeamTab(QWidget):
         return g
 
     # ------------------------------------------------------------------
-    def _spin(self, lo, hi, step, decimals, suffix):
-        s = QDoubleSpinBox(); s.setRange(lo, hi); s.setSingleStep(step)
-        s.setDecimals(decimals); s.setSuffix(suffix)
+    def _spin(self, lo, hi, step, decimals, suffix, precise=False):
+        """``precise`` boxes (beam-physics values) keep the full value
+        and ignore *decimals*; the rest round to *decimals* as before."""
+        if precise:
+            s = _PreciseSpinBox()
+        else:
+            s = QDoubleSpinBox(); s.setDecimals(decimals)
+        s.setRange(lo, hi); s.setSingleStep(step)
+        s.setSuffix(suffix)
         return s
 
     def _ro(self, text: str) -> QLabel:

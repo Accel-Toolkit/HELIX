@@ -342,8 +342,10 @@ envelope) and `run_in_gui` starts it **exactly as clicking Run does** —
 the same Numerics-tab grid/steps/integrator/backend and recording
 options, the same progress bar, results into the same tabs.  (The
 `run_envelope` / `run_mp` tools still exist for headless/CLI use and for
-one-off setting overrides, but in the GUI `run_in_gui` is preferred so
-your on-screen settings are honoured.)
+one-off setting overrides — `run_mp` records the
+[halo action scan](../09_diagnostics/03_halo.md#action-scan) when asked
+(`action_scan`) — but in the GUI `run_in_gui` is preferred so your
+on-screen settings are honoured.)
 
 **Physicist tools.**  `parameter_scan` sweeps one element parameter over
 N points (envelope per point, background job, cancellable) and returns a

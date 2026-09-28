@@ -13,6 +13,7 @@ All lengths are in mm, matching the internal Linac_Gen convention.
 """
 
 import os
+import re
 import shlex
 import warnings
 from pathlib import Path
@@ -35,6 +36,87 @@ from linac_gen.io.tracewin_syntax import SCHEMA, parse_positionals
 # Default RF frequency used when a GAP or FIELD_MAP is encountered before
 # any FREQ card.
 _DEFAULT_FREQ_MHZ = 352.21
+
+# Every card keyword the dispatch below matches literally.  Used to tell
+# a card from a LABEL whose name contains spaces (``SOL 1 : SOLENOID``,
+# ``HWR CM:`` — the TraceWin manual's own label example has a space):
+# a line is only read as a spaced label when its first word is NOT a
+# card.  tests/io/test_deck_labels.py keeps this set in sync with the
+# dispatch (every ``keyword == "…"`` / ``keyword in ("…", …)`` literal).
+_DISPATCHED_CARDS = frozenset({
+    "ACCT", "ADJUST_BEAM_CENTROID", "ADJUST_BEAM_CURRENT",
+    "ADJUST_BEAM_EMIT", "ADJUST_BEAM_TWISS", "APERTURE", "ASCN",
+    "BEAM_ROT", "BEND", "BPM", "CHOPPER", "COL", "DCCT", "DIAG_EMIT",
+    "DIAG_PHASE", "DIAG_POSITION", "DIAG_SIZE", "DPI", "DRIFT", "EDGE",
+    "END", "ERROR_GAUSSIAN_CUT_OFF", "ERROR_SET_RATIO", "FASTGV", "FFC",
+    "FIELD_MAP", "FIELD_MAP_PATH", "FREQ", "GAP", "LASERPROFILE",
+    "LATTICE", "LATTICE_END", "MARKER", "MATCH_FAM_FIELD",
+    "MATCH_FAM_GRAD", "MEBTABSORBER", "MIN_FIELD_VARIATION", "NCELLS",
+    "PARTRAN_STEP", "QUAD", "READ_DST", "RFQ_CELL", "RFQ_GAP_RMS_FFS",
+    "RFQ_GEOM", "RPU", "RWCM", "SET_SIZE", "SET_SIZE_MAX", "SET_SIZE_MIN",
+    "SET_SYNC_PHASE", "SHIFT_IN_FIELD_MAP", "SOLENOID", "SPACE_CHARGE_COMP",
+    "STEERER", "SUPERPOSE_MAP", "SUPERPOSE_MAP_OUT", "THIN_STEERING",
+    "TITLE", "XCOR", "YCOR",
+})
+
+
+def _is_card_keyword(token: str) -> bool:
+    u = token.rstrip(":").upper()
+    return (u in _DISPATCHED_CARDS or u in COMMAND_CLASSES or u in SCHEMA
+            or u.startswith("ERROR_"))
+
+
+_CARD_LIKE = re.compile(r"[A-Z][A-Z0-9]*_[A-Z0-9_]+")
+
+
+def _looks_like_card(token: str) -> bool:
+    """An upper-case word with an underscore (``PLOT_DST``) reads as a
+    TraceWin card HELIX does not know, not as a location label — it keeps
+    the 'unsupported card' warning instead of being swallowed."""
+    return bool(_CARD_LIKE.fullmatch(token.rstrip(":")))
+
+
+def _split_spaced_label(tokens):
+    """``NAME WITH SPACES : CARD …`` → ``(label, card_tokens)``.
+
+    Handles the three colon placements after a multi-word name
+    (``A B : CARD``, ``A B: CARD``, ``A B :CARD``); ``card_tokens`` is
+    empty for a label-only line (``HWR CM:``).  Returns ``None`` when the
+    line is not a spaced label: its first word is a card keyword (so
+    ``READ_DST C:\\x.dst`` or ``TITLE Linac: v2`` stay cards), or no
+    later token carries the separating colon."""
+    if (len(tokens) < 2 or ":" in tokens[0] or _is_card_keyword(tokens[0])
+            or _looks_like_card(tokens[0])):
+        return None
+    for k in range(1, len(tokens)):
+        t = tokens[k]
+        if ":" in t[1:-1]:
+            # ``SOL 1:SOLENOID …`` — colon glued on both sides; only when
+            # the right side is a card (so ``X C:\\path`` is no label).
+            left, _, right = t.partition(":")
+            if _is_card_keyword(right):
+                return (" ".join(tokens[:k] + ([left] if left else [])),
+                        [right] + list(tokens[k + 1:]))
+            return None
+        if t == ":":
+            return " ".join(tokens[:k]), list(tokens[k + 1:])
+        if t.endswith(":"):
+            return " ".join(tokens[:k] + [t[:-1]]), list(tokens[k + 1:])
+        if t.startswith(":"):
+            return " ".join(tokens[:k]), [t[1:]] + list(tokens[k + 1:])
+    return None
+
+
+class _NullFieldMap:
+    """A FIELD_MAP card whose map files are missing but which carries
+    nothing (kb = ke = 0, no current or aperture map: Ki = Ka = 0) — only
+    its length.  The dispatch keeps the geometry (a drift, or the cluster
+    span) instead of dropping the element."""
+
+    def __init__(self, length: float, aperture: float, filename: str):
+        self.length = float(length)
+        self.aperture = float(aperture)
+        self.filename = filename
 
 
 def parse_tracewin(filepath, strict=False, base_dir=None):
@@ -69,6 +151,10 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
 
         ``"title"``   – string from the ``TITLE`` card (empty if absent).
         ``"warnings"`` – list of warning strings for non-fatal parse issues.
+        ``"label_lines"`` – ``[line_number, name]`` of every label-only
+        line (``HWR CM:``, ``WPM :``) whose name is not a recognised
+        marker card: TraceWin location labels, accepted silently and
+        adding no element.
     """
     filepath = str(filepath)
     if base_dir is None:
@@ -77,7 +163,7 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
         base_dir = str(base_dir)
 
     lattice = Lattice()
-    metadata = {"warnings": [], "title": ""}
+    metadata = {"warnings": [], "title": "", "label_lines": []}
 
     # ERROR_* state machine — tracks pending ERROR_QUAD/CAV/BEND directives
     # and assigns them to subsequent matching elements.  See
@@ -119,6 +205,13 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
     # the next ordinary element (TraceWin semantics).  Cards may appear
     # in any order/position within the cluster.
     open_cluster: list = []       # [(z0_mm, element)] in card order
+    # z0 + L of cluster children whose map is missing but carries no
+    # field (kb = ke = 0): they keep the cluster span, nothing else.
+    open_cluster_null: list = []
+    # aperture of a field-free child at position 0 (TraceWin's aperture
+    # carrier) — handed to the container when no real child sits there
+    null_pos0_aperture: list = []
+    null_map_files: set = set()
     pending_superpose: list = []  # [z0] of one unbound SUPERPOSE_MAP
     # SHIFT_IN_FIELD_MAP: diagnostics placed INSIDE the span of the
     # following FIELD_MAP/cluster (TraceWin: dz > 0, several allowed).
@@ -171,6 +264,19 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
         return taken
 
     def _flush_cluster(line_num) -> None:
+        null_span = max(open_cluster_null, default=None)
+        open_cluster_null.clear()
+        span = max((z0 + c.length for z0, c in open_cluster), default=0.0)
+        _flush_cluster_children(line_num)
+        null_pos0_aperture.clear()
+        if null_span is not None and null_span > span + 1e-9:
+            # A field-free child (missing map, kb = ke = 0) reaches past
+            # every real child: the cluster still spans null_span in the
+            # deck, so the remainder follows as a drift and every
+            # downstream element keeps its position.
+            lattice.add(Drift(next_name("DRIFT"), length=null_span - span))
+
+    def _flush_cluster_children(line_num) -> None:
         if pending_superpose:
             _downgrade(
                 f"Line {line_num}: SUPERPOSE_MAP not followed by a "
@@ -229,7 +335,12 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                 # markers so their readings aren't lost entirely.
                 lattice.add(mk)
             return
-        if cont._pos0_child is None:
+        if cont._pos0_child is None and null_pos0_aperture:
+            # the position-0 carrier is a field-free card whose map is
+            # missing: it still carries the aperture
+            cont.aperture = null_pos0_aperture[0]
+            cont.ka = 0          # a null carrier has ka = 0 by definition
+        elif cont._pos0_child is None:
             metadata["warnings"].append(
                 f"Line {line_num}: SUPERPOSE cluster '{cont.name}' has "
                 "no map at position 0 — no aperture/current carrier "
@@ -346,6 +457,16 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                 # A strict parse must never hand back a lattice with the
                 # cavity silently removed.
                 raise ValueError(msg) from exc
+            if (float(kw["kb"]) == 0.0 and float(kw["ke"]) == 0.0
+                    and float(kw["ki"]) == 0.0 and float(kw["ka"]) == 0.0):
+                # kb = ke = 0 and no current / aperture map (ki = ka = 0):
+                # the card carries nothing but its length (an unpowered
+                # corrector placeholder) — keep that.  A plain card still
+                # consumes a pending SET_SYNC_PHASE, as a real map would.
+                if not in_cluster:
+                    pending_sync_phase = False
+                null_map_files.add(os.path.basename(raw_name))
+                return _NullFieldMap(kw["length"], kw["aperture"], raw_name)
             metadata["warnings"].append(
                 msg + " — ELEMENT DROPPED from the lattice; downstream "
                 "energy and optics will be wrong."
@@ -490,7 +611,13 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
             if not line:
                 continue
 
-            tokens = [t.strip('"') for t in shlex.split(line, posix=False)]
+            try:
+                tokens = [t.strip('"')
+                          for t in shlex.split(line, posix=False)]
+            except ValueError:
+                # An unbalanced quote (``Operator's Point:``) — shlex
+                # refuses the line; plain whitespace splitting keeps it.
+                tokens = line.split()
             # TraceWin allows labels on elements in the form ``NAME : CARD …``
             # (note the space-separated colon), ``NAME: CARD …`` (no space)
             # or ``NAME :CARD …``.  The label is a hint for diagnostics, not
@@ -501,10 +628,15 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
             # nothing after.  The colon-strip would silently delete them;
             # detect that here and keep the marker name as the keyword.
             label = None   # element label (``D01BPM``) when the line has one
+            # A label with nothing after it (``WPM :``, ``HWR CM:``): a
+            # built-in marker name still becomes its marker card; any
+            # other name is a location label (no element, no warning).
+            label_only = False
             if len(tokens) >= 2 and tokens[1] == ":":
                 if len(tokens) == 2:
                     # Standalone ``NAME :`` — treat NAME as the card.
                     tokens = [tokens[0]]
+                    label_only = True
                 else:
                     # ``NAME : CARD …`` — drop the label, keep the card.
                     label = tokens[0]
@@ -529,6 +661,8 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                 # else: standalone ``NAME:`` — fall through to
                 # ``tokens[0].rstrip(":").upper()`` below so built-in
                 # markers like ``BPM:`` keep working.
+                else:
+                    label_only = True
             elif ":" in tokens[0] and not tokens[0].startswith(":") \
                     and not tokens[0].endswith(":") \
                     and tokens[0][0].isalpha():
@@ -541,10 +675,34 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                 if _card:
                     label = _label
                     tokens = [_card] + list(tokens[1:])
+            else:
+                # ``SOL 1 : SOLENOID …`` / ``HWR CM:`` — a label whose
+                # name contains spaces (TraceWin names are "up to 50
+                # characters"; the manual's own example is ``SOL 1``).
+                spaced = _split_spaced_label(tokens)
+                if spaced is not None:
+                    _label, rest = spaced
+                    if rest:
+                        label = _label
+                        tokens = rest
+                    else:
+                        tokens = [_label]
+                        label_only = True
             if not tokens:
                 continue
             keyword = tokens[0].rstrip(":").upper()
             params = tokens[1:]
+            if (label_only and not _is_card_keyword(tokens[0])
+                    and not _looks_like_card(tokens[0])):
+                # A TraceWin location label (``HWR CM:``, ``Treaty
+                # Point:``, ``WPM :``) is not an element: no element, no
+                # warning, and transparent to an open SUPERPOSE cluster
+                # and to pending SHIFT_IN_FIELD_MAP diagnostics (element
+                # counts and index-based ADJUST / --set targets are
+                # unchanged).  Recorded for reference.
+                metadata["label_lines"].append(
+                    [line_num, tokens[0].rstrip(":")])
+                continue
             # Some labelled cards still have a trailing colon glued to the
             # second token, e.g. ``SOL1: FIELD_MAP`` parses cleanly via
             # rstrip; ``SOL1 : FIELD_MAP`` was handled by the early skip
@@ -561,7 +719,7 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                 # by the matcher), and ERROR_* directives.  FREQ closes
                 # WITH a warning (mixed-frequency clusters are
                 # unsupported); everything else closes silently.
-                if open_cluster or pending_superpose:
+                if open_cluster or pending_superpose or open_cluster_null:
                     transparent = (
                         keyword in ("SUPERPOSE_MAP", "TITLE",
                                     "PARTRAN_STEP", "FIELD_MAP_PATH")
@@ -760,7 +918,11 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                         z0 = pending_superpose.pop()
                         elem = _build_field_map_card(kw, line_num,
                                                      in_cluster=True)
-                        if elem is not None:
+                        if isinstance(elem, _NullFieldMap):
+                            open_cluster_null.append(z0 + elem.length)
+                            if abs(z0) < 1e-12:
+                                null_pos0_aperture.append(elem.aperture)
+                        elif elem is not None:
                             open_cluster.append((z0, elem))
                         else:
                             metadata["warnings"].append(
@@ -771,7 +933,27 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                     else:
                         elem = _build_field_map_card(kw, line_num,
                                                      in_cluster=False)
-                        if elem is not None:
+                        if isinstance(elem, _NullFieldMap):
+                            # Field-free: a drift of the card's length
+                            # and aperture keeps every position exact.
+                            lattice.add(Drift(next_name("DRIFT"),
+                                              length=elem.length,
+                                              aperture=elem.aperture))
+                            if pending_interior or pending_shift_dz:
+                                # SHIFT diagnostics cannot sit inside a
+                                # drift: restore them at the card
+                                # position, loudly (as for a dropped map).
+                                for _dz, mk in pending_interior:
+                                    lattice.add(mk)
+                                pending_interior.clear()
+                                pending_shift_dz.clear()
+                                _downgrade(
+                                    f"Line {line_num}: the FIELD_MAP bound "
+                                    "to SHIFT_IN_FIELD_MAP diagnostics has "
+                                    "no map file (kb = ke = 0) — the "
+                                    "diagnostics are restored as ordinary "
+                                    "markers after it.")
+                        elif elem is not None:
                             interior = []
                             if pending_interior or pending_shift_dz:
                                 interior = _take_interior(elem.length,
@@ -1331,6 +1513,13 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
     # A cluster still open at END/EOF closes here (TraceWin: the deck
     # end is as good an "ordinary element" as any).
     _flush_cluster(line_num)
+
+    if null_map_files:
+        metadata["warnings"].append(
+            "FIELD_MAP cards with kb = ke = 0 reference missing map files ("
+            + ", ".join(sorted(null_map_files)) + ") — they carry no field "
+            "and are kept as their length only (a drift, or the span of "
+            "the map cluster); load the maps to use them as correctors.")
 
     # SHIFT state still pending at EOF (deck without END): nothing left
     # to overlap — same restore-loudly contract as the mid-deck orphan

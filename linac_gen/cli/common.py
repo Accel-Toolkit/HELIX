@@ -405,8 +405,11 @@ def run_envelope_sim(lattice, cfg, env_solver: str = "matrix"):
 
 
 def run_mp_sim(lattice, cfg, sc_config, step_config, *, seed: int = 42,
-               progress_callback=None):
+               progress_callback=None, record_action_scan: bool = False):
     """Run a multi-particle simulation.
+
+    ``record_action_scan`` opts in to the per-step halo action scan
+    (``Simulation(record_action_scan=True)``).
 
     Returns ``(recorder, beam)`` — after the run ``beam.particles`` holds
     the final distribution (used for ``.dst`` export)."""
@@ -415,7 +418,8 @@ def run_mp_sim(lattice, cfg, sc_config, step_config, *, seed: int = 42,
     lattice.step_config = step_config
     beam = create_beam(cfg, seed=seed)
     sim = Simulation(lattice, beam, space_charge=sc_config,
-                     progress_callback=progress_callback)
+                     progress_callback=progress_callback,
+                     record_action_scan=record_action_scan)
     recorder = sim.run()
     return recorder, beam
 

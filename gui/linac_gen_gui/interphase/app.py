@@ -1436,6 +1436,7 @@ class InterphaseWindow(QMainWindow):
             "env_solver":       str(ct._fixed_env_solver.currentText()),
             "record_substeps":  bool(ct._record_substeps.isChecked()),
             "record_density":   bool(ct._record_density.isChecked()),
+            "record_action_scan": bool(ct._record_action_scan.isChecked()),
             "snapshot_every_n": int(ct._snapshot_every_n.value()),
             "snapshot_elements": ct._snapshot_elements.text(),
             "density_bins":     int(ct._density_bins.value()),
@@ -1580,6 +1581,10 @@ class InterphaseWindow(QMainWindow):
                 ct._record_substeps.setChecked(bool(conv["record_substeps"]))
             if "record_density" in conv:
                 ct._record_density.setChecked(bool(conv["record_density"]))
+            if "record_action_scan" in conv:
+                from linac_gen.cli.common import _as_bool
+                ct._record_action_scan.setChecked(
+                    _as_bool(conv["record_action_scan"]))
             if "csr_enabled" in conv:
                 ct._fixed_csr.setChecked(bool(conv["csr_enabled"]))
             if "drift_single_push" in conv:
@@ -2322,6 +2327,8 @@ class InterphaseWindow(QMainWindow):
             snapshot_elements=self.convergence_tab.snapshot_element_names(),
             density_n_bins=density_bins,
             density_extent=density_extent,
+            record_action_scan=(
+                self.convergence_tab._record_action_scan.isChecked()),
         )
         self._mp_worker.progress.connect(self._toolbar.set_progress)
         self._mp_worker.progress_s.connect(self._toolbar.set_live_s)

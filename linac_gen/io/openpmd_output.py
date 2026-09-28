@@ -336,6 +336,12 @@ def save_results_openpmd(results, filepath: str | Path,
             it.attrs["timeUnitSI"] = 1.0
             _write_envelope_extension(it, results)
 
+        # HELIX extension on the first iteration: loss / foil records and
+        # the halo action scan (same groups and helpers as the native file;
+        # openPMD readers ignore them).
+        from linac_gen.io.hdf5_output import _write_run_records
+        _write_run_records(data_grp[sorted(data_grp, key=int)[0]], results)
+
         # Optional beam-config attributes (HELIX extension).
         if beam_config is not None:
             cfg = f.create_group("beam_config")
@@ -362,6 +368,17 @@ def _write_envelope_extension(iteration_group: h5py.Group, results) -> None:
             arr = np.asarray(getattr(results, attr), dtype=np.float64)
             if arr.size > 0:
                 env.create_dataset(attr, data=arr)
+    # the rest of what a live run carries per step (same helpers and
+    # layout as the native file), so an imported openPMD file fills the
+    # same Results tiles
+    from linac_gen.io.hdf5_output import (
+        _EXTRA_PER_STEP, _per_step, _write_per_step, _write_run_scalars,
+    )
+    _s = getattr(results, "s", None)
+    _n = len(_s) if _s is not None else 0
+    for attr in _EXTRA_PER_STEP:
+        _write_per_step(env, results, attr, _n)
+    _write_run_scalars(env, results)
     ref_grp = iteration_group.create_group("reference_history")
     for attr, key in (
         ("ref_w_kin", "w_kin"),
@@ -374,6 +391,9 @@ def _write_envelope_extension(iteration_group: h5py.Group, results) -> None:
             arr = np.asarray(getattr(results, attr), dtype=np.float64)
             if arr.size > 0:
                 ref_grp.create_dataset(key, data=arr)
+    _freq = _per_step(getattr(results, "ref_frequency", None), _n)
+    if _freq is not None:
+        ref_grp.create_dataset("frequency", data=np.asarray(_freq, float))
 
 
 # ── loader -----------------------------------------------------------------
@@ -404,9 +424,17 @@ def load_results_openpmd(filepath: str | Path) -> dict:
         if "envelope" in it:
             for key in it["envelope"]:
                 results[key] = it["envelope"][key][:]
+            for key, val in it["envelope"].attrs.items():
+                results[key] = val.item() if hasattr(val, "item") else val
         if "reference_history" in it:
             for key in it["reference_history"]:
                 results[f"ref_{key}"] = it["reference_history"][key][:]
+        from linac_gen.io.hdf5_output import _read_run_records
+        _n = (it["envelope"]["s"].shape[0]
+              if "envelope" in it and "s" in it["envelope"] else 0)
+        _read_run_records(it, results, _n)
+    from linac_gen.io.hdf5_output import _restore_per_step
+    _restore_per_step(results)
     return results
 
 

@@ -63,6 +63,11 @@ def add_arguments(p) -> None:
                    default="matrix", dest="env_solver",
                    help="envelope solver kind (default matrix)")
     p.add_argument("--seed", type=int, default=42, help="RNG seed")
+    p.add_argument("--action-scan", action="store_true", dest="action_scan",
+                   help="record the halo action scan (particles outside "
+                        "the n x eps_rms ellipses, per step and plane) into "
+                        "the hdf5 results (mp mode only; the project's "
+                        "record_action_scan setting is not read)")
     p.add_argument("--fail-under-transmission", type=float, default=None,
                    dest="fail_under",
                    help="exit non-zero if final transmission < this %%")
@@ -115,6 +120,13 @@ def run(args) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
+    if args.action_scan and args.mode != "mp":
+        print("warning: --action-scan ignored (no particles in "
+              f"{args.mode} mode)", file=sys.stderr)
+    elif args.action_scan and args.format != "hdf5":
+        print("warning: --action-scan ignored (only the hdf5 format "
+              f"carries it, not {args.format})", file=sys.stderr)
+
     out_dir = Path(args.out)
     stem = Path(args.input).stem
     sc = None                       # bound only on the mp branch below
@@ -129,7 +141,9 @@ def run(args) -> int:
             step_cfg = common.make_step_config(conv, cli)
             sc = common.make_sc_config(beam_cfg, conv, cli)
             results, final_beam = common.run_mp_sim(
-                lattice, beam_cfg, sc, step_cfg, seed=args.seed)
+                lattice, beam_cfg, sc, step_cfg, seed=args.seed,
+                record_action_scan=(args.action_scan
+                                    and args.format == "hdf5"))
     except Exception as exc:                                # noqa: BLE001
         print(f"error: simulation failed: {exc}", file=sys.stderr)
         return 1

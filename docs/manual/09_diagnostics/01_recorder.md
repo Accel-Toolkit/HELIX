@@ -125,6 +125,28 @@ edges = recorder.density_edges["x"] # bin edges for axis labelling
   `recorder.density`, extents in `density_extent`, bin count in
   `density_n_bins`.
 
+### Halo action scan (opt-in)
+
+`configure_action_scan(grid=None)` makes every `record()` count, in
+the planes x, y (dispersion-corrected), z = (φ, W), x_raw and y_raw,
+the alive particles outside the ellipses of the beam's own rms shape
+whose emittance is n·ε_rms, for each n of the grid (default 551 values
+from 0 to 400).  `Simulation(..., record_action_scan=True)` calls it
+for multi-particle runs.  The data live in `recorder.action_scan`:
+
+| Key | Type | Units | Notes |
+|---|---|---|---|
+| `n` | ndarray (G,) | ε_rms | the grid |
+| `count_<p>` | list of int32 (G,) | particles | outside n·ε_rms, one row per record |
+| `eps_<p>` | list[float] | mm·mrad (z: deg·MeV) | rms emittance of the plane (Schur complement for x, y) |
+| `eps_n_<p>` | list[float] | mm·mrad | normalized (×βγ; z via the φ–W Jacobian, = `emit_nz`) |
+| `n_max_<p>` | list[float] | ε_rms | outermost particle |
+| `n_alive` | list[int] | — | particles present |
+
+Rows are appended on the dead-beam path too (zeros), so they stay
+aligned with `s`.  Definition, reference values and the read-back API:
+[Halo analysis → Action scan](03_halo.md#action-scan).
+
 ### Particle snapshots
 
 * `save_snapshot(beam, s_position)` — stores a full copy of the
