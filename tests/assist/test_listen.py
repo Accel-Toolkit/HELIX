@@ -650,22 +650,34 @@ def test_hallucinated_command_discarded_at_dispatch(monkeypatch):
 
 def test_followup_discards_stock_artifact():
     """The unattended follow-up window must drop stock Whisper noise
-    ('thanks for watching') as a timeout, with the discard visible."""
+    ('thanks for watching') as a timeout, with the discard visible.
+
+    Wait-until, as in test_followup_captures_speech_to_endpoint: a slow
+    CI runner can let the window expire UNHEARD before the first speech
+    block lands (also a timeout, but not the discard under test — seen on
+    the public macOS leg); reopen and speak again until the discard shows
+    or a generous deadline expires."""
     src = _FakeSource()
     status = []
-    fl, out = _followup(src, _FakeStt(["thanks for watching"]),
+    fl, out = _followup(src, _FakeStt(["thanks for watching"] * 50),
                         on_status=status.append)
     assert fl.open_window()
+
+    def discarded():
+        return any("discarded" in s for s in status)
+
     t_end = time.time() + 15.0
-    while out["timeout"] == 0 and out["text"] is None and time.time() < t_end:
+    while not discarded() and out["text"] is None and time.time() < t_end:
+        if not fl.active:
+            fl.open_window()               # window expired unheard
         for _ in range(30):
             src.push(0.2, n=1)
             time.sleep(0.012)
         for _ in range(30):
-            if out["timeout"] or out["text"] is not None:
+            if discarded() or out["text"] is not None:
                 break
             src.push(0.001, n=1)
             time.sleep(0.012)
     assert out["text"] is None
     assert out["timeout"] >= 1
-    assert any("discarded" in s for s in status)
+    assert discarded()

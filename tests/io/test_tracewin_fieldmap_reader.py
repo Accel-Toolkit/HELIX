@@ -335,7 +335,10 @@ class TestBinaryMaps:
         vals = _f32(np.sin(np.linspace(0, np.pi, 41)) * 0.37)
         _wb_1d(tmp_path / "m.bsz", 40, 0.3, 1.0, vals)
         with open(tmp_path / "a.bsz", "w", encoding="utf-8") as f:
-            f.write("40 0.3\n1.0\n" + "\n".join(repr(v) for v in vals) + "\n")
+            # repr(float(v)): numpy 2 prints np.float64 scalars as
+            # "np.float64(…)", which is not a field value
+            f.write("40 0.3\n1.0\n" + "\n".join(repr(float(v)) for v in vals)
+                    + "\n")
         _same_channel(read_1d_component(str(tmp_path / "a.bsz")),
                       read_1d_component(str(tmp_path / "m.bsz")))
 
