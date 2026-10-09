@@ -1405,6 +1405,18 @@ def _count(f: _Mad8File, name: str) -> int:
     return len(names)
 
 
+def _expand(f: _Mad8File, name: str, out: list) -> None:
+    """Append the flat element-name expansion of line ``name`` to ``out``.
+
+    Kept for the lattice-release builders (examples/pipii/btl/
+    convert_BTL2026v0916.py, examples/pipii/bal/make_mebt_to_bal_2026v0916.py),
+    which cross-check their own MAD8 expansion against this parser's; the
+    expander that replaced the old recursive helper is the same one
+    :func:`_count` uses.
+    """
+    _Expander(f, out.append, strict=False, quiet=True).line(name)
+
+
 class _Expander:
     """Walks the beam-line tree.  ``emit(name)`` receives each element name
     in beam order; ``on_cell(name, i0_fn)`` bookkeeping is done by the

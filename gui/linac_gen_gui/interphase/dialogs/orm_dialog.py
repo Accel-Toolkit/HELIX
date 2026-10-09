@@ -35,7 +35,8 @@ from PyQt6.QtWidgets import (
 from linac_gen_gui.interphase import theme
 from linac_gen_gui.interphase.app_settings import make_settings
 from linac_gen_gui.interphase.commands import MacroCommand, ParamChangeCommand
-from linac_gen_gui.interphase.plots.plot_style import style_plot
+from linac_gen_gui.interphase.plots.plot_style import (
+    HelixItemSample, fix_plot_range, style_plot)
 
 _STAGES = ("trims", "trims+quads", "trims+quads+bpms")
 _PLANE_NAME = {"x": "horizontal (x)", "y": "vertical (y)"}
@@ -285,7 +286,8 @@ class OrmCalibrationDialog(QDialog):
         left.addLayout(trow)
         self._trim_plot = pg.PlotWidget()
         style_plot(self._trim_plot, "response ÷ column max", "", xlabel="BPM", xunits="", title="measured (points, ±1σ) vs model (line)")
-        self._trim_plot.addLegend(offset=(10, 10))
+        self._trim_plot.addLegend(offset=(10, 10), sampleType=HelixItemSample)
+        fix_plot_range(self._trim_plot)          # ±1 normalised response: keep the scale
         left.addWidget(self._trim_plot, 1)
         bottom.addLayout(left, 3)
         self._metrics_table = self._table(["trim", "device", "k (mT·m/A)", "kick (mrad/A)", "|r|", "residual", "n BPM", "included"])
@@ -333,7 +335,7 @@ class OrmCalibrationDialog(QDialog):
         plots = QVBoxLayout()
         self._quad_plot = pg.PlotWidget(); style_plot(self._quad_plot, "gradient change", "%", xlabel="quad", xunits="", title="fitted quadrupole corrections")
         self._resid_plot = pg.PlotWidget(); style_plot(self._resid_plot, "residual / signal", "%", xlabel="trim", xunits="", title="residual per trim: before (grey) → after (colour)")
-        self._resid_plot.addLegend(offset=(10, 10))
+        self._resid_plot.addLegend(offset=(10, 10), sampleType=HelixItemSample)
         plots.addWidget(self._quad_plot, 1); plots.addWidget(self._resid_plot, 1)
         body.addLayout(plots, 3)
         lay.addLayout(body, 1)

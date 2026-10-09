@@ -93,8 +93,12 @@ ERROR_BEND_NCPL_STAT  N  r  dx  dy  φx  φy  φz  dg  dz
 !!! note "`dg` (fixed 2026-07)"
     The `field_rel` draw now lands on the Dipole's own `field_rel`
     slot, consumed via `effective_angle` — earlier releases silently
-    dropped it.  Alignment errors (`dx`, `dy`, `φz`) apply as before;
-    `dz` is still stored-but-inert (a parse warning now says so).
+    dropped it. `dz` is still stored but inert (a parse warning now says so).
+
+!!! note "`dg` and `φz` steer the beam (fixed 2026-10-07)"
+    A bend's field error and its roll `φz` now also move the orbit, not
+    only the optics. See
+    [Element-level errors](03_element_errors.md#field-parameters).
 
 ## `ERROR_BEAM_STAT`
 

@@ -12,6 +12,8 @@ import time
 
 import numpy as np
 import pyqtgraph as pg
+
+from linac_gen_gui.interphase.plots.plot_style import HelixItemSample
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
@@ -128,7 +130,8 @@ class MatchConvergenceDialog(QDialog):
         self._emit_plot.getAxis("left").setTextPen(theme.TEXT_2)
         self._emit_plot.getAxis("bottom").setTextPen(theme.TEXT_2)
         self._emit_plot.addLegend(offset=(10, 10),
-                                  labelTextColor=theme.TEXT_2)
+                                  labelTextColor=theme.TEXT_2,
+                                  sampleType=HelixItemSample)
         # Distinct colors: εnx (accent / blueish), εny (warning / orange),
         # εnz (text-0 / lighter).  Same line width / marker style as
         # the cost plot for visual continuity.

@@ -78,3 +78,52 @@ def test_compute_emittance_empty_array():
 def test_compute_halo_empty_array():
     p = np.zeros((0, 6))
     assert compute_halo(p, "x") == 0.0
+
+
+# ----------------------------------------------------------- ellipse_points
+@pytest.mark.parametrize("alpha,beta,eps", [(0.0, 2.0, 1.0), (1.3, 0.4, 2.5), (-2.0, 10.0, 0.1)])
+def test_ellipse_points_courant_snyder(alpha, beta, eps):
+    """Every point of the drawn ellipse satisfies γu² + 2αuu′ + βu′² = ε
+    about the centre; the curve is closed, has area πε and the extents
+    √(εβ), √(εγ); the sign convention matches compute_twiss_from_particles."""
+    from linac_gen.diagnostics.moments import ellipse_points
+    cx, cy = 1.5, -0.7
+    u, up = ellipse_points(alpha, beta, eps, centre=(cx, cy), n=200)
+    assert u.shape == up.shape == (201,)
+    gamma = (1 + alpha * alpha) / beta
+    du, dup = u - cx, up - cy
+    inv = gamma * du * du + 2 * alpha * du * dup + beta * dup * dup
+    assert np.allclose(inv, eps, rtol=1e-12, atol=1e-12 * eps)
+    assert u[0] == pytest.approx(u[-1]) and up[0] == pytest.approx(up[-1])
+    area = 0.5 * abs(np.dot(u[:-1], np.roll(up[:-1], -1)) - np.dot(up[:-1], np.roll(u[:-1], -1)))
+    assert area == pytest.approx(np.pi * eps, rel=1e-3)
+    assert du.max() == pytest.approx(np.sqrt(eps * beta), rel=1e-6)
+    assert dup.max() == pytest.approx(np.sqrt(eps * gamma), rel=5e-4)   # extremum between samples
+    # alpha > 0 (converging): at the largest u the slope u′ is negative
+    k = int(np.argmax(du))
+    if alpha > 0:
+        assert dup[k] < 0
+    elif alpha < 0:
+        assert dup[k] > 0
+
+
+def test_ellipse_points_matches_particle_twiss_sign():
+    """The ellipse of (α, β, ε) estimated from particles encloses the
+    1-σ shape of those particles: same sign convention end to end."""
+    from linac_gen.diagnostics.moments import compute_twiss_from_particles, ellipse_points
+    p = _make_gaussian_beam(n=20000)
+    p[:, 1] = p[:, 1] - 0.8 * p[:, 0]            # correlated: alpha > 0
+    tw = compute_twiss_from_particles(p, "x")
+    assert tw["alpha"] > 0
+    u, up = ellipse_points(tw["alpha"], tw["beta"], tw["emittance"], n=400)
+    # the principal axis of the particle cloud and of the ellipse agree
+    w_p, v_p = np.linalg.eigh(np.cov(p[:, 0], p[:, 1]))
+    w_e, v_e = np.linalg.eigh(np.cov(u, up))
+    assert abs(np.dot(v_p[:, 1], v_e[:, 1])) == pytest.approx(1.0, abs=1e-2)
+
+
+def test_ellipse_points_degenerate_inputs():
+    from linac_gen.diagnostics.moments import ellipse_points
+    for a, b, e in ((0.0, 0.0, 1.0), (0.0, 1.0, 0.0), (0.0, -1.0, 1.0), (0.0, 1.0, -1.0), (0.0, np.nan, 1.0)):
+        u, up = ellipse_points(a, b, e)
+        assert u.size == 0 and up.size == 0

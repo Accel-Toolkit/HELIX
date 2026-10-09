@@ -39,9 +39,10 @@ to differ.
 
 ¹ `dz` draws are stored on the element but **ignored by the
 tracker** (only dx, dy, tilt are honoured).
-² Amplitude errors are currently a **silent no-op** on `FieldMap`
-cavities (no `voltage` attribute) and on `Dipole` bends (no `field`
-attribute); they take effect on `RFGap` and `Solenoid`.  See
+² Amplitude errors land on the element's relative slot: `voltage_rel`
+for `FieldMap` cavities (fixed 2026-07) and `field_rel` for `Dipole`
+bends. Since 2026-10-07 a Dipole field error, and a roll `φz`, move the
+orbit as well as the optics. See
 [Element-level errors](../08_errors/03_element_errors.md).
 
 ## Validation residuals (5 mA SC)

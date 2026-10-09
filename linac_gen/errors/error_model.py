@@ -28,6 +28,145 @@ class ErrorDef:
     # patterns alone cannot separate solenoid field maps from cavity
     # field maps in decks where both are ``FMAP_*``.
     element_kind: str | None = None
+    # Power-supply circuits.  ``circuits`` maps a circuit name to its member
+    # elements (element ``label`` or ``name``, e.g. the BTL deck's MAD names
+    # ``QD101``).  ``circuit_mode`` says how the matched elements' draws
+    # relate (see :meth:`ErrorStudy.add_error`).  ``None`` / "independent"
+    # keeps the historical one-draw-per-element stream bit for bit.
+    circuits: dict | None = None
+    circuit_mode: str = "independent"
+    assignment: str = "random"
+    # Land a ``*_rel`` draw in the element's own relative slot
+    # (``gradient_rel`` / ``field_rel``) even when the design attribute
+    # exists, leaving the design value untouched — so a later circuit
+    # re-match (one shared absolute setpoint) keeps the spread.
+    into_slot: bool = False
+    # Sorting on MEASURED values: σ of the measurement error (same units as
+    # the draw, e.g. 5e-4 = 0.05 % for gradient_rel); 0 = perfect.
+    sort_noise: float = 0.0
+    # Draw only for matched elements that sit on a listed circuit; the
+    # rest of the pattern's matches get nothing (e.g. one supply family
+    # out of a ``BEND_*`` pattern).
+    listed_only: bool = False
+
+
+_CIRCUIT_MODES = ("independent", "about_mean", "common")
+_STREAM_TAG = 0x5EEDE770            # see ErrorStudy(rng_stream=...)
+
+
+def stream_entropy(seed: int, *key: int) -> tuple:
+    """Entropy for an auxiliary per-seed stream (at least one ``key``).
+
+    Tagged and at least 4 words long, so for seeds and keys below 2³² it
+    cannot coincide with an :class:`ErrorStudy` element / beam stream or
+    ``create_beam``'s integer seeds (no SeedSequence zero-padding
+    collisions; astronomically large integers can still alias words)."""
+    if not key:
+        raise ValueError("stream_entropy needs at least one key")
+    return (int(seed), _STREAM_TAG + 1) + tuple(int(k) for k in key) + (0,)
+_ASSIGNMENTS = ("random", "sorted")
+
+
+def _elem_keys(elem) -> tuple:
+    """Names a circuit list may use for ``elem``: deck label, then name."""
+    lab = getattr(elem, "label", None)
+    return tuple(k for k in (lab, getattr(elem, "name", None)) if k)
+
+
+def _draw_value(rng, err) -> float | None:
+    """One draw of ``err``'s distribution (None for an unknown one)."""
+    if err.distribution == "gaussian":
+        return _draw_truncated_gaussian(rng, err.sigma, err.cutoff)
+    if err.distribution == "uniform":
+        return float(rng.uniform(-err.half_width, err.half_width))
+    return None
+
+
+def circuit_groups(matched, circuits) -> tuple[list, list]:
+    """Partition ``matched`` elements by circuit.
+
+    Returns ``(groups, unlisted)``: ``groups`` is a list of
+    ``(circuit_name, [indices into matched])`` in order of first
+    appearance (only circuits with at least one matched member),
+    ``unlisted`` the indices of matched elements on no listed circuit.
+    """
+    owner = {}
+    for cname, members in (circuits or {}).items():
+        for m in members:
+            owner.setdefault(str(m), cname)
+    order, groups, unlisted = [], {}, []
+    for i, elem in enumerate(matched):
+        cname = next((owner[k] for k in _elem_keys(elem) if k in owner), None)
+        if cname is None:
+            unlisted.append(i)
+            continue
+        if cname not in groups:
+            groups[cname] = []
+            order.append(cname)
+        groups[cname].append(i)
+    return [(c, groups[c]) for c in order], unlisted
+
+
+def magnet_type(elem) -> tuple:
+    """Production family of a magnet: class and length (mm, 0.1 µm).
+
+    Sorting draws from one production batch per family — an arc-dipole
+    outlier cannot be installed in a short chicane-magnet position."""
+    return (type(elem).__name__, round(float(getattr(elem, "length", 0.0) or 0.0), 4))
+
+
+def _centred_block_order(sizes):
+    """Block sizes (descending) arranged largest-in-the-middle, the rest
+    alternating outward — the densest part of a batch to the largest
+    string."""
+    order = []
+    for k, n in enumerate(sorted(sizes, reverse=True)):
+        if k % 2:
+            order.append(n)
+        else:
+            order.insert(0, n)
+    return order
+
+
+def sorted_assignment(batch, groups, unlisted, rng, keys=None) -> np.ndarray:
+    """Install a production batch of magnet values by sorting.
+
+    The rule of the BTL sorting exercise: the magnets furthest from the
+    batch median go to the individually powered positions (single-magnet
+    circuits and magnets on no listed circuit), where their own supply
+    absorbs their error; the rest, sorted by value, are cut into
+    contiguous runs — one run per series string, the largest string on
+    the densest (central) run and the others alternating outward — so
+    each string carries near-equal magnets.  Inside a string the run is
+    shuffled over the positions.  Returns the value per matched index.
+    Call it per magnet family (:func:`magnet_type`).
+
+    ``keys``: the values the sorting DECIDES on — e.g. the measured GdL,
+    true value + measurement error — while the true ``batch`` values are
+    what gets installed.  Default: the true values (perfect measurement).
+    """
+    batch = np.asarray(batch, dtype=float)
+    keys = batch if keys is None else np.asarray(keys, dtype=float)
+    out = np.empty_like(batch)
+    singles = list(unlisted) + [ix[0] for _, ix in groups if len(ix) == 1]
+    multis = sorted((ix for _, ix in groups if len(ix) > 1), key=len, reverse=True)
+    order = np.argsort(-np.abs(keys - np.median(keys)), kind="stable")
+    for pos, b in zip(singles, order[:len(singles)]):
+        out[pos] = batch[b]
+    tail = order[len(singles):]
+    rest = batch[tail[np.argsort(keys[tail], kind="stable")]]
+    # contiguous runs, largest string centred; strings of equal size take
+    # the runs in their (deterministic) lattice order
+    by_size = {}
+    for ix in multis:
+        by_size.setdefault(len(ix), []).append(ix)
+    k = 0
+    for n in _centred_block_order([len(ix) for ix in multis]):
+        ix = by_size[n].pop(0)
+        run = rest[k:k + n]
+        k += n
+        out[np.asarray(ix)[rng.permutation(n)]] = run
+    return out
 
 
 @dataclass
@@ -198,7 +337,7 @@ class ErrorStudy:
     """
 
     def __init__(self, lattice, beam_config, n_seeds=100, sc_config=None,
-                 base_seed: int = 0):
+                 base_seed: int = 0, rng_stream=0):
         self.lattice = lattice
         self.beam_config = beam_config
         self.n_seeds = n_seeds
@@ -208,6 +347,18 @@ class ErrorStudy:
         # statistically independent ensembles (useful for chained Monte
         # Carlo runs where the user wants to extend an existing study).
         self.base_seed = int(base_seed)
+        # Entropy key: 0 is the historical stream (element draws
+        # ``(seed, 0)``, beam draws ``(seed, 2)``).  Any other int or tuple
+        # of ints gives streams ``(seed, TAG, *key, 0|1)`` — e.g. per-pulse
+        # jitter on top of a frozen static seed, which must never replay
+        # that seed's static draws.  The constant TAG word matters:
+        # SeedSequence zero-pads short entropy, so a bare ``(seed, *key)``
+        # would make key 0/(0,0) replay the default stream and key 2 the
+        # default BEAM stream (adversarial-review finding).
+        key = rng_stream if isinstance(rng_stream, (tuple, list)) else (rng_stream,)
+        self._rng_key = tuple(int(k) for k in key)
+        if not self._rng_key:
+            raise ValueError("rng_stream: an empty key")
         # Absorb errors attached to the lattice (TraceWin ERROR_* family).
         # Copy so user mutations on this list don't leak into the lattice.
         self._errors: list[ErrorDef] = list(getattr(lattice, "errors", []) or [])
@@ -229,7 +380,9 @@ class ErrorStudy:
 
     def add_error(self, pattern, parameter, distribution="gaussian",
                   sigma=0.0, half_width=0.0, cutoff=3.0,
-                  element_kind=None):
+                  element_kind=None, *, circuits=None,
+                  circuit_mode="independent", assignment="random",
+                  into_slot=False, listed_only=False, sort_noise=0.0):
         """Register an element-level error definition.
 
         ``element_kind`` (optional) gates the name pattern by element
@@ -244,7 +397,62 @@ class ErrorStudy:
         is rejected HERE (adversarial-review finding: a typo like
         ``"Gaussian"`` used to pass registration and the audit while
         producing zero draws).
+
+        Power-supply circuits (``circuits = {name: [member labels or
+        names]}``) relate the matched elements' draws:
+
+        * ``circuit_mode="independent"`` — one draw per element (the
+          historical behaviour; circuits are then only bookkeeping);
+        * ``"about_mean"`` — one draw per magnet minus its circuit's mean.
+          A series string is set to its mean transfer function, so only
+          the magnet-to-magnet spread survives; a magnet alone on its
+          supply, or on no listed circuit, keeps no error (its own
+          current absorbs it).  This is the model of a "BdL within x %
+          of each other" specification;
+        * ``"common"`` — one draw per circuit shared by its magnets (a
+          power-supply excursion); an unlisted magnet gets its own draw.
+
+        ``assignment="sorted"`` (``about_mean`` only) treats the drawn
+        values as a production batch installed by sorting
+        (:func:`sorted_assignment`) instead of in drawn order.
+        ``into_slot=True`` lands ``*_rel`` draws in the element's relative
+        slot (``gradient_rel``) instead of scaling the design value.
+        ``listed_only=True`` draws only for matched elements on a listed
+        circuit (one supply family out of a broader pattern).
+        ``sort_noise`` (sorted only): σ of the magnet-measurement error the
+        sorting decides on — magnets are sorted on true + N(0, σ) and the
+        true values installed.
+
+        The circuit map is checked against the lattice at registration:
+        a member that matches no element, a magnet listed on two circuits,
+        and a circuit only partly inside the pattern (its mean would be
+        taken over the matched members only) each raise a warning.
         """
+        if circuit_mode not in _CIRCUIT_MODES:
+            raise ValueError(f"add_error: circuit_mode {circuit_mode!r} — use "
+                             f"one of {_CIRCUIT_MODES}")
+        if assignment not in _ASSIGNMENTS:
+            raise ValueError(f"add_error: assignment {assignment!r} — use one "
+                             f"of {_ASSIGNMENTS}")
+        if circuit_mode != "independent" and not circuits:
+            raise ValueError(f"add_error: circuit_mode={circuit_mode!r} needs "
+                             "a circuits map")
+        if assignment == "sorted" and circuit_mode != "about_mean":
+            raise ValueError("add_error: assignment='sorted' sorts magnets "
+                             "onto series strings — it needs "
+                             "circuit_mode='about_mean'")
+        if into_slot and not str(parameter).endswith("_rel"):
+            raise ValueError(f"add_error: into_slot applies to *_rel "
+                             f"parameters, not {parameter!r}")
+        if sort_noise and assignment != "sorted":
+            raise ValueError("add_error: sort_noise applies to assignment='sorted'")
+        if float(sort_noise) < 0.0:
+            raise ValueError("add_error: sort_noise must be >= 0")
+        if listed_only and not circuits:
+            raise ValueError("add_error: listed_only needs a circuits map")
+        if circuits:
+            self._check_circuits(pattern, element_kind, circuits,
+                                 sorted_mode=(assignment == "sorted"))
         if distribution not in ("gaussian", "uniform"):
             raise ValueError(
                 f"add_error({pattern!r}, {parameter!r}): unknown "
@@ -268,7 +476,48 @@ class ErrorStudy:
             distribution=distribution, sigma=sigma,
             half_width=half_width, cutoff=cutoff,
             element_kind=element_kind,
+            circuits=({str(k): [str(m) for m in v] for k, v in circuits.items()}
+                      if circuits else None),
+            circuit_mode=circuit_mode, assignment=assignment,
+            into_slot=bool(into_slot), listed_only=bool(listed_only),
+            sort_noise=float(sort_noise),
         ))
+
+    def _check_circuits(self, pattern, kind, circuits, sorted_mode=False) -> None:
+        """Warn about circuit-map entries that cannot mean what they say."""
+        keys = {}
+        for e in self.lattice.elements:
+            for k in _elem_keys(e):
+                keys.setdefault(k, e)
+        seen, problems = {}, []
+        for cname, members in circuits.items():
+            for m in members:
+                m = str(m)
+                if m not in keys:
+                    problems.append(f"member {m!r} of circuit {cname!r} matches no "
+                                    "element (label or name) — it would be "
+                                    "silently unlisted")
+                if m in seen and seen[m] != cname:
+                    problems.append(f"{m!r} is listed on {seen[m]!r} and {cname!r} "
+                                    "— the first wins")
+                seen.setdefault(m, cname)
+            inside = [m for m in members if str(m) in keys
+                      and fnmatch.fnmatch(keys[str(m)].name, pattern)
+                      and (kind is None or element_kind(keys[str(m)]) == kind)]
+            if sorted_mode and len({magnet_type(keys[str(m)]) for m in inside}) > 1:
+                problems.append(f"circuit {cname!r} mixes magnet families — sorting "
+                                "draws one batch per family, so the string is "
+                                "sorted piecewise")
+            if inside and len(inside) < len(members):
+                problems.append(f"circuit {cname!r}: only {len(inside)} of "
+                                f"{len(members)} members match {pattern!r} — the "
+                                "string mean / single-supply status would use "
+                                "the matched members only")
+        for msg in problems[:12]:
+            warnings.warn(f"add_error({pattern!r}): {msg}", UserWarning, stacklevel=3)
+        if len(problems) > 12:
+            warnings.warn(f"add_error({pattern!r}): {len(problems) - 12} more "
+                          "circuit-map problems", UserWarning, stacklevel=3)
 
     def add_beam_error(self, parameter: str, distribution: str = "gaussian",
                        sigma: float = 0.0, half_width: float = 0.0,
@@ -338,12 +587,17 @@ class ErrorStudy:
         for i, err in enumerate(self._errors):
             bad_dist = err.distribution not in ("gaussian", "uniform")
             matched, applicable, skipped = [], [], []
+            listed = None
+            if err.circuits and err.listed_only:
+                listed = {str(m) for v in err.circuits.values() for m in v}
             for elem in self.lattice.elements:
                 if not fnmatch.fnmatch(elem.name, err.pattern):
                     continue
                 if (err.element_kind is not None
                         and element_kind(elem) != err.element_kind):
                     continue
+                if listed is not None and not any(k in listed for k in _elem_keys(elem)):
+                    continue          # listed_only: no draw lands here
                 matched.append(elem.name)
                 if bad_dist:
                     continue          # draws nothing — can't overlap/apply
@@ -355,7 +609,7 @@ class ErrorStudy:
                     applicable.append(elem.name)
                 else:
                     skipped.append((elem.name, type(elem).__name__))
-            rows.append({
+            row = {
                 "index": i, "pattern": err.pattern,
                 "element_kind": err.element_kind,
                 "parameter": err.parameter,
@@ -363,7 +617,19 @@ class ErrorStudy:
                 "skipped": skipped,
                 "inert": err.parameter in self._INERT_ALIGN,
                 "bad_distribution": bad_dist,
-            })
+            }
+            if err.circuits:
+                elems = [e for e in self.lattice.elements
+                         if fnmatch.fnmatch(e.name, err.pattern)
+                         and (err.element_kind is None
+                              or element_kind(e) == err.element_kind)]
+                groups, unlisted = circuit_groups(elems, err.circuits)
+                row["circuits"] = {
+                    "mode": err.circuit_mode, "assignment": err.assignment,
+                    "groups": {c: [elems[k].name for k in ix] for c, ix in groups},
+                    "unlisted": [elems[k].name for k in unlisted],
+                }
+            rows.append(row)
         beam_rows: list[dict] = []
         cfg = self.beam_config
         for i, be in enumerate(self._beam_errors):
@@ -575,7 +841,9 @@ class ErrorStudy:
         # draws can never collide with another seed's element-error
         # stream: with the old ``seed + 50_000`` scheme, seed i's beam
         # stream was bit-identical to seed i+50 000's element stream.
-        rng = np.random.default_rng((int(seed), 2))
+        rng = np.random.default_rng(
+            (int(seed), 2) if self._rng_key == (0,)
+            else (int(seed), _STREAM_TAG) + self._rng_key + (1,))
         cfg = copy.deepcopy(self.beam_config)
         blog: list[dict] = []
         for be in self._beam_errors:
@@ -635,11 +903,200 @@ class ErrorStudy:
             "BeamConfig — error NOT applied.", stacklevel=2)
         return False
 
+    def _grouped_values(self, err, matched, rng) -> list:
+        """Draws for ``matched`` (lattice order) related by circuit.
+
+        See :meth:`add_error` for the modes.  RNG use is deterministic per
+        seed: one draw per drawn element in lattice order ("independent" /
+        "about_mean"), or one per circuit in order of first appearance
+        plus one per unlisted element ("common"); with ``listed_only``
+        unlisted elements draw nothing.  "sorted" then consumes one
+        permutation per series string, family by family
+        (:func:`magnet_type`).  ``None`` marks an element with no draw.
+        """
+        n = len(matched)
+        if n == 0:
+            return []
+        mode = err.circuit_mode if err.circuits else "independent"
+        groups, unlisted = circuit_groups(matched, err.circuits)
+        unl = set(unlisted)
+        skip = unl if err.listed_only else set()
+        out = [None] * n
+        if mode == "common":
+            done = set()
+            for i in range(n):
+                if i in skip:
+                    continue
+                g = next((ix for _, ix in groups if i in ix), None)
+                if g is None:
+                    out[i] = float(_draw_value(rng, err))
+                elif id(g) not in done:
+                    done.add(id(g))
+                    v = float(_draw_value(rng, err))
+                    for k in g:
+                        out[k] = v
+            return out
+        drawn = [i for i in range(n) if i not in skip]
+        vals = np.zeros(n)
+        for i in drawn:
+            vals[i] = _draw_value(rng, err)
+        if mode == "independent":
+            for i in drawn:
+                out[i] = float(vals[i])
+            return out
+        if err.assignment == "sorted":
+            fams = {}
+            for i in drawn:
+                fams.setdefault(magnet_type(matched[i]), []).append(i)
+            for members in fams.values():
+                mset = set(members)
+                pos = {i: k for k, i in enumerate(members)}
+                g_f = [(c, [pos[i] for i in ix if i in mset]) for c, ix in groups]
+                g_f = [(c, ix) for c, ix in g_f if ix]
+                u_f = [pos[i] for i in members if i in unl]
+                keys = None
+                if err.sort_noise > 0.0:     # measured = true + error
+                    keys = vals[members] + rng.normal(0.0, err.sort_noise, len(members))
+                vals[members] = sorted_assignment(vals[members], g_f, u_f, rng, keys=keys)
+        for i in drawn:
+            out[i] = 0.0                      # unlisted / single: absorbed
+        for _, ix in groups:
+            if len(ix) > 1:
+                ix = np.asarray(ix)
+                for k, v in zip(ix, vals[ix] - vals[ix].mean()):
+                    out[k] = float(v)
+        return out
+
+    def _apply_draw(self, elem, err, val, _log) -> None:
+        """Write one drawn value onto ``elem`` (shared by both draw paths)."""
+        if err.parameter.endswith("_rel") and err.into_slot \
+                and hasattr(elem, err.parameter):
+            # Requested: keep the design value, add to the relative slot
+            # (``effective_gradient = gradient·(1+gradient_rel)``).
+            setattr(elem, err.parameter, getattr(elem, err.parameter) + val)
+            _log(elem, err, val, True, "slot-add")
+        elif err.parameter.endswith("_rel"):
+            # Relative error: multiply the design field × (1+δ).
+            # Strip the trailing "_rel" and look up the design slot
+            # (e.g. "gradient_rel" → "gradient").  This is the
+            # legacy behaviour kept stable for the existing test
+            # suite — equivalent in *physics* to setting the
+            # element's ``gradient_rel`` perturbation slot.
+            base_param = err.parameter[:-4]
+            if hasattr(elem, base_param):
+                setattr(elem, base_param,
+                        getattr(elem, base_param) * (1.0 + val))
+                _log(elem, err, val, True, "scale")
+            elif hasattr(elem, err.parameter):
+                # No design slot, but the element carries the
+                # relative-perturbation slot itself: FieldMap /
+                # FieldMap3D consume ``voltage_rel`` via
+                # effective_ke/kb = k·(1+voltage_rel), Dipole
+                # consumes ``field_rel`` via effective_angle.
+                # ADD the draw so multiple ErrorDefs (and any
+                # hand-set design offset) compose.  Before this
+                # branch, ERROR_CAV amplitude errors on field-map
+                # cavities and ERROR_BEND field errors were
+                # silently dropped — tolerance studies ran with
+                # zero RF-amplitude jitter on SRF sections.
+                setattr(elem, err.parameter,
+                        getattr(elem, err.parameter) + val)
+                _log(elem, err, val, True, "slot-add")
+            else:
+                # Neither slot exists on this element type: the
+                # error cannot be applied.  Warn ONCE per
+                # (pattern, parameter, type) so a mis-targeted
+                # ErrorDef is never again a silent no-op.
+                warned = getattr(self, "_warned_skipped", None)
+                if warned is None:
+                    warned = self._warned_skipped = set()
+                key = (err.pattern, err.parameter,
+                       type(elem).__name__)
+                if key not in warned:
+                    warned.add(key)
+                    warnings.warn(
+                        f"ErrorDef({err.pattern!r}, "
+                        f"{err.parameter!r}) matched element "
+                        f"'{elem.name}' "
+                        f"({type(elem).__name__}) but the element "
+                        f"has neither '{base_param}' nor "
+                        f"'{err.parameter}' — error NOT applied.",
+                        stacklevel=2,
+                    )
+                _log(elem, err, val, False, "no-slot")
+        elif err.parameter in ("dx", "dy", "dz",
+                               "tilt_deg", "pitch_deg", "yaw_deg"):
+            # Alignment slots: ADD to any design / accumulated
+            # value so multiple ErrorDefs on the same parameter
+            # compose correctly, and so an ERROR_*_STAT directive
+            # layered on top of a hand-edited dx still works.
+            if hasattr(elem, err.parameter):
+                setattr(elem, err.parameter,
+                        getattr(elem, err.parameter) + val)
+            else:
+                setattr(elem, err.parameter, val)
+            _log(elem, err, val, True, "align-add")
+        elif err.parameter == "phase":
+            if hasattr(elem, "phase"):
+                elem.phase += val
+                _log(elem, err, val, True, "add")
+            else:
+                # Same warn-once contract as the other skip
+                # branches — this was the last silent no-op path.
+                warned = getattr(self, "_warned_skipped", None)
+                if warned is None:
+                    warned = self._warned_skipped = set()
+                key = (err.pattern, err.parameter,
+                       type(elem).__name__)
+                if key not in warned:
+                    warned.add(key)
+                    warnings.warn(
+                        f"ErrorDef({err.pattern!r}, 'phase') "
+                        f"matched element '{elem.name}' "
+                        f"({type(elem).__name__}) but the element "
+                        "has no 'phase' slot — error NOT applied.",
+                        stacklevel=2,
+                    )
+                _log(elem, err, val, False, "no-slot")
+        else:
+            # Additive default for everything else (phase_offset,
+            # frequency_offset, raw gradient, raw field, etc.)
+            if hasattr(elem, err.parameter):
+                setattr(elem, err.parameter,
+                        getattr(elem, err.parameter) + val)
+                _log(elem, err, val, True, "add")
+            else:
+                # Same warn-once contract as the voltage_rel branch
+                # above: a matched-but-unsupported parameter must
+                # never be a silent no-op (ERROR_CAV phase errors on
+                # an element without a phase_offset slot used to be
+                # dropped without a trace — tolerance studies ran
+                # with zero RF-phase jitter).
+                warned = getattr(self, "_warned_skipped", None)
+                if warned is None:
+                    warned = self._warned_skipped = set()
+                key = (err.pattern, err.parameter,
+                       type(elem).__name__)
+                if key not in warned:
+                    warned.add(key)
+                    warnings.warn(
+                        f"ErrorDef({err.pattern!r}, "
+                        f"{err.parameter!r}) matched element "
+                        f"'{elem.name}' "
+                        f"({type(elem).__name__}) but the element "
+                        f"has no '{err.parameter}' slot — error "
+                        f"NOT applied.",
+                        stacklevel=2,
+                    )
+                _log(elem, err, val, False, "no-slot")
+
     def _apply_errors(self, seed):
         """Create a copy of the lattice with random errors applied."""
         # Tuple entropy → a stream disjoint from the beam-error stream
         # ((seed, 2)) and from create_beam's integer seeds.
-        rng = np.random.default_rng((int(seed), 0))
+        rng = np.random.default_rng(
+            (int(seed), 0) if self._rng_key == (0,)
+            else (int(seed), _STREAM_TAG) + self._rng_key + (0,))
         lattice_copy = copy.deepcopy(self.lattice)
         applied_log: list[dict] = []
 
@@ -651,6 +1108,21 @@ class ErrorStudy:
             })
 
         for err in self._errors:
+            if (err.circuits is not None or err.into_slot) \
+                    and err.distribution in ("gaussian", "uniform"):
+                # Circuit-aware / slot-writing definitions: draw for all
+                # matched elements first, relate the draws by circuit,
+                # then apply.  Definitions without these options never
+                # reach this branch — their RNG stream and application
+                # below are unchanged bit for bit.
+                matched = [e for e in lattice_copy.elements
+                           if fnmatch.fnmatch(e.name, err.pattern)
+                           and (err.element_kind is None
+                                or element_kind(e) == err.element_kind)]
+                for elem, val in zip(matched, self._grouped_values(err, matched, rng)):
+                    if val is not None:
+                        self._apply_draw(elem, err, val, _log)
+                continue
             for elem in lattice_copy.elements:
                 if not fnmatch.fnmatch(elem.name, err.pattern):
                     continue
@@ -685,121 +1157,7 @@ class ErrorStudy:
                     _log(elem, err, 0.0, False, "bad-distribution")
                     continue
 
-                # Apply error
-                if err.parameter.endswith("_rel"):
-                    # Relative error: multiply the design field × (1+δ).
-                    # Strip the trailing "_rel" and look up the design slot
-                    # (e.g. "gradient_rel" → "gradient").  This is the
-                    # legacy behaviour kept stable for the existing test
-                    # suite — equivalent in *physics* to setting the
-                    # element's ``gradient_rel`` perturbation slot.
-                    base_param = err.parameter[:-4]
-                    if hasattr(elem, base_param):
-                        setattr(elem, base_param,
-                                getattr(elem, base_param) * (1.0 + val))
-                        _log(elem, err, val, True, "scale")
-                    elif hasattr(elem, err.parameter):
-                        # No design slot, but the element carries the
-                        # relative-perturbation slot itself: FieldMap /
-                        # FieldMap3D consume ``voltage_rel`` via
-                        # effective_ke/kb = k·(1+voltage_rel), Dipole
-                        # consumes ``field_rel`` via effective_angle.
-                        # ADD the draw so multiple ErrorDefs (and any
-                        # hand-set design offset) compose.  Before this
-                        # branch, ERROR_CAV amplitude errors on field-map
-                        # cavities and ERROR_BEND field errors were
-                        # silently dropped — tolerance studies ran with
-                        # zero RF-amplitude jitter on SRF sections.
-                        setattr(elem, err.parameter,
-                                getattr(elem, err.parameter) + val)
-                        _log(elem, err, val, True, "slot-add")
-                    else:
-                        # Neither slot exists on this element type: the
-                        # error cannot be applied.  Warn ONCE per
-                        # (pattern, parameter, type) so a mis-targeted
-                        # ErrorDef is never again a silent no-op.
-                        warned = getattr(self, "_warned_skipped", None)
-                        if warned is None:
-                            warned = self._warned_skipped = set()
-                        key = (err.pattern, err.parameter,
-                               type(elem).__name__)
-                        if key not in warned:
-                            warned.add(key)
-                            warnings.warn(
-                                f"ErrorDef({err.pattern!r}, "
-                                f"{err.parameter!r}) matched element "
-                                f"'{elem.name}' "
-                                f"({type(elem).__name__}) but the element "
-                                f"has neither '{base_param}' nor "
-                                f"'{err.parameter}' — error NOT applied.",
-                                stacklevel=2,
-                            )
-                        _log(elem, err, val, False, "no-slot")
-                elif err.parameter in ("dx", "dy", "dz",
-                                       "tilt_deg", "pitch_deg", "yaw_deg"):
-                    # Alignment slots: ADD to any design / accumulated
-                    # value so multiple ErrorDefs on the same parameter
-                    # compose correctly, and so an ERROR_*_STAT directive
-                    # layered on top of a hand-edited dx still works.
-                    if hasattr(elem, err.parameter):
-                        setattr(elem, err.parameter,
-                                getattr(elem, err.parameter) + val)
-                    else:
-                        setattr(elem, err.parameter, val)
-                    _log(elem, err, val, True, "align-add")
-                elif err.parameter == "phase":
-                    if hasattr(elem, "phase"):
-                        elem.phase += val
-                        _log(elem, err, val, True, "add")
-                    else:
-                        # Same warn-once contract as the other skip
-                        # branches — this was the last silent no-op path.
-                        warned = getattr(self, "_warned_skipped", None)
-                        if warned is None:
-                            warned = self._warned_skipped = set()
-                        key = (err.pattern, err.parameter,
-                               type(elem).__name__)
-                        if key not in warned:
-                            warned.add(key)
-                            warnings.warn(
-                                f"ErrorDef({err.pattern!r}, 'phase') "
-                                f"matched element '{elem.name}' "
-                                f"({type(elem).__name__}) but the element "
-                                "has no 'phase' slot — error NOT applied.",
-                                stacklevel=2,
-                            )
-                        _log(elem, err, val, False, "no-slot")
-                else:
-                    # Additive default for everything else (phase_offset,
-                    # frequency_offset, raw gradient, raw field, etc.)
-                    if hasattr(elem, err.parameter):
-                        setattr(elem, err.parameter,
-                                getattr(elem, err.parameter) + val)
-                        _log(elem, err, val, True, "add")
-                    else:
-                        # Same warn-once contract as the voltage_rel branch
-                        # above: a matched-but-unsupported parameter must
-                        # never be a silent no-op (ERROR_CAV phase errors on
-                        # an element without a phase_offset slot used to be
-                        # dropped without a trace — tolerance studies ran
-                        # with zero RF-phase jitter).
-                        warned = getattr(self, "_warned_skipped", None)
-                        if warned is None:
-                            warned = self._warned_skipped = set()
-                        key = (err.pattern, err.parameter,
-                               type(elem).__name__)
-                        if key not in warned:
-                            warned.add(key)
-                            warnings.warn(
-                                f"ErrorDef({err.pattern!r}, "
-                                f"{err.parameter!r}) matched element "
-                                f"'{elem.name}' "
-                                f"({type(elem).__name__}) but the element "
-                                f"has no '{err.parameter}' slot — error "
-                                f"NOT applied.",
-                                stacklevel=2,
-                            )
-                        _log(elem, err, val, False, "no-slot")
+                self._apply_draw(elem, err, val, _log)
 
         self.applied_log[int(seed)] = applied_log
         return lattice_copy

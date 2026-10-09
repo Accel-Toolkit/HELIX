@@ -167,6 +167,7 @@ nav:
       - Interpreting results: 08_errors/06_interpreting.md
       - Orbit correction: 08_errors/07_correction.md
       - Orbit-response calibration (LOCO): 08_errors/08_orm_calibration.md
+      - Circuits, jitter and ensembles: 08_errors/09_circuits_ensembles.md
   - Diagnostics:
       - Recorder fields: 09_diagnostics/01_recorder.md
       - Emittances: 09_diagnostics/02_emittances.md

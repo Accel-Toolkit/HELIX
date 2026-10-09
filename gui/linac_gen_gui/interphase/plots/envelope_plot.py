@@ -71,6 +71,9 @@ def _make_symmetric_band(plot: pg.PlotWidget, color: str,
     fill = pg.FillBetweenItem(curve_pos, curve_neg,
                               brush=pg.mkBrush(r, g, b, fill_alpha))
     plot.addItem(fill)
+    # Only curve_pos carries the legend entry: a legend click on it must
+    # hide the lower curve and the fill too (plot_style.HelixItemSample).
+    curve_pos._helix_linked = (curve_neg, fill)
     return curve_pos, curve_neg, fill
 
 

@@ -183,3 +183,202 @@ def test_series_handles_garbage_entries():
     out = eigenemittances_series(sigmas)
     assert out.shape == (4, 3)
     assert np.all(out[1] == 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Normalised canonical intrinsic emittances (canonical_eigenemittances)
+# ---------------------------------------------------------------------------
+from types import SimpleNamespace
+
+from linac_gen.diagnostics.eigenemittance import (   # noqa: E402
+    canonical_eigenemittances, canonical_eigenemittances_series,
+    canonical_scale,
+)
+from linac_gen.diagnostics.recorder import _convert_emit_z_to_mmmrad  # noqa: E402
+
+_M = 939.29420          # H- rest mass [MeV]
+_J6C = np.kron(np.eye(3), np.array([[0.0, 1.0], [-1.0, 0.0]]))
+
+
+def _kin(w_mev):
+    g = 1.0 + w_mev / _M
+    return g, np.sqrt(g * g - 1.0)
+
+
+def _random_symplectic(seed, scale=0.3):
+    from scipy.linalg import expm
+    h = np.random.default_rng(seed).normal(size=(6, 6))
+    return expm(_J6C @ (h + h.T) * scale)
+
+
+def _sigma_coupled():
+    s = np.diag([1.0, 1.0, 0.8, 1.2, 4.0, 1e-4])   # mm², mrad², deg², MeV²
+    s[0, 5] = s[5, 0] = 0.006                      # <x ΔW>: dispersion-like
+    s[2, 4] = s[4, 2] = 0.3                        # <y Δφ>
+    return s
+
+
+def test_canonical_uncoupled_equals_recorder_normalised_emittances():
+    """External anchor: without coupling the modes ARE the recorder's
+    ε_nx = βγε_x, ε_ny and ε_nz = βγ·ε_z(mm·mrad) (independent code path,
+    _convert_emit_z_to_mmmrad) — at two energies and two frequencies."""
+    for w, f in ((2.1227, 162.5), (185.0, 650.0)):
+        g, bg = _kin(w)
+        s = np.diag([1.3, 0.7, 0.9, 1.1, 4.0, 1e-4])
+        s[0, 1] = s[1, 0] = -0.4
+        s[4, 5] = s[5, 4] = 0.012
+        r = canonical_eigenemittances(s, bg, f, _M)
+        ex = np.sqrt(np.linalg.det(s[:2, :2]))
+        ey = np.sqrt(np.linalg.det(s[2:4, 2:4]))
+        ez = np.sqrt(np.linalg.det(s[4:, 4:]))
+        ref = SimpleNamespace(beta=bg / g, gamma=g, species=SimpleNamespace(mass=_M),
+                              wavelength=299792458.0 / (f * 1e6) * 1e3)
+        want = [ex * bg, ey * bg, _convert_emit_z_to_mmmrad(ez, ref) * bg]
+        np.testing.assert_allclose(r["modes"], want, rtol=1e-12)
+        np.testing.assert_allclose(r["proj"], want, rtol=1e-12)
+        np.testing.assert_allclose(r["share"], np.eye(3), atol=1e-12)
+        assert r["coupling6"] == pytest.approx(1.0, abs=1e-12)
+        assert r["coupling4"] == pytest.approx(1.0, abs=1e-12)
+        assert r["e4d"] == pytest.approx(ex * ey * bg ** 2, rel=1e-12)
+
+
+def test_canonical_modes_invariant_under_coupled_symplectic_transport():
+    """Any canonical symplectic map, written in recorded (mm, mrad, deg,
+    MeV) units, leaves the canonical modes and ε_6D unchanged — the case
+    the mixed-unit eigenemittances() gets wrong (pinned below)."""
+    g, bg = _kin(2.1227)
+    f = 162.5
+    d = canonical_scale(bg, f, _M)
+    s0 = _sigma_coupled()
+    r0 = canonical_eigenemittances(s0, bg, f, _M)
+    for seed in range(5):
+        m = np.diag(1.0 / d) @ _random_symplectic(seed) @ np.diag(d)
+        r1 = canonical_eigenemittances(m @ s0 @ m.T, bg, f, _M)
+        np.testing.assert_allclose(np.sort(r1["modes"]), np.sort(r0["modes"]),
+                                   rtol=1e-9)
+        assert r1["e6d"] == pytest.approx(r0["e6d"], rel=1e-9)
+        assert r1["coupling6"] >= 1.0 - 1e-12
+    # Mixed-unit Balandin values are NOT invariant under the same map
+    # (documents why the canonical variant exists).
+    m = np.diag(1.0 / d) @ _random_symplectic(0) @ np.diag(d)
+    old0 = np.sort(eigenemittances(s0))
+    old1 = np.sort(eigenemittances(m @ s0 @ m.T))
+    assert np.max(np.abs(old1 / old0 - 1.0)) > 0.1
+
+
+def test_canonical_modes_satisfy_projection_inequality_and_shares():
+    g, bg = _kin(2.1227)
+    r = canonical_eigenemittances(_sigma_coupled(), bg, 162.5, _M)
+    assert np.prod(r["proj"]) >= r["e6d"] * (1 - 1e-12)
+    assert np.prod(r["modes"]) == pytest.approx(r["e6d"], rel=1e-10)
+    np.testing.assert_allclose(r["share"].sum(axis=1), 1.0, atol=1e-10)
+    # x-like mode is mostly x, z-like mostly z (labels follow dominant plane)
+    assert r["share"][0, 0] > 0.5 and r["share"][2, 2] > 0.5
+
+
+def test_canonical_modes_invariant_across_freq_jump():
+    """A FREQ jump rescales Δφ by f_new/f_old (Σ → DΣD); the canonical
+    modes must not move although the recorded ε_z (deg·MeV) doubles."""
+    g, bg = _kin(35.0)
+    s = _sigma_coupled()
+    r1 = canonical_eigenemittances(s, bg, 162.5, _M)
+    jump = np.diag([1, 1, 1, 1, 2.0, 1])
+    r2 = canonical_eigenemittances(jump @ s @ jump, bg, 325.0, _M)
+    np.testing.assert_allclose(r2["modes"], r1["modes"], rtol=1e-12)
+
+
+def test_canonical_degenerate_and_nonphysical_inputs_are_nan():
+    g, bg = _kin(2.1227)
+    for s, args in ((np.zeros((6, 6)), (bg, 162.5, _M)),
+                    (_sigma_coupled(), (0.0, 162.5, _M)),
+                    (_sigma_coupled(), (bg, 0.0, _M)),
+                    (np.full((6, 6), np.nan), (bg, 162.5, _M))):
+        r = canonical_eigenemittances(s, *args)
+        assert np.all(np.isnan(r["modes"])) and np.isnan(r["e6d"])
+
+
+def test_canonical_series_dc_records_keep_only_4d():
+    """Dual regime: DC (unbunched) records have no ε_z, so 6-D outputs are
+    NaN there while ε_4D is kept; bunched records are filled."""
+    g, bg = _kin(0.035)
+    s = _sigma_coupled()
+    res = SimpleNamespace(
+        s=[0.0, 1.0, 2.0], sigma_matrix=[s, s, np.zeros((6, 6))],
+        ref_beta=[bg / g] * 3, ref_gamma=[g] * 3, ref_frequency=[162.5] * 3,
+        mass_mev=_M, continuous_at=[True, False, False])
+    ser = canonical_eigenemittances_series(res)
+    assert np.isnan(ser["eps_x"][0]) and np.isfinite(ser["e4d"][0])
+    assert np.isfinite(ser["eps_x"][1]) and np.isfinite(ser["e6d"][1])
+    assert np.isnan(ser["eps_x"][2]) and np.isnan(ser["e4d"][2])
+    # misaligned inputs → None, not a wrong-length series
+    res.ref_frequency = [162.5] * 2
+    assert canonical_eigenemittances_series(res) is None
+
+
+@pytest.mark.parametrize("w_mev,f_mhz,angle,rho,hv,k", [
+    (800.0, 650.0, 6.5637, 20430.0, 0, 0.0),     # BTL-arc-like, horizontal
+    (2.1227, 162.5, 45.0, 300.0, 0, 0.5),        # low energy, field index
+    (185.0, 325.0, -10.0, 2000.0, 1, 0.0),       # vertical bend
+])
+def test_canonical_scale_makes_helix_dipole_matrices_symplectic(
+        w_mev, f_mhz, angle, rho, hv, k):
+    """External anchor: HELIX's Dipole matrix (its own R16/R26 ↔ R51/R52
+    derivation) must be symplectic in the canonical coordinates, i.e.
+    Mcᵀ J Mc = J with Mc = D·M·D⁻¹.  Fails with the unsigned ΔE scale
+    (|error| ~0.3 at 800 MeV) — (Δφ, ΔW) is anti-canonical."""
+    from linac_gen.core.particle import H_MINUS as sp
+    from linac_gen.core.reference import ReferenceParticle
+    from linac_gen.elements.dipole import Dipole
+    from linac_gen.tracking.matrix_tracking import get_element_matrix
+    ref = ReferenceParticle(species=sp, w_kin=w_mev, frequency=f_mhz)
+    el = Dipole("B", angle=angle, rho=rho, field_index=k, hv=hv)
+    M = get_element_matrix(el, ref)
+    d = canonical_scale(ref.beta * ref.gamma, f_mhz, sp.mass)
+    mc = np.diag(d) @ M @ np.diag(1.0 / d)
+    np.testing.assert_allclose(mc.T @ _J6C @ mc, _J6C, atol=1e-12)
+    # and the coupling is really exercised (dispersion is non-zero)
+    assert abs(M[0 if hv == 0 else 2, 5]) > 1e-6
+
+
+def test_canonical_series_vectorised_equals_per_record_reference():
+    """The vectorised series must reproduce the per-record function on a
+    mix of coupled, uncoupled, degenerate and DC records, across energy
+    and frequency (FREQ-jump-like) changes.  Tolerances: batched vs single
+    LAPACK det/eig differ by ~1e-9 relative on ill-conditioned Σ."""
+    rng = np.random.default_rng(7)
+    n = 60
+    stack, bgs, fs = [], [], []
+    for i in range(n):
+        a = rng.normal(size=(6, 6)) * np.array([1, 0.5, 1, 0.5, 3, 0.01])
+        s = a @ a.T
+        if i % 7 == 0:
+            s = np.diag(np.diag(s))                   # uncoupled
+        if i % 11 == 0:
+            s = np.zeros((6, 6))                       # lost beam
+        stack.append(s)
+        g, bg = _kin(2.0 + 10.0 * i)
+        bgs.append((bg / g, g))
+        fs.append(162.5 if i < 20 else (325.0 if i < 40 else 650.0))
+    dc = [i < 3 for i in range(n)]
+    res = SimpleNamespace(sigma_matrix=stack, ref_beta=[b for b, _ in bgs],
+                          ref_gamma=[g for _, g in bgs], ref_frequency=fs,
+                          mass_mev=_M, continuous_at=dc)
+    ser = canonical_eigenemittances_series(res)
+    for i in range(n):
+        b, g = bgs[i]
+        r = canonical_eigenemittances(stack[i], b * g, fs[i], _M)
+        np.testing.assert_allclose(ser["e4d"][i], r["e4d"], rtol=1e-8, equal_nan=True)
+        np.testing.assert_allclose(ser["coupling4"][i], r["coupling4"], rtol=1e-8,
+                                   equal_nan=True)
+        if dc[i]:
+            assert np.isnan(ser["eps_x"][i]) and np.isnan(ser["e6d"][i])
+            continue
+        got = [ser[f"eps_{p}"][i] for p in "xyz"]
+        # eig() rounding: absolute error scales with the LARGEST mode
+        np.testing.assert_allclose(got, r["modes"], rtol=1e-9, equal_nan=True,
+                                   atol=1e-12 * np.nanmax(np.r_[r["modes"], 0.0]))
+        np.testing.assert_allclose([ser[f"proj_{p}"][i] for p in "xyz"], r["proj"],
+                                   rtol=1e-8, equal_nan=True)
+        np.testing.assert_allclose(ser["e6d"][i], r["e6d"], rtol=1e-8, equal_nan=True)
+        np.testing.assert_allclose(ser["coupling6"][i], r["coupling6"], rtol=1e-8,
+                                   equal_nan=True)

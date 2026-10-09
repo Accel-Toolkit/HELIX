@@ -126,6 +126,32 @@ def compute_twiss_from_particles(particles: np.ndarray, plane: str = "x") -> dic
     return {"alpha": float(alpha), "beta": float(beta), "gamma_t": float(gamma_t), "emittance": float(emit)}
 
 
+def ellipse_points(alpha: float, beta: float, eps: float,
+                   centre=(0.0, 0.0), n: int = 200) -> tuple[np.ndarray, np.ndarray]:
+    """Closed rms (Courant–Snyder) ellipse  γu² + 2αuu′ + βu′² = ε.
+
+    u = √(εβ)·cosθ, u′ = −√(ε/β)·(α·cosθ + sinθ) for θ on [0, 2π], the
+    first point repeated so the curve closes (``n`` segments, ``n + 1``
+    points); area πε.  Same α sign convention as
+    :func:`compute_twiss_from_particles` (α > 0: converging beam, u′ < 0
+    at the largest u).  ``centre`` shifts the ellipse (the beam centroid
+    when drawn over a particle distribution).  Returns two empty arrays
+    when β or ε is not a positive finite number, so a degenerate plane
+    draws nothing instead of raising.
+    """
+    try:
+        a, b, e = float(alpha), float(beta), float(eps)
+    except (TypeError, ValueError):
+        return np.zeros(0), np.zeros(0)
+    if not (np.isfinite(a) and np.isfinite(b) and np.isfinite(e)) or b <= 0.0 or e <= 0.0:
+        return np.zeros(0), np.zeros(0)
+    th = np.linspace(0.0, 2.0 * np.pi, int(max(n, 8)) + 1)
+    c, s = np.cos(th), np.sin(th)
+    u = np.sqrt(e * b) * c + float(centre[0])
+    up = -np.sqrt(e / b) * (a * c + s) + float(centre[1])
+    return u, up
+
+
 def compute_halo(particles: np.ndarray, plane: str = "x") -> float:
     if len(particles) == 0:
         return 0.0

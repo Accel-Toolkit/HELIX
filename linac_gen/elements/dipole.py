@@ -24,7 +24,10 @@ class Dipole(TransferMapElement, Misalignment, FieldError):
     field_rel : float
         Relative magnet-strength error: ``B → B·(1 + field_rel)`` is
         equivalent to ``angle → angle·(1 + field_rel)`` since arc length is
-        fixed by geometry.  Drives orbit and dispersion errors.
+        fixed by geometry.  Drives orbit and dispersion errors: the
+        matrix carries the focusing / dispersion change and
+        :meth:`orbit_offset` the constant deflection of the design orbit;
+        a roll ``tilt_deg`` steers the beam too (:meth:`roll_exit_offset`).
     """
 
     # Matrix-affecting params for the opt-in `get_element_matrix(cache=)`
@@ -355,6 +358,135 @@ class Dipole(TransferMapElement, Misalignment, FieldError):
                 M[4, 3] *= -1
         return M
 
+    def orbit_offset(self, ref: ReferenceParticle, ds: float = None):
+        """Centroid shift from a field error, over the element or a slice.
+
+        The matrix alone cannot move a beam that enters on axis: a field
+        error ``B(1+δ)`` deflects the design orbit by a CONSTANT amount —
+        the inhomogeneous term of the linear map, ``c_out = M c_in + o``.
+        A field error acts like a momentum offset: relative to the design
+        arc the particle obeys ``x'' + k² x = −δ·h``, whose particular
+        solution with this element's own (effective) focusing is
+
+            o = −δ/(1+δ) · β²γm · M[:, 5]
+
+        (row 4 keeps only the path-length part — a field error changes
+        the path, not the speed — and row 5 is zero).  To first order this
+        is the textbook ``x = −δ·D``; the transverse rows agree with MAD-X
+        to ~|δ| relative, the path row only to first order in δ (fine for
+        tolerance errors, ~20 % off for a partial failure δ = −0.1).  Taking D from the very matrix that
+        transports the beam makes slices compose exactly (Σ M_later·o_k
+        equals the full-element o), so MP (sliced) and envelope (full)
+        agree to rounding.  Pinned against MAD-X (SBEND with K0 ≠ h) in
+        tests/elements/test_dipole_orbit_offset.py.
+
+        The result is in the MAGNET frame: the tracker's tilt rotations
+        sit outside, as for the matrix, so for a rolled magnet the extra
+        deflection points along the magnet's own bend axis.  The roll
+        itself is :meth:`roll_exit_offset`.  Returns None for δ = 0.
+        """
+        delta = float(self.field_rel or 0.0)
+        if delta == 0.0 or self.angle == 0.0 or self.length == 0.0:
+            return None
+        if delta == -1.0:
+            # Field switched off: the effective magnet is a pipe (no
+            # dispersion column, so the general formula is 0/0).  Its
+            # limit is the pipe's response to the full missing
+            # deflection as a uniform source h = θ/L: x = hL²/2,
+            # x' = hL in the bend plane, no path term (a pipe's
+            # path-length row is zero).  Slices compose exactly with
+            # the pipe matrices, like the general formula; it is first
+            # order in the deviation (the beam is ~ρθ²/2 off axis).
+            L_part = self.length if ds is None else ds
+            theta = math.radians(self.angle) * (L_part / self.length)
+            o = np.zeros(6)
+            ip, ia = (2, 3) if self.hv == 1 else (0, 1)
+            o[ip] = 0.5 * theta * L_part           # mm (θ rad · L mm / 2)
+            o[ia] = 1e3 * theta                    # mrad
+            return o
+        M = self.transfer_matrix(ref, ds=ds)
+        scale = -delta / (1.0 + delta)
+        L_part = self.length if ds is None else ds
+        b2gm = ref.beta ** 2 * ref.gamma * ref.species.mass
+        o = (scale * b2gm) * M[:, 5]
+        slip = (-360.0 * L_part
+                / (ref.beta ** 3 * ref.gamma ** 3 * ref.species.mass
+                   * ref.wavelength))
+        o[4] = scale * b2gm * (M[4, 5] - slip)
+        o[5] = 0.0
+        return o
+
+    def roll_exit_offset(self, ref: ReferenceParticle, exit_edge=None):
+        """Centroid shift of a rolled magnet at its exit, in the LAB frame.
+
+        A beam that enters a magnet rolled by ψ (``tilt_deg``) on axis
+        follows the magnet's own arc — the rotated design arc — so inside
+        the magnet frame nothing happens.  The whole effect is the frame
+        change at the exit: the tracker rotates back with R(−ψ), which is
+        exact for a straight element, but the exit of a rolled BEND sits
+        off the design exit.  The design arc ends ρ(1−cos θ) off the
+        entry axis along the bend direction b with its tangent turned by
+        θ; the rolled one along R(ψ)b.  The difference, seen from the
+        design exit frame, is
+
+            Δ = (R(ψ)b − b) · (ρ(1−cos θ), sin θ)
+
+        — a cross-plane kick sin θ·sin ψ (hv=0: in y, hv=1: in x) plus a
+        (cos ψ − 1) bend-plane term.  MAD-X EALIGN DPSI on an SBEND agrees
+        to O(θ²ψ²) relative (2.6e-8 for a BTL arc dipole rolled 2 mrad).  Applied once per
+        element by the tracker / envelope / backtrack wrappers, after
+        the exit rotation.  Returns None when there is no roll.
+
+        ``exit_edge``: the magnet's own exit pole face when the deck
+        writes it as a separate :class:`Edge` element (EDGE+BEND+EDGE —
+        every importer does).  That Edge is not rolled with the magnet, so
+        it would kick the offset (tan e₂/ρ · ρ(1−cos θ)·sin ψ — 0.3 % of
+        the roll kick for a BTL arc dipole, 6 % at θ = 0.5 rad), whereas
+        the beam of a rigidly rolled magnet leaves on that magnet's own
+        exit, where its edge does nothing.  The offset is then returned
+        pre-compensated, E⁻¹·o, so that after the Edge the centroid sits
+        exactly at o.  The wrappers pass the next lattice element when it
+        is an Edge.
+
+        The (cos ψ − 1) terms also lengthen the path by
+        ρ(1−cos θ)(1−cos ψ)·sin θ (row 4).
+        """
+        tilt = float(getattr(self, "tilt_deg", 0.0) or 0.0)
+        if abs(tilt) <= 1e-12 or self.angle == 0.0 or self.length == 0.0:
+            return None
+        psi = math.radians(tilt)
+        c_psi, s_psi = math.cos(psi), math.sin(psi)
+        theta = math.radians(self.angle)          # signed design angle
+        rho_mm = self.length / theta              # signed: b flips with θ
+        g_pos = 2.0 * rho_mm * math.sin(0.5 * theta) ** 2     # mm
+        g_ang = 1e3 * math.sin(theta)                          # mrad
+        # The deflection points along b = −u for θ > 0 (D > 0: a slower
+        # particle lands outward), u = x̂ (hv=0) or ŷ (hv=1); g carries
+        # the sign of θ, so g·b is the deflection for either sign.
+        # R(−ψ) is the magnet → lab rotation, (x, y) = (c x_m − s y_m,
+        # s x_m + c y_m), and d = R(−ψ)b − b.
+        if self.hv == 1:
+            d_x, d_y = s_psi, 1.0 - c_psi        # b = (0, −1)
+        else:
+            d_x, d_y = 1.0 - c_psi, -s_psi       # b = (−1, 0)
+        # The cross-plane axis is the same at entry and exit; the bend-
+        # plane axis has turned by θ, so that (second-order, cos ψ − 1)
+        # component projects with cos θ.
+        cx = math.cos(theta) if self.hv == 0 else 1.0
+        cy = math.cos(theta) if self.hv == 1 else 1.0
+        o = np.zeros(6)
+        o[0], o[1] = cx * d_x * g_pos, cx * d_x * g_ang
+        o[2], o[3] = cy * d_y * g_pos, cy * d_y * g_ang
+        # Path: the rolled arc's exit lies (1 − cos ψ)·ρ(1−cos θ) back
+        # toward the bend centre, sin θ of which is along the design exit
+        # tangent — a longer path, i.e. a later particle.
+        dl_mm = abs(g_pos) * (1.0 - c_psi) * abs(math.sin(theta))
+        o[4] = 360.0 * dl_mm / (ref.beta * ref.wavelength)
+        if exit_edge is not None and hasattr(exit_edge, "transfer_matrix"):
+            E = np.asarray(exit_edge.transfer_matrix(ref), dtype=float)
+            o = np.linalg.solve(E, o)
+        return o
+
     def track(self, beam: Beam, ds: float = None) -> None:
         L = ds if ds is not None else self.length
         beam.ref.s += L
@@ -362,3 +494,9 @@ class Dipole(TransferMapElement, Misalignment, FieldError):
         M = self.transfer_matrix(beam.ref, ds=L)
         alive = beam.alive_mask
         beam.particles[alive] = (M @ beam.particles[alive].T).T
+        # Field error: constant deflection of the design orbit (no-op,
+        # and bit-identical, for δ = 0).  The roll is applied by the
+        # tracker's misalignment wrapper (roll_exit_offset).
+        o = self.orbit_offset(beam.ref, ds=L)
+        if o is not None:
+            beam.particles[alive] += o

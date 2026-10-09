@@ -15,6 +15,7 @@ regime.  This page disambiguates and explains when to use which.
 | ε_4D | `emit_4d` | √det(Σ_4D) | invariant under x-y coupling |
 | ε_1, ε_2 | `emit_n1`, `emit_n2` | symplectic eigenvalues of J·Σ_4D | 4-D normal-mode |
 | ε_E1, ε_E2, ε_E3 | `emit_e1/e2/e3` | Balandin trace invariants of Σ_6D | full 6-D |
+| ε₁, ε₂, ε₃ (canonical) | derived (Results tile) | symplectic eigenvalues of Σ_6D in normalised canonical units | full 6-D, coupled planes |
 
 ## When projected ε_x is enough
 
@@ -76,6 +77,50 @@ In a fully uncoupled lattice, ε_E1 = ε_x, ε_E2 = ε_y, ε_E3 = ε_z.
 With coupling, the eigenemittances stay invariant while the
 projected ε_x/y/z visibly wobble.
 
+## Normalised canonical intrinsic emittances
+
+The recorded Σ is in mixed units (mm, mrad, mm, mrad, deg, MeV) with
+geometric angles, so its three conjugate pairs carry different
+phase-space area scales.  `emit_e1/e2/e3` are therefore invariants only
+while the longitudinal plane is decoupled from x and y.  Through
+dispersion (x–ΔW) or RF (x–Δφ) coupling, they are not.
+
+`canonical_eigenemittances_series(results)` first maps Σ to normalised
+canonical coordinates, all in mm and mrad,
+
+$$
+(x,\ eta\gamma x',\ y,\ eta\gamma y',\ c\,\Delta t,\ -10^3\,\Delta E/mc^2),
+\qquad c\,\Delta t = \Deltaarphi\,\lambda/360 ,
+$$
+
+and then takes the symplectic eigenvalues of Σ·J.
+
+- **Sign.** The minus sign is required: Δφ > 0 is a late particle and
+  the conjugate of t is −E, so (Δφ, ΔW) is anti-canonical.
+- **Uncoupled beam.** The three modes equal ε_nx, ε_ny and ε_nz
+  exactly.
+- **Invariance.** The modes are invariant under any linear symplectic
+  transport, including dispersion, acceleration and FREQ jumps.
+  HELIX's dipole matrices are symplectic in these coordinates to
+  1e-16, which is pinned in `tests/diagnostics/test_eigenemittance.py`.
+- **Labels.** Each mode is labelled x-, y- or z-like by its largest
+  share of symplectic area per plane.
+- **Coupling ratios.** The function also returns
+
+  $$
+  arepsilon_{nx}arepsilon_{ny}arepsilon_{nz}\,/\,(arepsilon_1arepsilon_2arepsilon_3) \ge 1
+  \quad	ext{and}\quad
+  arepsilon_{nx}arepsilon_{ny}\,/\,arepsilon_{4D,n} \ge 1 ,
+  $$
+
+  where 1 means no coupling.
+- **Mechanical momenta.** The momenta are mechanical (x′ = p_x/p_z),
+  so inside solenoid fields the modes are not invariants.
+- **DC beams.** Records of a DC beam give NaN for the 6-D quantities.
+
+In the GUI this is the Results tile **Intrinsic ε (canonical, norm.)**.
+The existing quantities are unchanged.
+
 ## Reference plots
 
 For an example of all six emittances on the same plot — illustrating
@@ -92,6 +137,11 @@ exactly when each is meaningful — see
   4-D version.
 * `linac_gen.diagnostics.eigenemittance.eigenemittances_series(...)` —
   per-step over the full lattice.
+* `linac_gen.diagnostics.eigenemittance.canonical_eigenemittances(sigma, bg, f_MHz, mass)`
+  — normalised canonical modes, projected ε_n, ε_4D,n, ε_6D,n, coupling ratios.
+* `linac_gen.diagnostics.eigenemittance.canonical_eigenemittances_series(results)`
+  — the same along a run (vectorised; uses `sigma_matrix`, `ref_beta`,
+  `ref_gamma`, `ref_frequency`, `mass_mev`).
 
 ## Reference
 

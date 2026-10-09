@@ -195,3 +195,204 @@ def eigenemittances_series(sigma_matrices) -> np.ndarray:
             continue
         out[i, :] = eigenemittances(s)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Canonical (normalised) intrinsic emittances
+# ---------------------------------------------------------------------------
+# The recorded Σ is in mixed units (mm, mrad, mm, mrad, deg, MeV) with
+# geometric angles.  Its three conjugate pairs then carry DIFFERENT
+# phase-space area scales, so the eigenvalues of Σ·J (what
+# :func:`eigenemittances` returns) are invariants only while the
+# longitudinal plane is decoupled from x and y.  The functions below first
+# map Σ to normalised canonical coordinates, all in mm and mrad,
+#
+#     (x, βγ·x', y, βγ·y', c·Δt, −1000·ΔE/mc²)
+#     Δt  = Δφ / (360·f)          →  c·Δt [mm]   = Δφ · λ/360
+#     ΔE  = ΔW                    →  [mrad]       = −ΔW · 1000/mc²
+#
+# where every pair has the same symplectic weight, then take the
+# symplectic eigenvalues.  The minus sign is not cosmetic: Δφ > 0 is a
+# LATE particle (Δφ ∝ +Δt) and the conjugate of t is −E, so (Δφ, ΔW) is
+# anti-canonical.  Uncoupled it does not matter (|ε| per plane); with
+# x–ΔE or x–Δφ coupling the unsigned form gives wrong modes — pinned by
+# the dipole-matrix test (R51/R52 vs R16/R26).  Uncoupled, the three modes reduce exactly to
+# the recorder's ε_nx, ε_ny and ε_nz (ε_nz = ε_z,mm·mrad · βγ — the longitudinal
+# scale λ·1000/(360·mc²) is independent of β and γ).  They are invariant
+# under any linear symplectic transport, including dispersive x–ΔE and
+# RF x–Δφ coupling, acceleration and FREQ jumps.  The momenta are the
+# mechanical ones (x' = p_x/p_z scaled by the reference βγ): inside a
+# solenoid field the true canonical P_x = p_x + qA_x differs, so the modes
+# are invariants outside solenoid fields only (√det of the 4-D block is
+# not affected — that change of variables has unit determinant).
+
+_PLANES = ("x", "y", "z")
+
+
+def canonical_scale(bg: float, freq_mhz: float, mass_mev: float) -> np.ndarray:
+    """Diagonal D (length 6) taking the recorded Σ to normalised canonical
+    units: Σ_c = D·Σ·D.  Returns NaNs when any input is non-physical."""
+    if not (bg > 0.0 and freq_mhz > 0.0 and mass_mev > 0.0):
+        return np.full(6, np.nan)
+    from linac_gen.core.constants import C_LIGHT
+    lam_mm = C_LIGHT / (freq_mhz * 1e6) * 1e3
+    return np.array([1.0, bg, 1.0, bg, lam_mm / 360.0, -1e3 / mass_mev])
+
+
+def canonical_eigenemittances(sigma: np.ndarray, bg: float, freq_mhz: float,
+                              mass_mev: float) -> dict:
+    """Normalised canonical intrinsic emittances of one recorded 6×6 Σ.
+
+    Returns a dict (all emittances in mm·mrad, normalised):
+
+    ``modes``     (ε₁, ε₂, ε₃) labelled by dominant plane — ``modes[0]`` is
+                  the x-like mode, ``[1]`` y-like, ``[2]`` z-like (assigned
+                  by the largest total share of each mode's symplectic
+                  area per plane; near-equal modes may swap labels)
+    ``share``     3×3 array, ``share[i, k]`` = fraction of mode i in plane k
+    ``proj``      projected (ε_nx, ε_ny, ε_nz) of the same Σ
+    ``e4d``       √det Σ_c,4×4 = (βγ)²·ε_4D            [(mm·mrad)²]
+    ``e6d``       √det Σ_c = ε₁ε₂ε₃                    [(mm·mrad)³]
+    ``coupling6`` ε_nx·ε_ny·ε_nz / (ε₁ε₂ε₃) ≥ 1 (1 = no coupling)
+    ``coupling4`` ε_nx·ε_ny / ε_4D,n ≥ 1 (transverse only)
+
+    Every value is NaN when Σ is not positive definite or a scale input is
+    non-physical (e.g. a record after the whole beam is lost).
+    """
+    nan3 = np.full(3, np.nan)
+    out = {"modes": nan3.copy(), "share": np.full((3, 3), np.nan),
+           "proj": nan3.copy(), "e4d": np.nan, "e6d": np.nan,
+           "coupling6": np.nan, "coupling4": np.nan}
+    sigma = np.asarray(sigma, dtype=float)
+    if sigma.shape != (6, 6) or not np.all(np.isfinite(sigma)):
+        return out
+    d = canonical_scale(bg, freq_mhz, mass_mev)
+    if not np.all(np.isfinite(d)):
+        return out
+    sc = sigma * np.outer(d, d)
+    proj = np.array([np.linalg.det(sc[k:k + 2, k:k + 2]) for k in (0, 2, 4)])
+    det4 = float(np.linalg.det(sc[:4, :4]))
+    det6 = float(np.linalg.det(sc))
+    if det4 > 0.0 and np.all(proj[:2] > 0.0):
+        out["e4d"] = float(np.sqrt(det4))
+        out["coupling4"] = float(np.sqrt(proj[0] * proj[1]) / out["e4d"])
+    if det6 <= 0.0 or np.any(proj <= 0.0):
+        return out
+    out["proj"] = np.sqrt(proj)
+    out["e6d"] = float(np.sqrt(det6))
+    out["coupling6"] = float(np.prod(out["proj"]) / out["e6d"])
+    # Σ_c·J = A·diag(ε_k J₂)·A⁻¹ with A symplectic: its eigenvalues are
+    # ±iε_k and the eigenvector of +iε_k is (a_2k − i·a_2k+1) for the
+    # mode's pair of columns of A.  Im(v̄_2j·v_2j+1) is that mode's share
+    # of symplectic area in plane j; the shares of one mode sum to 1.
+    lam, vec = np.linalg.eig(sc @ _J6)
+    up = np.argsort(-lam.imag)[:3]            # the three +iε_k
+    eps = lam.imag[up]
+    if np.any(eps <= 0.0):
+        return out
+    share = np.empty((3, 3))
+    for i, col in enumerate(up):
+        v = vec[:, col]
+        a = np.array([(np.conj(v[2 * j]) * v[2 * j + 1]).imag for j in range(3)])
+        tot = a.sum()
+        share[i] = a / tot if tot != 0.0 else np.nan
+    # Label modes by plane: the permutation maximising the summed share.
+    import itertools
+    best = max(itertools.permutations(range(3)),
+               key=lambda p: sum(share[p[k], k] for k in range(3)))
+    out["modes"] = np.array([eps[best[k]] for k in range(3)])
+    out["share"] = np.array([share[best[k]] for k in range(3)])
+    return out
+
+
+def canonical_eigenemittances_series(results) -> dict | None:
+    """:func:`canonical_eigenemittances` along a run.
+
+    ``results`` needs per-step ``sigma_matrix``, ``ref_beta``, ``ref_gamma``
+    and ``ref_frequency`` (MHz) plus ``mass_mev`` — recorded by both the
+    envelope solver and the multi-particle recorder, and kept by the HDF5
+    results file.  Records of a DC (unbunched) beam carry no longitudinal
+    emittance, so their 6-D quantities are NaN (``e4d`` is kept).
+
+    Returns a dict of arrays aligned with ``results.s`` — ``eps_x``,
+    ``eps_y``, ``eps_z`` (labelled modes), ``proj_x``, ``proj_y``,
+    ``proj_z``, ``e4d``, ``e6d``, ``coupling6``, ``coupling4`` — or None
+    when the inputs are missing or misaligned.
+    """
+    def arr(name):
+        v = getattr(results, name, None)
+        if v is None:
+            return np.zeros(0)
+        try:
+            return np.asarray(v, dtype=float)
+        except (TypeError, ValueError):
+            return np.zeros(0)
+
+    S = arr("sigma_matrix")
+    b, g, f = arr("ref_beta"), arr("ref_gamma"), arr("ref_frequency")
+    m = float(getattr(results, "mass_mev", 0.0) or 0.0)
+    if not m:
+        w = arr("ref_w_kin")
+        if w.size and g.size and g[0] > 1.0 + 1e-12:
+            m = float(w[0] / (g[0] - 1.0))
+    n = S.shape[0] if S.ndim == 3 else 0
+    if n == 0 or S.shape[1:] != (6, 6) or not (b.size == g.size == f.size == n):
+        return None
+    dc = arr("continuous_at")
+    dc = dc.astype(bool) if dc.size == n else np.zeros(n, dtype=bool)
+    return _canonical_batch(S, b * g, f, m, dc)
+
+
+def _canonical_batch(S, bg, f, m, dc) -> dict:
+    """Vectorised :func:`canonical_eigenemittances` over a (n, 6, 6) stack
+    (same NaN rules; ``dc`` marks records whose 6-D outputs are NaN)."""
+    import itertools
+    n = S.shape[0]
+    keys = ("eps_x", "eps_y", "eps_z", "proj_x", "proj_y", "proj_z",
+            "e4d", "e6d", "coupling6", "coupling4")
+    out = {k: np.full(n, np.nan) for k in keys}
+    ok_in = (np.all(np.isfinite(S.reshape(n, 36)), axis=1) & (bg > 0.0)
+             & (f > 0.0) & (m > 0.0))
+    if not ok_in.any():
+        return out
+    from linac_gen.core.constants import C_LIGHT
+    with np.errstate(divide="ignore", invalid="ignore"):
+        lam = np.where(f > 0.0, C_LIGHT / (f * 1e6) * 1e3, np.nan)
+        d = np.stack([np.ones(n), bg, np.ones(n), bg, lam / 360.0,
+                      np.full(n, -1e3 / m if m > 0.0 else np.nan)], axis=1)
+    idx = np.flatnonzero(ok_in)
+    sc = S[idx] * d[idx, :, None] * d[idx, None, :]
+    proj = np.stack([np.linalg.det(sc[:, k:k + 2, k:k + 2]) for k in (0, 2, 4)],
+                    axis=1)
+    det4 = np.linalg.det(sc[:, :4, :4])
+    det6 = np.linalg.det(sc)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ok4 = (det4 > 0.0) & (proj[:, 0] > 0.0) & (proj[:, 1] > 0.0)
+        e4 = np.sqrt(np.where(ok4, det4, np.nan))
+        out["e4d"][idx] = e4
+        out["coupling4"][idx] = np.sqrt(proj[:, 0] * proj[:, 1]) / e4
+    ok6 = (det6 > 0.0) & np.all(proj > 0.0, axis=1) & ~dc[idx]
+    if not ok6.any():
+        return out
+    i6, sc6 = idx[ok6], sc[ok6]
+    pr = np.sqrt(proj[ok6])
+    e6 = np.sqrt(det6[ok6])
+    lam_, vec = np.linalg.eig(sc6 @ _J6)
+    up = np.argsort(-lam_.imag, axis=1)[:, :3]
+    eps = np.take_along_axis(lam_.imag, up, axis=1)            # (k, 3)
+    v = np.take_along_axis(vec, up[:, None, :], axis=2)         # (k, 6, 3)
+    a = (np.conj(v[:, 0::2, :]) * v[:, 1::2, :]).imag           # (k, plane, mode)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        share = np.transpose(a / a.sum(axis=1, keepdims=True), (0, 2, 1))
+    perms = list(itertools.permutations(range(3)))
+    score = np.stack([sum(share[:, p[k], k] for k in range(3)) for p in perms],
+                     axis=1)
+    best = np.asarray(perms)[np.nanargmax(np.nan_to_num(score, nan=-np.inf), axis=1)]
+    modes = np.take_along_axis(eps, best, axis=1)
+    good = np.all(eps > 0.0, axis=1)
+    for k, pl in enumerate("xyz"):
+        out[f"eps_{pl}"][i6] = np.where(good, modes[:, k], np.nan)
+        out[f"proj_{pl}"][i6] = pr[:, k]
+    out["e6d"][i6] = e6
+    out["coupling6"][i6] = np.prod(pr, axis=1) / e6
+    return out

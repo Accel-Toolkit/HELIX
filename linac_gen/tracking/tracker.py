@@ -82,6 +82,48 @@ def _is_magnetic_only_fieldmap(element) -> bool:
 _is_magnetic_only_1d_fieldmap = _is_magnetic_only_fieldmap
 
 
+def _exit_edge_after(lattice, element):
+    """The bend's OWN exit pole face when the deck writes it as a separate
+    Edge element (EDGE + BEND + EDGE), else None.
+
+    Ownership is proven, not assumed: the element right after the bend (or
+    after a split-magnet chain of identical bends) must be an Edge with
+    the bend's |ρ| and plane, AND the chain must open with such an Edge.
+    An edge-less sector bend that abuts another magnet's EDGE + BEND +
+    EDGE therefore gets None — that Edge is the next magnet's entrance
+    face (adversarial-review round 3).  Used by
+    :meth:`Dipole.roll_exit_offset`; called only for rolled bends, so a
+    plain identity scan (no cache a deep-copied lattice could carry
+    stale) is cheap enough.
+    """
+    from linac_gen.elements.dipole import Dipole
+    from linac_gen.elements.edge import Edge
+    els = lattice.elements
+    k = next((i for i, e in enumerate(els) if e is element), None)
+    if k is None:
+        return None
+
+    def same(e) -> bool:
+        r0 = abs(float(getattr(element, "rho", 0.0) or 0.0))
+        r1 = abs(float(getattr(e, "rho", 0.0) or 0.0))
+        return (int(getattr(e, "hv", 0) or 0) == int(getattr(element, "hv", 0) or 0)
+                and r0 > 0.0 and abs(r1 - r0) <= 1e-9 * r0)
+
+    j = k + 1
+    while j < len(els) and isinstance(els[j], Dipole) and same(els[j]):
+        j += 1                                   # split magnet: chain forward
+    if j >= len(els) or not (isinstance(els[j], Edge) and same(els[j])):
+        return None
+    if j != k + 1:
+        return None      # the exit face belongs to the LAST bend of the chain
+    i = k - 1
+    while i >= 0 and isinstance(els[i], Dipole) and same(els[i]):
+        i -= 1                                   # chain backward
+    if i < 0 or not (isinstance(els[i], Edge) and same(els[i])):
+        return None
+    return els[j]
+
+
 def _is_rf_bunching_element(element) -> bool:
     """True if *element* is an RF bunching element — an RFGap, an RFQ
     cell, or a FIELD_MAP carrying an electric channel.  The tracker uses
@@ -622,6 +664,14 @@ class Tracker:
             self.beam.particles[alive, 2] = s * x + c * y
             self.beam.particles[alive, 1] = c * xp - s * yp
             self.beam.particles[alive, 3] = s * xp + c * yp
+            # A rolled BEND exits off the design exit (R(−ψ) is exact
+            # only for straight elements): add the geometric exit offset.
+            roll = getattr(element, "roll_exit_offset", None)
+            o_roll = (roll(self.beam.ref,
+                           exit_edge=_exit_edge_after(self.lattice, element))
+                      if roll is not None else None)
+            if o_roll is not None:
+                self.beam.particles[alive, :6] += o_roll
         if dx or dy:
             alive = self.beam.alive_mask
             self.beam.particles[alive, 0] += dx

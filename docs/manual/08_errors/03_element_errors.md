@@ -70,6 +70,29 @@ matrix in the (x, y) projection.
     warns once instead of silently vanishing.  Pre-fix tolerance
     studies with field-map amplitude errors should be re-run.
 
+!!! note "Dipole field errors and rolls steer the beam (fixed 2026-10-07)"
+    Before this fix, a Dipole `field_rel` and a Dipole `tilt_deg` changed only the
+    linear matrix (focusing and dispersion). A beam entering on axis left
+    on axis, so a 0.1 % BdL error, which should kick a BTL arc dipole by
+    0.115 mrad, produced no orbit.
+
+    Both effects now add the constant term of the map:
+
+    - **Field error δ** acts like a momentum offset −δ. The beam leaves
+      the magnet at `−δ/(1+δ)·D`, where D is the magnet's own dispersion
+      column (`Dipole.orbit_offset`).
+    - **Roll ψ** gives a cross-plane kick `sin θ·sin ψ`, plus the matching
+      position offset `ρ(1−cos θ)·sin ψ`, at the magnet exit
+      (`Dipole.roll_exit_offset`).
+
+    Validation against MAD-X: the field error matches an SBEND with
+    `K0 = h(1+δ)`, and the roll matches `EALIGN, DPSI`. MAD-X `TILT` is a
+    different thing: it is geometry, and the reference orbit follows it.
+
+    The envelope centroid, multi-particle tracking and backtracking all
+    agree. Orbit and correction results from earlier error studies that
+    had dipole field or roll errors should be re-run.
+
 These are *static* per-seed offsets — drawn once at seed start,
 held constant through the simulation.  Per-step time-varying
 jitter is not modelled (TraceWin's `ERROR_*_DYN` cards are absorbed

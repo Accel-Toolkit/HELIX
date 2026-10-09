@@ -184,6 +184,11 @@ def _command_comment(elem) -> str:
 
 
 def _misalignment_warning(elem, warnings: list) -> None:
+    fr = getattr(elem, "field_rel", 0.0)
+    if fr and type(elem).__name__ == "Dipole":
+        warnings.append(
+            f"{elem.name!r}: field error field_rel={fr:g} is not exported "
+            "(MAD-X: K0 = h·(1+field_rel), or EFCOMP) — exported at design field")
     for attr in ("dx", "dy", "tilt_deg"):
         v = getattr(elem, attr, 0.0)
         if v:

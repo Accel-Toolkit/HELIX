@@ -37,6 +37,7 @@ from linac_gen.diagnostics.action_scan import (
 )
 from linac_gen_gui.interphase import theme
 from linac_gen_gui.interphase.plots.plot_style import (
+    fix_plot_range,
     add_legend, curve_pen, mpl_dark_rc, opaque_sequential_colormap,
     resample_on_even_s, style_mpl_3d, style_plot,
 )
@@ -292,6 +293,7 @@ class HaloActionScanPopup(_PopupPlot):
         self._slice = pg.PlotWidget()
         style_plot(self._slice, "beam outside", "%", xlabel=_N_ELL, xunits="")
         add_legend(self._slice)
+        fix_plot_range(self._slice)             # log-y slice keeps its fixed framing
         self._slice.setLogMode(x=False, y=True)
         self._slice_curve = self._slice.plot(
             [], [], pen=curve_pen(theme.ACCENT, 2.0), connect="finite",

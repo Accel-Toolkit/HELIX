@@ -439,7 +439,17 @@ class _Backtracker:
             dx = getattr(element, "dx", 0.0)
             dy = getattr(element, "dy", 0.0)
             tilt_deg = getattr(element, "tilt_deg", 0.0)
-        self._pre_transform(dx, dy, tilt_deg)
+        # A rolled BEND's forward post-transform also adds the geometric
+        # exit offset after the exit rotation; undo it between the
+        # translation and the rotation (beam.ref holds the exit state).
+        roll = getattr(element, "roll_exit_offset", None) if tilt_deg else None
+        if roll is not None:
+            from linac_gen.tracking.tracker import _exit_edge_after
+            o_roll = roll(entry.make_ref(species),
+                          exit_edge=_exit_edge_after(self.lattice, element))
+        else:
+            o_roll = None
+        self._pre_transform(dx, dy, tilt_deg, exit_offset=o_roll)
         try:
             self._untrack_body(element, entry, exit_, species)
         finally:
@@ -569,12 +579,25 @@ class _Backtracker:
             if kick is not None:
                 kick(self.beam, ds_slice=ds / 2, fraction=-0.5)
 
+        # Dipole field error / roll: forward is p → M p + o per quarter,
+        # so the undo is p → M⁻¹(p − o).  None for every other element
+        # and for an ideal magnet (path bit-identical to before).
+        hook = getattr(element, "orbit_offset", None)
+        o_q = hook(ref_entry, ds=ds / 2) if hook is not None else None
+
+        def _o_neg() -> None:
+            if o_q is not None:
+                alive = self.beam.alive_mask
+                self.beam.particles[alive, :6] -= o_q
+
         for _ in range(n):
             _k_neg()
+            _o_neg()
             self._apply_matrix(M_q_inv)
             _k_neg()
             self._apply_sc_kick_negated(ds)
             _k_neg()
+            _o_neg()
             self._apply_matrix(M_q_inv)
             _k_neg()
 
@@ -798,11 +821,13 @@ class _Backtracker:
             self.pic_solver.kick(self.beam, ds_mm * self._sc_factor)
 
     # ------------------------------------------------------------------
-    def _pre_transform(self, dx, dy, tilt_deg) -> None:
+    def _pre_transform(self, dx, dy, tilt_deg, exit_offset=None) -> None:
         alive = self.beam.alive_mask
         if dx or dy:
             self.beam.particles[alive, 0] -= dx
             self.beam.particles[alive, 2] -= dy
+        if exit_offset is not None:
+            self.beam.particles[alive, :6] -= exit_offset
         if tilt_deg:
             theta = math.radians(tilt_deg)
             c, s = math.cos(theta), math.sin(theta)

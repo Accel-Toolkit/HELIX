@@ -874,6 +874,25 @@ class EnvelopeSolver:
                     / (self._ref.beta * self._ref.wavelength)
                 )
 
+    def _orbit_offset_push(self, element, ds=None) -> None:
+        """Add an element's constant first-moment term to the centroid.
+
+        Called right after the matching ``_probe_push(M)`` (which applied
+        ``c → M c``), so the first moment follows ``c → M c + o`` — the
+        inhomogeneous term of a Dipole field error or roll
+        (:meth:`Dipole.orbit_offset`, magnet frame; the misalignment
+        wrapper's rotations sit outside, as for M).  No-op for elements
+        without the hook, for an ideal magnet, and for shell solvers
+        without centroid state.
+        """
+        c = getattr(self, "_c", None)
+        hook = getattr(element, "orbit_offset", None)
+        if c is None or hook is None:
+            return
+        o = hook(self._ref, ds=ds)
+        if o is not None:
+            self._c = c + o
+
     def _propagate_element(self, element, sigma: np.ndarray) -> np.ndarray:
         """Propagate sigma matrix through one element, with optional SC
         kick + per-element misalignment wrap (M8).
@@ -940,6 +959,15 @@ class EnvelopeSolver:
             R_out = Misalignment.tilt_rotation_matrix(-tilt)
             sigma = R_out @ sigma @ R_out.T
             self._probe_push(R_out)
+            # A rolled BEND exits off the design exit: geometric exit
+            # offset of the first moment (Σ is unaffected — a shift).
+            roll = getattr(element, "roll_exit_offset", None)
+            if roll is not None and getattr(self, "_c", None) is not None:
+                from linac_gen.tracking.tracker import _exit_edge_after
+                o_roll = roll(self._ref,
+                              exit_edge=_exit_edge_after(self.lattice, element))
+                if o_roll is not None:
+                    self._c = self._c + o_roll
         if has_shift:
             self._c[0] += dx
             self._c[2] += dy
@@ -1122,6 +1150,7 @@ class EnvelopeSolver:
             # (SC bundles and per-sub-step walks stay RK4 by design).
             M = _full_matrix_at(element, self._ref)
             self._probe_push(M)
+            self._orbit_offset_push(element)
             sigma = M @ sigma @ M.T
             self._advance_ref(element)
         else:
@@ -1156,6 +1185,7 @@ class EnvelopeSolver:
         for _ in range(n):
             M_slice = element.transfer_matrix(self._ref, ds=ds_mm)
             self._probe_push(M_slice)
+            self._orbit_offset_push(element, ds_mm)
             sigma = M_slice @ sigma @ M_slice.T
             # Advance ref over this slice using the same length recipe as
             # _advance_ref but parameterised on ds_mm.
@@ -1315,6 +1345,7 @@ class EnvelopeSolver:
                 # Half-step map
                 M_half = element.transfer_matrix(self._ref, ds=ds / 2.0)
                 self._probe_push(M_half)
+                self._orbit_offset_push(element, ds / 2.0)
                 sigma = M_half @ sigma @ M_half.T
                 # SC kick at midpoint — 2-D DC or 3-D Ferrario depending
                 # on the beam state.
@@ -1323,6 +1354,7 @@ class EnvelopeSolver:
                 sigma = M_sc @ sigma @ M_sc.T
                 # Second half-step
                 self._probe_push(M_half)
+                self._orbit_offset_push(element, ds / 2.0)
                 sigma = M_half @ sigma @ M_half.T
                 # Record σ at step boundary when substeps enabled.  Ref
                 # doesn't advance inside this loop; we temporarily bump it

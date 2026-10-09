@@ -22,6 +22,8 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
+
+from linac_gen_gui.interphase.plots.plot_style import HelixItemSample
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QGridLayout,
@@ -280,7 +282,7 @@ class _Plot1DPanel(QWidget):
         v.addLayout(bar)
         self.plot = pg.PlotWidget(background="k")
         self.plot.showGrid(x=True, y=True, alpha=0.25)
-        self.plot.addLegend(offset=(10, 10))
+        self.plot.addLegend(offset=(10, 10), sampleType=HelixItemSample)
         v.addWidget(self.plot)
         for w_ in (self.x, self.y, self.group):
             w_.currentTextChanged.connect(self.redraw)
@@ -443,7 +445,7 @@ class _OverlayPanel(QWidget):
         h.addLayout(left)
         self.plot = pg.PlotWidget(background="k")
         self.plot.showGrid(x=True, y=True, alpha=0.25)
-        self.plot.addLegend(offset=(10, 10))
+        self.plot.addLegend(offset=(10, 10), sampleType=HelixItemSample)
         h.addWidget(self.plot, stretch=1)
         self.qty.currentTextChanged.connect(self.redraw)
 

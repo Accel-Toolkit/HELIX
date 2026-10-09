@@ -40,6 +40,19 @@ arrays.  The file dialog opens in the configured calculation
 directory, where every run's auto-saved dumps land (see
 [Running → GUI](../06_running/05_gui.md)).
 
+## Searching the tiles
+
+The search box at the left of the same row (2026-10) filters the tile
+grid as you type: only the tiles whose label, section, unit or common
+synonyms contain every typed word stay visible, packed from the left,
+and a section with no match disappears.  Greek letters can be typed as
+words ("sigma", "eta", "epsilon"), "H-" finds the H⁻ tiles, and a
+small typo ("emitance") still finds emittance.  ++enter++ opens the
+first visible tile, ++esc++ or the clear button restores the full grid,
+and ++ctrl+f++ jumps to the box whenever the Results tab is current.
+Hidden tiles keep updating in the background and stay available to the
+assistant's *open plot* command.
+
 ## Tile sections
 
 Nine section headers, top to bottom:
@@ -47,7 +60,15 @@ Nine section headers, top to bottom:
 * **BEAM SIZE & EMITTANCE** — RMS σ (x · y · z), geometric
   emittance, normalised emittance, 6-D emittance.
 * **TWISS · DIVERGENCE · HALO** — transverse Twiss α · β, phase
-  advance σ₀ · σ, tune depression η = σ/σ₀, **Hofmann stability
+  advance σ₀ · σ, tune depression η = σ/σ₀, **BMAG along s** (2026-10:
+  the mismatch factor BMAG = ½(β_b γ_d − 2 α_b α_d + γ_b β_d) of the
+  run's own Twiss at every record against the design, per plane x, y,
+  z; 1 = matched; the design is the error-free envelope of the current
+  lattice and Beam-tab config, computed once in the background and
+  shared with the phase-space ellipses; records with no design row
+  within 0.5 mm and DC records in z are left blank; Raw uses the
+  projected Twiss, Dispersion-corrected the betatron Twiss of the
+  transverse planes), **Hofmann stability
   chart**, **tune footprint (frozen SC)**, longitudinal Twiss,
   divergence σ_x' · σ_y', peak excursion X / Y_max, halo parameter
   H_x · H_y, and the **halo action scan (n·ε_rms)** (see
@@ -57,7 +78,12 @@ Nine section headers, top to bottom:
   secondary series; the Hofmann and footprint tiles are the two
   space-charge diagnostics described below.
 * **ENERGY · KINEMATICS** — energy · γ · transmission, beam power,
-  4-D invariant ε_4D, eigenemittances ε₁ · ε₂ · ε₃.
+  4-D invariant ε_4D, eigenemittances ε₁ · ε₂ · ε₃, and **intrinsic ε
+  (canonical, norm.)**.  The last tile shows the 6-D intrinsic
+  emittances in normalised canonical units against the projected
+  ε_nx, ε_ny and ε_nz, plus the projected/intrinsic coupling ratios.
+  These modes stay invariant through dispersion and RF coupling (see
+  [Emittances](../09_diagnostics/02_emittances.md#normalised-canonical-intrinsic-emittances)).
 * **LOSSES · TRANSMISSION** — loss profile, aperture-profile
   losses, **loss power (W/m · W/cm²)**, intra-beam stripping (H⁻),
   magnetic stripping (H⁻), and the error-study ensemble tile.
@@ -114,6 +140,32 @@ the checkbox.
     eigen-emittances, Wangler halo, and per-coordinate max extents.
     The table follows the location selector, and ++ctrl+s++ exports it
     like any other popup data.
+
+    The **ellipses** checkbox (2026-10) overlays two ellipses on the
+    x–x′, y–y′ and φ–W panels: the beam's own rms (Courant–Snyder)
+    ellipse (solid) and the *design* ellipse (dashed) — the design α
+    and β at that location drawn with the beam's rms emittance, so the
+    two have the same area and differ only in shape and orientation.
+    Both are centred on the beam centroid and use the projected Twiss
+    (dispersion included), i.e. the same numbers as the Beam-parameters
+    table.  Each panel title then shows the mismatch factor
+    BMAG = ½(β_b γ_d − 2 α_b α_d + γ_b β_d), where 1 means matched (the
+    conventional mismatch amplitude is BMAG + √(BMAG² − 1)).  The
+    design comes from the Beam-tab input Twiss at s = 0 — also for
+    envelope or loaded results, whose plotted beam is the regenerated
+    input — and elsewhere from the error-free envelope of the current
+    lattice and Beam-tab config, computed once in the background (the
+    same companion run the tune-depression and Hofmann popups use; the
+    title reads "BMAG …" until it is ready).  The title reads "BMAG
+    n/a" when no design exists (no lattice loaded, a failed envelope,
+    no envelope row at that s); a DC record gets no longitudinal
+    ellipse, and a degenerate plane none at all.  The overlay follows
+    the fold and location selectors, is redrawn in the (z, δ) basis
+    with the same linear map as the particles (BMAG is basis-
+    invariant), and ++ctrl+s++ exports the curves as "rms ellipse" /
+    "design ellipse".  Each overlaid panel carries a small legend;
+    clicking an entry hides that ellipse (without changing the view).
+    The checkbox is off by default and remembered.
 * **LATTICE PARAMETERS** — per-element field/optics scalars read off the
   lattice itself; see [Lattice-parameter field plots](#lattice-params) below.
 * **CROSS-CHECKS · COMPARE** — compare with TraceWin partran
@@ -364,7 +416,14 @@ drifts step backward.
 
 Each tile popup shows:
 
-* The plot (zoomable, toggle log/linear).
+* The plot (zoomable, toggle log/linear).  Clicking an entry in the
+  legend hides or shows that curve, and the view then refits the
+  curves that remain (both axes, or only the vertical one when the
+  horizontal axis is shared with other panels or the lattice strip);
+  this also ends any manual zoom.  Plots with a deliberately fixed
+  scale (SCC f_c, the halo slice, the ORM trim response, tune
+  depression) keep their scale.  ++ctrl+s++ still exports hidden
+  curves.
 * An optional **lattice-element strip** along the s-axis — a
   colour-coded impression of the lattice, toggled by a checkbox and
   drawn without obscuring the curves.
@@ -379,8 +438,9 @@ figure itself.  **Ctrl+W** or **Esc** closes the popup.
 
 ## Tile availability
 
-The tile grid is static — every card is always shown, and cards
-whose data is missing simply open an empty/"no data" view.  The one
+Every card is always present (the search box only hides the ones that
+do not match the typed words), and cards whose data is missing simply
+open an empty/"no data" view.  The one
 exception is **Intra-beam stripping (H⁻)**: the card is disabled
 unless the beam species is H⁻, and its tooltip explains how to
 switch (Beam tab → Species → H- → Apply).  **Loss power** needs a

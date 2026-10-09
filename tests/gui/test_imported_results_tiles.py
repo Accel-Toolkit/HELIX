@@ -76,6 +76,7 @@ def test_imported_run_fills_the_emittance_tiles(run, tmp_path, qapp,
 
     loaded = _LoadedResults(load_results_hdf5(str(p)), p)
     for key in ("emit_n", "emit6d", "dispersion", "eigenemit", "emit4d",
+                "eigen_canon",
                 "long_twiss", "divergence", "aperture_loss"):
         live, imp = points(run, key), points(loaded, key)
         assert live > 0 and imp == live, (key, live, imp)

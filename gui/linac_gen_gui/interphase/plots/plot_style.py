@@ -112,14 +112,70 @@ def style_plot(p: pg.PlotWidget, ylabel: str, yunits: str = "",
         )
 
 
+class HelixItemSample(pg.ItemSample):
+    """Legend sample that, after pyqtgraph's own click-to-hide, makes the
+    view refit the curves that remain.  pyqtgraph informs the ViewBox only
+    of position/transform changes, so hiding a curve never re-runs the
+    auto-range by itself (and after a manual zoom auto-range is off)."""
+
+    def mouseClickEvent(self, event):
+        from PyQt6.QtCore import Qt
+        is_left = event.button() == Qt.MouseButton.LeftButton
+        super().mouseClickEvent(event)
+        if not is_left:
+            return
+        item = self.item
+        for other in getattr(item, "_helix_linked", ()) or ():
+            try:
+                other.setVisible(item.isVisible())
+            except RuntimeError:
+                pass
+        refit_view_to_visible(item)
+
+
+def refit_view_to_visible(item) -> None:
+    """Re-enable auto-range on the item's ViewBox — y always, x only when
+    the x axis is not linked to another view (re-enabling x on a linked
+    view would take x auto-range away from the whole group) — and refit
+    now.  Skipped for items that take no part in the bounds
+    (``ignoreBounds``) and for plots that opted out with
+    :func:`fix_plot_range` (deliberate fixed scales)."""
+    try:
+        vb = item.getViewBox()
+    except Exception:                                        # noqa: BLE001
+        return
+    if vb is None or getattr(vb, "_helix_fixed_range", False):
+        return
+    if item not in getattr(vb, "addedItems", ()):
+        return
+    vb.itemBoundsChanged(item)
+    for other in getattr(item, "_helix_linked", ()) or ():
+        vb.itemBoundsChanged(other)
+    vb.enableAutoRange(pg.ViewBox.YAxis, True)
+    if vb.linkedView(0) is None:
+        vb.enableAutoRange(pg.ViewBox.XAxis, True)
+    vb.updateAutoRange()
+
+
+def fix_plot_range(p) -> None:
+    """Mark a plot's view as deliberately scaled: legend clicks still hide
+    curves but never refit it."""
+    try:
+        p.getPlotItem().getViewBox()._helix_fixed_range = True
+    except Exception:                                        # noqa: BLE001
+        pass
+
+
 def add_legend(p: pg.PlotWidget, offset: tuple[int, int] = (-10, 10)):
-    """Attach a legend with a translucent dark background and bright labels."""
+    """Attach a legend with a translucent dark background and bright labels.
+    Clicking an entry hides its curve and refits the view (HelixItemSample)."""
     legend = p.addLegend(
         offset=offset,
         labelTextColor=theme.TEXT_0,
         brush=pg.mkBrush(6, 10, 15, 220),   # BG_INSET-ish with alpha
         pen=pg.mkPen(theme.BORDER_1),
         labelTextSize=f"{_AXIS_TICK_PT}pt",
+        sampleType=HelixItemSample,
     )
     return legend
 
@@ -386,12 +442,9 @@ class DensityPanel(pg.GraphicsLayoutWidget):
         self._plot.setLabel("bottom", _html_label(xlabel),
                             units=xunits or None, **label_style)
 
+        self._title = title
         if title:
-            self._plot.setTitle(
-                f"<span style='color:{theme.ACCENT}; "
-                f"font-size:{_TITLE_PT}pt; font-weight:600; letter-spacing:1px;'>"
-                f"{title.upper()}</span>"
-            )
+            self._plot.setTitle(self._title_html(title))
 
         # Image item (starts empty; ``set_data`` fills it in)
         self._image = pg.ImageItem(axisOrder="row-major")
@@ -425,6 +478,18 @@ class DensityPanel(pg.GraphicsLayoutWidget):
     def plot(self):
         """Exposed so callers can tweak labels (e.g. basis switch)."""
         return self._plot
+
+    @staticmethod
+    def _title_html(title: str) -> str:
+        return (f"<span style='color:{theme.ACCENT}; "
+                f"font-size:{_TITLE_PT}pt; font-weight:600; letter-spacing:1px;'>"
+                f"{title.upper()}</span>")
+
+    def set_title(self, title: str) -> None:
+        """Replace the panel title (e.g. to append a BMAG value).  The
+        plain text is kept in ``_title`` for callers and tests."""
+        self._title = title
+        self._plot.setTitle(self._title_html(title) if title else None)
 
     def set_scatter(self, x, y, c=None, *,
                     cmap_name: str = "viridis", point_size: int = 3,

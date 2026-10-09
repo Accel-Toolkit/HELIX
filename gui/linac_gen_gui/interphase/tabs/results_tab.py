@@ -21,7 +21,7 @@ from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
     QDialog, QFileDialog, QMenu, QTableWidget, QTableWidgetItem,
-    QHeaderView, QMessageBox, QComboBox, QSpinBox, QCheckBox,
+    QHeaderView, QMessageBox, QComboBox, QSpinBox, QCheckBox, QLineEdit,
 )
 
 from linac_gen_gui.interphase.app_settings import make_settings
@@ -36,6 +36,7 @@ from linac_gen_gui.interphase.plots.envelope_plot import EnvelopeTriple
 from linac_gen_gui.interphase.plots.plot_style import (
     style_plot, add_legend, curve_pen, filled_curve,
     density_heatmap, update_density, DensityPanel,
+    HelixItemSample, fix_plot_range,
 )
 
 
@@ -2012,6 +2013,78 @@ class _EigenEmitPopup(_PopupPlot):
             self._c3.setData([], [])
 
 
+class _CanonEigenPopup(_PopupPlot):
+    """Normalised canonical intrinsic emittances ε₁ · ε₂ · ε₃.
+
+    Same physics as :class:`_EigenEmitPopup`, but Σ is first mapped to
+    normalised canonical coordinates (x, βγx', y, βγy', cΔt, −ΔE/mc²) in
+    which all three planes carry the same symplectic weight
+    (:func:`canonical_eigenemittances_series`).  The modes are then true
+    invariants also under transverse–longitudinal coupling (dispersion,
+    RF), acceleration and FREQ jumps, and reduce to ε_nx / ε_ny / ε_nz
+    without coupling.  The lower panel shows how much the projections
+    overstate the intrinsic volume.
+    """
+
+    _COLORS = ("#38bdf8", "#a3e635", "#fbbf24")
+
+    def __init__(self, parent):
+        super().__init__(parent, "Intrinsic emittances  —  normalised canonical "
+                         "ε₁ · ε₂ · ε₃ (6-D)", size=(1000, 640))
+        v = QVBoxLayout(self); v.setContentsMargins(12, 12, 12, 12); v.setSpacing(6)
+        banner = QLabel(
+            "Σ in normalised canonical units (x, βγx\u2032, y, βγy\u2032, "
+            "cΔt, −ΔE/mc²), all planes in mm·mrad.  Solid: intrinsic modes "
+            "(eigenvalues of ΣJ), labelled by dominant plane; dashed: "
+            "projected ε_nx, ε_ny, ε_nz.  Lower panel: ε_nx·ε_ny·ε_nz / "
+            "ε₁ε₂ε₃ and ε_nx·ε_ny / ε_4D (1 = no coupling).  Mechanical "
+            "momenta: inside solenoid fields the modes are not invariants."
+        )
+        banner.setStyleSheet(
+            f"color:{theme.TEXT_2}; font-size:11px; padding:4px 8px;"
+            f"background:{theme.BG_INSET}; border:1px solid {theme.BORDER_0};"
+            f"border-radius:3px;"
+        )
+        banner.setWordWrap(True)
+        v.addWidget(banner)
+        self._p = _mk_plot("ε_n", "mm·mrad")
+        self._pr = _mk_plot("projected / intrinsic", "")
+        self._pr.setXLink(self._p)
+        self._modes, self._proj = [], []
+        for k, (lab, plab) in enumerate((("ε₁ (x-like)", "ε_nx"),
+                                         ("ε₂ (y-like)", "ε_ny"),
+                                         ("ε₃ (z-like)", "ε_nz"))):
+            c = self._COLORS[k]
+            self._modes.append(self._p.plot(pen=pg.mkPen(c, width=2), name=lab))
+            self._proj.append(self._p.plot(
+                pen=pg.mkPen(c, width=1, style=Qt.PenStyle.DashLine), name=plab))
+        self._r6 = self._pr.plot(pen=pg.mkPen("#e879f9", width=2), name="6-D")
+        self._r4 = self._pr.plot(pen=pg.mkPen("#a78bfa", width=1.5,
+                                              style=Qt.PenStyle.DashLine),
+                                 name="4-D (transverse)")
+        v.addWidget(self._p, stretch=3)
+        v.addWidget(self._pr, stretch=2)
+        self.attach_lattice_strip(self._p)
+
+    def _curves(self):
+        return (*self._modes, *self._proj, self._r6, self._r4)
+
+    def refresh(self, results):
+        from linac_gen.diagnostics.eigenemittance import (
+            canonical_eigenemittances_series)
+        ser = None if results is None else canonical_eigenemittances_series(results)
+        s = np.asarray(getattr(results, "s", []) if results is not None else [],
+                       dtype=float)
+        if ser is None or s.size != ser["e4d"].size:
+            for c in self._curves(): c.setData([], [])
+            return
+        for k, pl in enumerate("xyz"):
+            self._modes[k].setData(s, ser[f"eps_{pl}"], connect="finite")
+            self._proj[k].setData(s, ser[f"proj_{pl}"], connect="finite")
+        self._r6.setData(s, ser["coupling6"], connect="finite")
+        self._r4.setData(s, ser["coupling4"], connect="finite")
+
+
 class _BeamPowerPopup(_PopupPlot):
     """Beam power P = I · W_kin along the lattice.
 
@@ -3676,6 +3749,158 @@ def _companion_probe_results(lattice, cfg):
     return None
 
 
+def _envelope_twiss_at(env, s_mm: float, plane: str, tol_mm: float = 0.5):
+    """Projected Twiss ``{"alpha", "beta", "emit"}`` of the envelope row
+    nearest ``s_mm`` (``EnvelopeResults.s`` is mm), or None when no row
+    lies within ``tol_mm`` or the plane's Σ block is degenerate.  Same
+    projected (dispersion-included) convention as the phase-space
+    parameters table, so beam and design ellipses compare like with like."""
+    try:
+        s = np.asarray(getattr(env, "s", []), dtype=float)
+        sig = getattr(env, "sigma_matrix", None)
+        if s.size == 0 or sig is None or len(sig) != s.size:
+            return None
+        k = int(np.argmin(np.abs(s - float(s_mm))))
+        if abs(s[k] - float(s_mm)) > tol_mm:
+            return None
+        from linac_gen.tracking.envelope import _sigma_to_twiss
+        tw = _sigma_to_twiss(np.asarray(sig[k], dtype=float), plane)
+    except Exception:                                        # noqa: BLE001
+        return None
+    if not (tw["beta"] > 0.0 and tw["emit"] > 0.0):
+        return None
+    return tw
+
+
+def _bmag_along_s(results, env, betatron: bool = False):
+    """BMAG per record of ``results`` against the design ``env`` (both with
+    ``s`` in mm and one 6×6 Σ per record), matched to the nearest design
+    row within 0.5 mm; NaN where no design row, a degenerate plane or a
+    DC record (longitudinal).  ``betatron`` uses the dispersion-corrected
+    transverse blocks (:func:`_betatron_sigma_blocks`); the longitudinal
+    plane is always the raw (Δφ, ΔW) block.  Returns
+    ``{"s_mm", "x", "y", "z"}`` or None when either side lacks Σ."""
+    S, E = _sigma_stack(results), _sigma_stack(env)
+    s = np.asarray(getattr(results, "s", []), dtype=float)
+    se = np.asarray(getattr(env, "s", []), dtype=float)
+    if (S is None or E is None or s.size == 0 or se.size == 0
+            or S.shape[0] != s.size or E.shape[0] != se.size):
+        return None
+    k = np.clip(np.searchsorted(se, s), 1, se.size - 1)
+    kk = np.where(np.abs(s - se[k - 1]) <= np.abs(s - se[k]), k - 1, k)
+    ok = np.abs(se[kk] - s) <= 0.5
+    Ek = E[kk]
+
+    def twiss(M, plane):
+        if plane == "z":
+            a, b, _g, _e = _twiss_from_block(M[:, 4, 4], M[:, 4, 5], M[:, 5, 5])
+        elif betatron:
+            sxx, sxxp, sxpxp, syy, syyp, sypyp = _betatron_sigma_blocks(M)
+            blk = (sxx, sxxp, sxpxp) if plane == "x" else (syy, syyp, sypyp)
+            a, b, _g, _e = _twiss_from_block(*blk)
+        else:
+            i, j = (0, 1) if plane == "x" else (2, 3)
+            a, b, _g, _e = _twiss_from_block(M[:, i, i], M[:, i, j], M[:, j, j])
+        return a, b
+
+    def bmag(plane, mask):
+        a1, b1 = twiss(S, plane)
+        a2, b2 = twiss(Ek, plane)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            g1 = (1.0 + a1 * a1) / b1
+            g2 = (1.0 + a2 * a2) / b2
+            v = 0.5 * (b1 * g2 - 2.0 * a1 * a2 + g1 * b2)
+        good = mask & (b1 > 0.0) & (b2 > 0.0) & np.isfinite(v)
+        return np.where(good, v, np.nan)
+
+    n = s.size
+    dc = np.zeros(n, dtype=bool)
+    flags = getattr(results, "continuous_at", None)
+    if flags and len(flags) == n:
+        dc = np.asarray(flags, dtype=bool)
+    elif bool(getattr(results, "continuous", False)):
+        dc[:] = True
+    if bool(getattr(env, "continuous", False)):
+        dc[:] = True
+    return {"s_mm": s, "x": bmag("x", ok), "y": bmag("y", ok), "z": bmag("z", ok & ~dc)}
+
+
+class _DesignProbeMixin:
+    """Shared "design = error-free envelope of the current lattice and
+    Beam-tab config" machinery: the companion-probe cache first, else a
+    background ``_ProbeWorker`` (named ``_probe_worker`` so the popup's
+    close / shutdown / cancel hygiene covers it).  Hosts must set
+    ``_state``, ``_probe_worker``, ``_probe_sig_pending``,
+    ``_design_failed_sig`` and ``_design_error`` in ``__init__`` and
+    provide ``_redraw()``."""
+
+    def _design_env(self):
+        """(EnvelopeResults or None, status text)."""
+        state = self._state
+        lattice = getattr(state, "lattice", None)
+        cfg = getattr(state, "beam_config", None)
+        if lattice is None:
+            return None, "unavailable — no lattice loaded"
+        if cfg is None:
+            return None, "unavailable — no beam config"
+        env = _companion_probe_results(lattice, cfg)
+        if env is not None:
+            return env, "design: error-free envelope of the current lattice"
+        if self._maybe_start_probe(lattice, cfg) == "failed":
+            return None, f"unavailable — envelope failed: {self._design_error}"
+        return None, "computing the error-free envelope…"
+
+    def _maybe_start_probe(self, lattice, cfg) -> str:
+        """Launch the companion envelope probe unless it is running or has
+        failed for this very lattice/config; returns "pending"/"failed"."""
+        sig = _probe_sig(lattice, cfg)
+        if sig == self._design_failed_sig:
+            return "failed"
+        w = self._probe_worker
+        if w is not None and hasattr(w, "isRunning") and w.isRunning():
+            return "pending"
+        try:
+            ref, initial = _beam_inputs_from_config(cfg)
+        except Exception as exc:                             # noqa: BLE001
+            self._design_failed_sig = sig
+            self._design_error = str(exc)
+            return "failed"
+        self._probe_sig_pending = sig
+        self._probe_worker = _ProbeWorker(
+            lattice, ref, initial, float(getattr(cfg, "current", 0.0) or 0.0))
+        self._probe_worker.finished_ok.connect(self._on_probe_ready)
+        self._probe_worker.failed.connect(self._on_probe_failed)
+        self._probe_worker.start()
+        return "pending"
+
+    def _on_probe_ready(self, env) -> None:
+        sig = self._probe_sig_pending
+        self._probe_sig_pending = None
+        lattice = getattr(self._state, "lattice", None)
+        n_el = len(getattr(lattice, "elements", []) or []) if lattice is not None else -1
+        n_rows = len(getattr(env, "element_exit_idx", []) or []) if env is not None else -1
+        if sig is not None and n_el > 0 and n_rows == n_el:
+            # Same single-slot cache the tune-depression / Hofmann popups use.
+            _COMPANION_PROBE.clear()
+            _COMPANION_PROBE["sig"] = sig
+            _COMPANION_PROBE["results"] = env
+        # A probe truncated by a run (cancel_background_walks) is neither
+        # cached nor latched: the post-run refresh launches a fresh one.
+        try:
+            self._redraw()
+        except RuntimeError:
+            pass
+
+    def _on_probe_failed(self, msg) -> None:
+        self._design_failed_sig = self._probe_sig_pending
+        self._probe_sig_pending = None
+        self._design_error = str(msg)
+        try:
+            self._redraw()
+        except RuntimeError:
+            pass
+
+
 def _beam_mu_curves(results, lattice, cfg, *, start_index: int = 0):
     """``beam_phase_advance_along_s`` for a popup: the run's own probe maps
     when it has them, else the cached companion probe's maps (MP results),
@@ -3859,6 +4084,7 @@ class _TuneDepressionPopup(_CoupledWalkMixin, _PopupPlot):
             p = _mk_plot(f"{title}  =  σ_{plane} / σ₀_{plane}  per cell", "")
             p.setLabel("bottom", "cell #")
             p.addLegend(offset=(-8, 8))
+            fix_plot_range(p)                   # framing computed in _redraw (y from 0, η = 1 kept)
             # PRIMARY: model η from the phase-probe channel monodromy
             # (matched-channel definition, exact w.r.t. the run).
             model = p.plot(pen=curve_pen("#a3e635", width=2.2),
@@ -5195,6 +5421,7 @@ class _SccPopup(_PopupPlot):
         self._plot_fc = _mk_plot("neutralisation f_c(z)", "")
         self._plot_fc.setLabel("bottom", "z", units="m")
         self._plot_fc.setYRange(0.0, 1.05)
+        fix_plot_range(self._plot_fc)           # f_c is a fraction: keep 0 … 1
         self._c_fc = self._plot_fc.plot(pen=curve_pen("#34d399", width=2.0),
                                         name="f_c")
         self._c_eta = self._plot_fc.plot(
@@ -6697,7 +6924,7 @@ class _CentroidPopup(_PopupPlot):
         self._goal_lbl.setVisible(True)
 
 
-class _PhaseSpacePopup(_PopupPlot):
+class _PhaseSpacePopup(_DesignProbeMixin, _PopupPlot):
     _FOLD_TIP = (
         "Fold Δφ into ONE RF period about the bunch centroid.\n"
         "Particles a full period away are in the neighbouring bucket "
@@ -6708,6 +6935,20 @@ class _PhaseSpacePopup(_PopupPlot):
         "beside it, not the run.  To remove the train at the source, "
         "enable Periodic phase in the Beam tab — then this control is "
         "disabled because there is nothing left to fold.")
+    _ELLIPSE_TIP = (
+        "Overlay two ellipses on x–x', y–y' and φ–W:\n"
+        "  solid — the beam's own rms (Courant–Snyder) ellipse;\n"
+        "  dashed — the DESIGN ellipse (design α, β at this location),\n"
+        "           drawn with the beam's rms emittance (same area).\n"
+        "Both are centred on the beam centroid.  Projected Twiss\n"
+        "(dispersion included), the same numbers as the Beam-parameters\n"
+        "table.  The panel title shows\n"
+        "  BMAG = ½(β_b γ_d − 2 α_b α_d + γ_b β_d)   (1 = matched).\n"
+        "Design: the Beam-tab input Twiss at s = 0; elsewhere the\n"
+        "error-free envelope of the current lattice and Beam-tab config,\n"
+        "computed once in the background (shared with the tune-depression\n"
+        "and Hofmann popups).  No longitudinal ellipse for DC records.")
+    _ELLIPSES_KEY = "linac_gen/phase_space/ellipses"
 
     def __init__(self, parent, state: AppState):
         super().__init__(parent, "Phase Space  —  x-x' · y-y' · x-y · φ-W", size=(1000, 760))
@@ -6778,6 +7019,21 @@ class _PhaseSpacePopup(_PopupPlot):
         self._wrap_phi.setToolTip(self._FOLD_TIP)
         self._wrap_phi.toggled.connect(self._redraw)
         top.addWidget(self._wrap_phi)
+        # Ellipse overlay (rms + design, BMAG in the panel titles).  The
+        # remembered state is read BEFORE connecting toggled, so a stored
+        # "on" cannot call _redraw before the panels exist.
+        self._settings = make_settings("linac_gen", "linac_gen_gui")
+        self._probe_worker = None
+        self._probe_sig_pending = None
+        self._design_failed_sig = None
+        self._design_error = ""
+        self._ell_items: dict = {}
+        self._ellipses = QCheckBox("ellipses")
+        self._ellipses.setToolTip(self._ELLIPSE_TIP)
+        self._ellipses.setChecked(bool(self._settings.value(
+            self._ELLIPSES_KEY, False, type=bool)))
+        self._ellipses.toggled.connect(self._on_ellipses_toggled)
+        top.addWidget(self._ellipses)
         top.addStretch(1)
         v.addLayout(top)
         # The 2x2 density grid lives in a container widget so the
@@ -6797,6 +7053,17 @@ class _PhaseSpacePopup(_PopupPlot):
                                        ylabel="W",   yunits="MeV")
         grid.addWidget(self._panel_xx,  0, 0); grid.addWidget(self._panel_yy,  0, 1)
         grid.addWidget(self._panel_xy,  1, 0); grid.addWidget(self._panel_phi, 1, 1)
+        self._ell_planes = (("x", self._panel_xx, "x – x'"),
+                            ("y", self._panel_yy, "y – y'"),
+                            ("z", self._panel_phi, "φ – W"))
+        # A lattice or Beam-tab change makes a new probe signature: forget
+        # a latched probe failure and redraw the overlay if it is showing.
+        if state is not None:
+            for _sig_name in ("beam_config_changed", "lattice_changed"):
+                try:
+                    getattr(state, _sig_name).connect(self._on_design_inputs_changed)
+                except Exception:                            # noqa: BLE001
+                    pass
         v.addWidget(self._plots_box, stretch=1)
         # Beam-parameters table (hidden until toggled) — style mirrors
         # _BpmsPopup.
@@ -6977,11 +7244,12 @@ class _PhaseSpacePopup(_PopupPlot):
         if getattr(self, "_table", None) is not None \
                 and not self._table.isHidden():
             self._fill_table()
-        particles = self._current_particles()
+        particles, ref, src, _n_total = self._current_particles_with_ref()
         if particles is None or len(particles) == 0:
             for panel in (self._panel_xx, self._panel_yy,
                           self._panel_xy, self._panel_phi):
                 panel.set_data([], [])
+            self._clear_ellipses()
             return
         q = particles
         # Fold BEFORE the (z, δ) basis conversion below, otherwise z
@@ -7000,6 +7268,7 @@ class _PhaseSpacePopup(_PopupPlot):
         phi, dw = q[:, 4], q[:, 5]
         basis = self._basis.currentData()
         cfg = self._state.beam_config
+        z_scale = None            # (Δφ, ΔW) → (z, δ) factors in the TraceWin basis
         # Color-by mode dispatch — density (default) keeps the existing
         # histogram render path so older snapshots still look identical.
         mode = self._colour.currentData()
@@ -7031,6 +7300,7 @@ class _PhaseSpacePopup(_PopupPlot):
             wl_m = C_LIGHT / (cfg.frequency * 1e6)
             z = -phi * beta * wl_m / 360.0
             delta = dw / (beta * beta * gamma * sp.mass)
+            z_scale = (-beta * wl_m / 360.0, 1.0 / (beta * beta * gamma * sp.mass))
             if mode != "density":
                 self._panel_phi.set_scatter(z, delta, cvec, label=clabel)
             else:
@@ -7044,6 +7314,165 @@ class _PhaseSpacePopup(_PopupPlot):
                 self._panel_phi.set_data(phi, dw)
             self._panel_phi.plot.setLabel("bottom", "φ", units="deg")
             self._panel_phi.plot.setLabel("left", "W", units="MeV")
+        self._update_ellipses(q, ref, src, z_scale)
+
+    # ----------------------------------------------------------- ellipses
+    def _on_ellipses_toggled(self, checked: bool) -> None:
+        try:
+            self._settings.setValue(self._ELLIPSES_KEY, bool(checked))
+        except Exception:                                    # noqa: BLE001
+            pass
+        self._redraw()
+
+    def _on_design_inputs_changed(self, *_args) -> None:
+        self._design_failed_sig = None
+        self._design_error = ""
+        if self.isVisible() and self._ellipses.isChecked():
+            try:
+                self._redraw()
+            except RuntimeError:
+                pass
+
+    def _ellipse_tip(self, status: str) -> None:
+        base = self._ellipses.toolTip().split("\n\nDesign now:")[0]
+        self._ellipses.setToolTip(base + "\n\nDesign now: " + status)
+
+    def _design_location(self, ref, src):
+        """(s in mm, "input" | "envelope"): the regenerated input beam and
+        anything at the line entrance take the Beam-tab Twiss."""
+        if ref is None or str(src).startswith("input beam"):
+            return 0.0, "input"
+        s = float(getattr(ref, "s", 0.0) or 0.0)
+        if abs(s) <= 0.5:
+            return 0.0, "input"
+        return s, "envelope"
+
+    def _is_dc_record(self, src) -> bool:
+        results = getattr(self._state, "results", None)
+        cfg = self._state.beam_config
+        try:
+            if str(src).startswith("input beam"):
+                return bool(getattr(cfg, "continuous", False))
+            if str(src) == "snapshot":
+                loc = self._location.currentData()
+                flags = getattr(results, "continuous_at", None)
+                s_arr = np.asarray(getattr(results, "s", []), dtype=float)
+                if flags and s_arr.size == len(flags) and loc is not None:
+                    return bool(flags[int(np.argmin(np.abs(s_arr - float(loc))))])
+            beam = getattr(results, "beam", None)
+            if beam is not None:
+                return bool(getattr(beam, "continuous", False))
+        except Exception:                                    # noqa: BLE001
+            pass
+        return False
+
+    def _design_twiss(self, plane, s_mm, kind):
+        """(design {"alpha", "beta"} or None, status text for the tooltip)."""
+        cfg = self._state.beam_config
+        if kind == "input":
+            if cfg is None:
+                return None, "unavailable — no beam config"
+            a = float(getattr(cfg, f"alpha_{plane}", 0.0) or 0.0)
+            b = float(getattr(cfg, f"beta_{plane}", 0.0) or 0.0)
+            if not b > 0.0:
+                return None, f"unavailable — input β_{plane} is not positive"
+            return {"alpha": a, "beta": b}, "input Twiss at s = 0 (Beam tab)"
+        env, status = self._design_env()
+        if env is None:
+            return None, status
+        tw = _envelope_twiss_at(env, s_mm, plane)
+        if tw is None:
+            return None, (f"unavailable — no envelope row within 0.5 mm of "
+                          f"s = {s_mm / 1e3:.3f} m")
+        return tw, f"error-free envelope of the current lattice at s = {s_mm / 1e3:.3f} m"
+
+    def _update_ellipses(self, q, ref, src, z_scale) -> None:
+        if getattr(self, "_ellipses", None) is None or not self._ellipses.isChecked():
+            self._clear_ellipses()
+            return
+        from linac_gen.analysis.phase_advance import mismatch_factor
+        from linac_gen.diagnostics.moments import (
+            compute_twiss_from_particles, ellipse_points)
+        s_mm, kind = self._design_location(ref, src)
+        dc = self._is_dc_record(src)
+        statuses = []
+        for plane, panel, base in self._ell_planes:
+            if plane == "z" and dc:
+                self._set_plane_items(panel, None, None)
+                panel.set_title(base)
+                continue
+            tw = compute_twiss_from_particles(q, plane)
+            if not (tw["beta"] > 0.0 and tw["emittance"] > 0.0):
+                self._set_plane_items(panel, None, None)
+                panel.set_title(base)
+                continue
+            i, j = {"x": (0, 1), "y": (2, 3), "z": (4, 5)}[plane]
+            centre = (float(np.mean(q[:, i])), float(np.mean(q[:, j])))
+            rms = ellipse_points(tw["alpha"], tw["beta"], tw["emittance"], centre)
+            design, status = self._design_twiss(plane, s_mm, kind)
+            statuses.append(status)
+            des = None
+            title = f"{base} · BMAG n/a"
+            if design is not None:
+                des = ellipse_points(design["alpha"], design["beta"], tw["emittance"], centre)
+                bmag = mismatch_factor(tw["alpha"], tw["beta"], design["alpha"], design["beta"])
+                title = f"{base} · BMAG {bmag:.3f}"
+            elif status.startswith("computing"):
+                title = f"{base} · BMAG …"
+            if plane == "z" and z_scale is not None:
+                rms = (rms[0] * z_scale[0], rms[1] * z_scale[1])
+                if des is not None:
+                    des = (des[0] * z_scale[0], des[1] * z_scale[1])
+            self._set_plane_items(panel, rms, des)
+            panel.set_title(title)
+        self._ellipse_tip(statuses[0] if statuses else "no distribution to draw")
+
+    _ELLIPSE_LEGEND = {"rms": "beam rms ellipse", "design": "design ellipse (same emittance)"}
+
+    def _set_plane_items(self, panel, rms, design) -> None:
+        """Create / update / remove the two overlay curves of one panel and
+        keep its legend in step.  Curves are removed, not hidden, so Ctrl+S
+        exports never carry a stale curve; the legend is a LegendItem
+        created by hand (not ``addLegend``) so PlotItem never auto-registers
+        the curves under their export names."""
+        items = self._ell_items.setdefault(id(panel), {})
+        leg = items.get("legend")
+        if leg is None:
+            leg = pg.LegendItem(offset=(8, 4), brush=pg.mkBrush(0, 0, 0, 140),
+                                pen=pg.mkPen(theme.BG_4, width=0.5),
+                                labelTextColor=theme.TEXT_0, labelTextSize="8pt",
+                                sampleType=HelixItemSample)
+            leg.setParentItem(panel.plot.vb)
+            items["legend"] = leg
+        # Cyan (complementary to the magma density ramp) stays visible on
+        # the bright core of a dense panel; the design is dashed white.
+        specs = (("rms", rms, "rms ellipse", pg.mkPen(theme.ACCENT, width=1.8)),
+                 ("design", design, "design ellipse",
+                  pg.mkPen(theme.TEXT_0, width=1.6, style=Qt.PenStyle.DashLine)))
+        shown = 0
+        for key, xy, name, pen in specs:
+            item = items.get(key)
+            if xy is None or len(xy[0]) == 0:
+                if item is not None and item in panel.plot.items:
+                    panel.plot.removeItem(item)
+                    leg.removeItem(item)
+                continue
+            if item is None:
+                item = pg.PlotDataItem(name=name, pen=pen)
+                item.setZValue(10)
+                items[key] = item
+            if item not in panel.plot.items:
+                panel.plot.addItem(item, ignoreBounds=True)
+                leg.addItem(item, self._ELLIPSE_LEGEND[key])
+            item.setData(np.asarray(xy[0], dtype=float), np.asarray(xy[1], dtype=float))
+            shown += 1
+        leg.setVisible(shown > 0)
+
+    def _clear_ellipses(self) -> None:
+        for _plane, panel, base in getattr(self, "_ell_planes", ()):
+            self._set_plane_items(panel, None, None)
+            if getattr(panel, "_title", None) != base:
+                panel.set_title(base)
 
     def _extra_panels(self):
         """Expose raw per-particle coordinates — DensityPanels histogram
@@ -7076,6 +7505,101 @@ _CHANNEL_LABEL = {
     "RF_E":   "RF E      (cavity electric)",
     "RF_B":   "RF B      (cavity magnetic)",
 }
+
+
+class _BmagPopup(_DesignProbeMixin, _PopupPlot):
+    """BMAG along s, per plane: the run's own Twiss at every record against
+    the design — the error-free envelope of the current lattice and
+    Beam-tab config — BMAG = ½(β_b γ_d − 2α_b α_d + γ_b β_d), 1 = matched."""
+
+    def __init__(self, parent, state: AppState):
+        super().__init__(parent, "BMAG along s  —  x · y · z  (1 = matched)", size=(1000, 560))
+        self._state = state
+        self._probe_worker = None
+        self._probe_sig_pending = None
+        self._design_failed_sig = None
+        self._design_error = ""
+        self._last_results = None
+        v = QVBoxLayout(self); v.setContentsMargins(12, 12, 12, 12); v.setSpacing(6)
+        from PyQt6.QtWidgets import QCheckBox, QHBoxLayout
+        ctrl = QHBoxLayout(); ctrl.setSpacing(8)
+        ctrl.addWidget(QLabel("Display:"))
+        self._mode_combo = _mk_mode_combo(self._on_mode_changed)
+        ctrl.addWidget(self._mode_combo)
+        self._chk_lat = QCheckBox("Show lattice")
+        self._chk_lat.setChecked(True)
+        self._chk_lat.toggled.connect(self.set_lattice_strip_visible)
+        ctrl.addWidget(self._chk_lat)
+        ctrl.addStretch(1)
+        self._info = QLabel("")
+        self._info.setStyleSheet(f"color:{theme.TEXT_1};")
+        self._info.setToolTip(
+            "BMAG = ½(β_b γ_d − 2 α_b α_d + γ_b β_d) between the beam's\n"
+            "Twiss at each record and the design Twiss at the same s\n"
+            "(nearest design row within 0.5 mm).  1 = matched; the\n"
+            "mismatch amplitude is BMAG + √(BMAG² − 1).\n"
+            "Design: the error-free envelope of the current lattice and\n"
+            "Beam-tab config (computed once in the background, shared with\n"
+            "the phase-space ellipses and the tune-depression popup).\n"
+            "Raw uses the projected Twiss (dispersion included);\n"
+            "Dispersion-corrected the betatron Twiss, transverse planes\n"
+            "only.  No longitudinal value for DC records.")
+        ctrl.addWidget(self._info)
+        v.addLayout(ctrl)
+        self._plot = _mk_plot("BMAG (1 = matched)")
+        self._plot.addItem(pg.InfiniteLine(
+            pos=1.0, angle=0, pen=pg.mkPen(theme.TEXT_1, width=0.8, style=Qt.PenStyle.DashLine)))
+        self._cx = self._plot.plot(pen=curve_pen(theme.ACCENT), name="BMAG_x", connect="finite")
+        self._cy = self._plot.plot(pen=curve_pen("#a3e635"), name="BMAG_y", connect="finite")
+        self._cz = self._plot.plot(pen=curve_pen("#fbbf24"), name="BMAG_z", connect="finite")
+        v.addWidget(self._plot, stretch=1)
+        self.attach_lattice_strip(self._plot)
+        if state is not None:
+            for _sig_name in ("beam_config_changed", "lattice_changed"):
+                try:
+                    getattr(state, _sig_name).connect(self._on_design_inputs_changed)
+                except Exception:                            # noqa: BLE001
+                    pass
+
+    def refresh(self, results):
+        self._last_results = results
+        self._redraw()
+
+    def _on_mode_changed(self, _index) -> None:
+        self._redraw()
+
+    def _on_design_inputs_changed(self, *_args) -> None:
+        self._design_failed_sig = None
+        self._design_error = ""
+        if self.isVisible():
+            try:
+                self._redraw()
+            except RuntimeError:
+                pass
+
+    def _clear(self, msg: str) -> None:
+        for c in (self._cx, self._cy, self._cz):
+            c.setData([], [])
+        self._info.setText(msg)
+
+    def _redraw(self) -> None:
+        results = self._last_results
+        if results is None or not len(getattr(results, "s", []) or []):
+            self._clear("no results")
+            return
+        env, status = self._design_env()
+        if env is None:
+            self._clear(status)
+            return
+        out = _bmag_along_s(results, env, betatron=(self._mode_combo.currentIndex() == 1))
+        if out is None:
+            self._clear("no σ matrices recorded in this run")
+            return
+        self._cx.setData(out["s_mm"], out["x"])
+        self._cy.setData(out["s_mm"], out["y"])
+        self._cz.setData(out["s_mm"], out["z"])
+        n = int(np.isfinite(out["x"]).sum())
+        self._info.setText(f"{status} · {n} of {out['s_mm'].size} records matched")
 
 
 def _expand_channel_to_grid(ch, *, oversample_xy: int = 25,
@@ -8480,8 +9004,37 @@ def _build_series_fns(state) -> dict:
             return None
         return sw / (beta * beta * gamma * m)
 
+    def eigen_canon(results):
+        # Sparkline: the x-like normalised canonical intrinsic emittance.
+        from linac_gen.diagnostics.eigenemittance import (
+            canonical_eigenemittances_series)
+        if results is None:
+            return None
+        ser = canonical_eigenemittances_series(results)
+        return None if ser is None else ser["eps_x"]
+
+    def bmag_s(results):
+        if results is None or state is None:
+            return None
+        lat = getattr(state, "lattice", None); cfg = getattr(state, "beam_config", None)
+        if lat is None or cfg is None:
+            return None
+        env = _companion_probe_results(lat, cfg)
+        if env is None:
+            return None
+        out = _bmag_along_s(results, env)
+        if out is None:
+            return None
+        v, s_mm = out["x"], out["s_mm"]
+        fin = np.isfinite(v)
+        if fin.sum() < 2:
+            return None
+        return np.interp(s_mm, s_mm[fin], v[fin])     # gap-filled for the sparkline
+
     return {
         "emit6d": emit6d,
+        "bmag_s": bmag_s,
+        "eigen_canon": eigen_canon,
         "phase_adv": phase_adv,
         "tune_depr": tune_depr,
         "hofmann": hofmann,
@@ -8543,6 +9096,111 @@ def _build_series_fns(state) -> dict:
 # parameters…); truly plain tiles (phase space, matrix viewers) stay
 # thumbnail-less because their data isn't a 1-D curve.
 
+# ---------------------------------------------------------------------------
+# Tile search: what the Results-tab search box matches against.  Tiles have
+# no description text, so each key gets a line of synonyms (popup names,
+# physics words, spellings) and the label glyphs are transliterated so
+# "sigma", "eta" or "H-" can be typed.  Pure helpers, unit-tested.
+# ---------------------------------------------------------------------------
+_GLYPHS = {
+    "σ": " sigma ", "Σ": " sigma ", "ε": " epsilon eps ", "η": " eta ", "α": " alpha ",
+    "β": " beta ", "γ": " gamma ", "φ": " phi ", "μ": " mu ", "Δ": " delta ", "δ": " delta ",
+    "⁻": "-", "₀": "0", "₁": "1", "₂": "2", "₃": "3", "²": "2", "∫": " int ", "×": " x ",
+    "⟨": " ", "⟩": " ", "·": " ", "—": " ", "–": " ",
+}
+_TILE_KEYWORDS: dict[str, str] = {
+    "rms":         "sigma rms beam size envelope width x y z",
+    "emit":        "emittance epsilon eps geometric unnormalised rms",
+    "emit_n":      "emittance epsilon eps normalised normalized rms",
+    "emit6d":      "emittance epsilon 6d six dimensional volume",
+    "twiss":       "twiss alpha beta courant snyder optics transverse",
+    "phase_adv":   "phase advance sigma0 sigma zero mu tune per cell channel",
+    "tune_depr":   "tune depression eta space charge sigma sigma0 ratio",
+    "bmag_s":      "bmag mismatch matched match factor design twiss along s",
+    "hofmann":     "hofmann stability chart resonance space charge k_z k_x",
+    "footprint":   "tune footprint frozen space charge resonance",
+    "scc":         "lebt space charge compensation scc gas neutralisation",
+    "long_twiss":  "longitudinal twiss alpha_z beta_z gamma_z z phase energy",
+    "divergence":  "divergence angle x' y' xp yp sigma prime",
+    "peak":        "peak excursion maximum extent xmax ymax amplitude",
+    "halo":        "halo parameter wangler h tails",
+    "halo_scan":   "halo action scan ellipse n eps rms tails outside",
+    "energy":      "energy kinetic gamma transmission w beta",
+    "power":       "beam power watts kw average current",
+    "emit4d":      "emittance 4d four dimensional invariant coupling",
+    "eigenemit":   "eigenemittance eigen emittance epsilon1 epsilon2 epsilon3 invariant coupled",
+    "eigen_canon": "intrinsic canonical eigenemittance normalised solenoid",
+    "loss":        "loss losses lost particles profile along s",
+    "aperture_loss": "aperture losses lost profile bore radius",
+    "loss_power":  "loss power watts per metre w/m w/cm2 deposition",
+    "ibs":         "intrabeam intra-beam stripping h- h minus hminus losses",
+    "magstrip":    "magnetic lorentz stripping h- h minus hminus field losses",
+    "ensemble":    "error study ensemble seeds errors statistics misalignment",
+    "centroid":    "centroid orbit offset mean position x y phi beam centre center",
+    "long_offset": "longitudinal offset synchronous phase energy delta phi delta w",
+    "dispersion":  "dispersion eta d_x d_y momentum",
+    "dpp":         "momentum spread dp/p delta p energy spread sigma",
+    "phase":       "phase space distribution particles x-x' y-y' x-y phi-w ellipse bmag density scatter",
+    "density_s":   "density heatmap along s particles",
+    "bpms":        "bpm bpms beam position monitors readings orbit",
+    "field_map":   "field map fieldmap 2d cuts cavity solenoid e b",
+    "ttf":         "ttf transit time factor cavity t(beta)",
+    "quad_grad":   "quadrupole gradient g k1 focusing lattice",
+    "quad_gl":     "quadrupole integrated gradient gl gdl lattice",
+    "rf_volt":     "rf voltage v0 cavity gap lattice",
+    "eacc":        "accelerating field eacc gradient cavity peak",
+    "bpeak":       "solenoid peak field bz lattice",
+    "int_b2":      "solenoid integrated b2 field integral lattice",
+    "bend_b":      "dipole bend field b magnet lattice",
+    "bend_bl":     "dipole bend integrated field bl bdl lattice",
+    "floorplan":   "floor plan survey geometry layout coordinates",
+    "sync_phase":  "synchronous phase phi_s rf cavity",
+    "partran":     "tracewin partran compare comparison cross-check benchmark",
+    "sigma":       "sigma matrix 6x6 second moments covariance",
+    "tmatrix":     "transfer matrix 6x6 r matrix map",
+    "convergence": "space charge convergence sc steps grid numerics",
+}
+
+
+def _translit(text: str) -> str:
+    out = str(text)
+    for g, r in _GLYPHS.items():
+        out = out.replace(g, r)
+    return out
+
+
+def _tile_haystack(key: str, label: str, section: str = "", unit: str = "",
+                   attr: str | None = None) -> str:
+    """Casefolded search text of one tile: key, label (as written and
+    transliterated), section, unit, series attribute and the synonyms."""
+    parts = [key, key.replace("_", " "), label, _translit(label), section, unit or "",
+             attr or "", _TILE_KEYWORDS.get(key, "")]
+    return " ".join(p for p in parts if p).casefold()
+
+
+def _tile_matches(query: str, haystack: str) -> bool:
+    """Every whitespace-separated term of ``query`` must occur in
+    ``haystack`` (substring), or be close to one of its words (≥ 4
+    letters, difflib ratio ≥ 0.8 — so a typo like "emitance" still finds
+    emittance).  An empty query matches everything."""
+    terms = query.casefold().split()
+    if not terms:
+        return True
+    words = None
+    for term in terms:
+        if term in haystack:
+            continue
+        if len(term) < 4:
+            return False
+        if words is None:
+            import re
+            words = [w for w in re.findall(r"[a-z0-9_'/.\-]+", haystack) if len(w) >= 4]
+        from difflib import SequenceMatcher
+        if not any(SequenceMatcher(None, term, w).ratio() >= 0.8 for w in words):
+            return False
+    return True
+
+
 _SECTIONS: list[tuple[str, list[tuple]]] = [
     ("BEAM SIZE & EMITTANCE", [
         ("rms",     "RMS σ (x · y · z)",            "wave",   "sigma_x",
@@ -8561,6 +9219,8 @@ _SECTIONS: list[tuple[str, list[tuple]]] = [
             "deg",      "{:.1f}", "#a3e635"),
         ("tune_depr",   "Tune depression η = σ/σ₀",  "gauge",   None,
             "",         "{:.3f}", "#fbbf24"),
+        ("bmag_s",      "BMAG along s",              "sliders", None,
+            "",         "{:.3f}", "#38bdf8"),
         ("hofmann",     "Hofmann stability chart",   "scatter", None,
             "k_z/k_x",  "{:.3f}", "#f472b6"),
         ("footprint",   "Tune footprint (frozen SC)", "scatter", None,
@@ -8587,6 +9247,8 @@ _SECTIONS: list[tuple[str, list[tuple]]] = [
             "(mm·mrad)²", "{:.3g}", "#a78bfa"),
         ("eigenemit",   "Eigenemittances ε₁·ε₂·ε₃",  "chart",   "emit_e1",
             "mm·mrad",  "{:.3g}", "#c084fc"),
+        ("eigen_canon", "Intrinsic ε (canonical, norm.)", "chart", None,
+            "mm·mrad",  "{:.3g}", "#38bdf8"),
     ]),
     ("LOSSES · TRANSMISSION", [
         ("loss",        "Loss profile",              "collision","transmission",
@@ -8708,12 +9370,36 @@ class ResultsTab(QWidget):
         hint.setStyleSheet(f"color:{theme.TEXT_2}; font-size:13px;")
         hint.setWordWrap(True)
         v.addWidget(hint)
+        self._hint = hint
 
         # --- Import / load saved run -----------------------------------
         # Loads any HDF5 produced by save_results_hdf5 (auto-saved after
         # every run into the configured calc dir) so all the cards and
         # popups below re-populate from the on-disk arrays.
         import_row = QHBoxLayout(); import_row.setSpacing(6)
+        # Tile search: filters the card grid below as you type (label,
+        # section, unit, synonyms, Greek letters typed as words, small
+        # typos); Enter opens the first match, Esc clears, Ctrl+F focuses
+        # the box while this tab is current.
+        self._search = QLineEdit()
+        self._search.setPlaceholderText("Search tiles…  (Ctrl+F)")
+        self._search.setClearButtonEnabled(True)
+        self._search.setMaximumWidth(340)
+        self._search.addAction(icon("search", 14, theme.TEXT_2),
+                               QLineEdit.ActionPosition.LeadingPosition)
+        self._search.setToolTip(
+            "Type one or more words to show only the matching tiles — "
+            "label, section, unit and common synonyms are searched; Greek "
+            "letters can be typed as words (sigma, eta, …) and small typos "
+            "are tolerated.  Enter opens the first match, Esc clears.")
+        self._search.textChanged.connect(self._apply_tile_filter)
+        self._search.returnPressed.connect(self._open_first_match)
+        _esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), self._search)
+        _esc.setContext(Qt.ShortcutContext.WidgetShortcut)
+        _esc.activated.connect(self._clear_search)
+        _find = QShortcut(QKeySequence(QKeySequence.StandardKey.Find), self)
+        _find.activated.connect(self._focus_search)
+        import_row.addWidget(self._search)
         import_row.addStretch(1)
         self._import_btn = QPushButton("  Import Results…")
         self._import_btn.setIcon(icon("folder-open", 12))
@@ -8752,6 +9438,7 @@ class ResultsTab(QWidget):
         }
         self._cards: list[ResultCard] = []
         COLS = 4
+        self._tile_cols = COLS
 
         # Derived-series providers (per-cell tunes, dispersion, lattice
         # parameters…) — closures over AppState so lattice tiles render
@@ -8759,9 +9446,13 @@ class ResultsTab(QWidget):
         self._series_fns = _build_series_fns(state)
 
         self._ibs_card: Optional[ResultCard] = None
+        self._tile_sections: list[tuple[QWidget, QGridLayout, list]] = []
+        self._card_haystack: dict[str, str] = {}
         for section_name, cards_def in _SECTIONS:
-            scroll_lay.addWidget(section_header(section_name))
+            hdr = section_header(section_name)
+            scroll_lay.addWidget(hdr)
             grid = QGridLayout(); grid.setSpacing(10)
+            section_cards: list = []
             for idx, (key, label, ic, attr, unit, fmt, accent) in enumerate(cards_def):
                 card = ResultCard(
                     key=key, title=label, icon_name=ic, accent=accent,
@@ -8777,16 +9468,24 @@ class ResultsTab(QWidget):
                     card.clicked.connect(self._open_popup)
                 grid.addWidget(card, idx // COLS, idx % COLS)
                 self._cards.append(card)
+                section_cards.append(card)
+                self._card_haystack[key] = _tile_haystack(key, label, section_name, unit, attr)
                 if key == "ibs":
                     self._ibs_card = card
             # Make the grid columns stretch uniformly
             for c in range(COLS):
                 grid.setColumnStretch(c, 1)
             scroll_lay.addLayout(grid)
+            self._tile_sections.append((hdr, grid, section_cards))
 
+        self._no_match = QLabel("No tiles match — clear the search to show all tiles.")
+        self._no_match.setStyleSheet(f"color:{theme.TEXT_2}; font-size:13px; padding:12px;")
+        self._no_match.setVisible(False)
+        scroll_lay.addWidget(self._no_match)
         scroll_lay.addStretch(1)
         scroll.setWidget(inner)
         v.addWidget(scroll, stretch=1)
+        self._scroll = scroll
 
         state.results_changed.connect(self._refresh)
         # Tile is H⁻-only — re-evaluate whenever the beam config changes
@@ -8801,6 +9500,50 @@ class ResultsTab(QWidget):
         # the beam rigidity); the other lattice tiles ignore the config.
         state.beam_config_changed.connect(self._refresh_cards_from_state)
         self._refresh_cards_from_state()
+
+    # ------------------------------------------------------------ tile search
+    def _apply_tile_filter(self, text: str) -> None:
+        """Show only the tiles matching ``text`` and re-pack every section
+        grid from the left (a QGridLayout does not reflow hidden cells);
+        hide the header of a section without a match.  Enabled state is
+        never touched (IBS gating, assistant ``open_plot``)."""
+        query = str(text or "")
+        any_match = False
+        for hdr, grid, cards in self._tile_sections:
+            matches = [_tile_matches(query, self._card_haystack.get(getattr(c, "_key", ""), ""))
+                       for c in cards]
+            for c in cards:
+                grid.removeWidget(c)
+            shown = 0
+            for c, ok in zip(cards, matches):
+                if ok:
+                    grid.addWidget(c, shown // self._tile_cols, shown % self._tile_cols)
+                    c.show()
+                    shown += 1
+                else:
+                    c.hide()
+            hdr.setVisible(shown > 0)
+            any_match = any_match or shown > 0
+        self._no_match.setVisible(bool(query.strip()) and not any_match)
+        try:
+            self._scroll.verticalScrollBar().setValue(0)
+        except Exception:                                    # noqa: BLE001
+            pass
+
+    def _open_first_match(self) -> None:
+        """Enter in the search box: open the first visible, enabled tile."""
+        for _hdr, _grid, cards in self._tile_sections:
+            for c in cards:
+                if not c.isHidden() and c.isEnabled():
+                    self.open_plot(getattr(c, "_key", None))
+                    return
+
+    def _focus_search(self) -> None:
+        self._search.setFocus()
+        self._search.selectAll()
+
+    def _clear_search(self) -> None:
+        self._search.clear()
 
     def _refresh_cards_from_state(self, *_a) -> None:
         results = getattr(self.state, "results", None)
@@ -8981,6 +9724,7 @@ class ResultsTab(QWidget):
             elif key == "ensemble":dlg = _EnsemblePopup(self, self.state)
             elif key == "centroid":dlg = _CentroidPopup(self, self.state)
             elif key == "phase":   dlg = _PhaseSpacePopup(self, self.state)
+            elif key == "bmag_s":  dlg = _BmagPopup(self, self.state)
             elif key == "density_s": dlg = _DensityPopup(self)
             elif key == "bpms":    dlg = _BpmsPopup(self, self.state)
             elif key == "long_twiss":  dlg = _LongTwissPopup(self)
@@ -9000,6 +9744,7 @@ class ResultsTab(QWidget):
             elif key == "emit6d":      dlg = _Emit6DPopup(self)
             elif key == "emit4d":      dlg = _Emit4DPopup(self)
             elif key == "eigenemit":   dlg = _EigenEmitPopup(self)
+            elif key == "eigen_canon": dlg = _CanonEigenPopup(self)
             elif key == "power":       dlg = _BeamPowerPopup(self, self.state)
             elif key == "quad_grad":
                 from linac_gen.elements.quadrupole import Quadrupole

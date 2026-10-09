@@ -105,6 +105,7 @@ Each tab gets its own chapter:
 | Run tracking | toolbar **Run Envelope** (Ctrl+R) or **Run Multi-particle** (Ctrl+Shift+R) |
 | Cancel a long run | toolbar **Stop** |
 | Inspect an element | click it in the Lattice tab list |
+| Find a result tile | Results tab → search box (Ctrl+F while the tab is current); Enter opens the first match |
 | Run a parameter study | Param Study tab → add parameters → **Start study** |
 | Add element error | Error Study tab → Element errors form |
 | Plot results | Results tab → click any tile |
