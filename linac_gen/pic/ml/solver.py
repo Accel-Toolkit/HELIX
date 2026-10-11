@@ -64,6 +64,10 @@ class KController:
 class HaloPicSolver(PicSolver):
     """Coarse PIC with learned defect correction + fine anchors."""
 
+    # The learned corrector is stateful (kick index, anchor cadence, alpha
+    # gate) and has no backward model.
+    exact_backward = False
+
     def __init__(self, config):
         super().__init__(config)
         h = getattr(config, "halo", {}) or {}
@@ -340,7 +344,8 @@ class HaloPicSolver(PicSolver):
             self._fine_solver = PoissonSolverFFT(
                 self._grid_min, self._grid_max, n_fine,
                 use_gpu=getattr(self.config, "use_gpu", "auto"),
-                green_kind=getattr(self.config, "green_kind", "igf"))
+                green_kind=getattr(self.config, "green_kind", "igf"),
+                green_build=getattr(self.config, "green_build", "exact"))
         elif not (np.array_equal(self._fine_solver.grid_min, self._grid_min)
                   and np.array_equal(self._fine_solver.grid_max,
                                      self._grid_max)):

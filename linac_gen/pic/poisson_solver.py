@@ -105,12 +105,29 @@ def _antideriv_igf(xp, x, y, z):
     return F
 
 
+def _guarded_copy(a: np.ndarray) -> np.ndarray:
+    """Copy of ``a`` (same shape, dtype, values and memory layout) placed
+    inside a 1-D allocation one element larger on each side, so no other
+    array can ever start or end exactly where its data does.
+
+    The layout is rebuilt by sorting the axes from slowest to fastest
+    stride; for the dense arrays FFT libraries return (C order, or a
+    permutation of it) the copy's strides equal ``a``'s.
+    """
+    order = sorted(range(a.ndim), key=lambda i: -abs(a.strides[i]))
+    buf = np.empty(a.size + 2, dtype=a.dtype)
+    inner = buf[1:-1].reshape(tuple(a.shape[i] for i in order))
+    view = inner.transpose(np.argsort(order))
+    view[...] = a
+    return view
+
+
 class PoissonSolverFFT:
     """3D FFT Poisson solver with open boundary conditions (Hockney's method)."""
 
     def __init__(self, grid_min: np.ndarray, grid_max: np.ndarray,
                  n_grid: np.ndarray, use_gpu: str = "auto",
-                 green_kind: str = "igf"):
+                 green_kind: str = "igf", green_build: str = "exact"):
         """Precompute Green's function FFT for the given grid.
 
         Parameters
@@ -127,6 +144,16 @@ class PoissonSolverFFT:
             Green's function flavour.  ``"igf"`` (default) uses the
             cell-integrated kernel of Qiang 2006; ``"point"`` uses the
             sampled 1/r kernel and the legacy self-potential regulariser.
+        green_build : {"exact", "symmetric"}
+            How the ``"igf"`` kernel is built.  ``"exact"`` (default)
+            evaluates every displacement; ``"symmetric"`` evaluates the
+            non-negative displacements only and mirrors them (the kernel is
+            even in each axis), about 7x fewer evaluations at 48^3.  It
+            equals the exact build within that build's own rounding: the
+            8-corner difference loses digits in the far cells (~5e-13 of the
+            kernel's peak at 48^3, growing with the grid, 3e-12 at 96^3), so
+            the exact build is not exactly even either.  Ignored for
+            ``"point"``.
         """
         self.grid_min = np.asarray(grid_min, dtype=np.float64)
         self.grid_max = np.asarray(grid_max, dtype=np.float64)
@@ -139,12 +166,21 @@ class PoissonSolverFFT:
                 f"green_kind must be 'igf' or 'point', got {green_kind!r}"
             )
         self.green_kind = green_kind
+        if green_build not in ("exact", "symmetric"):
+            raise ValueError(
+                "green_build must be 'exact' or 'symmetric', got "
+                f"{green_build!r}"
+            )
+        self.green_build = green_build
         grid_cells = int(self.n_grid.prod())
         self._backend = _build_backend(use_gpu, grid_cells)
         # Lazy-allocated reusable charge buffer on the device (filled & FFT'd
         # per solve).  Avoids a per-solve host alloc + H→D copy in adaptive
         # mode (~5–10 ms saved per kick).  Shape never changes.
         self._rho_padded = None
+        #: Green's-function builds (the kernel is rebuilt whenever the cell
+        #: size changes, i.e. at every kick of an adaptive grid)
+        self.n_green_builds = 0
         self._precompute_greens_fft()
 
     # ------------------------------------------------------------------
@@ -153,16 +189,20 @@ class PoissonSolverFFT:
         backend, FFT plan cache, or device buffers.  Used by adaptive grid
         mode to avoid re-instantiating the solver every PIC kick.
 
-        ``n_grid``, ``green_kind``, ``use_gpu`` are unchanged; only the grid
-        bounds and per-axis spacing are updated, then the Green's function
-        FFT is rebuilt in place on the same device.
+        ``n_grid``, ``green_kind``, ``green_build``, ``use_gpu`` are
+        unchanged; only the grid bounds and per-axis spacing are updated,
+        then the Green's function FFT is rebuilt in place on the same device.
+        When the spacing is exactly the one the stored Green's function was
+        built for, it is kept: it depends only on (n, dx, kind, build), and
+        :meth:`solve` never reads the grid bounds.
         """
-        self.grid_min = np.asarray(grid_min, dtype=np.float64)
-        self.grid_max = np.asarray(grid_max, dtype=np.float64)
-        self.dx = (self.grid_max - self.grid_min) / (self.n_grid - 1).astype(
-            np.float64
-        )
-        self._precompute_greens_fft()
+        grid_min = np.asarray(grid_min, dtype=np.float64)
+        grid_max = np.asarray(grid_max, dtype=np.float64)
+        self.grid_min = grid_min
+        self.grid_max = grid_max
+        self.dx = (grid_max - grid_min) / (self.n_grid - 1).astype(np.float64)
+        if not np.array_equal(self.dx, getattr(self, "_greens_dx", None)):
+            self._precompute_greens_fft()
 
     # ------------------------------------------------------------------
     def _precompute_greens_fft(self) -> None:
@@ -171,11 +211,33 @@ class PoissonSolverFFT:
         The Green's function is built directly on the backend's array module
         (cupy on GPU, numpy on CPU), so no host→device transfer is needed.
         """
-        if self.green_kind == "igf":
+        if self.green_kind == "igf" and self.green_build == "symmetric":
+            G = self._build_integrated_greens_symmetric()
+        elif self.green_kind == "igf":
             G = self._build_integrated_greens()
         else:
             G = self._build_point_greens()
-        self._G_fft = self._backend.rfftn(G)
+        G_fft = self._backend.rfftn(G)
+        if isinstance(G_fft, np.ndarray):
+            # Keep the host spectrum inside an allocation one element larger
+            # on each side.  numpy multiplies complex arrays with a vectorised
+            # loop unless the output's memory touches an input's end to end;
+            # then it falls back to a scalar loop that rounds both the real
+            # and imaginary parts differently (no fused multiply-add).  A
+            # freshly allocated FFT array could land flush against a bare
+            # spectrum -- on macOS it did for grids whose spectra are a
+            # whole number of allocator blocks (4^3, 32^3 = 66 x 32 KiB,
+            # 64^3) -- and runs then differed at the 1e-13 level.  With the
+            # margins that placement cannot happen.  The copy keeps the FFT
+            # output's own memory layout (numpy.fft returns permuted
+            # strides) so the in-place product in solve() pairs like with
+            # like; the values are copied unchanged.
+            G_fft = _guarded_copy(G_fft)
+        self._G_fft = G_fft
+        # The spacing this Green's function belongs to.  Set only after a
+        # successful build, so update_grid retries a rebuild that raised.
+        self._greens_dx = self.dx.copy()
+        self.n_green_builds += 1
 
     # ------------------------------------------------------------------
     def _build_point_greens(self):
@@ -218,6 +280,15 @@ class PoissonSolverFFT:
         centred on the cell, computed via the 8-point inclusion–exclusion of
         the analytic antiderivative ``_antideriv_igf``.
 
+        Neighbouring cells share corners, so the antiderivative is evaluated
+        once per vertex of the (2n+1)³ corner lattice and differenced by
+        slicing: 8× fewer transcendental evaluations than one call per cell
+        corner.  The vertex coordinates ``(v − 0.5)·d`` are the same doubles
+        as the per-cell corners ``(ii ± 0.5)·d`` and the eight terms are
+        combined in the same order, so the kernel is bit-for-bit identical
+        to the per-corner construction (pinned by
+        tests/pic/test_greens_vertex.py).
+
         Built on the backend's array module (numpy on CPU, cupy on GPU) so
         the result is already on-device for the FFT.
         """
@@ -225,42 +296,73 @@ class PoissonSolverFFT:
         nx, ny, nz = int(self.n_grid[0]), int(self.n_grid[1]), int(self.n_grid[2])
         dx, dy, dz = self.dx
 
-        ii = xp.arange(2 * nx, dtype=xp.float64)
-        jj = xp.arange(2 * ny, dtype=xp.float64)
-        kk = xp.arange(2 * nz, dtype=xp.float64)
-        ii = xp.where(ii < nx, ii, ii - 2 * nx)
-        jj = xp.where(jj < ny, jj, jj - 2 * ny)
-        kk = xp.where(kk < nz, kk, kk - 2 * nz)
+        # Vertex lattice in natural order: vertex v sits at (v − 0.5)·d for
+        # v = −n … n — the low corner of cell v and the high corner of v − 1.
+        vx = (xp.arange(-nx, nx + 1, dtype=xp.float64) - 0.5) * dx
+        vy = (xp.arange(-ny, ny + 1, dtype=xp.float64) - 0.5) * dy
+        vz = (xp.arange(-nz, nz + 1, dtype=xp.float64) - 0.5) * dz
+        # Broadcastable axes, not full meshes: every element still goes
+        # through the same IEEE operations on the same doubles, while the
+        # sub-expressions that depend on one or two axes are evaluated once
+        # per line or plane.
+        F = _antideriv_igf(xp, vx[:, None, None], vy[None, :, None],
+                           vz[None, None, :])
+        H, L = slice(1, None), slice(None, -1)
 
-        # Cell-corner positions — low and high in each axis.
-        xL = (ii - 0.5) * dx
-        xH = (ii + 0.5) * dx
-        yL = (jj - 0.5) * dy
-        yH = (jj + 0.5) * dy
-        zL = (kk - 0.5) * dz
-        zH = (kk + 0.5) * dz
-
-        # 8 corner combinations of the antiderivative — broadcast via meshgrid.
-        XL, YL, ZL = xp.meshgrid(xL, yL, zL, indexing="ij")
-        XH, YH, ZH = xp.meshgrid(xH, yH, zH, indexing="ij")
-
-        F_HHH = _antideriv_igf(xp, XH, YH, ZH)
-        F_LHH = _antideriv_igf(xp, XL, YH, ZH)
-        F_HLH = _antideriv_igf(xp, XH, YL, ZH)
-        F_HHL = _antideriv_igf(xp, XH, YH, ZL)
-        F_LLH = _antideriv_igf(xp, XL, YL, ZH)
-        F_LHL = _antideriv_igf(xp, XL, YH, ZL)
-        F_HLL = _antideriv_igf(xp, XH, YL, ZL)
-        F_LLL = _antideriv_igf(xp, XL, YL, ZL)
-
-        # Inclusion–exclusion over the 8 corners.
+        # Inclusion–exclusion over the 8 corners, in the per-corner term
+        # order HHH − LHH − HLH − HHL + LLH + LHL + HLL − LLL.
         cell_vol = dx * dy * dz
         G = (
-            F_HHH - F_LHH - F_HLH - F_HHL
-            + F_LLH + F_LHL + F_HLL - F_LLL
+            F[H, H, H] - F[L, H, H] - F[H, L, H] - F[H, H, L]
+            + F[L, L, H] + F[L, H, L] + F[H, L, L] - F[L, L, L]
         ) / cell_vol
         G *= 1.0 / (4.0 * PI * EPSILON_0)
-        return G
+        # Natural displacement order (−n … n−1) → Hockney wrap (0 … n−1, −n … −1).
+        return xp.roll(G, (-nx, -ny, -nz), axis=(0, 1, 2))
+
+    # ------------------------------------------------------------------
+    def _build_integrated_greens_symmetric(self):
+        """The cell-integrated Green's function from the non-negative
+        displacements only.
+
+        The cell average of 1/r over a box centred at displacement
+        (i, j, k)·d is even in each of i, j, k, so the cells 0 … n per axis
+        determine the whole kernel: the antiderivative is evaluated on the
+        (n+2)³ vertices (v − 0.5)·d, v = 0 … n+1, instead of the (2n+1)³ of
+        :meth:`_build_integrated_greens`, and the result is mirrored into
+        the Hockney layout (index m holds displacement m for m < n and
+        displacement m − 2n, i.e. |i| = 2n − m, for m ≥ n).
+
+        Cells with i, j, k ≥ 0 are computed exactly as in the exact build,
+        from the same vertex doubles and the same term order, so they are
+        bit-identical to it.  A mirrored cell takes its partner's value,
+        where the exact build evaluates the negative-side corners; the two
+        differ by the rounding of the 8-corner difference, which loses
+        digits in the far cells (~5e-13 of the kernel's peak at 48³,
+        growing with the grid).  The kernel is exactly even (pinned by
+        tests/pic/test_greens_symmetric.py).
+        """
+        xp = self._backend.xp
+        nx, ny, nz = int(self.n_grid[0]), int(self.n_grid[1]), int(self.n_grid[2])
+        dx, dy, dz = self.dx
+
+        vx = (xp.arange(0, nx + 2, dtype=xp.float64) - 0.5) * dx
+        vy = (xp.arange(0, ny + 2, dtype=xp.float64) - 0.5) * dy
+        vz = (xp.arange(0, nz + 2, dtype=xp.float64) - 0.5) * dz
+        F = _antideriv_igf(xp, vx[:, None, None], vy[None, :, None],
+                           vz[None, None, :])
+        H, L = slice(1, None), slice(None, -1)
+        cell_vol = dx * dy * dz
+        G = (
+            F[H, H, H] - F[L, H, H] - F[H, L, H] - F[H, H, L]
+            + F[L, L, H] + F[L, H, L] + F[H, L, L] - F[L, L, L]
+        ) / cell_vol
+        G *= 1.0 / (4.0 * PI * EPSILON_0)
+        # G[i, j, k] for i = 0 … n (one octant); mirror into 2n per axis.
+        mx = xp.concatenate([xp.arange(nx), xp.arange(nx, 0, -1)])
+        my = xp.concatenate([xp.arange(ny), xp.arange(ny, 0, -1)])
+        mz = xp.concatenate([xp.arange(nz), xp.arange(nz, 0, -1)])
+        return G[xp.ix_(mx, my, mz)]
 
     # ------------------------------------------------------------------
     def solve(
@@ -298,10 +400,16 @@ class PoissonSolverFFT:
 
         # Convolution via FFT on the chosen backend.  Green's-function FFT
         # is pre-cached on device so only rho / phi cross the H↔D boundary.
-        phi_dev = self._backend.irfftn(
-            self._backend.rfftn(self._rho_padded) * self._G_fft,
-            s=(2 * nx, 2 * ny, 2 * nz),
-        )
+        spectrum = self._backend.rfftn(self._rho_padded)
+        if isinstance(spectrum, np.ndarray):
+            # In place: no third array is allocated beside the two inputs,
+            # and the guarded spectrum (see _precompute_greens_fft) keeps the
+            # product on numpy's vectorised loop every time.
+            np.multiply(spectrum, self._G_fft, out=spectrum)
+        else:
+            spectrum = spectrum * self._G_fft
+        phi_dev = self._backend.irfftn(spectrum, s=(2 * nx, 2 * ny, 2 * nz))
+        del spectrum
         phi_padded = self._backend.to_host(phi_dev)
 
         # Extract potential on original grid

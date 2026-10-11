@@ -176,7 +176,8 @@ class _ScanWorker(QThread):
                  parallel_workers: int = 0,
                  lattice_path: str | None = None,
                  use_gpu: str = "auto",
-                 fixed_drift_single_push: bool = True):
+                 fixed_drift_single_push: bool = True,
+                 sc_base=None):
         super().__init__()
         # Cooperative stop — same threading.Event pattern as the
         # envelope/MP workers (workers.py).  A plain Event (rather than
@@ -205,6 +206,29 @@ class _ScanWorker(QThread):
         # parallel runs the pool auto-downgrades any GPU-like value to
         # "cpu" per worker since one GPU can't parallelise across processes.
         self.use_gpu = use_gpu
+        # The tab's full space-charge configuration; each point replaces
+        # only the grid size / extent it scans (None: the classic config).
+        self.sc_base = sc_base
+
+    def _point_sc(self, nx: int, extent: float):
+        """Space-charge config of one scan point."""
+        if self.sc_base is None:
+            from linac_gen.core.config import SpaceChargeConfig
+            return SpaceChargeConfig(nx=nx, ny=nx, nz=nx, grid_extent=extent,
+                                     use_gpu=self.use_gpu)
+        return replace(self.sc_base, nx=nx, ny=nx, nz=nx,
+                       grid_extent=extent, use_gpu=self.use_gpu)
+
+    def _scan_sc_overrides(self) -> tuple:
+        """The tab's settings for pool workers, minus what a scan point
+        carries itself (grid size, extent, device)."""
+        if self.sc_base is None:
+            return ()
+        import dataclasses
+        return tuple((f.name, getattr(self.sc_base, f.name))
+                     for f in dataclasses.fields(self.sc_base)
+                     if f.name not in ("nx", "ny", "nz", "grid_extent",
+                                       "use_gpu"))
 
     # -- cooperative stop ------------------------------------------------
     def request_stop(self) -> None:
@@ -227,7 +251,6 @@ class _ScanWorker(QThread):
                 self.done.emit(self._stopping())
                 return
 
-            from linac_gen.core.config import SpaceChargeConfig
             from linac_gen.core.step_config import StepConfig
             from linac_gen.core.simulation import Simulation
             from linac_gen.distributions.factory import create_beam
@@ -276,10 +299,8 @@ class _ScanWorker(QThread):
 
                 t0 = time.time()
                 beam = create_beam(cfg_i, seed=42)
-                sc = SpaceChargeConfig(
-                    nx=nx, ny=nx, nz=nx, grid_extent=extent,
-                    use_gpu=self.use_gpu,
-                ) if cfg_i.current > 0 else None
+                sc = (self._point_sc(nx, extent) if cfg_i.current > 0
+                      else None)
                 res = Simulation(self.lattice, beam, space_charge=sc,
                                  should_abort=self._stopping).run()
                 elapsed = time.time() - t0
@@ -338,6 +359,7 @@ class _ScanWorker(QThread):
                 step1=step1, step2=step2,
                 seed=42,
                 use_gpu=self.use_gpu,
+                sc_overrides=self._scan_sc_overrides(),
                 drift_single_push=self.fixed_drift_single_push,
                 # a MAD8 deck re-parsed by the worker keeps the rigidity it
                 # was loaded with, whatever the Beam tab says now
@@ -403,7 +425,7 @@ class ConvergenceTab(QWidget):
         # (96³) are noise-dominated for typical 5 k-particle runs; tighter
         # extent (5 σ) clips the halo and *increases* spurious losses.
         self._fixed_nx    = QSpinBox();       self._fixed_nx.setRange(16, 256);       self._fixed_nx.setValue(48)
-        self._fixed_ext   = QDoubleSpinBox(); self._fixed_ext.setRange(1, 20);        self._fixed_ext.setValue(7.0); self._fixed_ext.setSuffix(" σ")
+        self._fixed_ext   = QDoubleSpinBox(); self._fixed_ext.setRange(1, 20);        self._fixed_ext.setDecimals(3); self._fixed_ext.setValue(7.0); self._fixed_ext.setSuffix(" σ")
         self._fixed_step1 = QDoubleSpinBox(); self._fixed_step1.setRange(5, 5000);    self._fixed_step1.setValue(100); self._fixed_step1.setSuffix(" /m")
         self._fixed_step2 = QDoubleSpinBox(); self._fixed_step2.setRange(5, 5000);    self._fixed_step2.setValue(50);  self._fixed_step2.setSuffix(" /m")
         self._drift_single_push = QCheckBox("Single-push field-free drifts")
@@ -505,6 +527,59 @@ class ConvergenceTab(QWidget):
             "distribution. Captures full per-particle nonlinearity; "
             "TraceWin PICNIC_2D analogue."
         )
+        # Named space-charge method (linac_gen.pic.methods).  Choosing one
+        # sets the settings that define it (engine, kernel, grid mode, how
+        # often the field is solved) and its default grid; those controls
+        # are then locked.  "Custom" unlocks every setting.  HALO-PIC is
+        # left out: it needs a trained corrector, set in a project file.
+        from linac_gen.pic import methods as _methods
+        self._applying_method = False
+        self._sc_method = QComboBox()
+        for _name in _methods.names():
+            if _name == "halo_pic":
+                continue
+            self._sc_method.addItem(
+                "Custom (every setting chosen individually)"
+                if _name == _methods.CUSTOM else _methods.get(_name).label,
+                _name)
+        self._sc_method.setToolTip(
+            "How the bunched-beam space-charge field is computed.\n"
+            "A named method fixes the charge-assignment kernel, the grid\n"
+            "mode, the engine and how often the field is solved; the grid\n"
+            "size, extent and Green's function stay adjustable.  Custom\n"
+            "unlocks every setting.")
+        self._sc_method_summary = QLabel("")
+        self._sc_method_summary.setWordWrap(True)
+        self._fixed_green_build = QComboBox()
+        self._fixed_green_build.addItems(["exact", "symmetric"])
+        self._fixed_green_build.setCurrentText("exact")
+        self._fixed_green_build.setToolTip(
+            "How the integrated Green's function is built.\n"
+            "  exact     — every cell displacement evaluated.\n"
+            "  symmetric — the non-negative displacements only, mirrored\n"
+            "              (the kernel is even); about 5x faster to build and\n"
+            "              equal to the exact build within its rounding.\n"
+            "Matters on adaptive grids, which rebuild it at every kick.")
+        self._fixed_grid_card = QComboBox()
+        self._fixed_grid_card.addItems(["apply", "ignore", "auto"])
+        self._fixed_grid_card.setCurrentText("apply")
+        self._fixed_grid_card.setToolTip(
+            "HELIX_SC_GRID cards in the lattice.\n"
+            "  apply  — a card sets the grid extent from there on.\n"
+            "  ignore — the grid keeps the extent set here.\n"
+            "  auto   — ignore on an adaptive grid (a grid that follows the\n"
+            "           beam gains nothing from a wider extent), apply on a\n"
+            "           fixed one; the named adaptive methods use it.\n"
+            "Cards are always recorded in the results file.")
+        self._fixed_reuse = QSpinBox()
+        self._fixed_reuse.setRange(1, 8)
+        self._fixed_reuse.setValue(1)
+        self._fixed_reuse.setSuffix(" kick(s)")
+        self._fixed_reuse.setToolTip(
+            "Solve the field on every N-th kick; on the kicks between, the\n"
+            "last solved field is rescaled to the beam's current centre,\n"
+            "rms sizes and charge.  1 solves at every kick.  Needs an\n"
+            "adaptive grid and the numpy engine.")
         # Grey out the controls the torch SC engine ignores — it always
         # uses an adaptive grid, runs FP64 on CPU, and has no DC kernels.
         self._fixed_sc_backend.currentTextChanged.connect(
@@ -754,16 +829,29 @@ class ConvergenceTab(QWidget):
         self._sections["Step density"] = sec_step
 
         sec_sc = CollapsibleSection("Space charge & PIC")
+        sec_sc.addRow("Space-charge method",      self._sc_method)
+        sec_sc.addRow(self._sc_method_summary)
         sec_sc.addRow("Base PIC grid (nx=ny=nz)", self._fixed_nx)
         sec_sc.addRow("Base grid extent",         self._fixed_ext)
+        sec_sc.addRow("Green's function",         self._fixed_green)
+        sec_sc.addRow("Green's-function build",   self._fixed_green_build)
+        sec_sc.addRow("HELIX_SC_GRID cards",      self._fixed_grid_card)
         sec_sc.addRow("PIC backend",              self._fixed_backend)
         sec_sc.addRow("SC engine",                self._fixed_sc_backend)
-        sec_sc.addRow("Green's function",         self._fixed_green)
         sec_sc.addRow("Particle-mesh kernel",     self._fixed_kernel)
         sec_sc.addRow("Grid mode",                self._fixed_grid_mode)
+        sec_sc.addRow("Field solved every",       self._fixed_reuse)
         sec_sc.addRow("DC SC kernel",             self._fixed_dc_kernel)
         settings_layout.addWidget(sec_sc)
         self._sections["Space charge & PIC"] = sec_sc
+        # Method selector: connected after the engine handler, so on an
+        # engine change the method view (locks) is applied last.
+        self._sc_method.currentIndexChanged.connect(self._on_sc_method)
+        for _w in (self._fixed_sc_backend, self._fixed_kernel,
+                   self._fixed_grid_mode):
+            _w.currentTextChanged.connect(self._on_pinned_changed)
+        self._fixed_reuse.valueChanged.connect(self._on_pinned_changed)
+        self._sync_sc_method_from_widgets()
 
         sec_fm = CollapsibleSection("Field maps (FieldMap3D)")
         sec_fm.addRow("Integrator", self._fixed_integ)
@@ -969,15 +1057,17 @@ class ConvergenceTab(QWidget):
             except Exception:    # noqa: BLE001
                 pass
         for _w in (self._fixed_nx, self._fixed_ext,
-                   self._fixed_step1, self._fixed_step2):
+                   self._fixed_step1, self._fixed_step2, self._fixed_reuse):
             _w.valueChanged.connect(_mark_dirty)
         for _w in (self._fixed_backend, self._fixed_sc_backend,
                    self._fixed_green, self._fixed_kernel,
                    self._fixed_grid_mode, self._fixed_dc_kernel,
                    self._fixed_env_solver, self._fixed_integ,
                    self._fixed_interp, self._step_preset,
-                   self._fieldmap_sampling):
+                   self._fieldmap_sampling, self._fixed_green_build,
+                   self._fixed_grid_card):
             _w.currentTextChanged.connect(_mark_dirty)
+        self._sc_method.currentIndexChanged.connect(_mark_dirty)
         # Apply the sampling choice IMMEDIATELY on change (and on project
         # load, which fires the same signal).  This is the single source
         # of application, so every run type — MP, envelope, convergence
@@ -1056,7 +1146,8 @@ class ConvergenceTab(QWidget):
             self._fixed_grid_mode.setCurrentText("adaptive")
         else:
             saved = getattr(self, "_saved_grid_mode", None)
-            if saved is not None:
+            if saved is not None and not getattr(self, "_applying_method",
+                                                 False):
                 self._fixed_grid_mode.setCurrentText(saved)
                 # One-shot restore: forget the saved mode so a LATER explicit
                 # "adaptive" choice isn't silently overridden by a stale value
@@ -1065,6 +1156,139 @@ class ConvergenceTab(QWidget):
         for w in (self._fixed_grid_mode, self._fixed_backend,
                   self._fixed_dc_kernel):
             w.setEnabled(not is_torch)
+
+    # ------------------------------------------------------------------
+    # Named space-charge method
+    # ------------------------------------------------------------------
+    def sc_method_name(self) -> str:
+        """The chosen method's registry name (``"custom"`` for Custom)."""
+        return str(self._sc_method.currentData())
+
+    def _sc_widget_fields(self) -> dict:
+        """The method-controlled settings as the widgets show them."""
+        nx = int(self._fixed_nx.value())
+        return {"nx": nx, "ny": nx, "nz": nx,
+                "grid_extent": float(self._fixed_ext.value()),
+                "grid_mode": self._fixed_grid_mode.currentText(),
+                "kernel": self._fixed_kernel.currentText(),
+                "green_kind": self._fixed_green.currentText(),
+                "sc_backend": self._fixed_sc_backend.currentText(),
+                "grid_card": self._fixed_grid_card.currentText(),
+                "green_build": self._fixed_green_build.currentText(),
+                "reuse_every": int(self._fixed_reuse.value())}
+
+    def _set_sc_field(self, name: str, value) -> None:
+        if value is None:
+            return
+        if name == "nx":
+            self._fixed_nx.setValue(int(value))
+        elif name == "grid_extent":
+            self._fixed_ext.setValue(float(value))
+        elif name == "reuse_every":
+            self._fixed_reuse.setValue(int(value))
+        elif name == "use_gpu":
+            self._fixed_backend.setCurrentText(str(value))
+        elif name == "csr_enabled":
+            self._fixed_csr.setChecked(bool(value))
+        else:
+            box = {"grid_mode": self._fixed_grid_mode,
+                   "kernel": self._fixed_kernel,
+                   "green_kind": self._fixed_green,
+                   "sc_backend": self._fixed_sc_backend,
+                   "grid_card": self._fixed_grid_card,
+                   "green_build": self._fixed_green_build,
+                   "dc_kernel": self._fixed_dc_kernel}.get(name)
+            if box is not None and box.findText(str(value)) >= 0:
+                box.setCurrentText(str(value))
+
+    def _on_sc_method(self, _index=None) -> None:
+        """A named method sets its pinned settings and default grid."""
+        from linac_gen.pic import methods
+        name = self._sc_method.currentData()
+        if name is not None and name != methods.CUSTOM:
+            self._applying_method = True
+            self._saved_grid_mode = None      # the method sets the grid mode
+            try:
+                fields = methods.base_fields(name)
+                # the engine first: its handler adjusts the grid mode
+                for key in ("sc_backend",) + tuple(
+                        k for k in fields if k not in ("sc_backend", "ny",
+                                                       "nz")):
+                    self._set_sc_field(key, fields[key])
+            finally:
+                self._applying_method = False
+        self._update_sc_method_view()
+
+    def _on_pinned_changed(self, *_args) -> None:
+        """A defining setting changed without the selector (project load,
+        the engine rule, a script): show the method it now matches."""
+        if self._applying_method:
+            return
+        from linac_gen.pic import methods
+        if self._sc_method.currentData() == methods.CUSTOM:
+            self._update_sc_method_view()
+            return
+        self._sync_sc_method_from_widgets()
+
+    def _sync_sc_method_from_widgets(self) -> None:
+        from linac_gen.pic import methods
+        name = methods.infer(self._sc_widget_fields())
+        idx = self._sc_method.findData(name)
+        if idx < 0:
+            idx = self._sc_method.findData(methods.CUSTOM)
+        self._sc_method.blockSignals(True)
+        self._sc_method.setCurrentIndex(idx)
+        self._sc_method.blockSignals(False)
+        self._update_sc_method_view()
+
+    def _update_sc_method_view(self) -> None:
+        """Summary text and locks: the defining settings are editable only
+        under Custom; field reuse needs an adaptive grid and the numpy
+        engine; the torch engine keeps its own locks."""
+        from linac_gen.pic import methods
+        name = self._sc_method.currentData()
+        custom = name == methods.CUSTOM
+        self._sc_method_summary.setText(
+            "Every space-charge setting below is chosen individually."
+            if custom or name is None else methods.get(name).summary)
+        is_torch = self._fixed_sc_backend.currentText() == "torch"
+        self._fixed_sc_backend.setEnabled(custom)
+        self._fixed_kernel.setEnabled(custom)
+        self._fixed_grid_mode.setEnabled(custom and not is_torch)
+        reuse_ok = (not is_torch
+                    and self._fixed_grid_mode.currentText() == "adaptive")
+        if not reuse_ok and self._fixed_reuse.value() != 1:
+            self._fixed_reuse.setValue(1)
+        self._fixed_reuse.setEnabled(custom and reuse_ok)
+
+    def apply_sc_config(self, cfg, method: str | None = None) -> None:
+        """Show ``cfg`` in the widgets (every space-charge setting, so
+        nothing is left over from a previous project) with ``method``
+        selected when it is offered and matches, else the method the
+        settings match (Custom when none)."""
+        from linac_gen.pic import methods
+        self._applying_method = True
+        self._saved_grid_mode = None
+        try:
+            for key in ("sc_backend", "grid_mode", "kernel", "nx",
+                        "grid_extent", "green_kind", "green_build",
+                        "grid_card", "reuse_every", "use_gpu", "dc_kernel",
+                        "csr_enabled"):
+                self._set_sc_field(key, getattr(cfg, key, None))
+        finally:
+            self._applying_method = False
+        idx = -1
+        if method == methods.CUSTOM:
+            idx = self._sc_method.findData(methods.CUSTOM)
+        elif method is not None and methods.effective_method(cfg) == method:
+            idx = self._sc_method.findData(method)
+        if idx < 0:
+            self._sync_sc_method_from_widgets()
+            return
+        self._sc_method.blockSignals(True)
+        self._sc_method.setCurrentIndex(idx)
+        self._sc_method.blockSignals(False)
+        self._update_sc_method_view()
 
     # ------------------------------------------------------------------
     def _apply_fieldmap_sampling(self, text: str | None = None) -> None:
@@ -1150,6 +1374,9 @@ class ConvergenceTab(QWidget):
             # The torch PIC sizes its grid adaptively every kick — it has
             # no fixed-grid path — so label the config honestly.
             grid_mode = "adaptive"
+        reuse = int(self._fixed_reuse.value())
+        if sc_backend != "numpy" or grid_mode != "adaptive":
+            reuse = 1            # field reuse: adaptive numpy PIC only
         return SpaceChargeConfig(
             nx=nx, ny=nx, nz=nx,
             grid_extent=self._fixed_ext.value(),
@@ -1160,6 +1387,9 @@ class ConvergenceTab(QWidget):
             dc_kernel=self._fixed_dc_kernel.currentText(),
             sc_backend=sc_backend,
             csr_enabled=bool(self._fixed_csr.isChecked()),
+            green_build=self._fixed_green_build.currentText(),
+            grid_card=self._fixed_grid_card.currentText(),
+            reuse_every=reuse,
         )
 
     # ------------------------------------------------------------------
@@ -1288,6 +1518,9 @@ class ConvergenceTab(QWidget):
             lattice_path=self.state.lattice_path,
             use_gpu=self._fixed_backend.currentText(),
             fixed_drift_single_push=self._drift_single_push.isChecked(),
+            sc_base=self.current_sc_config(
+                1.0, continuous=bool(getattr(self.state.beam_config,
+                                             "continuous", False))),
         )
         self._worker.progress.connect(self._progress.setValue)
         self._worker.row_done.connect(self._on_row)
@@ -1566,9 +1799,12 @@ class ConvergenceTab(QWidget):
         """Write the three-line preamble matching the classic dialog."""
         cfg = self.state.beam_config
         lat = self.state.lattice
+        sc = self.current_sc_config(1.0, continuous=bool(getattr(
+            self.state.beam_config, "continuous", False)))
         self._log.append(
-            f"Current SC config: nx={self._fixed_nx.value()}  "
-            f"grid_extent={self._fixed_ext.value()}  grid_mode=fixed\n"
+            f"Current SC config: method={sc.method}  nx={sc.nx}  "
+            f"grid_extent={sc.grid_extent:g}  grid_mode={sc.grid_mode}  "
+            f"kernel={sc.kernel}\n"
         )
         if cfg is not None:
             self._log.append(

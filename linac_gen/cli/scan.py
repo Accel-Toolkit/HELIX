@@ -58,6 +58,10 @@ def add_arguments(p) -> None:
                         "between its sub-steps (losses located analytically); "
                         "default on, project value or off")
     p.add_argument("--backend", help="compute backend (auto / cpu / gpu)")
+    p.add_argument("--kernel", help="fixed PIC deposit kernel (cic / tsc)")
+    p.add_argument("--sc-method", dest="sc_method", metavar="NAME",
+                   action=common.ScMethodAction,
+                   help="fixed named space-charge method; 'list' prints them")
     p.add_argument("--sc", action="append", default=[], metavar="NAME=VALUE",
                    help="fixed SpaceChargeConfig override (repeatable)")
     p.add_argument("--env-solver", choices=("matrix", "sacherer"),
@@ -124,6 +128,12 @@ def run(args) -> int:
                 raise ValueError(f"--set expects ELEM.attr=VALUE, got '{item}'")
             fixed_elem.append((sel.strip(), val.strip()))
         fixed_sc = common.parse_assignments(args.sc)
+        if args.kernel is not None:
+            # a generic --sc kernel= wins, as in `run`
+            fixed_sc.setdefault("kernel", args.kernel)
+        common.check_sc_choice({"sc_method": args.sc_method, "sc": fixed_sc})
+        if args.sc_method is not None:
+            fixed_sc["method"] = args.sc_method
         fixed_cli = {"nx": args.nx, "grid_extent": args.grid_extent,
                      "step1": args.step1, "step2": args.step2,
                      "drift_single_push": (None if args.drift_single_push is None
@@ -146,6 +156,7 @@ def run(args) -> int:
 
     combos = list(itertools.product(*[vals for _, vals in varied]))
     points = []
+    sc_notes: list = []
     for combo in combos:
         beam_ov = dict(fixed_beam)
         elem_ov = list(fixed_elem)
@@ -162,10 +173,12 @@ def run(args) -> int:
                 args.input, beam_overrides=beam_ov, element_overrides=elem_ov,
                 sc_overrides=fixed_sc, mode=args.mode,
                 env_solver=args.env_solver, seed=args.seed, cli=cli_ov,
-                tracewin_ini=args.tracewin_ini))
+                tracewin_ini=args.tracewin_ini, notes=sc_notes))
         except (ValueError, KeyError) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
+    for note in dict.fromkeys(sc_notes):          # each once, in order
+        print(f"note: {note}", file=sys.stderr)
 
     if not args.quiet:
         print(f"[scan] {len(points)} point(s), mode={args.mode}, "

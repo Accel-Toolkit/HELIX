@@ -18,9 +18,15 @@ DC/continuous 2-D kick models and the envelope solver's linear SC have
 no sigma-scaled grid and ignore the card (the multi-particle tracker
 warns once if no bunched PIC solver is active).  Several cards may
 appear; each takes effect from its own position (last one wins).
+
+``SpaceChargeConfig.grid_card`` decides whether cards apply: "apply"
+(classic), "ignore", or "auto" (the named adaptive methods: ignored while
+the grid follows the beam).  Every card a run reaches is recorded in the
+results provenance.  A backward walk does not undo a card's extent change.
 """
 from __future__ import annotations
 
+from linac_gen.core.config import MAX_GRID_EXTENT_SIGMA, valid_grid_extent
 from linac_gen.elements.base import PassiveElement
 
 
@@ -38,9 +44,10 @@ class ScGridDirective(PassiveElement):
 
     def __init__(self, name: str, extent_sigma: float):
         super().__init__(name=name)
-        if not (float(extent_sigma) > 0.0):
+        if not valid_grid_extent(extent_sigma):
             raise ValueError(
-                f"HELIX_SC_GRID extent must be > 0 sigma, got {extent_sigma!r}")
+                "HELIX_SC_GRID extent must be a finite value in (0, "
+                f"{MAX_GRID_EXTENT_SIGMA:g}] sigma, got {extent_sigma!r}")
         self.extent_sigma = float(extent_sigma)
 
     def apply(self, beam) -> None:

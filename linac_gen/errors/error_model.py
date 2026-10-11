@@ -760,8 +760,8 @@ class ErrorStudy:
             # 4. Optional PIC solver
             pic = None
             if self.sc_config:
-                from linac_gen.pic.pic_solver import PicSolver
-                pic = PicSolver(self.sc_config)
+                from linac_gen.pic.factory import make_sc_solver
+                pic = make_sc_solver(self.sc_config)
             # 5. Track — forward the stop hook so cancellation lands at
             #    the next element instead of the next seed.
             tracker = Tracker(lattice_copy, beam, pic_solver=pic,

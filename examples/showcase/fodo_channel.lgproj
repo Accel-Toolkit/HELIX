@@ -20,5 +20,20 @@
     "emit_z": 0.25,
     "alpha_z": 0.0,
     "beta_z": 600.0
+  },
+  "convergence": {
+    "sc_method": "custom",
+    "grid_nx": 96,
+    "grid_extent_sigma": 5.0,
+    "backend": "auto",
+    "grid_mode": "fixed",
+    "kernel": "cic",
+    "green_kind": "igf",
+    "dc_kernel": "uniform",
+    "csr_enabled": false,
+    "sc_backend": "numpy",
+    "grid_card": "apply",
+    "green_build": "exact",
+    "reuse_every": 1
   }
 }

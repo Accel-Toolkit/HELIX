@@ -24,3 +24,13 @@ if(OpenMP_CXX_FOUND)
     message(STATUS "Building _fieldmap_kernels with OpenMP")
     target_link_libraries(_fieldmap_kernels PRIVATE OpenMP::OpenMP_CXX)
 endif()
+
+# TSC deposit/gather twin.  -ffp-contract=off is REQUIRED: the kernel is
+# bit-identical to the Python TSC kernels (tests/pic/test_tsc_kernels_cpp.py).
+pybind11_add_module(_tsc_kernels tsc_kernels.cpp)
+target_compile_options(_tsc_kernels PRIVATE -O3 -march=native -ffp-contract=off)
+
+if(OpenMP_CXX_FOUND)
+    message(STATUS "Building _tsc_kernels with OpenMP")
+    target_link_libraries(_tsc_kernels PRIVATE OpenMP::OpenMP_CXX)
+endif()

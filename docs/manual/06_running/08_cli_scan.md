@@ -62,7 +62,9 @@ takes precedence over its fixed value at that point.
 | `--step2` | float | space-charge kicks / m |
 | `--drift-single-push` | `on` \| `off` | single push of field-free drifts, as in [`run`](07_cli_run.md) (applies to every point) |
 | `--backend` | `auto` \| `cpu` \| `gpu` | compute backend (forced to `cpu` when `--parallel > 1`) |
-| `--sc` | `NAME=VALUE` | repeatable; any `SpaceChargeConfig` field — e.g. `--sc kernel=tsc` for the PIC deposition kernel (`scan` has no dedicated `--kernel` flag, unlike `run`) |
+| `--kernel` | `cic` \| `tsc` | PIC deposit kernel (every point) |
+| `--sc-method` | name \| `list` | a named [space-charge method](../05_space_charge/08_methods.md) for every point, as in [`run`](07_cli_run.md) |
+| `--sc` | `NAME=VALUE` | repeatable; any `SpaceChargeConfig` field — e.g. `--sc reuse_every=2` |
 | `-q`, `--quiet` | flag | suppress per-point progress |
 
 ## The CSV summary

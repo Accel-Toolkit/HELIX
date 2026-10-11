@@ -6,6 +6,7 @@ written per-test; decks resolve them via base_dir.  geom 10 = 1-D
 static magnetic (.bsz), geom 100 = 1-D RF electric (.edz).
 """
 import glob
+import os
 
 import numpy as np
 import pytest
@@ -253,20 +254,29 @@ def test_shipped_decks_unaffected():
     import re as _re
     import warnings as _w
     decks = sorted(glob.glob("examples/**/*.dat", recursive=True))
-    # floor low enough for the PUBLIC checkout (PIP-II decks are not
-    # distributed) while still proving a real sweep happened
-    assert len(decks) > 15
     uses = _re.compile(r"(?im)^[^;\n]*\bSUPERPOSE_MAP\b")
+    fields_present = os.path.isdir("Fields")
+    checked = 0
     for deck in decks:
         with _w.catch_warnings():
             _w.simplefilter("ignore")
             lat, meta = parse_tracewin(deck)
+        if not fields_present and any("file missing" in w
+                                      for w in meta["warnings"]):
+            # its field maps are undistributed reference data
+            # (examples/FIELD_MAPS.md): the dropped elements cannot show
+            # the claim (development CI has the decks but not Fields/)
+            continue
+        checked += 1
         text = open(deck, encoding="latin-1").read()
         if not uses.search(text):
             assert not any(isinstance(e, SuperposedFieldMap)
                            for e in lat.elements), deck
         assert not any("SUPERPOSE" in w for w in meta["warnings"]), \
             (deck, meta["warnings"])
+    # floor low enough for the PUBLIC checkout (PIP-II decks are not
+    # distributed) while still proving a real sweep happened
+    assert checked > 15
 
 
 # ── SHIFT_IN_FIELD_MAP (phase D) ─────────────────────────────────────────

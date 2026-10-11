@@ -86,6 +86,13 @@ class WorkContext:
         for elem, attr, old in changes:
             setattr(elem, attr, old)
 
+    # The space-charge settings of the session (the GUI's Numerics tab):
+    # None when there are none (headless, zero current); the GUI adapter
+    # returns the tab's config and raises RuntimeError when the GUI does
+    # not answer.
+    def session_sc_config(self, current: float, continuous: bool = False):
+        return None
+
     # GUI navigation hooks — base has no GUI, so these are inert; the GUI
     # adapter overrides them to drive the app's tabs/plots via a queued
     # signal.  All return "nothing available" outside the desktop GUI.
@@ -1286,6 +1293,116 @@ def _compare_runs(ctx, run_a: str, run_b: str):
                 "notes": notes}, _ctx_provenance(ctx))
 
 
+# ---------------------------------------------------------------------------
+# Space-charge settings of the compute tools
+# ---------------------------------------------------------------------------
+#: Grid of the tools' fallback space-charge settings (no method named and
+#: no GUI session): the historical CPU-friendly 32^3, +-5 sigma.
+_FALLBACK_GRID, _FALLBACK_EXTENT = 32, 5.0
+
+
+def _tool_sc_config(params: dict, ctx=None, *, current: float = 0.0,
+                    continuous: bool = False, device: str = "cpu"):
+    """``(config, summary, warnings)`` of a compute tool's space charge.
+
+    The GUI session's settings (the Numerics tab) play the part a
+    project's play on the command line: with ``sc_method`` naming their own
+    method (or ``custom``) they are kept, another method starts from its
+    defaults and keeps the settings that belong to no method (DC kernel,
+    CSR, FFT device, ...); without ``sc_method`` they run as they are.
+    Without a GUI session: the method named, else the tool's historical
+    32^3 +-5 sigma fixed CIC grid, with the FFT on ``device``.  ``grid`` /
+    ``grid_extent`` override the grid size and extent.  ``summary`` tells
+    the agent which settings ran; a GUI session that does not answer is
+    reported in ``warnings``.  An unknown method name raises ValueError
+    (listing the valid names).
+    """
+    if not params.get("space_charge", True):
+        return None, {"space_charge": "off"}, []
+    import dataclasses
+
+    from linac_gen.core.config import SpaceChargeConfig
+    from linac_gen.pic import methods
+    grid, extent = params.get("grid"), params.get("grid_extent")
+    name = params.get("sc_method")
+    if name:
+        methods.check_name(str(name))
+    session, gui_error = None, None
+    if ctx is not None:
+        try:
+            session = ctx.session_sc_config(current, continuous=continuous)
+        except Exception as exc:                        # noqa: BLE001
+            gui_error = exc
+    if name and session is not None:
+        conv = {f.name: getattr(session, f.name)
+                for f in dataclasses.fields(session) if f.name != "method"}
+        conv["sc_method"] = methods.effective_method(session)
+        cfg = methods.resolve_sc(conv, {"sc_method": str(name)})
+        source = "sc_method with the Numerics tab"
+    elif name:
+        cfg = methods.resolve_sc({}, {"sc_method": str(name),
+                                      "backend": device})
+        source = "sc_method"
+    elif session is not None:
+        cfg, source = session, "Numerics tab"
+    else:
+        cfg = SpaceChargeConfig(nx=_FALLBACK_GRID, ny=_FALLBACK_GRID,
+                                nz=_FALLBACK_GRID,
+                                grid_extent=_FALLBACK_EXTENT, use_gpu=device)
+        source = "fallback"
+    over = {}
+    if grid is not None:
+        over.update(nx=int(grid), ny=int(grid), nz=int(grid))
+    if extent is not None:
+        over["grid_extent"] = float(extent)
+    if over:
+        cfg = dataclasses.replace(cfg, **over)
+    warns = []
+    if gui_error is not None:
+        what = (f"method {name!r} ran with DC kernel {cfg.dc_kernel!r}, CSR "
+                f"{'on' if cfg.csr_enabled else 'off'} and FFT device "
+                f"{cfg.use_gpu!r}, not the tab's" if name else
+                f"the run used the assistant's fallback space charge "
+                f"({cfg.nx}^3 grid, +-{cfg.grid_extent:g} sigma, "
+                f"{methods.effective_method(cfg)}), not the tab's")
+        warns.append(f"space charge: {gui_error}; {what}")
+    summary = {"source": source, "method": methods.effective_method(cfg),
+               "grid": int(cfg.nx),
+               "grid_extent_sigma": float(cfg.grid_extent),
+               "dc_kernel": str(cfg.dc_kernel),
+               "csr": bool(cfg.csr_enabled)}
+    return cfg, summary, warns
+
+
+def _scan_point_sc(sc) -> dict:
+    """ScanPoint fields that carry SpaceChargeConfig ``sc`` (its worker
+    rebuilds exactly ``sc``)."""
+    import dataclasses
+    return {"nx": int(sc.nx), "grid_extent": float(sc.grid_extent),
+            "use_gpu": str(sc.use_gpu),
+            "sc_overrides": tuple(
+                (f.name, getattr(sc, f.name)) for f in dataclasses.fields(sc)
+                if f.name not in ("nx", "grid_extent", "use_gpu"))}
+
+
+_SC_TOOL_PROPS = {
+    "sc_method": {"type": "string",
+                  "description": "named space-charge method: cic_fixed, "
+                  "tsc_fixed, cic_adaptive, tsc_adaptive, "
+                  "cic_adaptive_reuse2/4, tsc_adaptive_reuse2/4, "
+                  "differentiable_pic, or 'default' (HELIX's default "
+                  "method).  Leave it out to use the GUI session's "
+                  "settings (Numerics tab); without a GUI, a 32^3 "
+                  "+-5 sigma fixed CIC grid"},
+    "grid": {"type": "integer",
+             "description": "PIC grid per axis (overrides the method's or "
+             "session's)"},
+    "grid_extent": {"type": "number",
+                    "description": "grid half-width in rms sizes "
+                    "(overrides the method's or session's)"},
+}
+
+
 @_tool("parameter_scan",
        "Sweep ONE element parameter over N evenly spaced values, running a "
        "simulation per point (envelope by default — seconds/point), and "
@@ -1305,11 +1422,16 @@ def _compare_runs(ctx, run_a: str, run_b: str):
             "n_points": {"type": "integer", "default": 7,
                          "description": "2-41 points"},
             "mode": {"type": "string", "enum": ["envelope", "mp"],
-                     "default": "envelope"}},
+                     "default": "envelope"},
+            **{key: dict(prop, description=prop["description"]
+                         + " (mode='mp')")
+               for key, prop in _SC_TOOL_PROPS.items()}},
         "required": ["element", "attribute", "start", "stop"]},
        "compute")
 def _parameter_scan(ctx, element: str, attribute: str, start: float,
                     stop: float, n_points: int = 7, mode: str = "envelope",
+                    sc_method: str | None = None, grid: int | None = None,
+                    grid_extent: float | None = None,
                     progress_callback=None, should_abort=None,
                     _assist_prov=None):
     gate = _need(ctx, "lattice", "beam_config")
@@ -1363,6 +1485,20 @@ def _parameter_scan(ctx, element: str, attribute: str, start: float,
                 f"{attribute!r} is integer-typed; sweep values like "
                 f"{bad[0]:g} would be silently truncated — choose "
                 f"integer start/stop/n_points")
+    # mp points run the session's space charge (or the method named);
+    # envelope points use no PIC grid
+    point_sc, sc_info, sc_warns = {"nx": 32, "grid_extent": 5.0}, None, []
+    if mode == "mp":
+        try:
+            sc, sc_info, sc_warns = _tool_sc_config(
+                {"sc_method": sc_method, "grid": grid,
+                 "grid_extent": grid_extent}, ctx,
+                current=float(getattr(cfg, "current", 0.0)),
+                continuous=bool(getattr(cfg, "continuous", False)),
+                device="auto")
+        except ValueError as exc:
+            return _refused(exc)
+        point_sc = _scan_point_sc(sc)
     values = _np.linspace(float(start), float(stop), n)
     rows, aborted = [], False
     # scan_pool's worker setdefaults LINAC_GEN_FFT_WORKERS=1 (meant for
@@ -1376,7 +1512,7 @@ def _parameter_scan(ctx, element: str, attribute: str, start: float,
                 break
             point = ScanPoint(lattice_path=lattice_path,
                               beam_config=dict(beam_dict),
-                              nx=32, grid_extent=5.0,
+                              **point_sc,
                               step1=step1, step2=step2,
                               drift_single_push=single,
                               mode=("envelope" if mode != "mp" else "mp"),
@@ -1402,27 +1538,18 @@ def _parameter_scan(ctx, element: str, attribute: str, start: float,
             _os.environ.pop("LINAC_GEN_FFT_WORKERS", None)
         else:
             _os.environ["LINAC_GEN_FFT_WORKERS"] = _prev_fft
-    return _ok({"element": getattr(el, "name", f"#{idx}"),
-                "attribute": attribute, "selector": selector,
-                "mode": mode, "points": rows, "aborted": aborted,
-                "note": f"lattice re-read from {lattice_path} per point"},
-               _ctx_provenance(ctx))
+    data = {"element": getattr(el, "name", f"#{idx}"),
+            "attribute": attribute, "selector": selector,
+            "mode": mode, "points": rows, "aborted": aborted,
+            "note": f"lattice re-read from {lattice_path} per point"}
+    if sc_info is not None:
+        data["space_charge"] = sc_info
+    return _ok(data, _ctx_provenance(ctx), sc_warns)
 
 
 # ---------------------------------------------------------------------------
 # COMPUTE tools (dispatched through the job manager by the agent loop)
 # ---------------------------------------------------------------------------
-def _sc_config_from(params: dict):
-    if not params.get("space_charge", True):
-        return None
-    from linac_gen.core.config import SpaceChargeConfig
-    return SpaceChargeConfig(
-        nx=int(params.get("grid", 32)), ny=int(params.get("grid", 32)),
-        nz=int(params.get("grid", 32)),
-        grid_extent=float(params.get("grid_extent", 5.0)),
-        use_gpu="cpu")
-
-
 @_tool("run_envelope",
        "Run the linear-envelope simulation (with linear space charge at "
        "the beam current) on the session lattice + beam.  Long-running: "
@@ -1460,9 +1587,7 @@ def _run_envelope(ctx, progress_callback=None, should_abort=None,
                             "description": "override macroparticle count"},
             "seed": {"type": "integer", "default": 42},
             "space_charge": {"type": "boolean", "default": True},
-            "grid": {"type": "integer", "default": 32,
-                     "description": "PIC grid per axis"},
-            "grid_extent": {"type": "number", "default": 5.0},
+            **_SC_TOOL_PROPS,
             "action_scan": {"type": "boolean", "default": False,
                             "description": "also record the halo action "
                             "scan (particles outside the n·ε_rms ellipses "
@@ -1471,8 +1596,9 @@ def _run_envelope(ctx, progress_callback=None, should_abort=None,
         "required": []},
        "compute")
 def _run_mp(ctx, n_particles: int | None = None, seed: int = 42,
-            space_charge: bool = True, grid: int = 32,
-            grid_extent: float = 5.0, action_scan: bool = False,
+            space_charge: bool = True, grid: int | None = None,
+            grid_extent: float | None = None, action_scan: bool = False,
+            sc_method: str | None = None,
             progress_callback=None, should_abort=None,
             _assist_prov=None):
     gate = _need(ctx, "lattice", "beam_config")
@@ -1485,8 +1611,15 @@ def _run_mp(ctx, n_particles: int | None = None, seed: int = 42,
     if n_particles:
         cfg = copy.deepcopy(cfg)
         cfg.n_particles = int(n_particles)
-    sc = _sc_config_from({"space_charge": space_charge, "grid": grid,
-                          "grid_extent": grid_extent})
+    try:
+        sc, sc_info, sc_warns = _tool_sc_config(
+            {"space_charge": space_charge, "grid": grid,
+             "grid_extent": grid_extent, "sc_method": sc_method},
+            ctx, current=float(getattr(cfg, "current", 0.0)),
+            continuous=bool(getattr(cfg, "continuous", False)))
+    except ValueError as exc:
+        return _refused(exc)
+
     def _go():
         beam = create_beam(cfg, seed=int(seed))
         sim = Simulation(ctx.lattice, beam, space_charge=sc,
@@ -1501,8 +1634,9 @@ def _run_mp(ctx, n_particles: int | None = None, seed: int = 42,
         return refusal
     ctx.set_results(out, "")
     from linac_gen.cli.common import result_summary
-    return _ok({"summary": result_summary(out), "seed": int(seed)},
-               _ctx_provenance(ctx), warns)
+    return _ok({"summary": result_summary(out), "seed": int(seed),
+                "space_charge": sc_info},
+               _ctx_provenance(ctx), sc_warns + warns)
 
 
 # ---------------------------------------------------------------------------
@@ -1674,8 +1808,7 @@ _TRAIN_MODE_KWARGS = {"fast": ("history_stride",),
             "space_charge": {"type": "boolean", "default": True,
                              "description": "in-bunch space charge for "
                              "tracked passes (False = explicit off)"},
-            "grid": {"type": "integer", "default": 32},
-            "grid_extent": {"type": "number", "default": 5.0},
+            **_SC_TOOL_PROPS,
             "lattice_path": {"type": "string",
                              "description": "deck to run (default: the "
                              "session lattice)"},
@@ -1692,9 +1825,9 @@ def _run_train(ctx, bunch_frequency_MHz: float, mode: str = "mp",
                select_bunches=None, replay_parallel: bool = False,
                history_stride: int = 1, keep_full_results: bool = True,
                seed: int = 42, n_particles: int | None = None,
-               space_charge: bool = True, grid: int = 32,
-               grid_extent: float = 5.0, lattice_path: str = "",
-               out_path: str = "",
+               space_charge: bool = True, grid: int | None = None,
+               grid_extent: float | None = None, lattice_path: str = "",
+               out_path: str = "", sc_method: str | None = None,
                progress_callback=None, should_abort=None,
                _assist_prov=None):
     import copy
@@ -1780,9 +1913,17 @@ def _run_train(ctx, bunch_frequency_MHz: float, mode: str = "mp",
         cfg.n_particles = int(n_particles)
     # "off" (explicit opt-out) instead of None: a current-carrying train
     # would otherwise warn once per bunch.
-    sc = _sc_config_from({"space_charge": space_charge, "grid": grid,
-                          "grid_extent": grid_extent}) \
-        if space_charge else "off"
+    if space_charge:
+        try:
+            sc, sc_info, sc_warns = _tool_sc_config(
+                {"grid": grid, "grid_extent": grid_extent,
+                 "sc_method": sc_method},
+                ctx, current=float(getattr(cfg, "current", 0.0)),
+                continuous=bool(getattr(cfg, "continuous", False)))
+        except ValueError as exc:
+            return _refused(exc)
+    else:
+        sc, sc_info, sc_warns = "off", {"space_charge": "off"}, []
     # ---- run ---------------------------------------------------------
     from linac_gen.train import run_train as _run
 
@@ -1813,7 +1954,7 @@ def _run_train(ctx, bunch_frequency_MHz: float, mode: str = "mp",
         progress_callback=_cb, should_abort=should_abort, **mode_kwargs)
     if refusal:
         return refusal
-    warns = list(warns0) + warns
+    warns = list(warns0) + sc_warns + warns
     # ---- save + summarize -------------------------------------------
     if out_path:
         try:
@@ -1833,6 +1974,7 @@ def _run_train(ctx, bunch_frequency_MHz: float, mode: str = "mp",
     ctx.set_results(out, str(out_path))
     data = _train_summary_data(out)
     data["output_path"] = str(out_path)
+    data["space_charge"] = sc_info
     prov = {"results_path": str(out_path)}
     if lat_path:
         prov["lattice_path"] = str(lat_path)

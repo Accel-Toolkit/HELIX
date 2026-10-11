@@ -202,19 +202,8 @@ class Simulation:
         pic = None
         csr = None
         if self.sc_config:
-            if getattr(self.sc_config, "sc_backend", "numpy") == "torch":
-                from linac_gen.pic.torch.solver import TorchPicSolver
-                pic = TorchPicSolver(self.sc_config)
-            elif getattr(self.sc_config, "sc_backend", "numpy") == "halo":
-                from linac_gen.pic.ml.solver import HaloPicSolver
-                pic = HaloPicSolver(self.sc_config)
-                cdir = (getattr(self.sc_config, "halo", None) or {}).get(
-                    "corrector_dir")
-                if cdir:
-                    pic.load(cdir)
-            else:
-                from linac_gen.pic.pic_solver import PicSolver
-                pic = PicSolver(self.sc_config)
+            from linac_gen.pic.factory import make_sc_solver
+            pic = make_sc_solver(self.sc_config)
             # CSR rides the same config object and the same current>0
             # gate as space charge.  Build a kicker only when the user
             # opted in via SpaceChargeConfig.csr_enabled.
@@ -260,6 +249,16 @@ class Simulation:
         # each macroparticle carries I_avg/n_macro of beam current.
         self._results.loss_table = self.beam.loss_table
         self._results.n_macro = int(self.beam.lost.size)
+        # The space-charge configuration this run used, so a results file
+        # written later records it even when the writer is not handed it
+        # (save_results_hdf5 falls back to it).  None when SC was off.  The
+        # solver's own copy when it runs differently from the config (the
+        # torch PIC always resizes its grid).
+        self._results.sc_config = (getattr(pic, "config", None)
+                                   or self.sc_config)
+        # solver counters (Green's-function builds, solved/reused kicks)
+        _stats = getattr(pic, "stats", None)
+        self._results.sc_solver_stats = _stats() if callable(_stats) else None
         # Stripper-foil bookkeeping (Foil strip_model / extent): the ions
         # a foil left unconverted or that missed it.  Empty for every
         # run without such a foil — the HDF5 writer then adds no group.

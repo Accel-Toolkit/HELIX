@@ -341,3 +341,150 @@ def test_density_settings_mark_the_project_dirty(win):
     win.state.mark_project_clean()
     ct._density_extent.setValue(ct._density_extent.value() + 1.0)
     assert win.state.project_dirty
+
+
+# ---------------------------------------------------------------------------
+# space-charge method in the project file (same resolver as the CLI)
+# ---------------------------------------------------------------------------
+def _sc_fields(cfg):
+    import dataclasses
+    return {f.name: getattr(cfg, f.name) for f in dataclasses.fields(cfg)}
+
+
+def test_space_charge_method_round_trips_through_the_project(win):
+    from linac_gen.pic import methods
+    ct = win.convergence_tab
+    ct._sc_method.setCurrentIndex(ct._sc_method.findData("tsc_adaptive_reuse2"))
+    ct._fixed_nx.setValue(64)
+    conv = win._collect_project_dict([])["convergence"]
+    assert conv["sc_method"] == "tsc_adaptive_reuse2"
+    assert (conv["reuse_every"], conv["grid_card"], conv["green_build"]) == (
+        2, "auto", "symmetric")
+    gui = ct.current_sc_config(5.0)
+    assert _sc_fields(methods.resolve_sc(conv, {})) == _sc_fields(gui)
+    ct._sc_method.setCurrentIndex(ct._sc_method.findData("cic_fixed"))
+    win._apply_project_dict({"__kind__": "linac_gen_project",
+                             "convergence": conv}, silent=True)
+    assert ct.sc_method_name() == "tsc_adaptive_reuse2"
+    assert _sc_fields(ct.current_sc_config(5.0)) == _sc_fields(gui)
+
+
+from tests.dataguard import needs  # noqa: E402
+
+
+@needs("examples/pipii/mebt/mebt.lgproj")
+def test_legacy_project_shows_its_method_and_runs_what_the_cli_runs(win):
+    """A shipped project (no sc_method): the tab shows the method its
+    settings match, and builds exactly the configuration the CLI builds."""
+    import json
+    import os
+
+    from linac_gen.cli import common
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(here, "..", "..", "examples", "pipii", "mebt",
+                        "mebt.lgproj")
+    data = json.load(open(path))
+    assert "sc_method" not in data["convergence"]
+    win._apply_project_dict(data, silent=True)
+    ct = win.convergence_tab
+    assert ct.sc_method_name() == "cic_fixed"
+
+    class _Beam:
+        current = 5.0
+    cli = common.make_sc_config(_Beam(), data["convergence"], {})
+    assert _sc_fields(ct.current_sc_config(5.0)) == _sc_fields(cli)
+
+
+def test_project_without_space_charge_keys_does_not_keep_the_old_ones(win):
+    """Regression: SC widgets kept the previously opened project's values
+    when the next project did not store them."""
+    from linac_gen.pic import methods
+    ct = win.convergence_tab
+    ct._sc_method.setCurrentIndex(ct._sc_method.findData("tsc_adaptive"))
+    conv = {"step1_per_m": 100.0}
+    win._apply_project_dict({"__kind__": "linac_gen_project",
+                             "convergence": conv}, silent=True)
+    want = methods.resolve_sc(conv, {})
+    got = ct.current_sc_config(5.0)
+    for key in ("kernel", "grid_mode", "nx", "grid_extent", "green_build",
+                "grid_card", "reuse_every"):
+        assert getattr(got, key) == getattr(want, key), key
+
+
+def test_project_with_an_unknown_method_warns_and_keeps_loading(win,
+                                                               monkeypatch):
+    from linac_gen_gui.interphase import app as app_mod
+    seen = []
+    monkeypatch.setattr(app_mod.QMessageBox, "warning",
+                        staticmethod(lambda *a, **k: seen.append(a)))
+    win._apply_project_dict({"__kind__": "linac_gen_project",
+                             "convergence": {"sc_method": "cic_fast",
+                                             "step1_per_m": 70.0}},
+                            silent=True)
+    assert win.convergence_tab._fixed_step1.value() == 70.0
+
+
+
+def test_legacy_project_with_the_torch_engine_still_runs_torch_in_the_gui(win):
+    conv = {"grid_nx": 32, "grid_extent_sigma": 6.0, "kernel": "cic",
+            "grid_mode": "fixed", "green_kind": "igf", "backend": "auto",
+            "sc_backend": "torch", "dc_kernel": "uniform"}
+    win._apply_project_dict({"__kind__": "linac_gen_project",
+                             "convergence": conv}, silent=True)
+    ct = win.convergence_tab
+    sc = ct.current_sc_config(5.0)
+    assert (sc.sc_backend, sc.grid_mode) == ("torch", "adaptive")
+    assert ct.sc_method_name() == "differentiable_pic"
+
+
+def test_settings_the_tab_cannot_hold_are_reported(win):
+    conv = {"sc_method": "tsc_fixed", "grid_nx": 48,
+            "grid_extent_sigma": 25.0, "csr_bins": 300}
+    warns = win._apply_project_dict({"__kind__": "linac_gen_project",
+                                     "convergence": conv}, silent=True)
+    text = "\n".join(warns)
+    assert "grid_extent" in text and "csr_bins" in text
+
+
+def test_invalid_block_falls_back_to_the_stored_keys(win):
+    ct = win.convergence_tab
+    ct._sc_method.setCurrentIndex(ct._sc_method.findData("cic_adaptive_reuse4"))
+    conv = {"sc_method": "cic_fast", "grid_nx": 40, "kernel": "tsc",
+            "grid_mode": "fixed"}
+    warns = win._apply_project_dict({"__kind__": "linac_gen_project",
+                                     "convergence": conv}, silent=True)
+    sc = ct.current_sc_config(5.0)
+    assert (sc.nx, sc.kernel, sc.grid_mode, sc.reuse_every) == (40, "tsc",
+                                                                "fixed", 1)
+    assert any("cic_fast" in w for w in warns)
+
+
+def test_a_save_keeps_the_migration_commands_undo_record(win, tmp_path):
+    """scripts/sc_method_migrate.py --switch keeps the old space-charge
+    keys under sc_previous; a save of the open project keeps them (also
+    the null of a project that had no block), so --restore still works."""
+    import json
+
+    from linac_gen_gui.interphase import app as app_mod
+    s = app_mod._settings()
+    old = s.value(app_mod._SETTINGS_LAST_PROJECT)
+    try:
+        for prev in ({"grid_nx": 48, "kernel": "tsc", "grid_mode": "fixed"},
+                     None):
+            data = {"__kind__": "linac_gen_project",
+                    "convergence": {"sc_method": "tsc_adaptive",
+                                    "sc_previous": prev}}
+            path = tmp_path / "p.lgproj"
+            path.write_text(json.dumps(data))
+            win._apply_project_dict(data, silent=True)
+            s.setValue(app_mod._SETTINGS_LAST_PROJECT, str(path))
+            out = win._collect_project_dict(None, project_path=str(path))
+            assert out["convergence"]["sc_previous"] == prev
+        s.remove(app_mod._SETTINGS_LAST_PROJECT)       # no open project
+        assert "sc_previous" not in win._collect_project_dict(
+            None)["convergence"]
+    finally:
+        if old:
+            s.setValue(app_mod._SETTINGS_LAST_PROJECT, old)
+        else:
+            s.remove(app_mod._SETTINGS_LAST_PROJECT)

@@ -265,7 +265,7 @@ def test_dispatched_card_set_matches_the_parser_dispatch():
         sorted(lits ^ set(tp._DISPATCHED_CARDS)))
 
 
-@needs("examples/MEBT_To_Foil/mebt_to_foil.dat")
+@needs("examples/MEBT_To_Foil/mebt_to_foil.dat", "Fields")
 def test_pipii_location_labels_are_recorded_not_warned():
     """The PIP-II decks carry ~50 ``HWR CM:`` / ``WPM :`` location labels;
     they used to raise 'unsupported card' each.  Element count unchanged

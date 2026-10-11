@@ -86,6 +86,9 @@ def test_beam_config_accepts_new_fields():
 @pytest.mark.parametrize("kwargs", [
     {"nx": 0}, {"ny": -1},
     {"grid_extent": 0.0}, {"grid_extent": -1.0},
+    # Non-finite extents used to pass the "> 0" check and gave NaN fields.
+    {"grid_extent": float("inf")}, {"grid_extent": float("nan")},
+    {"grid_extent": float("1e999")}, {"grid_extent": 1.0e7},
     {"shape_order": 0},
     {"boundary": "conducting"},     # not yet implemented
     # "periodic" used to VALIDATE and then be silently ignored (the
@@ -114,3 +117,9 @@ def test_space_charge_config_use_gpu_default_and_validation():
     assert SpaceChargeConfig(use_gpu="gpu").use_gpu == "gpu"
     with pytest.raises(ValueError, match="use_gpu"):
         SpaceChargeConfig(use_gpu="tpu")
+
+
+def test_sc_config_accepts_largest_grid_extent():
+    from linac_gen.core.config import MAX_GRID_EXTENT_SIGMA
+    assert SpaceChargeConfig(grid_extent=MAX_GRID_EXTENT_SIGMA).grid_extent == \
+        MAX_GRID_EXTENT_SIGMA

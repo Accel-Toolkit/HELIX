@@ -840,7 +840,6 @@ class MatchingTab(QWidget):
         to None / default StepConfig if the chain breaks (the engine
         constructs a sane default when these are None).
         """
-        from linac_gen.core.config import SpaceChargeConfig
         from linac_gen.core.step_config import StepConfig
         try:
             ct = self.window().convergence_tab    # type: ignore[attr-defined]
@@ -848,30 +847,12 @@ class MatchingTab(QWidget):
             return None, None
         try:
             cfg = self.state.beam_config
-            nx = ct._fixed_nx.value()
-            ext = ct._fixed_ext.value()
             step1 = ct._fixed_step1.value()
             step2 = ct._fixed_step2.value()
-            backend = ct._fixed_backend.currentText()
-            green_kind = ct._fixed_green.currentText()
-            kernel = ct._fixed_kernel.currentText()
-            grid_mode = ct._fixed_grid_mode.currentText()
-            dc_kernel = ct._fixed_dc_kernel.currentText()
-            csr_on = bool(ct._fixed_csr.isChecked())
-            sc_backend = ct._fixed_sc_backend.currentText()
-            # torch backend is bunched-only; fall back to numpy on DC.
-            if sc_backend == "torch" and getattr(cfg, "continuous", False):
-                sc_backend = "numpy"
-            if sc_backend == "torch":
-                grid_mode = "adaptive"
-            sc_cfg = (SpaceChargeConfig(nx=nx, ny=nx, nz=nx, grid_extent=ext,
-                                        grid_mode=grid_mode,
-                                        use_gpu=backend,
-                                        green_kind=green_kind, kernel=kernel,
-                                        dc_kernel=dc_kernel,
-                                        sc_backend=sc_backend,
-                                        csr_enabled=csr_on)
-                      if cfg.current > 0 else None)
+            # the Numerics tab's own builder (one source for every run)
+            sc_cfg = ct.current_sc_config(
+                cfg.current, continuous=bool(getattr(cfg, "continuous",
+                                                     False)))
             step_cfg = StepConfig(
                 integration_steps_per_metre=float(step1),
                 sc_steps_per_metre=float(step2),

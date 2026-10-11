@@ -878,6 +878,29 @@ def _reverse_recorder_in_place(rec: DiagnosticRecorder) -> None:
 
 
 # ---------------------------------------------------------------------------
+def _warn_applied_grid_cards(lattice, start, end, pic) -> None:
+    """The backward walk passes HELIX_SC_GRID cards without undoing their
+    grid-extent change; say so when the walked range holds a card the walk's
+    solver would apply (the space-charge undo across it is approximate)."""
+    if pic is None or isinstance(pic, str) or not hasattr(pic,
+                                                         "set_grid_extent"):
+        return
+    from linac_gen.elements.sc_grid import ScGridDirective
+    from linac_gen.pic.methods import card_policy
+    if card_policy(getattr(pic, "config", None)) != "apply":
+        return
+    cards = [e.name for e in lattice.elements[start:end + 1]
+             if isinstance(e, ScGridDirective)]
+    if cards:
+        shown = ", ".join(cards[:3]) + (" ..." if len(cards) > 3 else "")
+        warnings.warn(
+            f"the walked range holds HELIX_SC_GRID card(s) ({shown}); the "
+            "backward walk does not undo their grid-extent change, so the "
+            "space-charge undo across them is approximate.",
+            BacktrackWarning, stacklevel=3)
+
+
+# ---------------------------------------------------------------------------
 def backtrack_distribution(lattice, beam,
                            entrance_ref: ReferenceParticle, *,
                            start: int = 0, end: int | None = None,
@@ -1072,10 +1095,28 @@ def backtrack_distribution(lattice, beam,
     # alpha gate) and has no backward model, so reusing it mid-state is
     # a silent approximate undo.  Same contract as CSR: refuse unless
     # the caller opts in, then swap to a fresh plain PicSolver.
-    import sys as _sys
-    _ml = _sys.modules.get("linac_gen.pic.ml.solver")
-    if (_ml is not None and pic is not None and not isinstance(pic, str)
-            and isinstance(pic, getattr(_ml, "HaloPicSolver", ()))):
+    _reuse = (pic is not None and not isinstance(pic, str)
+              and int(getattr(pic, "reuse_every", 1) or 1) > 1)
+    if _reuse:
+        # The forward run solved the field every few kicks and rescaled it
+        # in between; the backward walk visits the kicks in reverse order and
+        # cannot retrace that, so it solves at every kick (as for a fixed
+        # grid rebuilt from a config: warn, no opt-in needed).
+        import dataclasses
+        from linac_gen.pic.factory import make_sc_solver
+        warnings.warn(
+            "the forward run solved the space-charge field every "
+            f"{pic.reuse_every} kicks and rescaled it in between, which a "
+            "backward walk cannot retrace -- the backward walk solves the "
+            "field at every kick on adaptive grids instead (approximate SC "
+            "undo).", BacktrackWarning, stacklevel=2)
+        extent = getattr(pic, "_extent_override", None)
+        pic = make_sc_solver(dataclasses.replace(pic.config, reuse_every=1),
+                             purpose="backward")
+        if extent is not None:                # a card applied going forward
+            pic._extent_override = extent
+    elif (pic is not None and not isinstance(pic, str)
+            and not getattr(pic, "exact_backward", True)):
         if not approximate_backtracking:
             raise ValueError(
                 "the forward run used sc_backend='halo' (learned defect "
@@ -1091,18 +1132,18 @@ def backtrack_distribution(lattice, beam,
             "PicSolver (no anchors, no corrector) for the backward SC "
             "kicks (approximate undo).", BacktrackWarning, stacklevel=2)
         import dataclasses
-        from linac_gen.pic.pic_solver import PicSolver
+        from linac_gen.pic.factory import make_sc_solver
         _cfg = getattr(pic, "config", None) or sc_config
         if _cfg is not None:
             if getattr(_cfg, "grid_mode", "fixed") == "fixed" \
                     and not getattr(beam, "continuous", False):
                 _cfg = dataclasses.replace(_cfg, grid_mode="adaptive")
             _cfg = dataclasses.replace(_cfg, sc_backend="numpy")
-            pic = PicSolver(_cfg)
+            pic = make_sc_solver(_cfg, purpose="backward")
         else:
             pic = None
     if pic is None and sc_config is not None:
-        from linac_gen.pic.pic_solver import PicSolver
+        from linac_gen.pic.factory import make_sc_solver
         # The frozen-grid concern only applies to the 3-D PIC path; the
         # analytic DC kernels are stateless (grid-free) either way.
         if getattr(sc_config, "grid_mode", "fixed") == "fixed" \
@@ -1117,6 +1158,14 @@ def backtrack_distribution(lattice, beam,
                 "with grid_mode='adaptive'.", BacktrackWarning,
                 stacklevel=2)
             sc_config = dataclasses.replace(sc_config, grid_mode="adaptive")
+        if int(getattr(sc_config, "reuse_every", 1) or 1) > 1:
+            import dataclasses
+            warnings.warn(
+                f"sc_config solves the field every {sc_config.reuse_every} "
+                "kicks, which a backward walk cannot retrace -- the backward "
+                "walk solves it at every kick (approximate SC undo).",
+                BacktrackWarning, stacklevel=2)
+            sc_config = dataclasses.replace(sc_config, reuse_every=1)
         if getattr(sc_config, "sc_backend", "numpy") == "halo":
             # The learned-defect (halo) backend has no backward model:
             # swapping in the plain PicSolver changes the SC physics of
@@ -1139,14 +1188,20 @@ def backtrack_distribution(lattice, beam,
                 "the plain PicSolver (no anchors, no corrector) for "
                 "the backward SC kicks (approximate undo).",
                 BacktrackWarning, stacklevel=2)
-        pic = PicSolver(sc_config)
+        pic = make_sc_solver(sc_config, purpose="backward")
 
+    _warn_applied_grid_cards(lattice, start, end, pic)
     walker = _Backtracker(
         lattice, beam, table, start=start, end=end, pic_solver=pic,
         recorder=recorder, record_substeps=record_substeps,
         progress_callback=progress_callback, should_abort=should_abort,
         dc_upstream=dc_upstream, field_map_mode=field_map_mode)
-    return walker.run()
+    rec = walker.run()
+    # The space-charge configuration the walk ran with (a fixed-grid config
+    # rebuilt from the exit distribution is walked on adaptive grids, see
+    # above), for the results provenance.
+    rec.sc_config = getattr(pic, "config", None)
+    return rec
 
 
 # ---------------------------------------------------------------------------

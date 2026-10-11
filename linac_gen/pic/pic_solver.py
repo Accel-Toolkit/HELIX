@@ -11,6 +11,7 @@ Each call to :meth:`kick` performs:
 8. Apply transverse and longitudinal momentum kicks
 """
 import logging
+import os
 
 import numpy as np
 
@@ -64,11 +65,75 @@ except ImportError:
         "prints a warning in the install log; a C++ compiler is required)."
     )
 
-# CIC: use C++ when available; TSC has no C++ kernel yet so always uses Python.
+# TSC: separate C++ module, bit-identical to the Python kernels (same
+# expressions, np.add.at summation order, no FMA contraction -- pinned by
+# tests/pic/test_tsc_kernels_cpp.py on every CI platform).
+# LINAC_GEN_TSC_KERNEL=0 forces the Python kernels.
+_USE_CPP_TSC = False
+if os.environ.get("LINAC_GEN_TSC_KERNEL", "1") != "0":
+    try:
+        from linac_gen._tsc_kernels import (
+            deposit_tsc as _cpp_deposit_tsc,
+            interpolate_tsc as _cpp_interpolate_tsc,
+        )
+        _USE_CPP_TSC = True
+        _log.info("PIC: using C++ TSC kernels (linac_gen._tsc_kernels)")
+    except ImportError:
+        _log.info("PIC: C++ TSC kernels unavailable; using the Python TSC kernels")
+
+
+def _cpp_tsc_ok(positions, grid_min, grid_max, n_grid) -> bool:
+    """Constant-time admission test for the C++ TSC twin.
+
+    Admits float64 (N, 3) positions with N > 0, float64 (3,) bounds and an
+    integer (3,) array of at least 3 nodes per axis.  Inputs outside that
+    (numpy's negative-index wrap for n < 3, lower-precision arithmetic for
+    float32, non-integral or list grid sizes) keep the Python kernels.  The
+    twin itself declines -- returns None, and the dispatcher runs Python --
+    when any particle maps to a grid coordinate that is not finite or lies
+    2**62 or more cells out (non-finite positions or bounds, zero spacing),
+    where numpy's float-to-int cast is platform-dependent.  Every PicSolver
+    call with finite grid bounds is admitted and accepted.
+    """
+    return (isinstance(positions, np.ndarray)
+            and positions.dtype == np.float64 and positions.ndim == 2
+            and positions.shape[1] == 3 and positions.shape[0] > 0
+            and all(isinstance(g, np.ndarray) and g.dtype == np.float64
+                    and g.shape == (3,) for g in (grid_min, grid_max))
+            and isinstance(n_grid, np.ndarray)
+            and np.issubdtype(n_grid.dtype, np.integer)
+            and n_grid.shape == (3,) and int(n_grid.min()) >= 3)
+
+
+def _deposit_tsc_dispatch(positions, charges, grid_min, grid_max, n_grid):
+    if _cpp_tsc_ok(positions, grid_min, grid_max, n_grid):
+        q = np.broadcast_to(np.asarray(charges, dtype=np.float64),
+                            (positions.shape[0],))
+        rho = _cpp_deposit_tsc(positions, q, grid_min, grid_max, n_grid)
+        if rho is not None:
+            return rho
+    return _py_deposit_tsc(positions, charges, grid_min, grid_max, n_grid)
+
+
+def _interpolate_tsc_dispatch(field_x, field_y, field_z, positions,
+                              grid_min, grid_max, n_grid):
+    shape = tuple(int(v) for v in n_grid)
+    if (_cpp_tsc_ok(positions, grid_min, grid_max, n_grid)
+            and all(np.shape(f) == shape for f in (field_x, field_y, field_z))):
+        e = _cpp_interpolate_tsc(field_x, field_y, field_z, positions,
+                                 grid_min, grid_max, n_grid)
+        if e is not None:
+            return e
+    return _py_interpolate_tsc(field_x, field_y, field_z, positions,
+                               grid_min, grid_max, n_grid)
+
+
+# CIC: C++ when available.  TSC: the C++ twin when available (see above).
 deposit_cic = _cpp_deposit if _USE_CPP else _py_deposit_cic
 interpolate_cic = _cpp_interpolate if _USE_CPP else _py_interpolate_cic
-deposit_tsc = _py_deposit_tsc
-interpolate_tsc = _py_interpolate_tsc
+deposit_tsc = _deposit_tsc_dispatch if _USE_CPP_TSC else _py_deposit_tsc
+interpolate_tsc = (_interpolate_tsc_dispatch if _USE_CPP_TSC
+                   else _py_interpolate_tsc)
 
 
 def _select_kernel(kind: str):
@@ -525,6 +590,15 @@ def kick_continuous_2d_pic(beam, ds_mm: float, *,
 class PicSolver:
     """Orchestrates one PIC space-charge kick per call to :meth:`kick`."""
 
+    #: A kick of this solver instance is undone exactly by a kick with the
+    #: opposite step at the same place: the field depends only on the
+    #: particle positions, which a kick does not change, and a fixed grid
+    #: stays the one the forward kicks froze.  A backtrack walk may then
+    #: reuse the forward run's solver.  (The walk does not undo the extent
+    #: change of an applied HELIX_SC_GRID card; across one the undo is
+    #: approximate and the walk warns.)
+    exact_backward: bool = True
+
     def __init__(self, config: SpaceChargeConfig):
         self.config = config
         # Lazily-built companion solver for bunch-train neighbour images
@@ -593,7 +667,16 @@ class PicSolver:
         fixed mode the ``_extent_dirty`` flag forces one re-derivation
         of the frozen grid from the CURRENT beam, after which fixed
         mode freezes again at the new extent.
+
+        The value is checked here as well, because a card's extent can be
+        changed after the deck is parsed (``--set``, the assistant).
         """
+        from linac_gen.core.config import (MAX_GRID_EXTENT_SIGMA,
+                                           valid_grid_extent)
+        if not valid_grid_extent(extent_sigma):
+            raise ValueError(
+                "grid extent must be a finite value in (0, "
+                f"{MAX_GRID_EXTENT_SIGMA:g}] sigma, got {extent_sigma!r}")
         self._extent_override = float(extent_sigma)
         self._extent_dirty = True
 
@@ -810,53 +893,11 @@ class PicSolver:
         gamma = beam.ref.gamma
         coords_rest = boost_to_rest_frame(coords_lab, gamma)
 
-        # 3. Grid setup
-        self._setup_grid(coords_rest)
-
-        # 4. Macro-particle charges.  Q = I / f_bunch per the TW manual
-        # ("FREQ command changes the R.F. frequency of the following
-        # structure, the beam frequency is not affected") and the partran
-        # SC DLL signature ("freq : beam frequency (Hz)").  After the
-        # FREQ-jump dphi rescale fix, this convention beats the prior
-        # cavity-freq choice on the MEBT+HWR+SSR1+SSR2 lattice: combined
-        # |σ LG/TW − 1|_avg drops from 0.053 → 0.037, σ_y oscillation std
-        # collapses 4× (0.057 → 0.014).  Residual ~3-4 % LG bias at SSR2
-        # is the kernel calibration offset (separate concern, see
-        # project_lg_pic_kernel_calibration_offset.md).
-        n_alive = beam.n_alive
-        from linac_gen.pic.macrocharge import macro_charge_for
-        macro_charge = macro_charge_for(beam)   # shared convention
-        if self._deposit_weights is None:
-            charges = np.full(n_alive, macro_charge)
-        else:
-            # Bunch-train image factors / neighbour snapshots (multibunch
-            # M5) — the only per-particle-charge consumer; every other
-            # path stays on the scalar convention above.
-            from linac_gen.pic.macrocharge import macro_charges_weighted
-            if len(self._deposit_weights) != n_alive:
-                raise ValueError(
-                    f"_deposit_weights length {len(self._deposit_weights)}"
-                    f" != n_alive {n_alive} — the train image machinery "
-                    "must build weights for exactly the alive stack")
-            charges = macro_charges_weighted(beam, self._deposit_weights)
-
-        # 5. Charge deposition (CIC or TSC, selected by config)
-        deposit_fn, interpolate_fn = _select_kernel(
-            getattr(self.config, "kernel", "cic")
-        )
-        rho = deposit_fn(
-            coords_rest, charges,
-            self._grid_min, self._grid_max, self._n_grid,
-        )
-
-        # 6. Poisson solve in rest frame
-        Ex_rest, Ey_rest, Ez_rest = self._solver.solve(rho)
-
-        # 7. Interpolate E-field to particles (matching shape function)
-        E_at_particles = interpolate_fn(
-            Ex_rest, Ey_rest, Ez_rest,
-            coords_rest, self._grid_min, self._grid_max, self._n_grid,
-        )  # (N_alive, 3) in solver units
+        # 3.-7. Rest-frame field at every alive particle, in solver units
+        # (grid set-up, charges, deposit, Poisson solve, gather).  A stage
+        # of its own so solver variants can change how the field is
+        # obtained while the kick below stays the same.
+        E_at_particles = self._rest_frame_field(coords_rest, beam)
 
         # 8. Apply kicks
         ds_m = ds * 1e-3  # mm -> m
@@ -921,6 +962,81 @@ class PicSolver:
         beam.particles[alive_indices, 5] += factor_z * E_si[:, 2]  # dW
 
     # ------------------------------------------------------------------
+    def _rest_frame_field(self, coords_rest: np.ndarray, beam) -> np.ndarray:
+        """Steps 3-7 of :meth:`kick`: grid set-up, macro-particle charges,
+        charge deposition, Poisson solve and gather.
+
+        Returns the rest-frame field at every alive particle, shape
+        ``(N_alive, 3)``, in solver units (V/m divided by 1e6, see the unit
+        note in :meth:`kick`).
+        """
+        # 3. Grid setup
+        self._setup_grid(coords_rest)
+
+        # 4. Macro-particle charges
+        charges = self._macro_charges(beam)
+
+        # 5. Charge deposition (CIC or TSC, selected by config)
+        deposit_fn, interpolate_fn = _select_kernel(
+            getattr(self.config, "kernel", "cic")
+        )
+        rho = deposit_fn(
+            coords_rest, charges,
+            self._grid_min, self._grid_max, self._n_grid,
+        )
+
+        # 6. Poisson solve in rest frame
+        Ex_rest, Ey_rest, Ez_rest = self._solver.solve(rho)
+
+        # 7. Interpolate E-field to particles (matching shape function)
+        return interpolate_fn(
+            Ex_rest, Ey_rest, Ez_rest,
+            coords_rest, self._grid_min, self._grid_max, self._n_grid,
+        )  # (N_alive, 3) in solver units
+
+    # ------------------------------------------------------------------
+    def stats(self) -> dict:
+        """Counters for the results provenance: Green's-function builds on
+        the bunch grid and, when bunch-train images were engaged, on the
+        3x-long companion grid."""
+        out = {"green_builds": int(getattr(self._solver, "n_green_builds",
+                                           0))}
+        if self._train_solver is not None:
+            out["train_green_builds"] = int(getattr(
+                self._train_solver._solver, "n_green_builds", 0))
+        return out
+
+    # ------------------------------------------------------------------
+    def _macro_charges(self, beam) -> np.ndarray:
+        """Charge of every alive macro-particle [C].
+
+        Q = I / f_bunch per the TW manual ("FREQ command changes the R.F.
+        frequency of the following structure, the beam frequency is not
+        affected") and the partran SC DLL signature ("freq : beam
+        frequency (Hz)").  After the FREQ-jump dphi rescale fix, this
+        convention beats the prior cavity-freq choice on the
+        MEBT+HWR+SSR1+SSR2 lattice: combined |σ LG/TW − 1|_avg drops from
+        0.053 → 0.037, σ_y oscillation std collapses 4× (0.057 → 0.014).
+        Residual ~3-4 % LG bias at SSR2 is the kernel calibration offset
+        (separate concern, see project_lg_pic_kernel_calibration_offset.md).
+        """
+        n_alive = beam.n_alive
+        from linac_gen.pic.macrocharge import macro_charge_for
+        macro_charge = macro_charge_for(beam)   # shared convention
+        if self._deposit_weights is None:
+            return np.full(n_alive, macro_charge)
+        # Bunch-train image factors / neighbour snapshots (multibunch
+        # M5) — the only per-particle-charge consumer; every other
+        # path stays on the scalar convention above.
+        from linac_gen.pic.macrocharge import macro_charges_weighted
+        if len(self._deposit_weights) != n_alive:
+            raise ValueError(
+                f"_deposit_weights length {len(self._deposit_weights)}"
+                f" != n_alive {n_alive} — the train image machinery "
+                "must build weights for exactly the alive stack")
+        return macro_charges_weighted(beam, self._deposit_weights)
+
+    # ------------------------------------------------------------------
     def _setup_grid(self, coords_rest: np.ndarray) -> None:
         """Set up or reuse the PIC grid.
 
@@ -953,6 +1069,7 @@ class PicSolver:
                 self._grid_min, self._grid_max, self._n_grid,
                 use_gpu=getattr(self.config, "use_gpu", "auto"),
                 green_kind=getattr(self.config, "green_kind", "igf"),
+                green_build=getattr(self.config, "green_build", "exact"),
             )
         else:
             # Adaptive: reuse existing solver instance, just retarget the grid.

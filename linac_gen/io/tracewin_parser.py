@@ -596,13 +596,16 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
             m = _HELIX_SC_GRID.match(raw_line)
             if m:
                 from linac_gen.elements.sc_grid import ScGridDirective
+                from linac_gen.core.config import (MAX_GRID_EXTENT_SIGMA,
+                                                   valid_grid_extent)
                 extent = float(m.group(1))
-                if extent > 0.0:
+                if valid_grid_extent(extent):
                     lattice.add(ScGridDirective(
                         next_name("SCGRID"), extent_sigma=extent))
                 else:
                     msg = (f"Line {line_num}: HELIX_SC_GRID extent must be "
-                           f"> 0 sigma, got {extent:g} — card IGNORED.")
+                           f"a finite value in (0, {MAX_GRID_EXTENT_SIGMA:g}]"
+                           f" sigma, got {extent:g} — card IGNORED.")
                     _downgrade(msg)
                     lattice.add(Marker(next_name("SCGRID"), snapshot=False))
                 continue

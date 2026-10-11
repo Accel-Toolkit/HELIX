@@ -124,6 +124,19 @@ def _matched_beam(grad: float) -> dict:
     }
 
 
+#: The space-charge settings these projects have always run (96^3 grid,
+#: +-5 sigma, fixed CIC grid), stored explicitly as
+#: ``scripts/sc_method_migrate.py --pin`` writes them, so a change of
+#: HELIX's default space-charge method leaves the projects as they are.
+_SPACE_CHARGE = {
+    "sc_method": "custom", "grid_nx": 96, "grid_extent_sigma": 5.0,
+    "backend": "auto", "grid_mode": "fixed", "kernel": "cic",
+    "green_kind": "igf", "dc_kernel": "uniform", "csr_enabled": False,
+    "sc_backend": "numpy", "grid_card": "apply", "green_build": "exact",
+    "reuse_every": 1,
+}
+
+
 def main() -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -146,6 +159,7 @@ def main() -> None:
                 "__version__": 1,
                 "lattice_path": f"{name}.dat",
                 "beam": _matched_beam(grad),
+                "convergence": dict(_SPACE_CHARGE),
             }
             with open(HERE / f"{name}.lgproj", "w") as fh:
                 json.dump(proj, fh, indent=2)

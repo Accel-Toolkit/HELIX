@@ -35,6 +35,10 @@ sim = Simulation(lattice, beam, space_charge=sc)
 results = sim.run()
 ```
 
+A whole combination of these settings can be chosen by name -- e.g.
+`SpaceChargeConfig(method="tsc_adaptive")` or `--sc-method tsc_adaptive`
+on the command line; see [Space-charge methods](08_methods.md).
+
 Reasonable defaults:
 
 * Grid: the default is `nx=ny=nz=96` (1% σ convergence at 5 mA);
@@ -52,6 +56,10 @@ Further `SpaceChargeConfig` knobs:
 | `solver` | `"fft"` | `fft` | Poisson solver flavour (only FFT is implemented) |
 | `shape_order` | `1` | `1` | deprecated no-op — deposition order is chosen by `kernel` (`cic`/`tsc`); any value ≠ 1 warns |
 | `grid_mode` | `"fixed"` | `fixed` \| `adaptive` | `fixed` = grid frozen after the **first** kick; `adaptive` = grid re-sized to ±`grid_extent`·σ on **every** kick |
+| `method` | `None` | a [method](08_methods.md) name, `custom`, `default` | names a whole combination of settings; after construction it names the method the settings match |
+| `green_build` | `"exact"` | `exact` \| `symmetric` | how the integrated Green's function is built: every vertex, or one octant mirrored (equal to rounding, about 5× faster; matters on adaptive grids) |
+| `grid_card` | `"apply"` | `apply` \| `ignore` \| `auto` | what a `HELIX_SC_GRID` card does; `auto` ignores it on an adaptive grid |
+| `reuse_every` | `1` | integer ≥ 1 | adaptive numpy grid only: solve the field every K-th kick and rescale it in between (see [Space-charge methods](08_methods.md#field-solved-every-k-th-kick-reuse_every)) |
 
 ## The 8-step PIC cycle
 
@@ -191,12 +199,30 @@ overhead dominate; lattices with proportionally more PIC kicks
   `interpolate_tsc`, grid → particle.
 * `linac_gen._pic_kernels` (C++/pybind11) — fast CIC
   deposit/interpolate paths.
+* `linac_gen._tsc_kernels` (C++/pybind11) — TSC deposit/interpolate,
+  bit-identical to the Python TSC functions.
 
-The C++ kernel is built automatically by pip during install.  If the
-extension is not importable, HELIX logs a warning and falls back to
-the pure-Python CIC in `charge_deposition.py` /
-`field_interpolation.py` (numerically equivalent, slower).  TSC has
-no C++ kernel and always runs the Python path.
+The C++ kernels are built automatically by pip during install.  If
+`_pic_kernels` is not importable, HELIX logs a warning and falls back
+to the pure-Python CIC in `charge_deposition.py` /
+`field_interpolation.py` (numerically equivalent, slower).  If
+`_tsc_kernels` is missing, HELIX logs one line and runs the Python
+TSC, with identical results; `LINAC_GEN_TSC_KERNEL=0` forces that path.
+Calls outside the compiled TSC kernel's proven envelope (an empty beam,
+fewer than 3 nodes per axis, non-finite coordinates or bounds, zero
+spacing, inputs that are not float64) always run the Python TSC.
+
+`PoissonSolverFFT` builds the IGF from the antiderivative at the shared
+cell vertices (see [Kernels](03_kernels.md#build-cost)).  In adaptive
+mode, `update_grid` rebuilds it only when the cell spacing changes.
+The differentiable torch kick (`linac_gen.pic.torch.sc_kick`) uses the
+same vertex build when no gradient flows through the grid spacing.  For
+plain tensors it also reuses the solver of an identical grid from a
+small cache (at most 4 grids and 128 MiB); under any gradient, a
+`torch.func` transform, tracing or compilation it builds a fresh solver,
+and `TorchPicSolver.free_memory()` empties the cache.  With a gradient
+through the spacing it builds the original per-corner graph, so
+gradients are unchanged.
 
 ## Cross-references
 

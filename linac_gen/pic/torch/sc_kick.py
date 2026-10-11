@@ -10,6 +10,9 @@ CIC/TSC deposit -> IGF FFT Poisson solve -> gather -> momentum kick.
 """
 from __future__ import annotations
 
+import threading
+from collections import OrderedDict
+
 import torch
 
 from linac_gen.pic.torch.deposition import deposit_cic_torch, deposit_tsc_torch
@@ -19,6 +22,79 @@ from linac_gen.pic.torch.interpolation import (
 from linac_gen.pic.torch.poisson import TorchPoissonSolverFFT
 
 __all__ = ["torch_pic_sc_kick"]
+
+# Solvers whose Green's function was built for a given grid spacing.  Used
+# only for plain tensors (see _cacheable): TorchPoissonSolverFFT.solve()
+# reads nothing but (n_grid, dx) and the Green's function and keeps no
+# per-call state, so a solver built for the same exact spacing returns the
+# same fields.  Bounded by entry count and by the bytes its Green's
+# functions hold; keyed on the device the spacing actually lives on;
+# inference-mode tensors are kept apart from normal ones.
+# clear_solver_cache() (also TorchPicSolver.free_memory()) empties it.
+_SOLVER_CACHE: "OrderedDict[tuple, tuple[TorchPoissonSolverFFT, int]]" = OrderedDict()
+_SOLVER_CACHE_MAX = 4
+_SOLVER_CACHE_MAX_BYTES = 128 * 2**20
+_SOLVER_LOCK = threading.Lock()
+
+
+def clear_solver_cache() -> None:
+    """Drop every cached solver and the Green's-function memory it holds."""
+    with _SOLVER_LOCK:
+        _SOLVER_CACHE.clear()
+
+
+def _cacheable(grid_min, grid_max) -> bool:
+    """True only for plain tensors: no reverse- or forward-mode gradient,
+    not wrapped by a torch.func transform, not being traced or compiled.
+    In any of those a reused solver would carry the wrong (or no) tangent,
+    or be frozen into the graph as a constant."""
+    if torch.is_grad_enabled() and (grid_min.requires_grad
+                                    or grid_max.requires_grad):
+        return False
+    if torch.jit.is_tracing():
+        return False
+    compiling = getattr(getattr(torch, "compiler", None), "is_compiling", None)
+    if compiling is not None and compiling():
+        return False
+    from torch.autograd import forward_ad
+    if any(forward_ad.unpack_dual(g).tangent is not None
+           for g in (grid_min, grid_max)):
+        return False
+    wrapped = getattr(getattr(torch._C, "_functorch", None),
+                      "is_functorch_wrapped_tensor", None)
+    if wrapped is None:                 # cannot tell: build fresh, as before
+        return False
+    return not (wrapped(grid_min) or wrapped(grid_max))
+
+
+def _solver_for(grid_min, grid_max, n_grid, green_kind, dtype, device):
+    if not _cacheable(grid_min, grid_max):
+        return TorchPoissonSolverFFT(grid_min, grid_max, n_grid,
+                                     green_kind=green_kind, dtype=dtype,
+                                     device=device)
+    n = tuple(int(v) for v in n_grid)
+    n_t = torch.tensor([float(v) for v in n], dtype=dtype, device=device)
+    dx = (grid_max - grid_min) / (n_t - 1.0)        # the solver's expression
+    key = (n, tuple(dx.tolist()), green_kind, str(dtype), str(dx.device),
+           torch.is_inference_mode_enabled())
+    with _SOLVER_LOCK:
+        hit = _SOLVER_CACHE.get(key)
+        if hit is not None:
+            _SOLVER_CACHE.move_to_end(key)
+            return hit[0]
+    solver = TorchPoissonSolverFFT(grid_min, grid_max, n_grid,
+                                   green_kind=green_kind, dtype=dtype,
+                                   device=device)
+    nbytes = solver._G_fft.numel() * solver._G_fft.element_size()
+    if nbytes <= _SOLVER_CACHE_MAX_BYTES:
+        with _SOLVER_LOCK:
+            _SOLVER_CACHE[key] = (solver, nbytes)
+            total = sum(b for _, b in _SOLVER_CACHE.values())
+            while (len(_SOLVER_CACHE) > _SOLVER_CACHE_MAX
+                   or total > _SOLVER_CACHE_MAX_BYTES):
+                _, (_, b) = _SOLVER_CACHE.popitem(last=False)
+                total -= b
+    return solver
 
 
 def torch_pic_sc_kick(particles, cfg, *, ds_mm, gamma, beta, mass_mev,
@@ -85,9 +161,7 @@ def torch_pic_sc_kick(particles, cfg, *, ds_mm, gamma, beta, mass_mev,
     charges = torch.ones(n, dtype=dtype, device=device) * macro_charge
     rho = deposit_fn(coords, charges, grid_min, grid_max, n_grid,
                      dtype=dtype, device=device)
-    solver = TorchPoissonSolverFFT(grid_min, grid_max, n_grid,
-                                   green_kind=green_kind, dtype=dtype,
-                                   device=device)
+    solver = _solver_for(grid_min, grid_max, n_grid, green_kind, dtype, device)
     ex, ey, ez = solver.solve(rho)
     e = interpolate_fn(ex, ey, ez, coords, grid_min, grid_max, n_grid,
                        dtype=dtype, device=device)               # (N, 3)

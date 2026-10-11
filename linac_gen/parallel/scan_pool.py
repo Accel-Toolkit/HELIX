@@ -33,6 +33,18 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterable, Optional
 
 
+def worker_sc_config(point: "ScanPoint"):
+    """The SpaceChargeConfig a worker builds for ``point``: grid size (also
+    used for ny and nz), extent and backend from the point's fields, with
+    ``point.sc_overrides`` winning over them (an override of nx, ny, nz,
+    grid_extent or use_gpu used to raise a duplicate-keyword TypeError)."""
+    from linac_gen.core.config import SpaceChargeConfig
+    kw = dict(nx=int(point.nx), ny=int(point.nx), nz=int(point.nx),
+              grid_extent=float(point.grid_extent), use_gpu=point.use_gpu)
+    kw.update(dict(point.sc_overrides))
+    return SpaceChargeConfig(**kw)
+
+
 @dataclass(frozen=True)
 class ScanPoint:
     """One independent scan row.
@@ -208,7 +220,7 @@ def _run_one_point_worker(point: ScanPoint) -> dict:
 
     t0 = time.time()
     try:
-        from linac_gen.core.config import BeamConfig, SpaceChargeConfig
+        from linac_gen.core.config import BeamConfig
         from linac_gen.core.step_config import StepConfig
         from linac_gen.core.simulation import Simulation
         from linac_gen.distributions.factory import create_beam
@@ -241,12 +253,7 @@ def _run_one_point_worker(point: ScanPoint) -> dict:
                                    env_solver=point.env_solver)
         else:
             if cfg.current > 0:
-                sc = SpaceChargeConfig(
-                    nx=int(point.nx), ny=int(point.nx), nz=int(point.nx),
-                    grid_extent=float(point.grid_extent),
-                    use_gpu=point.use_gpu,
-                    **dict(point.sc_overrides),
-                )
+                sc = worker_sc_config(point)
             res = Simulation(
                 lattice, beam, space_charge=sc,
                 snapshot_elements=(list(point.snapshot_elements)

@@ -334,13 +334,22 @@ class StudyTab(QWidget):
         if cfg is not None:
             beam = {k: v for k, v in dataclasses.asdict(cfg).items()
                     if v is not None}
-        numerics = {}
+        numerics, sc_over = {}, {}
         if self.sc_config_provider is not None and cfg is not None:
             try:
-                sc = self.sc_config_provider(getattr(cfg, "current", 0.0))
+                sc = self.sc_config_provider(
+                    getattr(cfg, "current", 0.0),
+                    continuous=bool(getattr(cfg, "continuous", False)))
                 if sc is not None:
                     numerics = {"nx": sc.nx,
                                 "grid_extent": sc.grid_extent}
+                    # every other setting of the tab, so the study runs
+                    # the space charge shown there
+                    sc_over = {f.name: getattr(sc, f.name)
+                               for f in dataclasses.fields(sc)
+                               if f.name not in ("nx", "ny", "nz",
+                                                 "grid_extent", "method")
+                               and getattr(sc, f.name) is not None}
             except Exception:                           # noqa: BLE001
                 pass
         return StudySpec(
@@ -352,7 +361,7 @@ class StudyTab(QWidget):
             seed=int(self._seed.value()),
             repeats=int(self._repeats.value()),
             n_samples=int(self._nsamples.value()),
-            beam=beam, numerics=numerics)
+            beam=beam, numerics=numerics, sc=sc_over)
 
     def _refresh_run_count(self, *_a) -> None:
         try:

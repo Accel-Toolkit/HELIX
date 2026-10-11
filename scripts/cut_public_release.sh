@@ -100,6 +100,7 @@ rm -f  docs/manual/11_examples/04_lebt_rfq.md \
        docs/manual/11_examples/05_pipii_mebt.md \
        docs/manual/11_examples/06_pipii_full.md \
        docs/manual/12_validation/02_pipii_validation.md \
+       docs/manual/12_validation/05_pipii_sc_methods.md \
        docs/manual/15_multibunch/02_pipii_pulse.md \
        docs/manual/_build/figures/fig_15_01_pip2_pulse_droop.png
 
@@ -113,12 +114,14 @@ for line in ("      - LEBT + RFQ: 11_examples/04_lebt_rfq.md\n",
              "      - PIP-II MEBT: 11_examples/05_pipii_mebt.md\n",
              "      - Full PIP-II: 11_examples/06_pipii_full.md\n",
              "      - PIP-II validation: 12_validation/02_pipii_validation.md\n",
+             "      - Space-charge methods on the PIP-II MEBT: 12_validation/05_pipii_sc_methods.md\n",
              "      - PIP-II pulse walkthrough: 15_multibunch/02_pipii_pulse.md\n"):
     s = s.replace(line, "")
 open("docs/mkdocs.yml", "w").write(s)
 
 targets = ("05_pipii_mebt.md", "04_lebt_rfq.md",
-           "02_pipii_validation.md", "06_pipii_full.md")
+           "02_pipii_validation.md", "06_pipii_full.md",
+           "05_pipii_sc_methods.md")
 for root, _, files in os.walk("docs/manual"):
     for f in files:
         if not f.endswith(".md"):
@@ -132,6 +135,9 @@ for root, _, files in os.walk("docs/manual"):
                        + re.escape(tgt) + r"\)", r"\1", t)
         # drop navigation stubs that pointed at removed pages
         t = re.sub(r"^\* \[PIP-II validation\][^\n]*\n", "", t, flags=re.M)
+        # the methods page's pointer to the PIP-II measurement page
+        t = re.sub(r"^Measured on the PIP-II MEBT:[^\n]*\n\n?", "", t,
+                   flags=re.M)
         t = re.sub(r"← \[Full PIP-II\][^\n]*\n?", "", t)
         t = re.sub(r"\[Continue to PIP-II[^\]]*\][^\n]*", "", t)
         # multibunch page: drop the whole worked-example pointer section

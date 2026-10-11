@@ -344,8 +344,14 @@ options, the same progress bar, results into the same tabs.  (The
 `run_envelope` / `run_mp` tools still exist for headless/CLI use and for
 one-off setting overrides — `run_mp` records the
 [halo action scan](../09_diagnostics/03_halo.md#action-scan) when asked
-(`action_scan`) — but in the GUI `run_in_gui` is preferred so your
-on-screen settings are honoured.)
+(`action_scan`) — but in the GUI `run_in_gui` is preferred so every
+on-screen setting is honoured.)  In the GUI, `run_mp`, `run_train` and
+`parameter_scan` (mp points) use the Numerics tab's space-charge
+settings; their `sc_method` argument names a
+[space-charge method](../05_space_charge/08_methods.md) instead (its
+defaults, with the tab's DC kernel, CSR and FFT device), and every
+result says which space charge ran.  Without the GUI they use the named
+method, else a 32³, ±5σ fixed CIC grid.
 
 **Physicist tools.**  `parameter_scan` sweeps one element parameter over
 N points (envelope per point, background job, cancellable) and returns a

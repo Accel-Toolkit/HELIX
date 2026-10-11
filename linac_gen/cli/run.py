@@ -50,6 +50,10 @@ def add_arguments(p) -> None:
                         "between its sub-steps (losses located analytically); "
                         "default on, project value or off")
     p.add_argument("--kernel", help="PIC deposit kernel (cic / tsc)")
+    p.add_argument("--sc-method", dest="sc_method", metavar="NAME",
+                   action=common.ScMethodAction,
+                   help="named space-charge method (mp), e.g. tsc_adaptive; "
+                        "'list' prints them")
     p.add_argument("--backend", help="compute backend (auto / cpu / gpu)")
     p.add_argument("--fieldmap-sampling", choices=("kernel", "scipy"),
                    default=None, dest="fieldmap_sampling",
@@ -94,6 +98,7 @@ def _cli_overrides(args) -> dict:
         "drift_single_push": (None if args.drift_single_push is None
                               else args.drift_single_push == "on"),
         "kernel": args.kernel, "backend": args.backend,
+        "sc_method": args.sc_method,
         "fieldmap_sampling": args.fieldmap_sampling,
         "sc": common.parse_assignments(args.sc),
     }
@@ -115,6 +120,7 @@ def run(args) -> int:
             sel, val = item.split("=", 1)
             common.apply_element_override(lattice, sel.strip(), val.strip())
         cli = _cli_overrides(args)
+        common.check_sc_choice(cli, conv)
         common.apply_fieldmap_settings(conv, cli)
     except (ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)

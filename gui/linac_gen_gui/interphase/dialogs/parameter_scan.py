@@ -317,17 +317,23 @@ class _ScanWorker(QThread):
         from linac_gen.distributions.factory import create_beam
 
         beam = create_beam(cfg, seed=42)
-        nx = int(self.convergence.get("nx", 48))
-        ext = float(self.convergence.get("grid_extent", 5.0))
-        backend = str(self.convergence.get("backend", "auto"))
-        green_kind = str(self.convergence.get("green_kind", "igf"))
-        kernel = str(self.convergence.get("kernel", "cic"))
-        dc_kernel = str(self.convergence.get("dc_kernel", "uniform"))
-        sc = (SpaceChargeConfig(nx=nx, ny=nx, nz=nx, grid_extent=ext,
-                                use_gpu=backend,
-                                green_kind=green_kind, kernel=kernel,
-                                dc_kernel=dc_kernel)
-              if cfg.current > 0 else None)
+        base = self.convergence.get("sc_config")
+        if base is not None:
+            # the Numerics tab's full configuration (grid mode, engine,
+            # CSR, method included)
+            sc = base if cfg.current > 0 else None
+        else:
+            nx = int(self.convergence.get("nx", 48))
+            ext = float(self.convergence.get("grid_extent", 5.0))
+            backend = str(self.convergence.get("backend", "auto"))
+            green_kind = str(self.convergence.get("green_kind", "igf"))
+            kernel = str(self.convergence.get("kernel", "cic"))
+            dc_kernel = str(self.convergence.get("dc_kernel", "uniform"))
+            sc = (SpaceChargeConfig(nx=nx, ny=nx, nz=nx, grid_extent=ext,
+                                    use_gpu=backend,
+                                    green_kind=green_kind, kernel=kernel,
+                                    dc_kernel=dc_kernel)
+                  if cfg.current > 0 else None)
         sim = Simulation(lat, beam, space_charge=sc, record_substeps=False)
         res = sim.run()
         # Same rule as the envelope branch: the recorder's ref_frequency
@@ -494,6 +500,11 @@ class ParameterScanDialog(QDialog):
                 "step1":           float(ct._fixed_step1.value()),
                 "step2":           float(ct._fixed_step2.value()),
                 "drift_single_push": bool(ct._drift_single_push.isChecked()),
+                # the tab's full space-charge configuration
+                "sc_config": ct.current_sc_config(
+                    1.0, continuous=bool(getattr(
+                        getattr(self._state, "beam_config", None),
+                        "continuous", False))),
             }
         except Exception:
             return {}

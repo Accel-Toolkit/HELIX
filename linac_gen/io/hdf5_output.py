@@ -35,7 +35,8 @@ def _hash_file(path) -> str | None:
 
 
 def _write_provenance(f, lattice_path=None, seed=None, sc_config=None,
-                      lattice=None, input_beam_path=None):
+                      lattice=None, input_beam_path=None, grid_cards=None,
+                      solver_stats=None):
     """``provenance/`` attr group: everything needed to say WHICH code,
     WHICH machine description and WHICH numerical configuration produced
     this file.  A results file without these cannot reproduce its run
@@ -75,6 +76,18 @@ def _write_provenance(f, lattice_path=None, seed=None, sc_config=None,
         prov.attrs["omp_dynamic"] = os.environ.get("OMP_DYNAMIC", "unset")
     except Exception:                                       # noqa: BLE001
         pass
+    # The thread count actually in force.  HELIX's compiled kernels share
+    # torch's OpenMP runtime (pic_solver imports torch first), so this is
+    # the team the CIC deposit splits particles over -- and a
+    # torch.set_num_threads() call anywhere in the process changes it,
+    # whatever OMP_NUM_THREADS said at start-up.
+    try:
+        import sys as _sys
+        _torch = _sys.modules.get("torch")
+        if _torch is not None:
+            prov.attrs["omp_threads_in_force"] = int(_torch.get_num_threads())
+    except Exception:                                       # noqa: BLE001
+        pass
     # Which deposit/gather implementation actually ran (C++ OpenMP
     # kernels vs the pure-Python fallback) — the two are numerically
     # equivalent but not bit-identical, so a reproduction needs to know.
@@ -82,19 +95,44 @@ def _write_provenance(f, lattice_path=None, seed=None, sc_config=None,
         from linac_gen.pic import pic_solver as _ps
         prov.attrs["sc_cpp_kernels"] = bool(getattr(_ps, "_USE_CPP",
                                                     False))
+        # TSC twin (bit-identical to the Python TSC by contract; recorded
+        # so a reproduction knows which implementation ran)
+        prov.attrs["sc_tsc_cpp_kernel"] = bool(getattr(_ps, "_USE_CPP_TSC",
+                                                       False))
     except Exception:                                       # noqa: BLE001
         pass
     if sc_config is not None and not isinstance(sc_config, str):
-        for key in ("sc_backend", "use_gpu", "grid_mode", "nx", "ny",
-                    "nz", "grid_extent", "kernel", "green_kind",
-                    "shape_order", "dc_kernel", "boundary",
-                    "csr_enabled", "csr_bins", "csr_model"):
+        import dataclasses as _dc
+        import json as _json
+        # Every field of the config, so a new setting is recorded without
+        # touching this writer.  Unset (None) fields are skipped; dicts are
+        # stored as JSON text.
+        keys = ([f.name for f in _dc.fields(sc_config)]
+                if _dc.is_dataclass(sc_config) else
+                ["sc_backend", "use_gpu", "grid_mode", "nx", "ny", "nz",
+                 "grid_extent", "kernel", "green_kind", "shape_order",
+                 "dc_kernel", "boundary", "csr_enabled", "csr_bins",
+                 "csr_model"])
+        for key in keys:
             val = getattr(sc_config, key, None)
-            if val is not None:
+            if key == "method":
+                # the name matching the settings that ran (a field may have
+                # been changed after the config was built)
                 try:
-                    prov.attrs[f"sc_{key}"] = val
-                except TypeError:
-                    pass                    # h5py-unencodable — skip
+                    from linac_gen.pic import methods as _methods
+                    val = _methods.effective_method(sc_config)
+                    prov.attrs["sc_method_registry"] = int(
+                        _methods.REGISTRY_VERSION)
+                except Exception:                           # noqa: BLE001
+                    pass
+            if val is None:
+                continue
+            if isinstance(val, dict):
+                val = _json.dumps(val, sort_keys=True, default=str)
+            try:
+                prov.attrs[f"sc_{key}"] = val
+            except TypeError:
+                pass                        # h5py-unencodable — skip
         try:
             from linac_gen.pic.gpu_backend import (effective_backend_info,
                                                    select_backend)
@@ -112,6 +150,17 @@ def _write_provenance(f, lattice_path=None, seed=None, sc_config=None,
                 prov.attrs[f"backend_{key}"] = val
         except Exception:                                   # noqa: BLE001
             pass
+    if grid_cards:
+        # every HELIX_SC_GRID card the run reached and what it did
+        # (applied / ignored / inert), as JSON
+        import json as _json
+        prov.attrs["sc_grid_cards"] = _json.dumps(list(grid_cards),
+                                                  default=str)
+    if solver_stats:
+        # Green's-function builds and solved / reused kicks, as JSON
+        import json as _json
+        prov.attrs["sc_solver_stats"] = _json.dumps(dict(solver_stats),
+                                                    default=str)
 
     # ---- referenced-input hashes & run configuration (2026-07) --------
     # lattice_sha256 covers the .dat text only, not the files it points
@@ -594,11 +643,21 @@ def save_results_hdf5(recorder, filepath: str, beam_config=None,
     sc_config : SpaceChargeConfig or None
         Stored as ``sc_*`` attrs plus the EFFECTIVE backend resolution
         (including any ``LINAC_GEN_USE_GPU`` environment override).
+        When omitted, the config the run attached to ``recorder``
+        (``recorder.sc_config``, set by ``Simulation``) is used.  The
+        ``HELIX_SC_GRID`` cards the run reached (``recorder.sc_grid_cards``)
+        are stored as ``sc_grid_cards``.
     """
+    if sc_config is None:
+        sc_config = getattr(recorder, "sc_config", None)
     with h5py.File(filepath, "w") as f:
         _write_provenance(f, lattice_path=lattice_path, seed=seed,
                           sc_config=sc_config, lattice=lattice,
-                          input_beam_path=input_beam_path)
+                          input_beam_path=input_beam_path,
+                          grid_cards=getattr(recorder, "sc_grid_cards",
+                                             None),
+                          solver_stats=getattr(recorder, "sc_solver_stats",
+                                               None))
         # ── envelope ─────────────────────────────────────────────────────────
         env = f.create_group("envelope")
         env.create_dataset("s", data=np.array(recorder.s))

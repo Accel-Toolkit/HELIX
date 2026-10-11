@@ -637,18 +637,7 @@ class Tracker:
                 # HELIX_SC_GRID card: retarget the 3-D bunched PIC grid
                 # extent from here on (e.g. linac at the default, BTL at
                 # 20 sigma in one combined deck).
-                if self.pic_solver is not None and hasattr(
-                        self.pic_solver, "set_grid_extent"):
-                    self.pic_solver.set_grid_extent(element.extent_sigma)
-                elif not getattr(self, "_warned_sc_grid_inert", False):
-                    self._warned_sc_grid_inert = True
-                    import warnings
-                    warnings.warn(
-                        f"HELIX_SC_GRID {element.extent_sigma:g} at "
-                        f"'{element.name}' has NO effect: no 3-D bunched "
-                        "PIC solver is active in this run (the card does "
-                        "not apply to DC/continuous SC models or "
-                        "envelope runs).", stacklevel=2)
+                self._sc_grid_card(element)
 
         # Post-element transform: inverse rotation, then restore offset.
         if tilt_deg:
@@ -681,6 +670,54 @@ class Tracker:
         # phases, and SC-off runs are covered (they never reach the
         # kick hook below).
         self._fold_phase()
+
+    # ------------------------------------------------------------------
+    def _sc_grid_card(self, element) -> None:
+        """A ``HELIX_SC_GRID`` card: give its extent to the 3-D PIC solver,
+        or ignore it when the space-charge config says so (``grid_card``).
+        Every card reached is recorded in ``recorder.sc_grid_cards`` (a
+        tuple, so per-step series handling never touches it) for the
+        results provenance; one warning per run unless all were applied."""
+        from linac_gen.pic.methods import card_policy, effective_method
+        pic = self.pic_solver
+        cfg = getattr(pic, "config", None)
+        extent = float(element.extent_sigma)
+        if pic is None:
+            action = "inert: no 3-D bunched PIC solver"
+        elif card_policy(cfg) == "ignore":
+            action = "ignored"
+        elif hasattr(pic, "set_grid_extent"):
+            pic.set_grid_extent(extent)
+            action = "applied"
+        else:
+            action = "inert: solver has no grid-extent setting"
+        self.recorder.sc_grid_cards = tuple(
+            getattr(self.recorder, "sc_grid_cards", ())) + (
+            {"element": str(element.name), "s_mm": float(self.beam.ref.s),
+             "extent_sigma": extent, "action": action},)
+        if action == "applied" or getattr(self, "_warned_sc_grid", False):
+            return
+        self._warned_sc_grid = True
+        where = f"HELIX_SC_GRID {extent:g} at '{element.name}'"
+        if action == "ignored":
+            if getattr(cfg, "grid_card", None) == "ignore":
+                why = "the space-charge configuration sets grid_card='ignore'."
+            else:
+                why = (f"the space-charge method '{effective_method(cfg)}' "
+                       "resizes its grid to the beam at every kick, so a "
+                       "wider extent would only make the cells coarser.")
+            msg = f"{where} is ignored, as are any later ones: {why}"
+            if hasattr(pic, "set_grid_extent"):
+                msg += "  Set grid_card='apply' to honour the cards."
+        elif pic is None:
+            msg = (f"{where} has NO effect: no 3-D bunched PIC solver is "
+                   "active in this run (the card does not apply to "
+                   "DC/continuous SC models or envelope runs).")
+        else:
+            msg = (f"{where} has NO effect: the active space-charge solver "
+                   f"({type(pic).__name__}) takes its grid extent from its "
+                   "configuration only.")
+        warnings.warn(msg, stacklevel=3)
 
     # ------------------------------------------------------------------
     # Periodic phase coordinates (opt-in; see BeamConfig.periodic_phase)

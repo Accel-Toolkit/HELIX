@@ -68,6 +68,87 @@ def test_hdf5_provenance_full(recorder, tmp_path, deck):
         assert "backend_resolved_mode" in prov
 
 
+def test_hdf5_provenance_records_every_sc_field(recorder, tmp_path):
+    """Every SpaceChargeConfig field is recorded (dicts as JSON, unset
+    fields skipped), not just a hand-picked list."""
+    import dataclasses
+    import json
+
+    from linac_gen.io.hdf5_output import save_results_hdf5
+    sc = SpaceChargeConfig(nx=24, ny=24, nz=24, train_images=False,
+                           halo={"alpha": 0.5})
+    out = tmp_path / "r.h5"
+    save_results_hdf5(recorder, str(out), sc_config=sc)
+    with h5py.File(out, "r") as f:
+        prov = f["provenance"].attrs
+        for fld in dataclasses.fields(sc):
+            val = getattr(sc, fld.name)
+            key = f"sc_{fld.name}"
+            if val is None:
+                assert key not in prov
+            elif isinstance(val, dict):
+                assert json.loads(prov[key]) == val
+            else:
+                assert prov[key] == val, key
+        assert prov["sc_solver"] == "fft"
+        assert bool(prov["sc_train_images"]) is False
+
+
+def test_hdf5_provenance_names_the_method_that_ran(recorder, tmp_path):
+    """The recorded method name follows the settings, also when a field was
+    changed after the config was built."""
+    from linac_gen.io.hdf5_output import save_results_hdf5
+    from linac_gen.pic import methods
+    sc = SpaceChargeConfig(method="cic_fixed")
+    sc.kernel = "tsc"
+    out = tmp_path / "r.h5"
+    save_results_hdf5(recorder, str(out), sc_config=sc)
+    with h5py.File(out, "r") as f:
+        prov = f["provenance"].attrs
+        assert prov["sc_method"] == "tsc_fixed"
+        assert prov["sc_method_registry"] == methods.REGISTRY_VERSION
+
+
+def test_hdf5_provenance_records_threads_in_force(recorder, tmp_path):
+    """The CIC deposit is bit-reproducible only at a fixed thread count, and
+    torch.set_num_threads() changes that count for HELIX's kernels too (one
+    shared OpenMP runtime), so the count in force is recorded."""
+    import torch
+
+    from linac_gen.io.hdf5_output import save_results_hdf5
+    prev = torch.get_num_threads()
+    try:
+        torch.set_num_threads(max(1, prev - 1))
+        out = tmp_path / "r.h5"
+        save_results_hdf5(recorder, str(out))
+        with h5py.File(out, "r") as f:
+            assert f["provenance"].attrs["omp_threads_in_force"] == max(1, prev - 1)
+    finally:
+        torch.set_num_threads(prev)
+
+
+def test_hdf5_provenance_uses_the_runs_own_sc_config(tmp_path):
+    """A run with space charge attaches its config to its results, so a
+    writer that is not handed the config (the GUI auto-save) records it."""
+    from linac_gen.io.hdf5_output import save_results_hdf5
+    lat = Lattice()
+    lat.add(Drift("D1", length=50.0))
+    ref = ReferenceParticle(species=PROTON, w_kin=3.0, frequency=352.21)
+    beam = Beam(ref=ref, n_particles=400, current=1.0)
+    beam.particles[:] = np.random.default_rng(1).standard_normal((400, 6)) * \
+        [1.0, 1.0, 1.0, 1.0, 5.0, 0.01]
+    sc = SpaceChargeConfig(nx=16, ny=16, nz=16, grid_mode="adaptive",
+                           use_gpu="cpu")
+    rec = Simulation(lat, beam, space_charge=sc).run()
+    assert rec.sc_config is sc
+    out = tmp_path / "r.h5"
+    save_results_hdf5(rec, str(out))                 # config not passed
+    with h5py.File(out, "r") as f:
+        prov = f["provenance"].attrs
+        assert prov["sc_grid_mode"] == "adaptive"
+        assert prov["sc_nx"] == 16
+
+
 def test_hdf5_provenance_referenced_inputs(recorder, tmp_path, deck):
     """2026-07 completeness round: the provenance group hashes the
     files the lattice_sha256 does NOT cover — field-map data, the

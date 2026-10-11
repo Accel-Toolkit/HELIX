@@ -79,6 +79,7 @@ def run(args) -> int:
                     if (base / twini).is_file():
                         twini = str(base / twini)
                         break
+            sc_notes: list = []
             point = common.build_scan_point(
                 str(ipath),
                 beam_overrides=dict(job.get("beam", {})),
@@ -88,7 +89,10 @@ def run(args) -> int:
                 env_solver=str(job.get("env_solver", "matrix")),
                 seed=int(job.get("seed", 42)),
                 tracewin_ini=twini,
+                notes=sc_notes,
             )
+            for note in sc_notes:
+                print(f"note: job {i + 1} ({name}): {note}", file=sys.stderr)
         except (KeyError, ValueError) as exc:
             print(f"error: job {i + 1} ({job.get('name', '?')}): {exc}",
                   file=sys.stderr)

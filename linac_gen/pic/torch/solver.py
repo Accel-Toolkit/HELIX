@@ -37,6 +37,10 @@ class AdaptiveOnlyBackendWarning(UserWarning):
 class TorchPicSolver:
     """Differentiable-torch PIC space-charge backend (adaptive-grid only)."""
 
+    # Grid refitted to the live positions every kick: a kick with the
+    # opposite step at the same place undoes it exactly.
+    exact_backward = True
+
     def __init__(self, config):
         self.config = config
         # Multibunch M5 interface parity: the numpy PicSolver's opt-in
@@ -54,6 +58,12 @@ class TorchPicSolver:
                 "solver.  Set grid_mode='adaptive' to silence this "
                 "warning, or use the numpy backend for fixed grids.",
                 AdaptiveOnlyBackendWarning, stacklevel=3)
+            # what runs, for the results provenance (the caller's config
+            # object is left untouched)
+            import dataclasses
+            if dataclasses.is_dataclass(config):
+                self.config = dataclasses.replace(config,
+                                                  grid_mode="adaptive")
 
     def kick(self, beam, ds: float) -> None:
         """Apply one space-charge kick over step ``ds`` (mm); beam in-place."""
@@ -101,4 +111,7 @@ class TorchPicSolver:
         beam.particles[alive_idx] = kicked.detach().numpy()
 
     def free_memory(self) -> None:
-        """Interface parity with ``PicSolver`` — nothing to release."""
+        """Release the Green's functions the torch kick caches for repeated
+        grids (``linac_gen.pic.torch.sc_kick.clear_solver_cache``)."""
+        from linac_gen.pic.torch.sc_kick import clear_solver_cache
+        clear_solver_cache()

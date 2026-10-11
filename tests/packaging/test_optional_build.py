@@ -84,8 +84,8 @@ def test_real_build_produces_importable_kernels(tmp_path):
     check = subprocess.run(
         [sys.executable, "-c",
          "import torch\n"
-         "from linac_gen import _pic_kernels, _fieldmap_kernels\n"
-         "for m in (_pic_kernels, _fieldmap_kernels):\n"
+         "from linac_gen import _pic_kernels, _fieldmap_kernels, _tsc_kernels\n"
+         "for m in (_pic_kernels, _fieldmap_kernels, _tsc_kernels):\n"
          "    assert 'build' in m.__file__, m.__file__\n"
          "print('kernels-ok')"],
         cwd=root / "build", env=env,

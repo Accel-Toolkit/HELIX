@@ -225,6 +225,24 @@ def _make_context(state, calc_dir: str, nav=None):
 
             self._gui_sync(_do, box)
 
+        def session_sc_config(self, current, continuous=False):
+            """The Numerics tab's space-charge config, read on the GUI
+            thread (None at zero current or without the tab); raises
+            RuntimeError when the GUI does not answer."""
+            def _do():
+                app = (getattr(self._nav, "_app", None)
+                       if self._nav is not None else None)
+                tab = getattr(app, "convergence_tab", None)
+                cfg = (tab.current_sc_config(current, continuous=continuous)
+                       if tab is not None else None)
+                return {"ok": True, "cfg": cfg}
+            try:
+                return self._gui_sync(_do, {"cancelled": False})["cfg"]
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    "the GUI did not return the Numerics tab's settings "
+                    "(busy, closing, or an error in the tab)") from exc
+
         def _gui_sync(self, fn, box):
             if self._nav is None:        # tests / no panel: same thread
                 out = fn()

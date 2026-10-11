@@ -60,9 +60,42 @@ def build_integrated_greens_torch(n_grid, dx, *,
     Torch mirror of ``PoissonSolverFFT._build_integrated_greens``. ``n_grid``
     is the (nx, ny, nz) physical grid size; ``dx`` is the (3,) cell spacing
     (may carry ``requires_grad``). Returns a ``(2nx, 2ny, 2nz)`` tensor.
+
+    Without a gradient through ``dx`` the shared-vertex construction is used
+    (one antiderivative evaluation per cell vertex; bit-identical values,
+    several times faster).  When ``dx`` requires grad the per-corner graph
+    is kept, so gradients stay bit-identical as well: the shared-vertex
+    graph accumulates the same terms in a different order (equal only to
+    about 1e-14).
     """
-    nx, ny, nz = (int(n) for n in n_grid)
     dx = torch.as_tensor(dx, dtype=dtype, device=device)
+    if torch.is_grad_enabled() and dx.requires_grad:
+        return _igf_torch_corners(n_grid, dx, dtype=dtype, device=device)
+    return _igf_torch_vertex(n_grid, dx, dtype=dtype, device=device)
+
+
+def _igf_torch_vertex(n_grid, dx, *, dtype, device) -> torch.Tensor:
+    """Shared-vertex IGF: same doubles and term order as the per-corner form."""
+    nx, ny, nz = (int(n) for n in n_grid)
+    dxx, dyy, dzz = dx[0], dx[1], dx[2]
+    vx = (torch.arange(-nx, nx + 1, dtype=dtype, device=device) - 0.5) * dxx
+    vy = (torch.arange(-ny, ny + 1, dtype=dtype, device=device) - 0.5) * dyy
+    vz = (torch.arange(-nz, nz + 1, dtype=dtype, device=device) - 0.5) * dzz
+    # Broadcastable axes (same per-element operations as full meshes).
+    F = torch_antideriv_igf(vx[:, None, None], vy[None, :, None],
+                            vz[None, None, :])
+    G = (
+        F[1:, 1:, 1:] - F[:-1, 1:, 1:] - F[1:, :-1, 1:] - F[1:, 1:, :-1]
+        + F[:-1, :-1, 1:] + F[:-1, 1:, :-1] + F[1:, :-1, :-1] - F[:-1, :-1, :-1]
+    ) / (dxx * dyy * dzz)
+    # Natural displacement order (-n ... n-1) -> Hockney wrap.
+    G = torch.roll(G, shifts=(-nx, -ny, -nz), dims=(0, 1, 2))
+    return G * (1.0 / (4.0 * PI * EPSILON_0))
+
+
+def _igf_torch_corners(n_grid, dx, *, dtype, device) -> torch.Tensor:
+    """Per-corner IGF (the original construction), kept for the autograd path."""
+    nx, ny, nz = (int(n) for n in n_grid)
     dxx, dyy, dzz = dx[0], dx[1], dx[2]
 
     ii = _wrapped_index(nx, dtype, device)

@@ -11,6 +11,7 @@ deferred to call time so importing this module stays cheap.
 """
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 __all__ = [
@@ -281,38 +282,53 @@ def make_step_config(conv: dict, cli: dict):
                       drift_single_push=_as_bool(single))
 
 
+def check_sc_choice(cli: dict, conv: dict | None = None) -> None:
+    """Raise ``ValueError`` for an unknown method name on the command line
+    (``--sc-method`` or ``--sc method=``), two different names there, or an
+    unknown project ``sc_method``, so the run fails before any tracking."""
+    from linac_gen.pic import methods
+    methods.cli_method(cli or {})
+    methods.check_name((conv or {}).get("sc_method"))
+
+
+def print_sc_methods() -> None:
+    """Print the named space-charge methods (``--sc-method list``)."""
+    from linac_gen.pic import methods
+    print(methods.table())
+
+
+class ScMethodAction(argparse.Action):
+    """``--sc-method NAME``; ``--sc-method list`` prints the methods and
+    exits at once, so no input file or other required option is needed."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        if values == "list":
+            print_sc_methods()
+            parser.exit(0)
+        setattr(namespace, self.dest, values)
+
+
 def make_sc_config(cfg, conv: dict, cli: dict):
     """Build a ``SpaceChargeConfig`` (or ``None`` when ``cfg.current<=0``).
 
-    Resolution priority: CLI override > project ``convergence`` value >
-    ``SpaceChargeConfig`` default.  ``cli`` may carry ``nx`` /
-    ``grid_extent`` / ``kernel`` / ``backend`` and a nested ``sc`` dict
-    of generic ``name=value`` overrides.
+    Resolved by :func:`linac_gen.pic.methods.resolve_sc`: the method named
+    by ``cli["sc_method"]`` (or ``cli["sc"]["method"]``) or the project's
+    ``sc_method``; a project without ``sc_method`` resolves exactly as it
+    always did (CLI override > project ``convergence`` value > classic
+    value).  ``cli`` may carry ``nx`` / ``grid_extent`` / ``kernel`` /
+    ``backend`` and a nested ``sc`` dict of generic ``name=value``
+    overrides.
     """
     if cfg.current <= 0:
         return None
-    from linac_gen.core.config import SpaceChargeConfig
-    d = SpaceChargeConfig()
-    conv = conv or {}
-    nx = int(_first(cli.get("nx"), conv.get("grid_nx"), d.nx))
-    kw = dict(
-        nx=nx, ny=nx, nz=nx,
-        grid_extent=float(_first(cli.get("grid_extent"),
-                                 conv.get("grid_extent_sigma"),
-                                 d.grid_extent)),
-        kernel=str(_first(cli.get("kernel"), conv.get("kernel"), d.kernel)),
-        green_kind=str(conv.get("green_kind", d.green_kind)),
-        grid_mode=str(conv.get("grid_mode", d.grid_mode)),
-        dc_kernel=str(conv.get("dc_kernel", d.dc_kernel)),
-        use_gpu=str(_first(cli.get("backend"), conv.get("backend"),
-                           d.use_gpu)),
-        csr_enabled=bool(conv.get("csr_enabled", d.csr_enabled)),
-    )
-    for key, raw in (cli.get("sc") or {}).items():
-        if not hasattr(d, key):
-            raise ValueError(f"unknown space-charge parameter '{key}'")
-        kw[key] = coerce_like(getattr(d, key), str(raw))
-    return SpaceChargeConfig(**kw)
+    import sys
+
+    from linac_gen.pic import methods
+    notes: list = []
+    sc = methods.resolve_sc(conv or {}, cli or {}, notes=notes)
+    for note in notes:
+        print(f"note: {note}", file=sys.stderr)
+    return sc
 
 
 def apply_fieldmap_settings(conv: dict, cli: dict) -> None:
@@ -405,11 +421,14 @@ def run_envelope_sim(lattice, cfg, env_solver: str = "matrix"):
 
 
 def run_mp_sim(lattice, cfg, sc_config, step_config, *, seed: int = 42,
-               progress_callback=None, record_action_scan: bool = False):
+               progress_callback=None, record_action_scan: bool = False,
+               pic_setup_hook=None):
     """Run a multi-particle simulation.
 
     ``record_action_scan`` opts in to the per-step halo action scan
-    (``Simulation(record_action_scan=True)``).
+    (``Simulation(record_action_scan=True)``).  ``pic_setup_hook(solver)``
+    is called with the space-charge solver once it is built (the
+    ``Simulation`` hook), e.g. to instrument its kicks.
 
     Returns ``(recorder, beam)`` — after the run ``beam.particles`` holds
     the final distribution (used for ``.dst`` export)."""
@@ -419,7 +438,8 @@ def run_mp_sim(lattice, cfg, sc_config, step_config, *, seed: int = 42,
     beam = create_beam(cfg, seed=seed)
     sim = Simulation(lattice, beam, space_charge=sc_config,
                      progress_callback=progress_callback,
-                     record_action_scan=record_action_scan)
+                     record_action_scan=record_action_scan,
+                     pic_setup_hook=pic_setup_hook)
     recorder = sim.run()
     return recorder, beam
 
@@ -590,20 +610,22 @@ def result_summary(results) -> dict:
 def build_scan_point(input_path, *, beam_overrides=None, element_overrides=(),
                      sc_overrides=None, mode="mp", env_solver="matrix",
                      seed: int = 42, cli: dict | None = None,
-                     tracewin_ini=None):
+                     tracewin_ini=None, notes: list | None = None):
     """Resolve a CLI input + overrides into a :class:`ScanPoint`.
 
     Used by both ``scan`` (one point per swept value) and ``batch`` (one
     point per job).  ``cli`` may carry fixed ``nx`` / ``grid_extent`` /
-    ``step1`` / ``step2`` / ``drift_single_push`` / ``backend`` overrides;
-    ``beam_overrides`` and
+    ``step1`` / ``step2`` / ``drift_single_push`` / ``backend`` /
+    ``sc_method`` overrides; ``beam_overrides`` and
     ``sc_overrides`` are ``name=value`` dicts; ``element_overrides`` is an
     iterable of ``(selector, value)`` pairs.  ``tracewin_ini`` has the
     :func:`load_input` meaning (bare lattice only; the beam of the deck's
-    TraceWin options file before ``beam_overrides`` are applied).
+    TraceWin options file before ``beam_overrides`` are applied).  Notes of
+    the space-charge resolution (a method replacing the project's settings)
+    are appended to ``notes``, or issued as warnings when ``notes`` is None.
     """
     from dataclasses import asdict
-    from linac_gen.core.config import BeamConfig, SpaceChargeConfig
+    from linac_gen.core.config import BeamConfig
     from linac_gen.core.step_config import StepConfig
     from linac_gen.parallel.scan_pool import ScanPoint
 
@@ -628,11 +650,7 @@ def build_scan_point(input_path, *, beam_overrides=None, element_overrides=(),
     apply_beam_overrides(beam_cfg, beam_overrides or {})
     note_tracewin_ini_overrides(tracewin_ini, beam_overrides)
 
-    sd, scd = StepConfig(), SpaceChargeConfig()
-    nx = int(_first(cli.get("nx"), conv.get("grid_nx"), scd.nx))
-    grid_extent = float(_first(cli.get("grid_extent"),
-                               conv.get("grid_extent_sigma"),
-                               scd.grid_extent))
+    sd = StepConfig()
     step1 = float(_first(cli.get("step1"), conv.get("step1_per_m"),
                          sd.integration_steps_per_metre))
     step2 = float(_first(cli.get("step2"), conv.get("step2_per_m"),
@@ -640,28 +658,35 @@ def build_scan_point(input_path, *, beam_overrides=None, element_overrides=(),
     single = _as_bool(_first(cli.get("drift_single_push"),
                              conv.get("drift_single_push"),
                              sd.drift_single_push))
-    backend = str(_first(cli.get("backend"), conv.get("backend"),
-                         scd.use_gpu))
 
-    # Extra SpaceChargeConfig kwargs (project values + CLI --sc overrides).
-    sc_kw: dict = {}
-    for key in ("kernel", "green_kind", "grid_mode", "dc_kernel",
-                "csr_enabled"):
-        if conv and key in conv:
-            sc_kw[key] = conv[key]
-    for key, raw in (sc_overrides or {}).items():
-        if not hasattr(scd, key):
-            raise ValueError(f"unknown space-charge parameter '{key}'")
-        sc_kw[key] = coerce_like(getattr(scd, key), str(raw))
+    # The full space-charge configuration, resolved once here and carried
+    # by the point: the worker rebuilds exactly this config, and builds and
+    # checks it only when the point runs with space charge (mp, current >
+    # 0), as before.  As before, only the grid size, extent and backend
+    # (and now a method name) are read from ``cli``; a kernel choice
+    # arrives through ``sc_overrides``.
+    from linac_gen.pic import methods
+    sc_cli = {k: cli.get(k)
+              for k in ("nx", "grid_extent", "backend", "sc_method")}
+    sc_cli["sc"] = dict(sc_overrides or {})
+    sc_notes: list = [] if notes is None else notes
+    sc_kw = methods.filled_kwargs(
+        methods.resolve_sc_kwargs(conv, sc_cli, notes=sc_notes))
+    if notes is None:
+        import warnings
+        for note in sc_notes:
+            warnings.warn(f"space charge: {note}", stacklevel=2)
 
     return ScanPoint(
         lattice_path=lattice_path,
         beam_config=asdict(beam_cfg),
-        nx=nx, grid_extent=grid_extent, step1=step1, step2=step2,
-        seed=int(seed), use_gpu=backend,
+        nx=int(sc_kw["nx"]), grid_extent=float(sc_kw["grid_extent"]),
+        step1=step1, step2=step2,
+        seed=int(seed), use_gpu=str(sc_kw.get("use_gpu", "auto")),
         mode=mode, env_solver=env_solver,
         element_overrides=tuple(element_overrides),
-        sc_overrides=tuple(sc_kw.items()),
+        sc_overrides=tuple((k, v) for k, v in sc_kw.items()
+                           if k not in ("nx", "grid_extent", "use_gpu")),
         drift_single_push=single,
         lattice_beam=lattice_beam,
     )

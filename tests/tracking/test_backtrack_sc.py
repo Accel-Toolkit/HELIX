@@ -181,3 +181,64 @@ def test_space_charge_comp_factor_honoured():
     Tracker(lat, beam, pic_solver=solver).run()
     backtrack_distribution(lat, beam, _make_ref(), pic_solver=solver)
     np.testing.assert_allclose(beam.particles, p_in, rtol=1e-8, atol=1e-10)
+
+
+def test_provenance_records_the_config_the_walk_ran():
+    """A fixed-grid config rebuilt from the exit distribution is walked on
+    adaptive grids; the results carry that config, not the input one."""
+    from linac_gen.pic import methods
+    lat = _fodo()
+    beam = _make_beam()
+    sc = SpaceChargeConfig(nx=32, ny=32, nz=32, kernel="tsc")     # fixed
+    Tracker(lat, beam, pic_solver=PicSolver(sc)).run()
+    with pytest.warns(BacktrackWarning, match="ADAPTIVE"):
+        rec = backtrack_distribution(lat, beam, _make_ref(), sc_config=sc)
+    assert rec.sc_config.grid_mode == "adaptive"
+    assert methods.effective_method(rec.sc_config) == "tsc_adaptive"
+    assert sc.grid_mode == "fixed"                     # caller's untouched
+
+
+def test_provenance_of_a_reused_forward_solver_is_its_config():
+    lat = _fodo()
+    beam = _make_beam()
+    sc = SpaceChargeConfig(nx=32, ny=32, nz=32)
+    solver = PicSolver(sc)
+    Tracker(lat, beam, pic_solver=solver).run()
+    rec = backtrack_distribution(lat, beam, _make_ref(), pic_solver=solver)
+    assert rec.sc_config is sc
+
+
+def _fodo_with_card():
+    from linac_gen.elements.sc_grid import ScGridDirective
+    lat = Lattice()
+    lat.add(Quadrupole("QF", 50.0, gradient=5.0, n_steps=5))
+    lat.add(Drift("D1", 200.0))
+    lat.add(ScGridDirective("SCGRID_001", extent_sigma=20.0))
+    lat.add(Quadrupole("QD", 50.0, gradient=-5.0, n_steps=5))
+    lat.add(Drift("D2", 200.0))
+    return lat
+
+
+def test_walk_across_an_applied_card_warns():
+    lat = _fodo_with_card()
+    beam = _make_beam()
+    sc = SpaceChargeConfig(nx=32, ny=32, nz=32)
+    solver = PicSolver(sc)
+    Tracker(lat, beam, pic_solver=solver).run()
+    with pytest.warns(BacktrackWarning, match="HELIX_SC_GRID"):
+        backtrack_distribution(lat, beam, _make_ref(), pic_solver=solver)
+
+
+def test_walk_across_an_ignored_card_is_silent_and_exact():
+    lat = _fodo_with_card()
+    beam = _make_beam()
+    p_in = beam.particles.copy()
+    sc = SpaceChargeConfig(nx=32, ny=32, nz=32, grid_card="ignore")
+    solver = PicSolver(sc)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        Tracker(lat, beam, pic_solver=solver).run()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", BacktrackWarning)
+        backtrack_distribution(lat, beam, _make_ref(), pic_solver=solver)
+    np.testing.assert_allclose(beam.particles, p_in, rtol=1e-8, atol=1e-10)

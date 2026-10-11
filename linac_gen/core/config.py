@@ -1,4 +1,6 @@
 """Configuration dataclasses for beam and space charge."""
+import math
+import numbers
 from dataclasses import dataclass
 from typing import Optional
 
@@ -180,11 +182,34 @@ class BeamConfig:
             )
 
 
+#: Largest PIC grid extent accepted [beam sigmas].  Far above any physical
+#: extent (a few to a few tens of sigma) and far below the extents at which
+#: the Green's-function arithmetic overflows (about 1e150 sigma).
+MAX_GRID_EXTENT_SIGMA = 1.0e6
+
+
+def valid_grid_extent(value) -> bool:
+    """True for a finite grid extent in (0, MAX_GRID_EXTENT_SIGMA] sigma."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(v) and 0.0 < v <= MAX_GRID_EXTENT_SIGMA
+
+
 @dataclass
 class SpaceChargeConfig:
     """PIC space charge solver configuration.
 
-    Defaults are tuned for the H- injector reference beam (5 mA CW) on
+    The settings that decide how the bunched-beam field is computed (grid
+    size and extent, grid mode, kernel, Green's function, engine) can be
+    chosen together by name with ``method`` -- see
+    :mod:`linac_gen.pic.methods` for the names and the rules.  Left unset
+    (``None``) they are filled in when the config is built: from the named
+    method, else from the classic values below.  An explicitly given field
+    always wins.
+
+    Classic values, tuned for the H- injector reference beam (5 mA CW) on
     a FODO-style focusing channel, following the convergence study in
     ``scripts/convergence_study.py`` and ``docs/convergence/``:
 
@@ -195,15 +220,20 @@ class SpaceChargeConfig:
       For high-current cases (I >> 10 mA with tight focusing), 3 sigma
       can be safe because the beam is pinched small -- but verify via
       the Tools -> Check SC Convergence dialog.
+    - ``grid_mode="fixed"``, ``kernel="cic"``, ``green_kind="igf"``,
+      ``sc_backend="numpy"``, ``grid_card="apply"``,
+      ``green_build="exact"``, ``reuse_every=1``.
     """
-    nx: int = 96
-    ny: int = 96
-    nz: int = 96
+    nx: int | None = None
+    ny: int | None = None
+    nz: int | None = None
     boundary: str = "open"
     solver: str = "fft"
-    grid_extent: float = 5.0
+    grid_extent: float | None = None
     shape_order: int = 1
-    grid_mode: str = "fixed"
+    # "fixed": grid sized from the beam at the first kick and kept;
+    # "adaptive": grid resized to the beam at every kick.
+    grid_mode: str | None = None
     # FFT backend for the Poisson solver.  "auto" picks GPU (cupy) when
     # importable and a CUDA device is visible, else CPU (scipy.fft).  The
     # env var ``LINAC_GEN_USE_GPU`` overrides this field.
@@ -211,11 +241,11 @@ class SpaceChargeConfig:
     # Particle-mesh shape function for deposition AND gather.  "cic" is
     # the legacy 8-corner trilinear (1st-order); "tsc" is the 27-cell
     # quadratic that reduces grid noise at the cost of ~3.4× more work.
-    kernel: str = "cic"
+    kernel: str | None = None
     # Hockney FFT Green's function flavour.  "igf" (default) uses the
     # cell-integrated kernel of Qiang 2006; "point" samples 1/(4πε₀ r)
     # at cell centres and is kept for legacy-baseline reproduction.
-    green_kind: str = "igf"
+    green_kind: str | None = None
     # DC (continuous beam) SC kick model:
     #   "uniform"  — analytic linear uniform-elliptical-cylinder field
     #                (legacy; matches the rigid-Σ envelope solver).
@@ -248,19 +278,51 @@ class SpaceChargeConfig:
     # PIC; "torch" routes the bunched-beam kick through the differentiable
     # PyTorch PIC (``linac_gen.pic.torch``) for autograd / gradient-based
     # optimisation — numerically matches "numpy" to ~1e-9.
-    sc_backend: str = "numpy"
+    sc_backend: str | None = None
     # HALO-PIC options (sc_backend="halo"): alpha, k_init/k_min/k_max,
     # tau_lo/tau_hi/tau_hard, fine_factor, basis_degree, basis_width,
     # warmup_kicks, anchors, collect, corrector_dir, period_len_mm.
     halo: dict = None
+    # Named space-charge method (linac_gen.pic.methods): "cic_fixed",
+    # "tsc_adaptive", ..., "custom", or "default".  After construction it
+    # holds the name matching the resolved settings.
+    method: str | None = None
+    # HELIX_SC_GRID cards in the lattice: "apply" (the card sets the grid
+    # extent from there on), "ignore" (the grid keeps this config's extent;
+    # every card reached is still recorded in the provenance) or "auto"
+    # (ignore on an adaptive grid, apply on a fixed one).  Unset: "auto" for
+    # the named adaptive-grid methods of the numpy PIC -- a grid that follows
+    # the beam gains nothing from a wider extent, its cells only get coarser
+    # -- else "apply", as always.
+    grid_card: str | None = None
+    # How the "igf" Green's function is built: "exact" (every displacement)
+    # or "symmetric" (the non-negative ones, mirrored -- the kernel is even;
+    # ~7x fewer evaluations, equal within the exact build's own rounding:
+    # ~5e-13 of the kernel's peak at 48^3, growing with the grid, 3e-12 at
+    # 96^3).  Matters where the kernel is rebuilt every kick, i.e. on
+    # adaptive grids.  The torch PIC builds its own Green's function and
+    # ignores it.  Unset: "symmetric" for the named adaptive methods of the
+    # numpy PIC, else "exact".
+    green_build: str | None = None
+    # Solve the bunched-beam field on every reuse_every-th kick and, on the
+    # kicks between, rescale the last solved field to the beam's current
+    # centre, rms sizes and charge (linac_gen.pic.field_reuse).  1 (classic)
+    # solves at every kick; > 1 needs grid_mode="adaptive" and the numpy PIC.
+    reuse_every: int | None = None
 
     def __post_init__(self) -> None:
+        from linac_gen.pic import methods as _methods
+        _methods.resolve_in_place(self)
         for attr in ("nx", "ny", "nz"):
             val = getattr(self, attr)
             if val <= 0:
                 raise ValueError(f"{attr} must be > 0, got {val}")
-        if self.grid_extent <= 0:
-            raise ValueError(f"grid_extent must be > 0, got {self.grid_extent}")
+        if not valid_grid_extent(self.grid_extent):
+            # inf, nan, an overflowing literal such as 1e999, or an absurd
+            # finite value would give non-finite grid spacing or fields.
+            raise ValueError(
+                "grid_extent must be a finite value in (0, "
+                f"{MAX_GRID_EXTENT_SIGMA:g}] sigma, got {self.grid_extent}")
         if self.shape_order < 1:
             raise ValueError(f"shape_order must be >= 1, got {self.shape_order}")
         if self.shape_order != 1:
@@ -330,4 +392,30 @@ class SpaceChargeConfig:
             raise ValueError(
                 f"sc_backend must be one of {valid_sc_backend}, got "
                 f"{self.sc_backend!r}"
+            )
+        if (isinstance(self.reuse_every, bool)
+                or not isinstance(self.reuse_every, numbers.Integral)
+                or self.reuse_every < 1):
+            raise ValueError(
+                f"reuse_every must be an integer >= 1, got {self.reuse_every!r}"
+            )
+        self.reuse_every = int(self.reuse_every)
+        if self.reuse_every > 1 and (self.grid_mode != "adaptive"
+                                     or self.sc_backend != "numpy"):
+            raise ValueError(
+                f"reuse_every={self.reuse_every} (field solved every few "
+                "kicks) needs grid_mode='adaptive' and sc_backend='numpy', got "
+                f"grid_mode={self.grid_mode!r}, sc_backend={self.sc_backend!r}"
+            )
+        valid_build = {"exact", "symmetric"}
+        if self.green_build not in valid_build:
+            raise ValueError(
+                f"green_build must be one of {valid_build}, got "
+                f"{self.green_build!r}"
+            )
+        valid_grid_card = {"apply", "ignore", "auto"}
+        if self.grid_card not in valid_grid_card:
+            raise ValueError(
+                f"grid_card must be one of {valid_grid_card}, got "
+                f"{self.grid_card!r}"
             )

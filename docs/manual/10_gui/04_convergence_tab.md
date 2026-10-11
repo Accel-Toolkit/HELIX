@@ -24,7 +24,16 @@ state is persisted per user across sessions:
   is located exactly on the particle's straight line; untick it to
   keep the sub-stepped walk of HELIX ≤ 1.9.1.  With it on, a step1
   scan at zero current only probes field maps.
-* **Space charge & PIC** — **Base PIC grid (nx=ny=nz)**: a single
+* **Space charge & PIC** — **Space-charge method**: a named
+  [method](../05_space_charge/08_methods.md) with its label and a
+  one-line summary.  Choosing one sets the settings that define it
+  (engine, kernel, grid mode, how often the field is solved) and its
+  default grid; those controls are then locked, the grid controls stay
+  free, and **Custom** unlocks everything.  A project saves the method
+  and every setting.  Below it: **Green's-function build** (exact /
+  symmetric), **HELIX_SC_GRID cards** (apply / ignore / auto) and
+  **Field solved every** N kicks (adaptive numpy grid only).
+  **Base PIC grid (nx=ny=nz)**: a single
   cubic spinbox (one value sets all three axes); grid extent
   (σ multiplier); **PIC backend** (auto / cpu / gpu / cuda / mps);
   **SC engine** — `numpy` (production PIC, default) or `torch`

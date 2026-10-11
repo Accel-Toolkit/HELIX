@@ -323,6 +323,27 @@ def _settings() -> QSettings:
     from linac_gen_gui.interphase.app_settings import make_settings
     return make_settings("Linac_Gen", "Interphase")
 
+
+_NO_SC_PREVIOUS = object()
+
+
+def _open_project_sc_previous():
+    """``convergence.sc_previous`` (the undo record of
+    scripts/sc_method_migrate.py --switch) in the open project's file, else
+    ``_NO_SC_PREVIOUS``."""
+    import json
+    path = _settings().value(_SETTINGS_LAST_PROJECT)
+    if not path or not os.path.isfile(str(path)):
+        return _NO_SC_PREVIOUS
+    try:
+        with open(str(path), encoding="utf-8") as fh:
+            conv = json.load(fh).get("convergence")
+    except (OSError, ValueError, AttributeError):
+        return _NO_SC_PREVIOUS
+    if isinstance(conv, dict) and "sc_previous" in conv:
+        return conv["sc_previous"]
+    return _NO_SC_PREVIOUS
+
 from linac_gen_gui.interphase import theme
 from linac_gen_gui.interphase.icons import icon
 from linac_gen_gui.interphase.scrollwrap import scroll_wrap
@@ -1422,13 +1443,19 @@ class InterphaseWindow(QMainWindow):
         out["convergence"] = {
             "step1_per_m":      float(ct._fixed_step1.value()),
             "step2_per_m":      float(ct._fixed_step2.value()),
+            # space charge: the method and every setting explicitly, so
+            # a later change of a method's defaults leaves the project
+            "sc_method":        ct.sc_method_name(),
             "grid_nx":          int(ct._fixed_nx.value()),
             "grid_extent_sigma":float(ct._fixed_ext.value()),
             "backend":          str(ct._fixed_backend.currentText()),
             "sc_backend":       str(ct._fixed_sc_backend.currentText()),
             "green_kind":       str(ct._fixed_green.currentText()),
+            "green_build":      str(ct._fixed_green_build.currentText()),
             "kernel":           str(ct._fixed_kernel.currentText()),
             "grid_mode":        str(ct._fixed_grid_mode.currentText()),
+            "grid_card":        str(ct._fixed_grid_card.currentText()),
+            "reuse_every":      int(ct._fixed_reuse.value()),
             "dc_kernel":        str(ct._fixed_dc_kernel.currentText()),
             "integrator_kind":  str(ct._fixed_integ.currentText()),
             "interp_kind":      str(ct._fixed_interp.currentText()),
@@ -1444,6 +1471,12 @@ class InterphaseWindow(QMainWindow):
             "csr_enabled":      bool(ct._fixed_csr.isChecked()),
             "drift_single_push": bool(ct._drift_single_push.isChecked()),
         }
+        # The undo record of scripts/sc_method_migrate.py --switch is not
+        # shown in the tab; keep it from the open project's file so that
+        # --restore still works after a save.
+        _prev = _open_project_sc_previous()
+        if _prev is not _NO_SC_PREVIOUS:
+            out["convergence"]["sc_previous"] = _prev
         return out
 
     def _apply_project_dict(self, data: dict, project_path: str | None = None,
@@ -1553,18 +1586,46 @@ class InterphaseWindow(QMainWindow):
         try:
             if "step1_per_m" in conv:     ct._fixed_step1.setValue(float(conv["step1_per_m"]))
             if "step2_per_m" in conv:     ct._fixed_step2.setValue(float(conv["step2_per_m"]))
-            if "grid_nx" in conv:         ct._fixed_nx.setValue(int(conv["grid_nx"]))
-            if "grid_extent_sigma" in conv: ct._fixed_ext.setValue(float(conv["grid_extent_sigma"]))
-            if "backend" in conv:
-                idx = ct._fixed_backend.findText(str(conv["backend"]))
-                if idx >= 0:
-                    ct._fixed_backend.setCurrentIndex(idx)
-            for key, widget in (("sc_backend",      ct._fixed_sc_backend),
-                                ("green_kind",      ct._fixed_green),
-                                ("kernel",          ct._fixed_kernel),
-                                ("grid_mode",       ct._fixed_grid_mode),
-                                ("dc_kernel",       ct._fixed_dc_kernel),
-                                ("integrator_kind", ct._fixed_integ),
+            # Space charge through the same resolver as the command line,
+            # and every setting shown -- a key the project does not store
+            # gets its resolved value, not the previous project's.
+            import dataclasses as _dc
+
+            from linac_gen.pic import methods as _methods
+            try:
+                _sc = _methods.resolve_sc(conv, {})
+            except Exception as exc:                        # noqa: BLE001
+                # the stored keys without the method name, else the
+                # classic settings -- never the previous project's
+                try:
+                    _sc = _methods.resolve_sc(
+                        {k: v for k, v in conv.items() if k != "sc_method"},
+                        {})
+                except Exception:                           # noqa: BLE001
+                    _sc = _methods.resolve_sc({}, {})
+                _warn("Numerics",
+                      f"Space-charge settings in project are invalid:\n{exc}"
+                      f"\nShown instead: {_sc.method}.")
+            if ("sc_method" not in conv
+                    and str(conv.get("sc_backend", "numpy")) == "torch"):
+                # the GUI always honoured a saved torch engine (the command
+                # line's rule for such projects ignores it); keep doing so
+                _sc = _dc.replace(_sc, sc_backend="torch",
+                                  grid_mode="adaptive", reuse_every=1)
+            ct.apply_sc_config(_sc, method=conv.get("sc_method"))
+            # settings the tab cannot hold (out of a control's range, HALO
+            # options, ...) are reported, not changed silently
+            _shown = ct.current_sc_config(1.0)
+            _lost = [f.name for f in _dc.fields(_sc) if f.name != "method"
+                     and getattr(_shown, f.name) != getattr(_sc, f.name)]
+            if _lost:
+                _warn("Numerics",
+                      "The Numerics tab cannot show every space-charge "
+                      "setting of this project; a run and a save use what "
+                      "it shows:\n" + "\n".join(
+                          f"  {k}: {getattr(_sc, k)!r} -> "
+                          f"{getattr(_shown, k)!r}" for k in _lost))
+            for key, widget in (("integrator_kind", ct._fixed_integ),
                                 ("interp_kind",     ct._fixed_interp),
                                 ("fieldmap_sampling", ct._fieldmap_sampling),
                                 ("env_solver",      ct._fixed_env_solver)):
@@ -1585,8 +1646,6 @@ class InterphaseWindow(QMainWindow):
                 from linac_gen.cli.common import _as_bool
                 ct._record_action_scan.setChecked(
                     _as_bool(conv["record_action_scan"]))
-            if "csr_enabled" in conv:
-                ct._fixed_csr.setChecked(bool(conv["csr_enabled"]))
             if "drift_single_push" in conv:
                 from linac_gen.cli.common import _as_bool
                 ct._drift_single_push.setChecked(_as_bool(conv["drift_single_push"]))

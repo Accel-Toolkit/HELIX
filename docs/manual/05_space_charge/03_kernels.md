@@ -10,7 +10,7 @@ gathered back) and the **Green's function** (how Poisson is solved).
 |---|---|---|
 | Order | 1st (linear B-spline) | 2nd (quadratic B-spline) |
 | Cells per particle | 8 (one corner each octant) | 27 (3×3×3 around centre) |
-| Cost | ~1× | ~3.4× |
+| Cost per kick | 1× | about 1.4× (compiled kernel) |
 | Default | yes (legacy) | recommended for noise-sensitive cases |
 
 ### When CIC is fine
@@ -46,9 +46,25 @@ TSC is the recommended kernel for BTL-style sections.
 
 ### Performance
 
-TSC is ~3.4× more expensive per step than CIC.  For PIP-II's full
-linac with frequent RF, this is unnecessary cost.  For BTL-only or
-DC-only runs, TSC is essential.
+TSC deposit and gather run in a compiled kernel, `linac_gen._tsc_kernels`.
+It returns the same charge density and fields as the Python
+implementation, bit for bit, at any thread count.  Measured on the
+PIP-II MEBT with 100 000 particles on a 48³ grid (Apple M3 Max):
+
+| | CIC | TSC, compiled | TSC, Python |
+|---|---|---|---|
+| Space-charge kick | 19.0 ms | 26.7 ms | 117.7 ms |
+| Whole MEBT run | 60 s | 70 s | 153 s |
+
+TSC therefore costs about 1.4× CIC per kick, instead of about six
+times.  CIC remains sufficient for lattices with frequent RF (see above).
+
+The kernel is built with HELIX's other C++ extensions.  If it is
+missing, HELIX logs one line and runs the Python kernels, with identical
+results.  `LINAC_GEN_TSC_KERNEL=0` forces the Python kernels, and the
+HDF5 provenance attribute `sc_tsc_cpp_kernel` records whether the
+compiled kernel was enabled.  *(Changed 2026-10: TSC used to run in
+Python only.)*
 
 ## Green's function: IGF vs point
 
@@ -67,6 +83,33 @@ grid-resolution bias near the source.
 
 **Always use IGF.**  The "point" option is kept only for legacy
 regression reproduction.
+
+### Build cost
+
+The IGF is built by evaluating the antiderivative once at each vertex
+of the (2n+1)³ cell-corner lattice and differencing neighbouring
+vertices.  This gives the same bits as evaluating it at the eight
+corners of every cell, at about one ninth of the cost (48³: 365 ms
+before, 41 ms now).  With
+`grid_mode="fixed"` it is built once per run.  With
+`grid_mode="adaptive"` it is rebuilt at every kick whose cell spacing
+changes, so its cost sets the adaptive kick time:
+
+| Adaptive ±6σ kick, PIP-II MEBT, 100 000 particles, 48³ | IGF from cell corners | IGF from shared vertices |
+|---|---|---|
+| CIC | 466 ms | 82 ms |
+| TSC (compiled kernel) | 471 ms | 89 ms |
+
+A grid that only moves, with its spacing unchanged, keeps its Green's
+function.  *(Changed 2026-10: the IGF used to be evaluated at every
+cell corner.)*
+
+`green_build="symmetric"` builds one octant and mirrors it: the
+Green's function is even in each coordinate, so the result equals the
+full build to rounding (about 5·10⁻¹³ of its peak at 48³) and is
+exactly even.  The build takes 14 ms instead of 76 ms at 48³ and 37 ms
+instead of 142 ms at 64³.  The named adaptive
+[methods](08_methods.md) use it; everything else keeps the full build.
 
 ## Configuration
 

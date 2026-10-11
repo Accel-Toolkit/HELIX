@@ -211,18 +211,20 @@ class _Pybind11WithOpenMP(build_ext):
                 ]
                 # MSVC links the OpenMP runtime automatically when the switch
                 # is set; no extra linker args needed.
-                if ext.name.endswith("_fieldmap_kernels"):
+                if ext.name.endswith(("_fieldmap_kernels", "_tsc_kernels")):
                     # The field-map kernel's bit-identity contract with scipy
                     # RGI (tests/elements/test_fieldmap_kernels.py) forbids FMA
                     # contraction.  VS2022's /fp:precise emits no contractions
                     # by default (/fp:contract is the explicit opt-in we never
                     # pass); on older toolchains the bit-identity test fails
                     # loudly rather than skipping, and the runtime kill-switch
-                    # is LINAC_GEN_FIELDMAP_KERNEL=0.
+                    # is LINAC_GEN_FIELDMAP_KERNEL=0.  The TSC twin has the same
+                    # contract with the Python TSC kernels
+                    # (tests/pic/test_tsc_kernels_cpp.py; LINAC_GEN_TSC_KERNEL=0).
                     ext.extra_compile_args.append("/fp:precise")
         elif ctype in ("mingw32", "cygwin"):
             for ext in self.extensions:
-                if ext.name.endswith("_fieldmap_kernels"):
+                if ext.name.endswith(("_fieldmap_kernels", "_tsc_kernels")):
                     # GCC defaults to -ffp-contract=fast in C++ — the
                     # same contraction ban as every other toolchain.
                     ext.extra_compile_args = list(
@@ -255,6 +257,17 @@ ext_modules = [
     Pybind11Extension(
         "linac_gen._fieldmap_kernels",
         ["linac_gen/csrc/fieldmap_kernels.cpp"],
+        extra_compile_args=_fieldmap_compile,
+        extra_link_args=_link,
+        include_dirs=_includes,
+        cxx_std=14,
+        optional=not _require_cpp,
+    ),
+    # TSC deposit/gather twin: bit-identical to the Python TSC kernels, so
+    # it needs the same contraction ban as _fieldmap_kernels.
+    Pybind11Extension(
+        "linac_gen._tsc_kernels",
+        ["linac_gen/csrc/tsc_kernels.cpp"],
         extra_compile_args=_fieldmap_compile,
         extra_link_args=_link,
         include_dirs=_includes,

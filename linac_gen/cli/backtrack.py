@@ -106,6 +106,9 @@ def add_arguments(p) -> None:
                         "between its sub-steps (losses located analytically); "
                         "default on, project value or off")
     p.add_argument("--kernel", help="PIC deposit kernel (cic / tsc)")
+    p.add_argument("--sc-method", dest="sc_method", metavar="NAME",
+                   action=common.ScMethodAction,
+                   help="named space-charge method; 'list' prints them")
     p.add_argument("--backend", help="compute backend (auto / cpu / gpu)")
     p.add_argument("--sc", action="append", default=[], metavar="NAME=VALUE",
                    help="generic SpaceChargeConfig override (repeatable)")
@@ -133,6 +136,7 @@ def _cli_overrides(args) -> dict:
         "drift_single_push": (None if args.drift_single_push is None
                               else args.drift_single_push == "on"),
         "kernel": args.kernel, "backend": args.backend,
+        "sc_method": args.sc_method,
         "sc": common.parse_assignments(args.sc),
     }
 
@@ -151,6 +155,7 @@ def run(args) -> int:
         common.apply_beam_overrides(beam_cfg, _beam_overrides(args))
         common.note_tracewin_ini_overrides(args.tracewin_ini, _beam_overrides(args))
         cli = _cli_overrides(args)
+        common.check_sc_choice(cli, conv)
         common.apply_fieldmap_settings(conv, cli)
     except (ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -209,7 +214,8 @@ def run(args) -> int:
                                     beam_cfg, lattice,
                                     lattice_path=args.input,
                                     seed=args.seed,
-                                    sc_config=sc)]
+                                    sc_config=(getattr(recorder, "sc_config",
+                                                       None) or sc))]
     if args.write_dst:
         written.append(common.write_final_dst(beam, Path(args.write_dst)))
 
@@ -250,7 +256,7 @@ def _validate(args, lattice, beam_cfg, recorder, beam, end) -> int:
     """Forward closure check: re-track the reconstruction over the same
     range and compare the recovered exit against the original input."""
     from linac_gen.core.beam import Beam
-    from linac_gen.pic.pic_solver import PicSolver
+    from linac_gen.pic.factory import make_sc_solver
     from linac_gen.tracking.tracker import Tracker
     from linac_gen.tracking.backtrack import build_replay_table
 
@@ -291,7 +297,7 @@ def _validate(args, lattice, beam_cfg, recorder, beam, end) -> int:
         if _fwd_was_train and sc_cfg is not None \
                 and sc_cfg.train_images is None:
             sc_cfg.train_images = True
-        sc = PicSolver(sc_cfg) if sc_cfg else None
+        sc = make_sc_solver(sc_cfg) if sc_cfg else None
     tracker = Tracker(lattice, vbeam, pic_solver=sc)
     # Forward sub-range replay: element loop with the table's entrance
     # state (mirrors the backward walk's use of the replay table).
