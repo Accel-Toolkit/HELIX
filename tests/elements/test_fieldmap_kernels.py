@@ -119,7 +119,10 @@ def test_tracking_bitwise_identical(monkeypatch):
     _USE_FUSED is read at sample time, so the two loops must run under
     different switch states; a call-spy proves the kernel path really
     executed (guards against this test silently comparing scipy to
-    scipy, which an earlier version did)."""
+    scipy, which an earlier version did).  The fused KD step, which
+    samples inside its own kernel, is off here: this pins the sampler;
+    tests/elements/test_fieldmap_step.py pins the step."""
+    monkeypatch.setattr(fm3_mod, "_USE_STEP", False)
     calls = {"n": 0}
     real = fm3_mod._interp3_multi
     def spy(*a, **k):

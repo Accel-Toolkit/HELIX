@@ -71,6 +71,21 @@ except ImportError:                                   # pragma: no cover
 _USE_FUSED = (_KERNEL_AVAILABLE
               and _os.environ.get("LINAC_GEN_FIELDMAP_KERNEL", "1") != "0")
 
+# Fused KD step: the particle part of one kick-then-drift step (field
+# sampling of every channel, energy kick, damping, phase slip, Lorentz
+# kick, drift) in one compiled pass, identical to the numpy code in
+# _track_kd for every non-NaN value (tests/elements/test_fieldmap_step.py;
+# a NaN stays NaN, its sign bit may differ, and numpy's floating-point
+# warnings for such values are not raised).  It rides on the fused
+# sampler (off with it) and needs a fused pack for every channel; anything
+# else keeps the numpy path.  Kill switch: LINAC_GEN_FIELDMAP_STEP=0.
+try:
+    from linac_gen._fieldmap_kernels import kd_step as _kd_step
+except ImportError:                                   # pragma: no cover
+    _kd_step = None            # a build of the module without the step
+_USE_STEP = (_kd_step is not None
+             and _os.environ.get("LINAC_GEN_FIELDMAP_STEP", "1") != "0")
+
 
 def kernel_available() -> bool:
     """True when the compiled _fieldmap_kernels module is importable."""
@@ -91,6 +106,20 @@ def use_fused_kernel(enabled: bool) -> None:
     """
     global _USE_FUSED
     _USE_FUSED = bool(enabled) and _KERNEL_AVAILABLE
+
+
+def fused_step_available() -> bool:
+    """True when the compiled module has the fused KD step."""
+    return _kd_step is not None
+
+
+def use_fused_step(enabled: bool) -> None:
+    """Enable/disable the fused KD step at runtime (global), mirrored into
+    LINAC_GEN_FIELDMAP_STEP so spawned workers (scans, error studies)
+    inherit it.  Results are identical either way; only speed differs."""
+    global _USE_STEP
+    _USE_STEP = bool(enabled) and _kd_step is not None
+    _os.environ["LINAC_GEN_FIELDMAP_STEP"] = "1" if enabled else "0"
 
 
 def set_fieldmap_numerics(integrator: str | None = None,
@@ -413,6 +442,7 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
         method = self.interp_kind if self.interp_kind in ("linear", "cubic") else "linear"
         common = dict(method=method, bounds_error=False, fill_value=0.0)
         self._fused_packs = {}
+        self._onaxis_cache = {}          # see _sample_onaxis
         for ch_enum, ch in fd.channels.items():
             if ch.geometry != 7:
                 raise ValueError(
@@ -497,11 +527,22 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
 
     def _sample_onaxis(self, ch_enum: Channel, comp_interps: dict,
                        z_pos: float) -> float:
-        """Sample Fz component on-axis (0, 0, z_pos) for one channel."""
+        """Sample Fz component on-axis (0, 0, z_pos) for one channel.
+
+        Each (channel, z) is evaluated once and remembered: the map never
+        changes, and the SET_SYNC_PHASE calibration probes and the tracking
+        steps ask for the same positions again and again (an HWR cavity:
+        2200 single-point interpolations for 400 positions)."""
         if "Fz" not in comp_interps:
             return 0.0
-        pt = np.array([[0.0, 0.0, z_pos]])
-        return float(comp_interps["Fz"](pt)[0])
+        cache = self.__dict__.setdefault("_onaxis_cache", {})
+        key = (ch_enum, z_pos)
+        val = cache.get(key)
+        if val is None:
+            pt = np.array([[0.0, 0.0, z_pos]])
+            val = float(comp_interps["Fz"](pt)[0])
+            cache[key] = val
+        return val
 
     # ------------------------------------------------------------------
     # Public API
@@ -613,6 +654,10 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
         if not np.any(alive):
             return
 
+        if self._fused_kd_step(beam, alive, z_pos, phi_sync_rad, charge,
+                               ds, ds_m, dW_ref, beta, gamma, mass_MeV):
+            return
+
         xs = beam.particles[alive, 0]
         ys = beam.particles[alive, 2]
         zs = np.full_like(xs, z_pos)
@@ -698,6 +743,52 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
         # --- Drift -------------------------------------------------------
         beam.particles[alive, 0] += beam.particles[alive, 1] * ds_m
         beam.particles[alive, 2] += beam.particles[alive, 3] * ds_m
+
+    def _fused_kd_step(self, beam, alive, z_pos, phi_sync_rad, charge, ds,
+                       ds_m, dW_ref, beta, gamma, mass_MeV) -> bool:
+        """The particle part of one KD step (the code after this call in
+        _track_kd) in the compiled kernel, bit for bit; False when it does
+        not apply: no kernel, the scipy sampler chosen, a channel without a
+        fused pack, or a particle array that is not C-contiguous float64."""
+        if not (_USE_STEP and _USE_FUSED):
+            return False
+        P = beam.particles
+        if (P.dtype != np.float64 or P.ndim != 2 or P.shape[1] != 6
+                or not P.flags.c_contiguous or not P.flags.writeable):
+            return False
+        packs = getattr(self, "_fused_packs", {})
+        items = list(self._interpolators.items())
+        if not items or any(ch_enum not in packs for ch_enum, _ in items):
+            return False
+        idx = np.flatnonzero(alive)
+        # phases and phasors exactly as below, in numpy
+        dphi_deg = P[idx, 4]
+        phi_total_rad = phi_sync_rad + dphi_deg * (np.pi / 180.0)
+        chans = []
+        for ch_enum, _comp in items:
+            gx, gy, gz, stacked, names = packs[ch_enum]
+            ch_data = self.field_data.channels[ch_enum]
+            slots = np.array([names.index(c) if c in names else -1
+                              for c in ("Fx", "Fy", "Fz")], dtype=np.int64)
+            chans.append((gx, gy, gz, stacked, slots,
+                          float(self._scale_factor(ch_enum, ch_data)),
+                          bool(ch_enum.is_electric),
+                          None if ch_enum.is_static
+                          else self._phasor(ch_enum, phi_total_rad)))
+        wl = beam.ref.wavelength
+        do_damp = beta > 0 and gamma > 0 and mass_MeV > 0
+        do_slip = wl > 0 and beta > 0 and gamma > 0
+        do_kick = beta > 0 and gamma > 0
+        _kd_step(
+            P, idx, float(z_pos), chans, float(charge), float(ds_m),
+            float(dW_ref),
+            do_damp, beta * beta * gamma * mass_MeV if do_damp else 1.0,
+            do_slip, (-360.0 * ds / (beta ** 3 * gamma ** 3 * mass_MeV * wl)
+                      if do_slip else 0.0),
+            do_kick, ds_m / (gamma * beta * beta * mass_MeV) if do_kick else 0.0,
+            (ds_m * _C_LIGHT_CONV / (gamma * beta * mass_MeV)
+             if do_kick else 0.0))
+        return True
 
     # ------------------------------------------------------------------
     def _track_dkd(self, beam, ds: float) -> None:

@@ -36,6 +36,22 @@ forbids FMA re-rounding of `f*w + acc`.
 
 Runtime kill-switch: `LINAC_GEN_FIELDMAP_KERNEL=0` forces the scipy path.
 
+The same module holds `kd_step`, the particle part of one FieldMap3D
+kick-then-drift substep (sampling of every channel, energy kick, damping,
+phase slip, Lorentz kick, drift) in one pass over the particles.  It
+reproduces the numpy step in `FieldMap3D._track_kd` bit for bit: the same
+expressions in the same order, each particle on its own (threaded over
+particles, so any thread count gives the same bits), no FP contraction,
+and the cos/sin phasors computed by numpy and passed in, so no
+transcendental function is evaluated in C++.  The sampling shares one
+inline routine with `interp3_multi` (the z cell, common to every particle
+of a substep, is located once).  `tests/elements/test_fieldmap_step.py`
+pins it with `np.array_equal` (every channel kind, absent components,
+lost, out-of-box and NaN particles, 1 against 3 threads).  For macOS
+threading add `-Xpreprocessor -fopenmp -I"$(brew --prefix libomp)/include"`
+as for `_tsc_kernels` below; `_openmp_enabled` reports the build.  Kill
+switch: `LINAC_GEN_FIELDMAP_STEP=0` (the numpy step; the sampler stays).
+
 ## TSC deposit/gather twin (`_tsc_kernels`)
 
 Same direct compile, with the source and module name swapped:

@@ -149,6 +149,40 @@ If the compiled module is absent the scipy path is used silently
 (identical results, slower).  Build instructions:
 `linac_gen/csrc/README.md`.  Cubic interpolation always uses scipy.
 
+### Fused kick-then-drift step
+
+With the kernel sampler and the default KD integrator, the whole
+particle part of each substep — sampling every channel, the energy kick,
+the adiabatic damping, the phase slip, the Lorentz kick and the drift —
+runs in one compiled pass over the particles (`kd_step` in
+`linac_gen._fieldmap_kernels`) instead of about fifteen numpy array
+operations.  It reproduces the numpy step **bit for bit** for every
+value that is not NaN: the same expressions in the same order, and the
+cos/sin phasors still computed by numpy
+(`tests/elements/test_fieldmap_step.py`; end to end, every recorder
+series, the final particles and the losses are identical on the PIP-II
+MEBT and MEBT-to-foil lines, the latter with the stripping foil's random
+scattering seeded — `seed=None` draws a new one every run).  A particle
+that already holds a NaN keeps NaN, but its sign bit may differ, and
+numpy's floating-point warnings for such values are not raised.  The on-axis field that the reference
+particle and the SET_SYNC_PHASE calibration use is sampled once per
+position and element and remembered (an HWR cavity used to sample the
+same 400 positions 2200 times).
+
+Measured with one thread, as the GUI runs:
+
+| Line | Field maps | Whole run |
+|---|---|---|
+| PIP-II MEBT, 100 000 particles | 25.2 → 9.5 s (2.6×) | 41.7 → 25.8 s (1.6×) |
+| PIP-II MEBT to foil, 5 000 particles | 154.6 → 45.6 s (3.4×) | 301.7 → 190.5 s (1.6×) |
+
+The step follows the *Sampling* choice (scipy sampling runs the numpy
+step), covers the KD integrator (DKD and backward tracking keep the numpy
+code) and FieldMap3D only (1-D / 2-D [FieldMap](07_fieldmap.md) elements
+keep theirs).  `LINAC_GEN_FIELDMAP_STEP=0`, or
+`field_map_3d.use_fused_step(False)`, turns it off; results do not
+change either way.
+
 ### Source
 
 `linac_gen/elements/field_map_3d.py:88` (constructor), `:366-389`
