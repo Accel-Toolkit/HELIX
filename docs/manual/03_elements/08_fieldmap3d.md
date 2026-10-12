@@ -169,7 +169,8 @@ particle and the SET_SYNC_PHASE calibration use is sampled once per
 position and element and remembered (an HWR cavity used to sample the
 same 400 positions 2200 times).
 
-Measured with one thread, as the GUI runs:
+Measured on one thread (as the GUI then ran field maps; it now uses the
+[CPU threads](../06_running/15_threads.md) setting, every CPU by default):
 
 | Line | Field maps | Whole run |
 |---|---|---|

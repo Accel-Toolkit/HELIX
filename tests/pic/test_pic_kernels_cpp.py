@@ -6,6 +6,12 @@ suite passes in environments where the C++ build has not been run.
 import numpy as np
 import pytest
 
+# torch first: on macOS the kernel binds its OpenMP symbols to the libomp
+# torch loads (tests/pic/test_openmp_single_runtime.py); without it a
+# kernel built as setup.py builds it does not import and every test here
+# would skip.
+import linac_gen.pic.pic_solver  # noqa: E402,F401
+
 try:
     from linac_gen._pic_kernels import (
         deposit_cic as cpp_deposit,

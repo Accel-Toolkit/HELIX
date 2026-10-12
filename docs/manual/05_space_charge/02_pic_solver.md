@@ -109,7 +109,7 @@ shipped:
 
 | Backend | Module | Precision | Runs on |
 |---|---|---|---|
-| `_CpuBackend` | scipy.fft (or numpy.fft fallback) | FP64 | host CPU, multi-threaded via `workers=-1` |
+| `_CpuBackend` | scipy.fft (or numpy.fft fallback) | FP64 | host CPU, on the [CPU threads](../06_running/15_threads.md) setting |
 | `_GpuBackend` | cupy / cupyx.scipy.fft | FP64 | NVIDIA CUDA device |
 | `_MpsBackend` | torch.fft on MPS | FP32 (Metal hardware) | Apple Silicon GPU |
 

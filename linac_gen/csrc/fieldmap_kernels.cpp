@@ -43,6 +43,8 @@
 #include <omp.h>
 #endif
 
+#include "helix_threads.h"
+
 namespace py = pybind11;
 
 namespace {
@@ -191,7 +193,7 @@ py::array_t<double> interp3_multi(
     py::gil_scoped_release release;
 
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) num_threads(helix::num_threads())
 #endif
     for (long p = 0; p < N; ++p) {
         double v[64];
@@ -327,7 +329,7 @@ void kd_step(py::array particles, py::array idx_in,
     py::gil_scoped_release release;
 
 #ifdef _OPENMP
-#pragma omp parallel for schedule(static)
+#pragma omp parallel for schedule(static) num_threads(helix::num_threads())
 #endif
     for (long k = 0; k < n; ++k) {
         double* p = P + 6 * ix(k);
@@ -382,6 +384,12 @@ PYBIND11_MODULE(_fieldmap_kernels, m) {
           py::arg("dW_ref"), py::arg("do_damp"), py::arg("damp_denom"),
           py::arg("do_slip"), py::arg("slip"), py::arg("do_kick"),
           py::arg("factor_E"), py::arg("factor_B"));
+    m.def("set_num_threads", &helix::set_num_threads, py::arg("n"),
+          "Threads for this module's OpenMP loops (0 = the OpenMP default)");
+    m.def("get_num_threads", &helix::num_threads,
+          "Threads this module's OpenMP loops use");
+    m.def("_team_size", &helix::team_size,
+          "Team a parallel region gets from the calling thread (tests)");
 #ifdef _OPENMP
     m.attr("_openmp_enabled") = true;
 #else

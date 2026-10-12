@@ -12,6 +12,8 @@ python -m linac_gen study run   runs/studies/my_study  # resume (default)
 python -m linac_gen study summarize runs/studies/my_study
 ```
 
+Like every subcommand, `study` takes `--threads N|all`, the CPU threads for the space-charge FFT, the field maps and the charge deposition; worker processes share them ([CPU threads](15_threads.md)).
+
 ## The study.json spec
 
 ```json

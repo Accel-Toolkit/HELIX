@@ -33,6 +33,7 @@ product** of the value sets.
 
 | Option | Argument | Default | Meaning |
 |---|---|---|---|
+| `--threads` | N \| `all` | `$HELIX_THREADS`, else `$OMP_NUM_THREADS`, else all | CPU threads for the space-charge FFT, field maps and charge deposition; results are identical for any number ([CPU threads](15_threads.md)) |
 | `--vary` | `VAR=SPEC` | (required) | a swept variable — repeatable |
 | `--out` | `FILE` | `scan.csv` | CSV summary path |
 | `--mode` | `envelope` \| `mp` | `envelope` | solver mode for every point |

@@ -215,6 +215,8 @@ def _make_parser() -> argparse.ArgumentParser:
     p.add_argument("--alpha-z", dest="alpha_z", type=float, default=0.0)
     p.add_argument("--beta-z",  dest="beta_z",  type=float, default=1.0)
     p.add_argument("--emit-z",  dest="emit_z",  type=float, default=0.3)
+    from linac_gen.cli.common import add_threads_argument
+    add_threads_argument(p)
     return p
 
 
@@ -223,6 +225,8 @@ def main(argv: list[str] | None = None) -> int:
     make_console_encoding_safe()
     parser = _make_parser()
     args = parser.parse_args(argv)
+    from linac_gen.cli.common import apply_threads_arg
+    apply_threads_arg(args)
 
     if not os.path.isfile(args.input):
         print(f"error: input not found: {args.input}", file=sys.stderr)

@@ -16,10 +16,10 @@ Design:
   point finishes (in arbitrary order).  The callback also receives the
   ORIGINAL input index so callers can slot the result into the right
   table row.
-* Every worker uses ``LINAC_GEN_FFT_WORKERS=1`` internally to avoid
-  thread oversubscription: the pool gives us O(N_cores) parallelism
-  across points, and we do not want each point to also try to use
-  O(N_cores) threads inside.
+* The workers share the HELIX thread setting
+  (:mod:`linac_gen.parallel.threads`): each gets ``threads // workers``
+  (at least 1), so a pool of one worker per core runs one thread each and
+  a 3-point scan on 14 cores four each, without oversubscribing the box.
 * A serial fallback (:func:`run_scan_points_serial`) is shipped with
   the identical signature so regression tests can exercise the same
   control flow without spawning processes.
@@ -213,9 +213,6 @@ def _run_one_point_worker(point: ScanPoint) -> dict:
     only primitives through the process boundary so we never have to
     teach pickle about Qt/QThread/QApplication internals.
     """
-    # Cap the per-point FFT threading so the pool doesn't oversubscribe.
-    os.environ.setdefault("LINAC_GEN_FFT_WORKERS", "1")
-
     import time
 
     t0 = time.time()
@@ -353,7 +350,11 @@ def run_scan_points(
     # starts a fresh interpreter, avoiding this entirely at the cost of
     # re-importing modules in each worker.
     mp_ctx = multiprocessing.get_context("spawn")
-    pool = ProcessPoolExecutor(max_workers=max_workers, mp_context=mp_ctx)
+    from linac_gen.parallel.threads import init_worker, worker_threads
+    pool = ProcessPoolExecutor(
+        max_workers=max_workers, mp_context=mp_ctx,
+        initializer=init_worker,
+        initargs=(worker_threads(min(actual_workers, len(pts)) or 1),))
 
     def _kill_pool() -> None:
         """Cancel queued points and SIGTERM the running children.

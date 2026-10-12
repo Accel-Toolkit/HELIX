@@ -8,6 +8,15 @@ from linac_gen.core.config import SpaceChargeConfig
 
 _log = logging.getLogger(__name__)
 
+
+def _record_threads(results, info) -> None:
+    """Attach the threads a run used (read in its own thread) for the
+    results file's provenance."""
+    try:
+        results.threads_info = info
+    except (AttributeError, TypeError):
+        pass
+
 class Simulation:
     """Top-level simulation controller."""
 
@@ -181,11 +190,16 @@ class Simulation:
         return [c for c in cells if c._geom_z is not None]
 
     def run(self):
+        from linac_gen.parallel.threads import run_scope
         suspended = (self._suspend_rfq_geometry()
                      if self.rfq_geometry == "off" else [])
         armed = self._arm_rfq_geometry()
         try:
-            return self._run_mp()
+            # the HELIX thread setting in this thread, BLAS on one thread
+            with run_scope() as threads_info:
+                rec = self._run_mp()
+            _record_threads(rec, threads_info)
+            return rec
         finally:
             # scoped: a later run_envelope() on this lattice stays on
             # the cards, mirroring TraceWin's envelope-mode semantics
@@ -292,26 +306,29 @@ class Simulation:
         (index 0 = reconstructed entrance), tagged
         ``direction="backward"``; also stored in :meth:`get_results`.
         """
+        from linac_gen.parallel.threads import run_scope
         from linac_gen.tracking.backtrack import backtrack_distribution
         if entrance_ref is None:
             entrance_ref = self._entrance_ref
-        self._results = backtrack_distribution(
-            self.lattice, self.beam, entrance_ref,
-            start=start, end=end,
-            # Forward the explicit-off intent (same mapping as run()):
-            # without it a DC space_charge="off" run would un-kick
-            # forward but re-kick on the backward walk.
-            sc_config=self.sc_config,
-            pic_solver=("off" if self._sc_explicitly_off
-                        else self._pic_solver),
-            record_substeps=self.record_substeps,
-            progress_callback=self.progress_callback,
-            should_abort=self.should_abort,
-            allow_dc_crossing=allow_dc_crossing,
-            approximate_backtracking=approximate_backtracking,
-            energy_tolerance=energy_tolerance,
-            energy_hard_limit=energy_hard_limit,
-            field_map_mode=field_map_mode)
+        with run_scope() as threads_info:
+            self._results = backtrack_distribution(
+                self.lattice, self.beam, entrance_ref,
+                start=start, end=end,
+                # Forward the explicit-off intent (same mapping as run()):
+                # without it a DC space_charge="off" run would un-kick
+                # forward but re-kick on the backward walk.
+                sc_config=self.sc_config,
+                pic_solver=("off" if self._sc_explicitly_off
+                            else self._pic_solver),
+                record_substeps=self.record_substeps,
+                progress_callback=self.progress_callback,
+                should_abort=self.should_abort,
+                allow_dc_crossing=allow_dc_crossing,
+                approximate_backtracking=approximate_backtracking,
+                energy_tolerance=energy_tolerance,
+                energy_hard_limit=energy_hard_limit,
+                field_map_mode=field_map_mode)
+        _record_threads(self._results, threads_info)
         return self._results
 
     def run_envelope(self):
@@ -349,7 +366,7 @@ class Simulation:
             record_substeps=self.record_substeps,
             phase_probe=self.phase_probe,
         )
-        self._results = solver.run()
+        self._results = solver.run()     # in the thread setting's scope
         return self._results
 
     def get_results(self):

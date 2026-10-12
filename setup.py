@@ -244,10 +244,15 @@ class _Pybind11WithOpenMP(build_ext):
 _fieldmap_compile = ([f for f in _compile] + ["-ffp-contract=off"]
                      if sys.platform != "win32" else list(_compile))
 
+#: Headers the kernels include: rebuilt when they change, and shipped in
+#: an sdist (setuptools adds an extension's depends to it).
+_DEPENDS = ["linac_gen/csrc/helix_threads.h"]
+
 ext_modules = [
     Pybind11Extension(
         "linac_gen._pic_kernels",
         ["linac_gen/csrc/pic_kernels.cpp"],
+        depends=_DEPENDS,
         extra_compile_args=_compile,
         extra_link_args=_link,
         include_dirs=_includes,
@@ -257,6 +262,7 @@ ext_modules = [
     Pybind11Extension(
         "linac_gen._fieldmap_kernels",
         ["linac_gen/csrc/fieldmap_kernels.cpp"],
+        depends=_DEPENDS,
         extra_compile_args=_fieldmap_compile,
         extra_link_args=_link,
         include_dirs=_includes,
@@ -268,6 +274,7 @@ ext_modules = [
     Pybind11Extension(
         "linac_gen._tsc_kernels",
         ["linac_gen/csrc/tsc_kernels.cpp"],
+        depends=_DEPENDS,
         extra_compile_args=_fieldmap_compile,
         extra_link_args=_link,
         include_dirs=_includes,

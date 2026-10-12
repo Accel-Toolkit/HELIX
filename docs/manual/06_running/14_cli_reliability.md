@@ -34,6 +34,8 @@ the deck's TraceWin options file for a bare deck; a project refuses it).
 Exit codes: 0 success / self-test PASS, 1 execution failure / self-test FAIL,
 2 bad input.
 
+Like every subcommand, `reliability` takes `--threads N|all`, the CPU threads for the space-charge FFT, the field maps and the charge deposition; worker processes share them ([CPU threads](15_threads.md)).
+
 ## A first campaign
 
 ```

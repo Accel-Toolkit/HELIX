@@ -36,6 +36,11 @@ state is persisted per user across sessions:
   **Base PIC grid (nx=ny=nz)**: a single
   cubic spinbox (one value sets all three axes); grid extent
   (σ multiplier); **PIC backend** (auto / cpu / gpu / cuda / mps);
+  **CPU threads** — *All (N)* (default) or 1 … N, the threads for the
+  FFT field solve, the field maps and the charge deposition, for every
+  backend; results are identical for any number.  Saved for this
+  computer, not in the project, and applied at once
+  ([CPU threads](../06_running/15_threads.md));
   **SC engine** — `numpy` (production PIC, default) or `torch`
   (the differentiable PyTorch PIC). Pick `torch` for the
   autograd-differentiable space-charge kick; it runs FP64 on CPU,

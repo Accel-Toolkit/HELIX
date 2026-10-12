@@ -25,6 +25,7 @@ source modes:
 
 | Option | Argument | Default | Meaning |
 |---|---|---|---|
+| `--threads` | N \| `all` | `$HELIX_THREADS`, else `$OMP_NUM_THREADS`, else all | CPU threads for the space-charge FFT, field maps and charge deposition; results are identical for any number ([CPU threads](15_threads.md)) |
 | `--dst` | path | — | exit-plane `.dst` to reconstruct from (omit for design mode) |
 | `--mode` | `mp` \| `envelope` | `mp` | multi-particle walk or RMS σ-matrix walk |
 | `--from-element` | int | `0` | range start — the entrance the walk targets |

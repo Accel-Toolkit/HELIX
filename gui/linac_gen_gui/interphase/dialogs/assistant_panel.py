@@ -1013,7 +1013,9 @@ class AssistantPanel(QDialog):
         # reset the toggle to OFF, so sessions began silently deaf and
         # the wake word "mostly didn't work".  Deferred one event-loop
         # turn so panel construction finishes first; the user's choice
-        # is persisted (turning it off stays off).
+        # is persisted (turning it off stays off).  The panel is built
+        # when the assistant is opened (Tools → Assistant…), not at GUI
+        # launch (2026-10-11), so this is "listening starts on open".
         import os as _os
         if (str(self._settings().value("assist/wake_on", "1")) == "1"
                 and _os.environ.get("HELIX_ASSIST_NO_PREWARM") != "1"):

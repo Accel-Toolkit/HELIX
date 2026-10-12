@@ -7,8 +7,6 @@ of the OpenMP thread count.  A call spy proves which path ran."""
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
 
 import numpy as np
 import pytest
@@ -139,35 +137,25 @@ def test_a_channel_without_a_fused_pack_keeps_the_numpy_path(monkeypatch):
     assert calls == []
 
 
-_THREAD_SCRIPT = r"""
-import sys
-import numpy as np
-sys.path.insert(0, {root!r})
-from tests.elements.test_fieldmap_step import _map, _run
-b = _run(_map(), fused=True)
-np.save(sys.argv[1], b.particles)
-"""
-
-
 @needs
-def test_independent_of_thread_count(tmp_path):
+def test_independent_of_thread_count():
     from linac_gen import _fieldmap_kernels as K
+    from linac_gen.parallel.threads import sync_kernels
     if not K._openmp_enabled:
         pytest.skip("single-threaded build: the thread count cannot change "
                     "anything")
-    root = os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))))
+    if not hasattr(K, "set_num_threads"):
+        pytest.skip("kernel built before thread control (2026-10-11)")
     outs = []
-    for t in ("1", "3"):
-        f = tmp_path / f"t{t}.npy"
-        env = dict(os.environ, OMP_NUM_THREADS=t, PYTHONPATH=root)
-        r = subprocess.run([sys.executable, "-c",
-                            _THREAD_SCRIPT.format(root=root), str(f)],
-                           env=env, capture_output=True, text=True,
-                           timeout=300)
-        assert r.returncode == 0, r.stderr[-2000:]
-        outs.append(np.load(f))
-    assert np.array_equal(outs[0], outs[1], equal_nan=True)
+    try:
+        for t in (1, 3, 14):
+            K.set_num_threads(t)
+            assert K.get_num_threads() == t
+            outs.append(_run(_map(), fused=True).particles)
+    finally:
+        sync_kernels()
+    for o in outs[1:]:
+        assert np.array_equal(o, outs[0], equal_nan=True)
 
 
 @needs

@@ -484,14 +484,23 @@ def run_train(lattice, beam_config, train_config, sc_config=None,
     FastPulseRunner (M3); "hybrid" runs the two-pass HybridReplayRunner
     (M6); "mp"/"envelope" run the tracked TrainRunner.
     """
+    from linac_gen.parallel.threads import run_scope
     mode = getattr(train_config, "mode", None)
     if mode == "fast":
         from linac_gen.train.fast import FastPulseRunner
-        return FastPulseRunner(lattice, beam_config, train_config,
-                               sc_config=sc_config, **kwargs).run()
-    if mode == "hybrid":
+        runner = FastPulseRunner(lattice, beam_config, train_config,
+                                 sc_config=sc_config, **kwargs)
+    elif mode == "hybrid":
         from linac_gen.train.replay import HybridReplayRunner
-        return HybridReplayRunner(lattice, beam_config, train_config,
-                                  sc_config=sc_config, **kwargs).run()
-    return TrainRunner(lattice, beam_config, train_config,
-                       sc_config=sc_config, **kwargs).run()
+        runner = HybridReplayRunner(lattice, beam_config, train_config,
+                                    sc_config=sc_config, **kwargs)
+    else:
+        runner = TrainRunner(lattice, beam_config, train_config,
+                             sc_config=sc_config, **kwargs)
+    with run_scope() as threads_info:   # the HELIX thread setting, BLAS on one
+        results = runner.run()
+    try:
+        results.threads_info = threads_info
+    except (AttributeError, TypeError):
+        pass
+    return results

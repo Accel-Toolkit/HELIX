@@ -171,8 +171,10 @@ workers=N)` runs each seed through the same steps:
 
 It uses a spawn process pool. The BLAS thread variables are set in the
 parent before the pool starts (a spawned child imports numpy before any
-initializer can run), and `threadpoolctl` limits each worker to one
-thread. Serial and pooled results are identical.
+initializer can run), `threadpoolctl` keeps each worker's BLAS on one
+thread, and each worker gets its share of the
+[CPU threads](../06_running/15_threads.md) setting. Serial and pooled
+results are identical.
 
 The metrics for each seed, compared with `design_reference`, are:
 

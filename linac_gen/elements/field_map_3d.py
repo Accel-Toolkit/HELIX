@@ -85,6 +85,10 @@ except ImportError:                                   # pragma: no cover
     _kd_step = None            # a build of the module without the step
 _USE_STEP = (_kd_step is not None
              and _os.environ.get("LINAC_GEN_FIELDMAP_STEP", "1") != "0")
+if _KERNEL_AVAILABLE:
+    # the HELIX thread setting for the module's OpenMP loops
+    from linac_gen.parallel.threads import sync_kernels as _sync_kernels
+    _sync_kernels()
 
 
 def kernel_available() -> bool:

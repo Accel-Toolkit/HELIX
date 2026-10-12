@@ -48,7 +48,7 @@ _WORKER_STATE: dict = {}
 
 
 def _worker_init(element, ref_template, param_names,
-                 counters=None, id_counter=None) -> None:
+                 counters=None, id_counter=None, threads: int = 1) -> None:
     """Pool initializer: stash a deep-copied element per worker process.
 
     For progress reporting each worker claims a unique slot ``wid`` in the
@@ -58,6 +58,9 @@ def _worker_init(element, ref_template, param_names,
     contention on the hot per-sample path; the parent sums the array for
     total progress.
     """
+    # this worker's share of the HELIX thread setting
+    from linac_gen.parallel.threads import set_threads
+    set_threads(threads)
     _WORKER_STATE["element"] = copy.deepcopy(element)
     _WORKER_STATE["ref_template"] = ref_template
     _WORKER_STATE["param_names"] = list(param_names)
@@ -261,11 +264,12 @@ def generate_training_data(
         chunksize = max(1, n_samples // (n_workers * 4))
         log_every = max(1, n_samples // 10)
         last_log = 0
+        from linac_gen.parallel.threads import worker_threads
         with ctx.Pool(
             processes=n_workers,
             initializer=_worker_init,
             initargs=(element, ref_template, param_names,
-                      counters, id_counter),
+                      counters, id_counter, worker_threads(n_workers)),
         ) as pool:
             # Initial 0/N tick so the bar shows the run has started while
             # the spawn Pool brings its workers online (the one-time

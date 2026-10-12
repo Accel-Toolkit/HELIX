@@ -61,6 +61,20 @@ Multi-particle tracking via `Tracker`.  Returns the
 RMS envelope tracking via `EnvelopeSolver`.  Returns a results
 object with the same `s, sigma_x, sigma_y, sigma_phi, ...` arrays.
 
+### Threads
+
+```python
+import linac_gen
+linac_gen.set_threads(4)       # or "all" (the default: every CPU)
+linac_gen.get_threads()        # -> 4
+```
+
+`set_threads` sets the number of CPU threads for the space-charge FFT,
+the field maps and the charge deposition, in this process and the
+processes it starts; results are the same for any number.  `Simulation`,
+`EnvelopeSolver` and the matcher also keep numpy's BLAS on one thread while
+they run.  See [CPU threads](15_threads.md).
+
 ### Source
 
 `linac_gen/core/simulation.py:1`

@@ -138,7 +138,11 @@ a Claude subscription with the simulator.  Requires the optional
 ## GUI
 
 The desktop app exposes the assistant under **Tools → Assistant…** as a
-non-modal panel.  On first open a short **capabilities card** lists what
+non-modal panel.  Nothing of the assistant runs until you open it there:
+the first **Tools → Assistant…** starts it — the AI brain, the voice
+models and hands-free listening (if 👂 was left on) — so a simulation
+started before that never shares the CPU with it.  On first open a short
+**capabilities card** lists what
 it can do, and a row of **quick-action chips** sits above the input —
 **🎓 Tour** (the 15-station guided walkthrough of HELIX), **🧩 Drill**
 (a hidden-fault training exercise), **🐍 Python** (sandboxed analysis
@@ -301,9 +305,10 @@ ends.
 
 **Closing the window.**  The window's close button **hides** the panel
 — the assistant keeps running in the background (hands-free listening
-included), and saying "HELIX" or reopening it from the toolbar brings
-the same conversation back.  The assistant only shuts down with the
-application.
+included), and saying "HELIX" or reopening it from **Tools → Assistant…**
+brings the same conversation back.  The assistant only shuts down with
+the application; the next launch starts without it until you open it
+again.
 
 **Run watching (proactive).**  With **Watch runs** ticked (the
 default), *every* finished run — assistant-initiated **or one you

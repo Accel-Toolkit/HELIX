@@ -835,3 +835,47 @@ def test_assistant_revert_refused_when_no_lattice_loaded(qapp, tmp_path):
                                  label="Assistant edit")
     assert qf.gradient == 9.0
     assert len(st.bus._undo) == 0
+
+
+def test_assistant_starts_only_from_the_tools_menu(win, qapp, monkeypatch):
+    """Nothing of the assistant runs at GUI launch (user decision
+    2026-10-11: its always-on listening used about as much CPU as a
+    running simulation).  The first Tools → Assistant… builds it; later
+    calls re-show the same panel.  The panel is a recording fake, so no
+    microphone opens either way."""
+    from linac_gen_gui.interphase.dialogs import assistant_panel as ap
+    built = []
+
+    class _FakePanel:
+        _closing = False
+
+        def __init__(self, parent, state):
+            self.shown = 0
+            built.append(self)
+
+        def show(self):
+            self.shown += 1
+
+        def raise_(self):
+            pass
+
+        def activateWindow(self):
+            pass
+
+        def shutdown(self):
+            pass
+
+    monkeypatch.setattr(ap, "AssistantPanel", _FakePanel)
+    # allow the launch-time warm start the 2026-07-28 code had, before the
+    # window's deferred start-up steps run in the first pump below
+    monkeypatch.setenv("HELIX_ASSIST_NO_PREWARM", "0")
+    win.pump(0.5)
+    assert built == []
+    assert getattr(win, "_assistant_panel", None) is None
+    win._toolbar.open_assistant_requested.emit()     # Tools → Assistant…
+    qapp.processEvents()
+    assert len(built) == 1 and win._assistant_panel is built[0]
+    assert built[0].shown == 1
+    win._toolbar.open_assistant_requested.emit()     # again: same panel
+    qapp.processEvents()
+    assert len(built) == 1 and built[0].shown == 2

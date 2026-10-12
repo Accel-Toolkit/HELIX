@@ -15,6 +15,7 @@ Convergence metric is ε_x (same as the classic — tolerance 1 %).
 """
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import replace
 import numpy as np
@@ -460,6 +461,12 @@ class ConvergenceTab(QWidget):
             "  mps  — force torch.mps (Apple Silicon Metal GPU, FLOAT32:\n"
             "         ~1e-7 field error, warns). Errors if unavailable."
         )
+        # CPU threads for every run (linac_gen.parallel.threads): a setting
+        # of this computer, kept in QSettings, not in the project.
+        self._cpu_threads = QComboBox()
+        self._init_cpu_threads()
+        self._cpu_threads.currentIndexChanged.connect(
+            self._on_cpu_threads_changed)
         # Space-charge compute engine: production numpy/C++ PIC vs the
         # differentiable PyTorch PIC.  Feeds SpaceChargeConfig.sc_backend.
         self._fixed_sc_backend = QComboBox()
@@ -837,6 +844,7 @@ class ConvergenceTab(QWidget):
         sec_sc.addRow("Green's-function build",   self._fixed_green_build)
         sec_sc.addRow("HELIX_SC_GRID cards",      self._fixed_grid_card)
         sec_sc.addRow("PIC backend",              self._fixed_backend)
+        sec_sc.addRow("CPU threads",              self._cpu_threads)
         sec_sc.addRow("SC engine",                self._fixed_sc_backend)
         sec_sc.addRow("Particle-mesh kernel",     self._fixed_kernel)
         sec_sc.addRow("Grid mode",                self._fixed_grid_mode)
@@ -1391,6 +1399,59 @@ class ConvergenceTab(QWidget):
             grid_card=self._fixed_grid_card.currentText(),
             reuse_every=reuse,
         )
+
+    # ------------------------------------------------------------------
+    _THREADS_KEY = "compute/threads"
+
+    def _init_cpu_threads(self) -> None:
+        """Fill the CPU-threads box and apply the saved choice.
+
+        The number in force comes from, first match wins: HELIX_THREADS (or
+        a user's OMP_NUM_THREADS) in the environment the GUI started with,
+        the choice saved on this computer, every CPU."""
+        from linac_gen.parallel import threads
+        n_cpu = threads.available_threads()
+        box = self._cpu_threads
+        box.addItem(f"All ({n_cpu})", 0)
+        for n in range(1, n_cpu + 1):
+            box.addItem(str(n), n)
+        note = ""
+        source = threads.thread_source()
+        if source == "all":
+            try:
+                saved = make_settings("HELIX", "linac_gen_gui").value(
+                    self._THREADS_KEY, "")
+                if saved:
+                    threads.set_threads(str(saved))
+            except Exception:                         # noqa: BLE001
+                pass                    # unreadable or stale: every CPU
+        elif source in ("env", "omp"):
+            var = threads.ENV if source == "env" else "OMP_NUM_THREADS"
+            note = (f"\n\nSet by {var}={os.environ.get(var)} when HELIX "
+                    "started.")
+        req = threads.requested_threads()
+        if req is not None and box.findData(req) < 0:
+            box.addItem(str(req), req)          # more than this machine has
+        box.setCurrentIndex(max(0, box.findData(0 if req is None else req)))
+        box.setToolTip(
+            "CPU threads for simulations: the space-charge field solve "
+            "(FFT),\nthe field maps and the charge deposition.\n"
+            f"  All — every CPU of this computer ({n_cpu}); the default.\n"
+            "Results are identical for any number; fewer threads only take "
+            "longer.\nSaved for this computer, not in the project.  "
+            "Elsewhere: the CLI option\n--threads, the environment variable "
+            f"{threads.ENV}, or linac_gen.set_threads()." + note)
+
+    def _on_cpu_threads_changed(self, _index: int) -> None:
+        from linac_gen.parallel.threads import set_threads
+        n = int(self._cpu_threads.currentData() or 0)
+        value = "all" if n == 0 else str(n)
+        set_threads(value)
+        try:
+            make_settings("HELIX", "linac_gen_gui").setValue(
+                self._THREADS_KEY, value)
+        except Exception:                             # noqa: BLE001
+            pass
 
     # ------------------------------------------------------------------
     def _restore_section_state(self) -> None:

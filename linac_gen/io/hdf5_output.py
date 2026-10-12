@@ -36,7 +36,7 @@ def _hash_file(path) -> str | None:
 
 def _write_provenance(f, lattice_path=None, seed=None, sc_config=None,
                       lattice=None, input_beam_path=None, grid_cards=None,
-                      solver_stats=None):
+                      solver_stats=None, threads_info=None):
     """``provenance/`` attr group: everything needed to say WHICH code,
     WHICH machine description and WHICH numerical configuration produced
     this file.  A results file without these cannot reproduce its run
@@ -67,25 +67,32 @@ def _write_provenance(f, lattice_path=None, seed=None, sc_config=None,
             prov.attrs["lattice_path"] = str(lattice_path)
     if seed is not None:
         prov.attrs["beam_seed"] = int(seed)
-    # OpenMP configuration: the C++ deposit kernel is bit-deterministic
-    # only at a FIXED thread count, so record what this run used.
+    # Threads (linac_gen.parallel.threads).  The results do not depend on
+    # them -- the FFT, the gathers, the field-map step and the deposits give
+    # the same bits for any count -- so this records what ran and explains
+    # the timing.  Read by the run in its own thread (threads_info, attached
+    # by Simulation / EnvelopeSolver / run_train); else what is in force now.
     try:
+        import json as _json
         import os
-        prov.attrs["omp_num_threads"] = os.environ.get(
-            "OMP_NUM_THREADS", f"unset (cpu_count={os.cpu_count()})")
+        from linac_gen.parallel import threads as _threads
+        info = dict(threads_info or {})
+        if not info:
+            info = {"threads": _threads.get_threads(),
+                    "source": _threads.thread_source(),
+                    "fft": _threads.fft_threads(),
+                    "kernels": _threads.kernel_threads(),
+                    "torch": _threads._torch_threads()}
+        prov.attrs["threads"] = int(info["threads"])
+        prov.attrs["threads_source"] = str(info["source"])
+        prov.attrs["threads_fft"] = int(info["fft"])
+        prov.attrs["threads_kernels"] = _json.dumps(info.get("kernels", {}),
+                                                    sort_keys=True)
+        if info.get("torch") is not None:
+            prov.attrs["threads_torch"] = int(info["torch"])
+        if info.get("blas") is not None:
+            prov.attrs["threads_blas"] = int(info["blas"])
         prov.attrs["omp_dynamic"] = os.environ.get("OMP_DYNAMIC", "unset")
-    except Exception:                                       # noqa: BLE001
-        pass
-    # The thread count actually in force.  HELIX's compiled kernels share
-    # torch's OpenMP runtime (pic_solver imports torch first), so this is
-    # the team the CIC deposit splits particles over -- and a
-    # torch.set_num_threads() call anywhere in the process changes it,
-    # whatever OMP_NUM_THREADS said at start-up.
-    try:
-        import sys as _sys
-        _torch = _sys.modules.get("torch")
-        if _torch is not None:
-            prov.attrs["omp_threads_in_force"] = int(_torch.get_num_threads())
     except Exception:                                       # noqa: BLE001
         pass
     # Which deposit/gather implementation actually ran (C++ OpenMP
@@ -167,20 +174,17 @@ def _write_provenance(f, lattice_path=None, seed=None, sc_config=None,
     # at — a reproduction needs the actual field-map data, the imported
     # beam, and the surrogate identities as well.
     prov.attrs["fp_dtype"] = "float64"      # tracker/envelope precision
-    # OpenMP schedule: read from the kernel binary itself — a .so built
-    # from pre-2026-07 source lacks the contractual schedule(static)
-    # clause and must not be recorded as carrying it; the pure-Python
-    # fallback has no OpenMP at all.
+    # CIC deposit summation order, read from the kernel binary: since
+    # 2026-10-11 every cell sums in particle order (any thread count gives
+    # the same bits); an older binary summed per-thread partial grids.
     try:
         from linac_gen import _pic_kernels as _pk
-        if getattr(_pk, "_openmp_enabled", False):
-            prov.attrs["omp_schedule"] = getattr(
-                _pk, "_omp_schedule",
-                "unknown (kernel predates the schedule(static) clause)")
-        else:
-            prov.attrs["omp_schedule"] = "n/a (kernel built without OpenMP)"
+        prov.attrs["cic_deposit_order"] = getattr(
+            _pk, "_deposit_order",
+            "per-thread grids (kernel built before 2026-10-11: the last "
+            "bits depend on the thread count)")
     except Exception:                                       # noqa: BLE001
-        prov.attrs["omp_schedule"] = "n/a (python fallback deposit)"
+        prov.attrs["cic_deposit_order"] = "particle (python fallback deposit)"
     if input_beam_path:
         digest = _hash_file(input_beam_path)
         if digest:
@@ -657,7 +661,8 @@ def save_results_hdf5(recorder, filepath: str, beam_config=None,
                           grid_cards=getattr(recorder, "sc_grid_cards",
                                              None),
                           solver_stats=getattr(recorder, "sc_solver_stats",
-                                               None))
+                                               None),
+                          threads_info=getattr(recorder, "threads_info", None))
         # ── envelope ─────────────────────────────────────────────────────────
         env = f.create_group("envelope")
         env.create_dataset("s", data=np.array(recorder.s))

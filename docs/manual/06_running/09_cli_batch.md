@@ -13,6 +13,7 @@ python -m linac_gen batch <jobfile.json> [options]
 
 | Option | Argument | Default | Meaning |
 |---|---|---|---|
+| `--threads` | N \| `all` | `$HELIX_THREADS`, else `$OMP_NUM_THREADS`, else all | CPU threads for the space-charge FFT, field maps and charge deposition; results are identical for any number ([CPU threads](15_threads.md)) |
 | `jobfile` | path | (required) | the JSON job file |
 | `--out` | `DIR` | `.` | directory for `batch_summary.csv` |
 | `--parallel` | int | `1` | worker processes; `>1` runs jobs in a process pool |

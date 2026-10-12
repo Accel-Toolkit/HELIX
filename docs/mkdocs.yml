@@ -141,6 +141,7 @@ nav:
       - HELIX extensions: 06_running/03_lg_extensions.md
       - Reading results: 06_running/04_results.md
       - From the GUI: 06_running/05_gui.md
+      - CPU threads: 06_running/15_threads.md
       - Batch CLI overview: 06_running/06_batch_cli.md
       - 'CLI: run': 06_running/07_cli_run.md
       - 'CLI: scan': 06_running/08_cli_scan.md

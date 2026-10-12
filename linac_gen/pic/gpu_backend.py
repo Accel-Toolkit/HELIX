@@ -132,6 +132,7 @@ def effective_backend_info(use_gpu: str = "auto") -> dict:
         "resolved_mode": resolved,
         "env_override": env_raw if env_raw is not None else "",
         "fft_workers": os.environ.get("LINAC_GEN_FFT_WORKERS", ""),
+        "fft_threads": _CpuBackend._workers(),
     }
 
 
@@ -216,25 +217,19 @@ class _CpuBackend:
 
     @staticmethod
     def _workers() -> int:
-        raw = os.environ.get("LINAC_GEN_FFT_WORKERS")
-        if raw:
-            try:
-                n = int(raw)
-                if n != 0:
-                    return n
-            except ValueError:
-                pass
-        # scipy.fft's multi-threaded pocketfft uses a *global* thread pool
-        # that is unsafe to drive from a secondary thread: when the pool is
-        # torn down elsewhere in the process it raises "Work item submitted
-        # after shutdown" mid-run.  Off the main thread (GUI run-worker,
-        # assistant job pool) force a single thread — the transform is
-        # bit-identical regardless of worker count and the cost is
-        # negligible at PIC grid sizes.  An explicit env override wins.
+        """FFT threads (linac_gen.parallel.threads.fft_threads):
+        ``LINAC_GEN_FFT_WORKERS`` when set, else the HELIX thread setting."""
+        from linac_gen.parallel.threads import fft_threads
+        return fft_threads()
+
+    @staticmethod
+    def _split_here() -> bool:
+        # Off the main thread scipy's own FFT pool is unsafe (a fork
+        # elsewhere in the process shuts it down mid-transform), so the
+        # transform is threaded by linac_gen.pic.fft_split instead -- the
+        # same bits either way.
         import threading
-        if threading.current_thread() is not threading.main_thread():
-            return 1
-        return -1
+        return threading.current_thread() is not threading.main_thread()
 
     def to_device(self, arr):
         import numpy as _np
@@ -245,14 +240,22 @@ class _CpuBackend:
         return _np.asarray(arr)
 
     def rfftn(self, x):
-        if self._has_scipy:
-            return self._fft.rfftn(x, workers=self._workers())
-        return self._fft.rfftn(x)
+        if not self._has_scipy:
+            return self._fft.rfftn(x)
+        n = self._workers()
+        if n > 1 and self._split_here():
+            from linac_gen.pic import fft_split
+            return fft_split.rfftn(x, n)
+        return self._fft.rfftn(x, workers=n)
 
     def irfftn(self, x, s):
-        if self._has_scipy:
-            return self._fft.irfftn(x, s=s, workers=self._workers())
-        return self._fft.irfftn(x, s=s)
+        if not self._has_scipy:
+            return self._fft.irfftn(x, s=s)
+        n = self._workers()
+        if n > 1 and self._split_here():
+            from linac_gen.pic import fft_split
+            return fft_split.irfftn(x, s, n)
+        return self._fft.irfftn(x, s=s, workers=n)
 
     def free_memory(self) -> None:
         pass
@@ -417,9 +420,9 @@ def _maybe_emit_banner(backend_name: str) -> None:
         except Exception:
             _log.info("PicSolver: using MPS backend (torch)")
             return
-    workers = os.environ.get("LINAC_GEN_FFT_WORKERS", "auto")
     _log.info(
-        "PicSolver: using CPU backend (scipy.fft, workers=%s)", workers,
+        "PicSolver: using CPU backend (scipy.fft, %d threads)",
+        _CpuBackend._workers(),
     )
 
 

@@ -173,7 +173,8 @@ The GUI saves `sc_method` and every space-charge setting explicitly.
 The HDF5 provenance group records the method (`sc_method`), the registry
 version, every space-charge setting, the `HELIX_SC_GRID` cards and what
 was done with them, the solver's counters (`sc_solver_stats`: Green's
-function builds, solved and reused kicks) and the thread count in force.
+function builds, solved and reused kicks) and the threads in use (which
+do not change the results — [CPU threads](../06_running/15_threads.md)).
 
 ## Cross-references
 

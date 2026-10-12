@@ -22,7 +22,8 @@ a convolution via FFT, and returns the three components of E = -grad(phi)
 computed with finite differences.
 
 FFTs are dispatched through :mod:`linac_gen.pic.gpu_backend`, which picks
-between a CPU path (``scipy.fft`` with ``workers=-1`` or ``numpy.fft`` if
+between a CPU path (``scipy.fft`` on the HELIX thread setting, see
+:mod:`linac_gen.parallel.threads`, or ``numpy.fft`` if
 SciPy is unavailable) and a GPU path (``cupyx.scipy.fft`` in FP64).  The
 selection is controlled by ``SpaceChargeConfig.use_gpu`` and overridable by
 the ``LINAC_GEN_USE_GPU`` env var.  The FFT of the Green's function is

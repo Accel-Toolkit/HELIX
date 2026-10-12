@@ -41,6 +41,7 @@ import numpy as np
 
 from linac_gen.core.config import BeamConfig
 from linac_gen.matching.constraints import Constraint, collect_constraints
+from linac_gen.parallel.threads import in_run_scope
 from linac_gen.matching.variables import (MatchingConfigError, Variable,
                                           collect_variables)
 
@@ -375,7 +376,8 @@ _PARALLEL_STATE: dict = {}
 def _cmaes_pool_init(lattice, beam_cfg, variables, col_for_var,
                      space_charge: bool,
                      search_solver: str = "envelope",
-                     mp_kwargs: dict | None = None) -> None:
+                     mp_kwargs: dict | None = None,
+                     threads: int = 1) -> None:
     """Pool ``initializer`` -- stash per-worker state.
 
     Worker processes inherit a copy of these via fork or rebuild via
@@ -386,12 +388,13 @@ def _cmaes_pool_init(lattice, beam_cfg, variables, col_for_var,
     ``search_solver`` selects the objective the workers score
     ("envelope" or "mp") — an explicit caller choice since the honesty
     round; workers no longer hardwire the envelope cost.
+
+    ``threads``: this worker's share of the HELIX thread setting
+    (``threads // workers``, see :mod:`linac_gen.parallel.threads`).
     """
-    import os as _os
     from linac_gen.matching.constraints import collect_constraints
-    # N workers × threaded FFTs oversubscribes the box — same guard as
-    # parallel/scan_pool.
-    _os.environ.setdefault("LINAC_GEN_FFT_WORKERS", "1")
+    from linac_gen.parallel.threads import set_threads
+    set_threads(threads)
     _PARALLEL_STATE["lattice"] = lattice
     _PARALLEL_STATE["beam_cfg"] = beam_cfg
     _PARALLEL_STATE["variables"] = variables
@@ -465,6 +468,7 @@ def _evaluate_residuals(constraints: List[Constraint], results, lattice
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+@in_run_scope
 def match(lattice, beam_cfg: BeamConfig, *,
           space_charge: bool = False,
           algorithm: str = "least_squares",
@@ -1070,6 +1074,8 @@ def match(lattice, beam_cfg: BeamConfig, *,
         if n_workers > 1:
             try:
                 from multiprocessing import Pool as _Pool
+                from linac_gen.parallel.threads import (
+                    worker_threads as _worker_threads)
                 pool = _Pool(
                     processes=n_workers,
                     initializer=_cmaes_pool_init,
@@ -1078,7 +1084,8 @@ def match(lattice, beam_cfg: BeamConfig, *,
                               dict(n_particles=mp_n_particles,
                                    seed=mp_seed,
                                    sc_config=mp_sc_config,
-                                   step_config=mp_step_config)),
+                                   step_config=mp_step_config),
+                              _worker_threads(n_workers)),
                 )
             except Exception as exc:    # noqa: BLE001
                 # Fall back to sequential (with the notice below) --

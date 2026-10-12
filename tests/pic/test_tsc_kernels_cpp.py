@@ -85,34 +85,34 @@ def test_repeated_calls_identical():
         assert np.array_equal(K.deposit_tsc(pos, q, gmin, gmax, n), first)
 
 
-_THREAD_SCRIPT = r"""
-import sys, numpy as np
-from linac_gen.pic import pic_solver            # torch first, then the kernel
-from linac_gen import _tsc_kernels as K
-rng = np.random.default_rng(5)
-pos = rng.standard_normal((40000, 3)) * [1.5, 1.2, 2.8]
-q = np.full(len(pos), 1e-15); n = np.array([32, 32, 32], dtype=np.int64)
-gmin, gmax = pos.mean(0) - 5 * pos.std(0), pos.mean(0) + 5 * pos.std(0)
-E = [rng.standard_normal((32, 32, 32)) for _ in range(3)]
-np.savez(sys.argv[1], rho=K.deposit_tsc(pos, q, gmin, gmax, n),
-         e=K.interpolate_tsc(*E, pos, gmin, gmax, n))
-"""
-
-
 @needs
-def test_independent_of_thread_count(tmp_path):
+def test_independent_of_thread_count():
+    """The gather at 1, 3 and 14 threads, set through the module's own
+    control (OMP_NUM_THREADS no longer reaches the kernels); the deposit
+    is single-threaded and is pinned for repeatability above."""
     if not K._openmp_enabled:
         pytest.skip("single-threaded build: the thread count cannot change anything")
+    if not hasattr(K, "set_num_threads"):
+        pytest.skip("kernel built before thread control (2026-10-11)")
+    from linac_gen.parallel.threads import sync_kernels
+    rng = np.random.default_rng(5)
+    pos = rng.standard_normal((40000, 3)) * [1.5, 1.2, 2.8]
+    q = np.full(len(pos), 1e-15)
+    n = np.array([32, 32, 32], dtype=np.int64)
+    gmin, gmax = pos.mean(0) - 5 * pos.std(0), pos.mean(0) + 5 * pos.std(0)
+    E = [rng.standard_normal((32, 32, 32)) for _ in range(3)]
     outs = []
-    for t in ("1", "3"):
-        f = tmp_path / f"t{t}.npz"
-        env = dict(os.environ, OMP_NUM_THREADS=t)
-        r = subprocess.run([sys.executable, "-c", _THREAD_SCRIPT, str(f)], env=env,
-                           capture_output=True, text=True, timeout=300)
-        assert r.returncode == 0, r.stderr[-2000:]
-        outs.append(np.load(f))
-    assert np.array_equal(outs[0]["rho"], outs[1]["rho"])
-    assert np.array_equal(outs[0]["e"], outs[1]["e"])
+    try:
+        for t in (1, 3, 14):
+            K.set_num_threads(t)
+            assert K.get_num_threads() == t
+            outs.append((K.deposit_tsc(pos, q, gmin, gmax, n),
+                         K.interpolate_tsc(*E, pos, gmin, gmax, n)))
+    finally:
+        sync_kernels()
+    for rho, e in outs[1:]:
+        assert np.array_equal(rho, outs[0][0])
+        assert np.array_equal(e, outs[0][1])
 
 
 @pytest.mark.filterwarnings("ignore:invalid value encountered in cast:RuntimeWarning")

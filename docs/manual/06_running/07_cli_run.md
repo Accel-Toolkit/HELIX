@@ -63,6 +63,7 @@ or a `.lgproj` project.
 | Option | Argument | Default | Meaning |
 |---|---|---|---|
 | `--seed` | int | `42` | RNG seed for the particle distribution |
+| `--threads` | N \| `all` | `$HELIX_THREADS`, else `$OMP_NUM_THREADS`, else all | CPU threads for the space-charge FFT, field maps and charge deposition; results are identical for any number ([CPU threads](15_threads.md)) |
 | `--action-scan` | flag | off | record the halo action scan (particles outside the n·ε_rms ellipses, per step and plane) into the results file's `action_scan/` group — `mp` mode and the `hdf5` format only (otherwise ignored with a warning).  The project's `record_action_scan` setting is not read: pass the flag |
 | `--fail-under-transmission` | % | — | exit non-zero if final transmission falls below this |
 | `-q`, `--quiet` | flag | off | suppress the run report |

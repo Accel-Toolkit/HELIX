@@ -309,11 +309,13 @@ def test_voice_failure_resets_state_to_idle(qapp, tmp_path):
     panel.shutdown()
 
 
-def test_wake_autostarts_on_launch_and_persists_choice(qapp, tmp_path,
-                                                       monkeypatch):
+def test_wake_autostarts_when_opened_and_persists_choice(qapp, tmp_path,
+                                                         monkeypatch):
     """MIRAGE parity (2026-07-28): hands-free must start WITH the panel
     — sessions used to begin silently deaf (gray orb) until the toggle
-    was clicked, and every relaunch reset it."""
+    was clicked, and every relaunch reset it.  The panel is built when
+    the assistant is opened (Tools → Assistant…), not at GUI launch
+    (2026-10-11), so this is "listening starts on open"."""
     from linac_gen.assist.testing import turn_text
 
     monkeypatch.setenv("HELIX_ASSIST_NO_PREWARM", "0")   # opt IN

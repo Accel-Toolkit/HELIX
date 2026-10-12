@@ -343,9 +343,11 @@ def _add_common_beam_args(p, defaults):
 def main(argv=None) -> int:
     from linac_gen.cli.common import make_console_encoding_safe
     make_console_encoding_safe()     # ∈ in scope strings kills cp1252 consoles
+    from linac_gen.cli.common import add_threads_argument, apply_threads_arg
     parser = argparse.ArgumentParser(
         prog="linac_gen.surrogates",
         description="HELIX surrogate-element CLI (M5).")
+    add_threads_argument(parser)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     # -- train ----------------------------------------------------------
@@ -421,6 +423,7 @@ def main(argv=None) -> int:
     p_multi.set_defaults(fn=_cmd_register_multi)
 
     args = parser.parse_args(argv)
+    apply_threads_arg(args)
     return args.fn(args)
 
 

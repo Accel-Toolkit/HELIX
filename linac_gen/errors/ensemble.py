@@ -185,12 +185,16 @@ def _row_sigmas(corrector, sigma):
     return np.full(len(corrector.rows), float(sigma or 0.0))
 
 
-def _init_worker():
+def _init_worker(threads: int = 1):
     try:
         from threadpoolctl import threadpool_limits
         threadpool_limits(1)
     except Exception:                                          # noqa: BLE001
         pass
+    # this worker's share of the HELIX thread setting (the kernels take
+    # it, not OMP_NUM_THREADS)
+    from linac_gen.parallel.threads import set_threads
+    set_threads(threads)
 
 
 def run_ensemble(study, seeds, *, design=None, corrector=None, corr_kw=None,
@@ -224,8 +228,11 @@ def run_ensemble(study, seeds, *, design=None, corrector=None, corr_kw=None,
     os.environ.update({v: "1" for v in _THREAD_VARS})
     try:
         ctx = mp.get_context("spawn")
+        from linac_gen.parallel.threads import worker_threads
         with ProcessPoolExecutor(max_workers=int(workers), mp_context=ctx,
-                                 initializer=_init_worker) as ex:
+                                 initializer=_init_worker,
+                                 initargs=(worker_threads(
+                                     min(int(workers), len(args))),)) as ex:
             return list(ex.map(_job, args,
                                chunksize=max(1, len(args) // (4 * int(workers)))))
     finally:

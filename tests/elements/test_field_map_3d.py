@@ -133,25 +133,22 @@ def test_3d_tracker_agrees_with_2d_cyl_tracker():
     )
 
 
-@pytest.mark.parametrize("n_threads", [1, 2, 4])
-def test_3d_tracker_deterministic_across_omp_threads(n_threads, monkeypatch):
-    """RegularGridInterpolator is deterministic; OMP count must not change results."""
-    monkeypatch.setenv("OMP_NUM_THREADS", str(n_threads))
+def test_3d_tracker_identical_across_thread_counts():
+    """The tracked particle is the same, bit for bit, at 1, 2 and 4
+    threads (set through the HELIX thread setting, which the kernels take;
+    OMP_NUM_THREADS set at run time never reached them)."""
+    from tests.helpers import kept_thread_setting
     data = _pillbox_axisymmetric()
-    fm = FieldMap3D(name="P3D", length=100.0, field_data=data, n_steps=40)
-    beam = _beam(x_mm=2.0)
-    for _ in range(fm.n_steps):
-        fm.track_rk4(beam, fm.length / fm.n_steps)
-    # Record to a mutable list so pytest can compare across parametrizations
-    # (simplest: assert a fixed reference).  We just check values are finite
-    # and that the same inputs always produce the same xp.
-    xp = float(beam.particles[0, 1])
-    assert np.isfinite(xp)
-    # Pin to 1e-12 of the OMP=1 reference (captured on first run):
-    # since RGI is pure NumPy, this should hold trivially — we simply
-    # verify determinism by re-running and comparing.
-    beam2 = _beam(x_mm=2.0)
-    fm2 = FieldMap3D(name="P3D2", length=100.0, field_data=data, n_steps=40)
-    for _ in range(fm2.n_steps):
-        fm2.track_rk4(beam2, fm2.length / fm2.n_steps)
-    np.testing.assert_allclose(xp, beam2.particles[0, 1], rtol=1e-14)
+    out = []
+    with kept_thread_setting() as threads:
+        for n in (1, 2, 4):
+            threads.set_threads(n)
+            fm = FieldMap3D(name="P3D", length=100.0, field_data=data,
+                            n_steps=40)
+            beam = _beam(x_mm=2.0)
+            for _ in range(fm.n_steps):
+                fm.track_rk4(beam, fm.length / fm.n_steps)
+            out.append(beam.particles.copy())
+    assert np.isfinite(out[0]).all()
+    for o in out[1:]:
+        assert np.array_equal(o, out[0])

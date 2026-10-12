@@ -1501,43 +1501,33 @@ def _parameter_scan(ctx, element: str, attribute: str, start: float,
         point_sc = _scan_point_sc(sc)
     values = _np.linspace(float(start), float(stop), n)
     rows, aborted = [], False
-    # scan_pool's worker setdefaults LINAC_GEN_FFT_WORKERS=1 (meant for
-    # subprocess pools); running in-process, snapshot & restore it so one
-    # scan doesn't permanently single-thread the host GUI's FFTs.
-    _prev_fft = _os.environ.get("LINAC_GEN_FFT_WORKERS")
-    try:
-        for i, v in enumerate(values):
-            if should_abort is not None and should_abort():
-                aborted = True
-                break
-            point = ScanPoint(lattice_path=lattice_path,
-                              beam_config=dict(beam_dict),
-                              **point_sc,
-                              step1=step1, step2=step2,
-                              drift_single_push=single,
-                              mode=("envelope" if mode != "mp" else "mp"),
-                              element_overrides=((selector, float(v)),))
-            try:
-                m = _run_one_point_worker(point)
-            except Exception as exc:                        # noqa: BLE001
-                rows.append({"value": float(v),
-                             "error": f"{type(exc).__name__}: {exc}"})
-                continue
+    for i, v in enumerate(values):
+        if should_abort is not None and should_abort():
+            aborted = True
+            break
+        point = ScanPoint(lattice_path=lattice_path,
+                          beam_config=dict(beam_dict),
+                          **point_sc,
+                          step1=step1, step2=step2,
+                          drift_single_push=single,
+                          mode=("envelope" if mode != "mp" else "mp"),
+                          element_overrides=((selector, float(v)),))
+        try:
+            m = _run_one_point_worker(point)
+        except Exception as exc:                        # noqa: BLE001
             rows.append({"value": float(v),
-                         **{k: m.get(k) for k in
-                            ("sigma_x", "sigma_y", "sigma_phi", "emit_x",
-                             "emit_y", "transmission", "ref_w_kin",
-                             "elapsed")}})
-            if progress_callback is not None:
-                try:
-                    progress_callback(float(i + 1), i + 1, n)
-                except Exception:                           # noqa: BLE001
-                    pass
-    finally:
-        if _prev_fft is None:
-            _os.environ.pop("LINAC_GEN_FFT_WORKERS", None)
-        else:
-            _os.environ["LINAC_GEN_FFT_WORKERS"] = _prev_fft
+                         "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        rows.append({"value": float(v),
+                     **{k: m.get(k) for k in
+                        ("sigma_x", "sigma_y", "sigma_phi", "emit_x",
+                         "emit_y", "transmission", "ref_w_kin",
+                         "elapsed")}})
+        if progress_callback is not None:
+            try:
+                progress_callback(float(i + 1), i + 1, n)
+            except Exception:                           # noqa: BLE001
+                pass
     data = {"element": getattr(el, "name", f"#{idx}"),
             "attribute": attribute, "selector": selector,
             "mode": mode, "points": rows, "aborted": aborted,

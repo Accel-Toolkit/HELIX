@@ -27,9 +27,14 @@ def run_jobs(fn, jobs, *, max_workers: int | None = None, on_done=None,
             if on_done is not None:
                 on_done(i, row)
         return results
-    os.environ.setdefault("LINAC_GEN_FFT_WORKERS", "1")
+    # the workers share the HELIX thread setting; nothing is set in this
+    # (possibly GUI) process
+    from linac_gen.parallel.threads import init_worker, worker_threads
     pool = ProcessPoolExecutor(max_workers=workers,
-                               mp_context=multiprocessing.get_context("spawn"))
+                               mp_context=multiprocessing.get_context("spawn"),
+                               initializer=init_worker,
+                               initargs=(worker_threads(
+                                   min(workers, len(jobs)) or 1),))
 
     def _kill_pool() -> None:
         pool.shutdown(wait=False, cancel_futures=True)

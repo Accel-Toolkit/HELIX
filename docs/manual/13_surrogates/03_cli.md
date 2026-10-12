@@ -14,6 +14,8 @@ python -m linac_gen.surrogates.cli <subcommand> [options]
 | `run-envelope`   | Run one envelope pass with surrogates engaged |
 | `register-multi` | Register one trained surrogate under multiple element names |
 
+`--threads N|all`, given before the subcommand (`python -m linac_gen.surrogates.cli --threads 4 train …`), sets the CPU threads; training's worker processes share them ([CPU threads](../06_running/15_threads.md)).
+
 ## `train`
 
 Train a `FieldMap3D` surrogate.  Writes `weights.pt` +

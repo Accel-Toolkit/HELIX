@@ -25,6 +25,11 @@ Subcommands:
   import and a built-in self-test;
 * ``match`` — delegates to the matcher (``python -m linac_gen.matching``).
 
+Every subcommand takes ``--threads N|all``: the CPU threads for the
+space-charge FFT, the field maps and the charge deposition (default
+``$HELIX_THREADS``, else ``$OMP_NUM_THREADS``, else every CPU; results are
+the same for any number).
+
 All of it is GUI-free and drives the same engines the GUI uses.
 """
 from __future__ import annotations
@@ -34,7 +39,9 @@ import sys
 
 
 def main(argv: list[str] | None = None) -> int:
-    from linac_gen.cli.common import (make_console_encoding_safe,
+    from linac_gen.cli.common import (apply_threads_arg,
+                                      make_console_encoding_safe,
+                                      threads_parent,
                                       warn_if_no_cpp_kernels)
     make_console_encoding_safe()
     warn_if_no_cpp_kernels()
@@ -54,6 +61,11 @@ def main(argv: list[str] | None = None) -> int:
                "(python -m linac_gen.matching).",
     )
     sub = parser.add_subparsers(dest="command", required=True)
+    threads = threads_parent()
+
+    def command(name, **kw):
+        # every subcommand takes --threads N|all
+        return sub.add_parser(name, parents=[threads], **kw)
 
     from linac_gen.cli import assist as assist_cmd
     from linac_gen.cli import backtrack as backtrack_cmd
@@ -69,37 +81,37 @@ def main(argv: list[str] | None = None) -> int:
     from linac_gen.cli import tracewin_ini as twini_cmd
     from linac_gen.cli import reliability as rel_cmd
 
-    run_cmd.add_arguments(sub.add_parser(
+    run_cmd.add_arguments(command(
         "run", help="run one headless simulation"))
-    scan_cmd.add_arguments(sub.add_parser(
+    scan_cmd.add_arguments(command(
         "scan", help="native parameter scan → CSV summary"))
-    batch_cmd.add_arguments(sub.add_parser(
+    batch_cmd.add_arguments(command(
         "batch", help="multi-run campaign from a JSON job file"))
-    study_cmd.add_arguments(sub.add_parser(
+    study_cmd.add_arguments(command(
         "study", help="parameter study — per-run folders, resume, "
                       "oat/zip/grid/random/lhs strategies"))
-    twiss_cmd.add_arguments(sub.add_parser(
+    twiss_cmd.add_arguments(command(
         "twiss", help="matched Twiss — whole-lattice or FODO-cell input match"))
-    mo_cmd.add_arguments(sub.add_parser(
+    mo_cmd.add_arguments(command(
         "mo", help="multi-objective design — Pareto front over ADJUST knobs"))
-    fail_cmd.add_arguments(sub.add_parser(
+    fail_cmd.add_arguments(command(
         "failures", help="element failure impact + recovery → CSV"))
-    backtrack_cmd.add_arguments(sub.add_parser(
+    backtrack_cmd.add_arguments(command(
         "backtrack", help="backward tracking — reconstruct an upstream "
                           "distribution from a downstream state"))
-    assist_cmd.add_arguments(sub.add_parser(
+    assist_cmd.add_arguments(command(
         "assist", help="AI assistant chat (OPTIONAL — local or cloud "
                        "LLM; the rest of HELIX never needs it)"))
-    export_cmd.add_arguments(sub.add_parser(
+    export_cmd.add_arguments(command(
         "export", help="write the lattice in another code's format "
                        "(MAD-X sequence)"))
-    orm_cmd.add_arguments(sub.add_parser(
+    orm_cmd.add_arguments(command(
         "orm", help="orbit-response matrix — compare a measurement with the "
                     "model, LOCO-style quad/trim/BPM calibration, deck export"))
-    twini_cmd.add_arguments(sub.add_parser(
+    twini_cmd.add_arguments(command(
         "twini", help="TraceWin project options file (.ini) — converted "
                       "beam, decode report, or a .lgproj for the deck"))
-    rel_cmd.add_arguments(sub.add_parser(
+    rel_cmd.add_arguments(command(
         "reliability", help="Reliability Study mode — faults + compensation, imperfections, "
                             "foil, availability as one resumable campaign with a report; "
                             "job export/import; self-test"))
@@ -107,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="run the matcher (delegates to linac_gen.matching)")
 
     args = parser.parse_args(argv)
+    apply_threads_arg(args)
     if args.command == "run":
         return run_cmd.run(args)
     if args.command == "scan":

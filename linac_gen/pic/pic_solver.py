@@ -43,11 +43,9 @@ try:  # noqa: SIM105
 except Exception:
     pass
 
-# Reproducibility note: OMP_DYNAMIC is pinned FALSE in
-# linac_gen/__init__.py — it must be set BEFORE the torch import above
-# (torch initializes the shared libomp, which reads the env var once),
-# so setting it here would be too late.  Results still differ ~1e-10
-# ACROSS different OMP_NUM_THREADS settings — documented in the manual.
+# Thread count: the kernels take the HELIX setting
+# (linac_gen.parallel.threads), not OMP_NUM_THREADS, and their results do
+# not depend on it -- the CIC deposit sums every cell in particle order.
 
 try:
     from linac_gen._pic_kernels import (
@@ -80,6 +78,11 @@ if os.environ.get("LINAC_GEN_TSC_KERNEL", "1") != "0":
         _log.info("PIC: using C++ TSC kernels (linac_gen._tsc_kernels)")
     except ImportError:
         _log.info("PIC: C++ TSC kernels unavailable; using the Python TSC kernels")
+
+if _USE_CPP or _USE_CPP_TSC:
+    # the HELIX thread setting for the kernels' OpenMP loops
+    from linac_gen.parallel.threads import sync_kernels as _sync_kernels
+    _sync_kernels()
 
 
 def _cpp_tsc_ok(positions, grid_min, grid_max, n_grid) -> bool:

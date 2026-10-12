@@ -21,6 +21,7 @@ from scipy.special import elliprd
 
 from linac_gen.core.constants import EPSILON_0, E_CHARGE, C_LIGHT, PI
 from linac_gen.core.reference import ReferenceParticle
+from linac_gen.parallel.threads import in_run_scope
 from linac_gen.elements.base import (
     TransferMapElement, ThinKickElement, PassiveElement, FieldMapElement,
 )
@@ -659,8 +660,10 @@ class EnvelopeSolver:
                             if self._bunch_freq_override is not None
                             else float(self._ref.frequency))
 
+    @in_run_scope
     def run(self) -> EnvelopeResults:
-        """Track envelope through lattice and return results."""
+        """Track envelope through lattice and return results.  (Runs in the
+        HELIX thread setting's scope: linac_gen.parallel.threads.)"""
         if self._initial_sigma is not None:
             # Full entrance covariance supplied — required for coupled
             # seeds (solenoid cross terms) that a Twiss dict cannot

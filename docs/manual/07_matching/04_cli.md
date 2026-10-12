@@ -22,6 +22,7 @@ This parses the `.dat`, runs the matcher on its embedded `ADJUST_*` /
 
 | Flag | Default | Meaning |
 |---|---|---|
+| `--threads N\|all` | `$HELIX_THREADS`, else `$OMP_NUM_THREADS`, else all | CPU threads for the space-charge FFT, field maps and charge deposition; results are identical for any number ([CPU threads](../06_running/15_threads.md)) |
 | `input` (positional) | required | input lattice `.dat` |
 | `--out PATH` | `<input>.matched.dat` | where to write the matched lattice |
 | `--no-write` | off | skip writing the matched `.dat` (just report) |

@@ -109,22 +109,59 @@ def test_hdf5_provenance_names_the_method_that_ran(recorder, tmp_path):
         assert prov["sc_method_registry"] == methods.REGISTRY_VERSION
 
 
-def test_hdf5_provenance_records_threads_in_force(recorder, tmp_path):
-    """The CIC deposit is bit-reproducible only at a fixed thread count, and
-    torch.set_num_threads() changes that count for HELIX's kernels too (one
-    shared OpenMP runtime), so the count in force is recorded."""
-    import torch
+def test_hdf5_provenance_records_the_threads(recorder, tmp_path):
+    """Without the run's own record (a results object built elsewhere), the
+    thread setting in force is recorded (the results do not depend on it):
+    the count and where it came from, the FFT's, each kernel's and
+    torch's."""
+    import json
+    import sys
 
     from linac_gen.io.hdf5_output import save_results_hdf5
-    prev = torch.get_num_threads()
-    try:
-        torch.set_num_threads(max(1, prev - 1))
+    from tests.helpers import kept_thread_setting
+    run_info = recorder.__dict__.pop("threads_info", None)
+    with kept_thread_setting() as threads:
+        threads.set_threads(3)
         out = tmp_path / "r.h5"
         save_results_hdf5(recorder, str(out))
         with h5py.File(out, "r") as f:
-            assert f["provenance"].attrs["omp_threads_in_force"] == max(1, prev - 1)
+            prov = f["provenance"].attrs
+            assert prov["threads"] == 3
+            assert prov["threads_source"] == "set"
+            assert prov["threads_fft"] == 3
+            kernels = json.loads(prov["threads_kernels"])
+            for name in threads.KERNEL_MODULES:
+                mod = sys.modules.get(name)
+                if mod is not None and hasattr(mod, "get_num_threads"):
+                    # a build without OpenMP runs one thread
+                    want = 3 if getattr(mod, "_openmp_enabled", False) else 1
+                    assert kernels[name.rsplit(".", 1)[1]] == want
+            if "torch" in sys.modules:
+                assert prov["threads_torch"] == 3
+    if run_info is not None:
+        recorder.threads_info = run_info
+
+
+def test_hdf5_provenance_prefers_what_the_run_recorded(recorder, tmp_path):
+    """A GUI run records its threads in its worker thread; the file is
+    written later on the main thread, whose torch count differs."""
+    from linac_gen.io.hdf5_output import save_results_hdf5
+    run_info = getattr(recorder, "threads_info", None)
+    recorder.threads_info = {"threads": 6, "source": "set", "fft": 6,
+                             "kernels": {"_pic_kernels": 6}, "torch": 6,
+                             "blas": 1}
+    try:
+        out = tmp_path / "r.h5"
+        save_results_hdf5(recorder, str(out))
+        with h5py.File(out, "r") as f:
+            prov = f["provenance"].attrs
+            assert (prov["threads"], prov["threads_fft"],
+                    prov["threads_torch"], prov["threads_blas"]) == (6, 6, 6, 1)
     finally:
-        torch.set_num_threads(prev)
+        if run_info is None:
+            del recorder.threads_info
+        else:
+            recorder.threads_info = run_info
 
 
 def test_hdf5_provenance_uses_the_runs_own_sc_config(tmp_path):
@@ -183,10 +220,9 @@ def test_hdf5_provenance_referenced_inputs(recorder, tmp_path, deck):
     with h5py.File(out, "r") as f:
         prov = f["provenance"].attrs
         assert prov["fp_dtype"] == "float64"
-        # C++ kernels report the OpenMP schedule; pure-Python CI
-        # pure-Python builds honestly report n/a
-        assert (prov["omp_schedule"] == "static"
-                or str(prov["omp_schedule"]).startswith("n/a"))
+        # read from the kernel binary: particle order since 2026-10-11
+        # (the pure-Python deposit is particle order too)
+        assert str(prov["cic_deposit_order"]).startswith("particle")
         assert prov["integration_steps_per_metre"] == 100.0
         assert prov["sc_steps_per_metre"] == 50.0
         assert bool(prov["drift_single_push"]) is True

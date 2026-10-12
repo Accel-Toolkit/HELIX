@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "linac_gen"
-version = "1.15.1"
+version = "1.16.0"
 description = "Particle tracking code with PIC space charge for proton/ion linacs"
 readme = "README.md"
 # Dict form (not bare SPDX string) so older setuptools still parses it.
@@ -19,6 +19,8 @@ dependencies = [
     "h5py>=3.8",
     "cma>=3.3",
     "torch>=2.0",
+    # keeps BLAS on one thread during a run (linac_gen.parallel.threads)
+    "threadpoolctl>=3.0",
 ]
 
 [project.optional-dependencies]

@@ -28,8 +28,9 @@ def _scratch_repo(tmp_path: Path) -> Path:
     (root / "linac_gen" / "csrc").mkdir(parents=True)
     shutil.copy(REPO / "setup.py", root / "setup.py")
     shutil.copy(REPO / "pyproject.toml", root / "pyproject.toml")
-    for src in (REPO / "linac_gen" / "csrc").glob("*.cpp"):
-        shutil.copy(src, root / "linac_gen" / "csrc" / src.name)
+    for pattern in ("*.cpp", "*.h"):          # sources and their headers
+        for src in (REPO / "linac_gen" / "csrc").glob(pattern):
+            shutil.copy(src, root / "linac_gen" / "csrc" / src.name)
     (root / "linac_gen" / "__init__.py").write_text("", encoding="utf-8")
     return root
 

@@ -46,31 +46,34 @@ def test_cpu_backend_rfftn_matches_numpy(monkeypatch):
     assert np.allclose(y_be, y_ref, atol=1e-12, rtol=1e-12)
 
 
-def test_fft_workers_single_threaded_off_main_thread(monkeypatch):
-    """Regression: scipy.fft's multi-threaded pocketfft pool is unsafe on a
-    secondary thread — it raised 'Work item submitted after shutdown' during
-    a multiparticle+SC run driven from the assistant's background job pool.
-    Off the main thread the CPU backend must fall back to a single worker;
-    on the main thread it keeps all cores; an explicit env override wins."""
-    import threading
+def test_fft_threads_follow_the_setting(monkeypatch):
+    """The CPU backend's FFT takes the HELIX thread setting on every thread
+    -- off the main thread it used to drop to one (the transform is now
+    split by linac_gen.pic.fft_split there, tests/pic/test_fft_split.py) --
+    and LINAC_GEN_FFT_WORKERS still wins (scipy's convention, -1 = all)."""
+    import os
     from concurrent.futures import ThreadPoolExecutor
+
+    from tests.helpers import kept_thread_setting
     monkeypatch.delenv("LINAC_GEN_FFT_WORKERS", raising=False)
-
-    assert gpu_backend._CpuBackend._workers() == -1          # main thread
-    with ThreadPoolExecutor(max_workers=1) as ex:
-        assert ex.submit(gpu_backend._CpuBackend._workers).result() == 1
-
-    # explicit override is honoured on every thread
-    monkeypatch.setenv("LINAC_GEN_FFT_WORKERS", "3")
-    assert gpu_backend._CpuBackend._workers() == 3
-    with ThreadPoolExecutor(max_workers=1) as ex:
-        assert ex.submit(gpu_backend._CpuBackend._workers).result() == 3
+    with kept_thread_setting() as threads:
+        threads.set_threads(3)
+        assert gpu_backend._CpuBackend._workers() == 3       # main thread
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            assert ex.submit(gpu_backend._CpuBackend._workers).result() == 3
+        monkeypatch.setenv("LINAC_GEN_FFT_WORKERS", "2")
+        assert gpu_backend._CpuBackend._workers() == 2
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            assert ex.submit(gpu_backend._CpuBackend._workers).result() == 2
+        monkeypatch.setenv("LINAC_GEN_FFT_WORKERS", "-1")
+        assert gpu_backend._CpuBackend._workers() == (os.cpu_count() or 1)
+        monkeypatch.setenv("LINAC_GEN_FFT_WORKERS", "junk")   # ignored
+        assert gpu_backend._CpuBackend._workers() == 3
 
 
 def test_cpu_backend_rfftn_workers_bit_identical():
-    """The single-thread fallback must not change the transform: scipy.fft
-    is bit-identical for workers=1 vs workers=-1 (so the fix is numerically
-    inert — the only difference a real run shows is BLAS thread noise)."""
+    """scipy.fft is bit-identical for workers=1 vs workers=-1, so the FFT
+    thread count never changes a result."""
     pytest.importorskip("scipy")
     import numpy as np
     from scipy import fft as sfft

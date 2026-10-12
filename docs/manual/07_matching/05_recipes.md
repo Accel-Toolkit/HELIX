@@ -400,9 +400,9 @@ python -m linac_gen.matching heavy_fieldmap.dat \
 
 Currently the GUI does not expose `cmaes_parallel` directly — it
 defaults to `1`.  Workaround: drive parallel matches from the CLI or
-Python API.  The GUI worker single-threads anyway because it runs in
-a Qt `QThread`; the speedup comes from worker processes spawned
-*inside* the matcher.
+Python API.  The speedup comes from worker processes spawned *inside*
+the matcher, each with its share of the
+[CPU threads](../06_running/15_threads.md) setting.
 
 ---
 

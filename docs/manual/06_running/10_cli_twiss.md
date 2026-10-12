@@ -17,6 +17,7 @@ python -m linac_gen twiss <input> [options]
 
 | Option | Argument | Default | Meaning |
 |---|---|---|---|
+| `--threads` | N \| `all` | `$HELIX_THREADS`, else `$OMP_NUM_THREADS`, else all | CPU threads for the space-charge FFT, field maps and charge deposition; results are identical for any number ([CPU threads](15_threads.md)) |
 | `--mode` | `whole` \| `cell` | `cell` | which matched Twiss to compute (see below) |
 | `--cell` | int | `0` | which detected FODO cell to use, 0-based (`cell` mode) |
 | `--list-cells` | flag | off | list the detected FODO cells and exit |

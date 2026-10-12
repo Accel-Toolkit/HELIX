@@ -13,6 +13,7 @@ identically as a Python library or as a bundled `.exe` GUI.
 | h5py | 3.8+ | for HDF5 result archives |
 | matplotlib | 3.6+ | plotting |
 | PyTorch | 2.0+ | **required** — used by surrogates, MPS PIC backend, torch-native matcher objective |
+| threadpoolctl | 3.0+ | keeps numpy's BLAS on one thread during a run ([CPU threads](../06_running/15_threads.md)) |
 | C++ toolchain | optional | for the C++ PIC kernel; falls back to pure-Python silently |
 | libomp | optional | OpenMP runtime for the threaded C++ kernel (auto-detected; see [Build prerequisites](#3-build-prerequisites-by-platform)) |
 | CUDA 12.x + cupy | optional | for GPU PIC FFT on NVIDIA hardware (Linux/Windows only) |

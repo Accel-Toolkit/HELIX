@@ -4,22 +4,36 @@
 #include <algorithm>
 #include <vector>
 #include <cstring>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
 
-#ifdef _OPENMP
-#include <omp.h>
-#endif
+#include "helix_threads.h"
 
 namespace py = pybind11;
 
 // ---------------------------------------------------------------------------
-// CIC charge deposition: scatter particle charges to 3D grid.
+// CIC charge deposition: scatter particle charges to a 3D grid.
 //
-// Parallel strategy: each thread accumulates into a private flat buffer,
-// then we reduce across threads cell-by-cell in a deterministic order.
-// This avoids any data race and keeps the final result bitwise identical
-// across runs (per-thread partial sums are deterministic once the
-// particle partition is fixed; the final sum-over-threads for each cell
-// is evaluated in a fixed thread-index order).
+// Every cell sums its particles' contributions in particle order -- the
+// order of a single-threaded loop -- whatever the thread count, so 1 thread
+// or 64 give the same bits: those of the per-thread-grid kernel this
+// replaces when it ran on one thread.  (That kernel summed per-thread
+// partial grids, so its last bits depended on the thread count: the GUI,
+// capped at 1 OpenMP thread, and the CLI on 10 differed.)
+//
+// One thread runs the particle loop itself.  Several threads cut the grid
+// into x-planes: plane i takes the particles of x-cell i (their low-x
+// corners) and of x-cell i-1 (their high-x corners), merged by particle
+// index after a stable counting sort by x-cell.  Planes share no cells, so
+// they run in parallel with no per-thread grids.
+//
+// The arithmetic is the old kernel's, statement for statement, so a
+// compiler that contracts `acc += a * b` into an FMA (the clang and gcc
+// default; this module is NOT built with -ffp-contract=off) contracts it
+// the same way.  The old kernel's last step on one thread added every
+// cell's sum to 0.0 (its reduce over threads), which turns a -0.0 -- an FMA
+// that underflows -- into +0.0; so does this one.
 // ---------------------------------------------------------------------------
 py::array_t<double> deposit_cic_cpp(
     py::array_t<double, py::array::c_style | py::array::forcecast> positions,  // (N, 3)
@@ -34,46 +48,44 @@ py::array_t<double> deposit_cic_cpp(
     auto gmax = grid_max.unchecked<1>();
     auto ng = n_grid.unchecked<1>();
 
-    const int N = pos.shape(0);
+    // The old kernel trusted these and read or wrote out of bounds.
+    if (pos.shape(1) != 3)
+        throw std::invalid_argument("positions must have shape (N, 3)");
+    if (q.shape(0) != pos.shape(0))
+        throw std::invalid_argument("charges must have one value per particle");
+    if (gmin.shape(0) != 3 || gmax.shape(0) != 3 || ng.shape(0) != 3)
+        throw std::invalid_argument("grid_min, grid_max and n_grid must have 3 entries");
+    if (ng(0) < 2 || ng(1) < 2 || ng(2) < 2)
+        throw std::invalid_argument("n_grid needs at least 2 nodes per axis");
+    if (pos.shape(0) > std::numeric_limits<int>::max())
+        throw std::invalid_argument("more particles than a 32-bit index holds");
+
+    const int N = static_cast<int>(pos.shape(0));
     const int nx = ng(0), ny = ng(1), nz = ng(2);
     const double dx = (gmax(0) - gmin(0)) / (nx - 1);
     const double dy = (gmax(1) - gmin(1)) / (ny - 1);
     const double dz = (gmax(2) - gmin(2)) / (nz - 1);
     const double cell_vol = dx * dy * dz;
     const double gmin0 = gmin(0), gmin1 = gmin(1), gmin2 = gmin(2);
-    const size_t cells = static_cast<size_t>(nx) * ny * nz;
+    const size_t plane = static_cast<size_t>(ny) * nz;
+    const size_t cells = static_cast<size_t>(nx) * plane;
 
     auto result = py::array_t<double>({nx, ny, nz});
-    auto rho = result.mutable_unchecked<3>();
-    // Zero init (OMP-parallel over grid cells)
-#ifdef _OPENMP
-    #pragma omp parallel for collapse(3)
-#endif
-    for (int i = 0; i < nx; i++)
-        for (int j = 0; j < ny; j++)
-            for (int k = 0; k < nz; k++)
-                rho(i, j, k) = 0.0;
+    double* rho = result.mutable_data();
+    const int nt = helix::num_threads();
 
-    // --- Particle loop --------------------------------------------------
-    // Without OpenMP: original in-place accumulation into rho.
-    // With OpenMP: each thread accumulates into its own flat buffer; after
-    // the parallel region we sum the buffers into rho in a deterministic
-    // cell-major + thread-index-major order.
-#ifdef _OPENMP
-    const int T = omp_get_max_threads();
-    std::vector<std::vector<double>> per_thread_rho(T);
-    #pragma omp parallel
-    {
-        const int t = omp_get_thread_num();
-        per_thread_rho[t].assign(cells, 0.0);
-        double* my = per_thread_rho[t].data();
-        // schedule(static): the particle->thread partition must be a
-        // pure function of (N, thread count) for the per-thread partial
-        // sums to be reproducible -- with a dynamic/runtime schedule the
-        // partition (and thus the FP summation order) could vary run to
-        // run.  Previously this rested on the implementation-default
-        // schedule; now it is contractual.
-        #pragma omp for schedule(static)
+    // The one-thread kernel's last step: + 0.0, then the density.
+    auto finish = [cell_vol](double* c, size_t n) {
+        for (size_t k = 0; k < n; k++)
+            c[k] = 0.0 + c[k];
+        if (cell_vol > 0)
+            for (size_t k = 0; k < n; k++)
+                c[k] /= cell_vol;
+    };
+
+    if (nt <= 1) {
+        py::gil_scoped_release release;
+        std::fill(rho, rho + cells, 0.0);
         for (int p = 0; p < N; p++) {
             double px = pos(p, 0), py_val = pos(p, 1), pz = pos(p, 2);
             double fx = (px - gmin0) / dx;
@@ -92,64 +104,115 @@ py::array_t<double> deposit_cic_cpp(
             const size_t s1 = (static_cast<size_t>(ix+1) * ny + iy  ) * nz + iz;
             const size_t s2 = (static_cast<size_t>(ix)   * ny + iy+1) * nz + iz;
             const size_t s3 = (static_cast<size_t>(ix+1) * ny + iy+1) * nz + iz;
-            my[s0]             += charge * wx0 * wy0 * wz0;
-            my[s1]             += charge * wx1 * wy0 * wz0;
-            my[s2]             += charge * wx0 * wy1 * wz0;
-            my[s3]             += charge * wx1 * wy1 * wz0;
-            my[s0 + 1]         += charge * wx0 * wy0 * wz1;
-            my[s1 + 1]         += charge * wx1 * wy0 * wz1;
-            my[s2 + 1]         += charge * wx0 * wy1 * wz1;
-            my[s3 + 1]         += charge * wx1 * wy1 * wz1;
+            rho[s0]     += charge * wx0 * wy0 * wz0;
+            rho[s1]     += charge * wx1 * wy0 * wz0;
+            rho[s2]     += charge * wx0 * wy1 * wz0;
+            rho[s3]     += charge * wx1 * wy1 * wz0;
+            rho[s0 + 1] += charge * wx0 * wy0 * wz1;
+            rho[s1 + 1] += charge * wx1 * wy0 * wz1;
+            rho[s2 + 1] += charge * wx0 * wy1 * wz1;
+            rho[s3 + 1] += charge * wx1 * wy1 * wz1;
         }
-    }
-    // Deterministic reduce: for each cell, sum thread 0..T-1 in order.
-    #pragma omp parallel for collapse(3)
-    for (int i = 0; i < nx; i++)
-        for (int j = 0; j < ny; j++)
-            for (int k = 0; k < nz; k++) {
-                const size_t idx = (static_cast<size_t>(i) * ny + j) * nz + k;
-                double s = 0.0;
-                for (int t = 0; t < T; t++) s += per_thread_rho[t][idx];
-                rho(i, j, k) = s;
-            }
-#else
-    for (int p = 0; p < N; p++) {
-        double px = pos(p, 0), py_val = pos(p, 1), pz = pos(p, 2);
-        double fx = (px - gmin0) / dx;
-        double fy = (py_val - gmin1) / dy;
-        double fz = (pz - gmin2) / dz;
-        int ix = std::max(0, std::min((int)fx, nx - 2));
-        int iy = std::max(0, std::min((int)fy, ny - 2));
-        int iz = std::max(0, std::min((int)fz, nz - 2));
-        double wx1 = fx - ix; wx1 = std::max(0.0, std::min(1.0, wx1));
-        double wy1 = fy - iy; wy1 = std::max(0.0, std::min(1.0, wy1));
-        double wz1 = fz - iz; wz1 = std::max(0.0, std::min(1.0, wz1));
-        double wx0 = 1.0 - wx1, wy0 = 1.0 - wy1, wz0 = 1.0 - wz1;
-        double charge = q(p);
-        rho(ix,   iy,   iz)   += charge * wx0 * wy0 * wz0;
-        rho(ix+1, iy,   iz)   += charge * wx1 * wy0 * wz0;
-        rho(ix,   iy+1, iz)   += charge * wx0 * wy1 * wz0;
-        rho(ix+1, iy+1, iz)   += charge * wx1 * wy1 * wz0;
-        rho(ix,   iy,   iz+1) += charge * wx0 * wy0 * wz1;
-        rho(ix+1, iy,   iz+1) += charge * wx1 * wy0 * wz1;
-        rho(ix,   iy+1, iz+1) += charge * wx0 * wy1 * wz1;
-        rho(ix+1, iy+1, iz+1) += charge * wx1 * wy1 * wz1;
-    }
-#endif
-
-    // Normalise by cell volume → density.
-    if (cell_vol > 0) {
+        finish(rho, cells);
+    } else {
+        // Each particle's cell and weights, computed once (same
+        // expressions as above), and the particles bucketed by x-cell in
+        // particle order within a bucket (a stable counting sort, the same
+        // order for any thread count): chunk t counts its particles per
+        // cell, the buckets are laid out cell-major, chunk-minor, and each
+        // chunk writes its particles into its slots.
+        std::vector<int> cell_x(N), cell_y(N), cell_z(N), order(N);
+        std::vector<double> w1(3 * static_cast<size_t>(N));
+        std::vector<int> start(static_cast<size_t>(nx) + 1);
+        std::vector<int> slot(static_cast<size_t>(nt) * nx, 0);
+        py::gil_scoped_release release;
 #ifdef _OPENMP
-        #pragma omp parallel for collapse(3)
+        #pragma omp parallel for schedule(static) num_threads(nt)
 #endif
-        for (int i = 0; i < nx; i++)
-            for (int j = 0; j < ny; j++)
-                for (int k = 0; k < nz; k++)
-                    rho(i, j, k) /= cell_vol;
+        for (int t = 0; t < nt; t++) {
+            const int lo = static_cast<int>(static_cast<int64_t>(N) * t / nt);
+            const int hi = static_cast<int>(static_cast<int64_t>(N) * (t + 1) / nt);
+            int* cnt = &slot[static_cast<size_t>(t) * nx];
+            for (int p = lo; p < hi; p++) {
+                double px = pos(p, 0), py_val = pos(p, 1), pz = pos(p, 2);
+                double fx = (px - gmin0) / dx;
+                double fy = (py_val - gmin1) / dy;
+                double fz = (pz - gmin2) / dz;
+                int ix = std::max(0, std::min((int)fx, nx - 2));
+                int iy = std::max(0, std::min((int)fy, ny - 2));
+                int iz = std::max(0, std::min((int)fz, nz - 2));
+                double wx1 = fx - ix; wx1 = std::max(0.0, std::min(1.0, wx1));
+                double wy1 = fy - iy; wy1 = std::max(0.0, std::min(1.0, wy1));
+                double wz1 = fz - iz; wz1 = std::max(0.0, std::min(1.0, wz1));
+                cell_x[p] = ix;
+                cell_y[p] = iy;
+                cell_z[p] = iz;
+                w1[3 * static_cast<size_t>(p)] = wx1;
+                w1[3 * static_cast<size_t>(p) + 1] = wy1;
+                w1[3 * static_cast<size_t>(p) + 2] = wz1;
+                cnt[ix]++;
+            }
+        }
+        int run = 0;
+        for (int i = 0; i < nx; i++) {
+            start[i] = run;
+            for (int t = 0; t < nt; t++) {
+                int& s = slot[static_cast<size_t>(t) * nx + i];
+                const int c = s;
+                s = run;
+                run += c;
+            }
+        }
+        start[nx] = run;
+#ifdef _OPENMP
+        #pragma omp parallel for schedule(static) num_threads(nt)
+#endif
+        for (int t = 0; t < nt; t++) {
+            const int lo = static_cast<int>(static_cast<int64_t>(N) * t / nt);
+            const int hi = static_cast<int>(static_cast<int64_t>(N) * (t + 1) / nt);
+            int* s = &slot[static_cast<size_t>(t) * nx];
+            for (int p = lo; p < hi; p++)
+                order[s[cell_x[p]]++] = p;
+        }
+
+        // Planes in parallel, dealt round-robin so the crowded planes of
+        // the beam core land on different threads.  (Not schedule(dynamic):
+        // it needs __kmpc_dispatch_deinit, which older libomp builds -- an
+        // older torch's -- lack, and the module would then fail to load.)
+        // Bucket nx-1 is always empty (ix <= nx-2).
+#ifdef _OPENMP
+        #pragma omp parallel for schedule(static, 1) num_threads(nt)
+#endif
+        for (int i = 0; i < nx; i++) {
+            double* pl = rho + static_cast<size_t>(i) * plane;
+            std::fill(pl, pl + plane, 0.0);
+            int a = start[i];                                // x-cell i
+            const int a_end = start[i + 1];
+            int b = (i > 0) ? start[i - 1] : 0;              // x-cell i-1
+            const int b_end = (i > 0) ? start[i] : 0;
+            while (a < a_end || b < b_end) {
+                const bool low = (b >= b_end
+                                  || (a < a_end && order[a] < order[b]));
+                const int p = low ? order[a++] : order[b++];
+                const int iy = cell_y[p], iz = cell_z[p];
+                const double* w = &w1[3 * static_cast<size_t>(p)];
+                double wx1 = w[0], wy1 = w[1], wz1 = w[2];
+                double wx0 = 1.0 - wx1, wy0 = 1.0 - wy1, wz0 = 1.0 - wz1;
+                double charge = q(p);
+                // low-x corners for x-cell i, high-x corners for i-1
+                const double wx = low ? wx0 : wx1;
+                const size_t c0 = static_cast<size_t>(iy) * nz + iz;
+                const size_t c2 = static_cast<size_t>(iy + 1) * nz + iz;
+                pl[c0]     += charge * wx * wy0 * wz0;
+                pl[c2]     += charge * wx * wy1 * wz0;
+                pl[c0 + 1] += charge * wx * wy0 * wz1;
+                pl[c2 + 1] += charge * wx * wy1 * wz1;
+            }
+            finish(pl, plane);
+        }
     }
     return result;
 }
-
 
 // ---------------------------------------------------------------------------
 // CIC field interpolation: gather field values from grid to particles.
@@ -184,10 +247,9 @@ py::array_t<double> interpolate_cic_cpp(
     auto out = result.mutable_unchecked<2>();
 
 #ifdef _OPENMP
-    // schedule(static) is contractual here too (symmetry with the
-    // deposit loop); the gather is bit-identical under any schedule
-    // (disjoint writes, shared reads), so this only pins the contract.
-    #pragma omp parallel for schedule(static)
+    // Each particle writes its own row: the same bits for any thread
+    // count and any schedule.
+    #pragma omp parallel for schedule(static) num_threads(helix::num_threads())
 #endif
     for (int p = 0; p < N; p++) {
         double px = pos(p, 0), py_val = pos(p, 1), pz = pos(p, 2);
@@ -229,14 +291,19 @@ PYBIND11_MODULE(_pic_kernels, m) {
     m.def("interpolate_cic", &interpolate_cic_cpp, "CIC field interpolation",
           py::arg("field_x"), py::arg("field_y"), py::arg("field_z"),
           py::arg("positions"), py::arg("grid_min"), py::arg("grid_max"), py::arg("n_grid"));
+    m.def("set_num_threads", &helix::set_num_threads, py::arg("n"),
+          "Threads for this module's OpenMP loops (0 = the OpenMP default)");
+    m.def("get_num_threads", &helix::num_threads,
+          "Threads this module's OpenMP loops use");
+    m.def("_team_size", &helix::team_size,
+          "Team a parallel region gets from the calling thread (tests)");
 #ifdef _OPENMP
     m.attr("_openmp_enabled") = true;
-    // Contractual since 2026-07: the deposit/gather loops carry an
-    // explicit schedule(static) clause.  Provenance reads this attr —
-    // a binary built from older source lacks it, so the HDF5 record
-    // honestly reports "unknown" instead of asserting the contract.
-    m.attr("_omp_schedule") = "static";
 #else
     m.attr("_openmp_enabled") = false;
 #endif
+    // Provenance reads this: the deposit sums every cell in particle
+    // order, so its result does not depend on the thread count (a binary
+    // built before 2026-10-11 lacks the attribute).
+    m.attr("_deposit_order") = "particle";
 }

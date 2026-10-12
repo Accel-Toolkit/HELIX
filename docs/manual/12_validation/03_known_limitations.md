@@ -272,19 +272,15 @@ coordinate to absorb the path-length change — separate work.
 | `pitch_deg`, `yaw_deg` | reserved on every element; only `tilt_deg` is honoured |
 | `geom = 8` (3-D cylindrical field map) | parsed, but TraceWin manual says "not implemented" |
 
-### PIC results are bit-reproducible only at a fixed thread count
+### PIC results and the thread count (resolved 2026-10-11)
 
-The C++ deposit kernel accumulates per-thread buffers and reduces
-them in a fixed order, so runs are bit-identical **at the same
-`OMP_NUM_THREADS`** — but changing the thread count regroups the
-floating-point sums and shifts results at the ~1e-10 level.  HELIX
-pins `OMP_DYNAMIC=FALSE` at import (so the count cannot drift within
-a session), makes the particle→thread partition contractual with an
-explicit `schedule(static)` clause on the kernel loops (2026-07 — it
-previously rested on the implementation-default schedule), and records
-`omp_num_threads` and `omp_schedule` in the HDF5 `provenance/` group.
-For bit-reproducible studies across machines, set `OMP_NUM_THREADS`
-explicitly.
+Until 2026-10-11 the C++ CIC deposit added per-thread partial sums, so
+changing the OpenMP thread count shifted results in the last digits.  It
+now adds every cell's contributions in particle order, and every kernel,
+the FFT and both deposits give the same bits for any thread count, so
+results no longer depend on it — see [CPU threads](../06_running/15_threads.md).
+Results files written before then record `omp_num_threads` and
+`omp_schedule` in `provenance/`.
 
 ### Backtracking through CSR is approximate (opt-in)
 

@@ -33,6 +33,7 @@ driven plane; repeat it for the other plane) or a HELIX ORM CSV.
 
 | Option | Argument | Default | Meaning |
 |---|---|---|---|
+| `--threads` | N \| `all` | `$HELIX_THREADS`, else `$OMP_NUM_THREADS`, else all | CPU threads for the space-charge FFT, field maps and charge deposition; results are identical for any number ([CPU threads](15_threads.md)) |
 | `--map` | JSON | built-in rules | device map (`L:DnnBPH` → `DnnBPM`, `L:DnnTMH` → `DnnT`, `L:BPH5OT` → the first BPM …); `--write-map` saves the resolved map for editing |
 | `--exclude-bpm` / `--exclude-trim` | device or label | — | leave a BPM row / trim column out (repeatable) |
 | `--sys-floor` | fraction | `0.05` | systematic floor added in quadrature to the measured errors, as a fraction of each column's maximum |

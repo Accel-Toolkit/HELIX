@@ -187,8 +187,10 @@ imported beam file, the **parser downgrade ledger** (`parse_downgrades`
 — attached to the lattice by the CLI loader), the diagnostic cadence
 (`integration_steps_per_metre` / `sc_steps_per_metre` /
 `drift_single_push`), the effective
-FP precision (`fp_dtype`), the contractual OpenMP `schedule(static)`
-clause (`omp_schedule`), and a manifest of every **registered
+FP precision (`fp_dtype`), the CIC deposit's summation order
+(`cic_deposit_order`), the threads in use (`threads`, `threads_source`,
+`threads_fft`, `threads_kernels`, `threads_torch` — they do not change the
+results, see [CPU threads](15_threads.md)), and a manifest of every **registered
 surrogate** (element key, class, training seed, validation MAPE) that
 name-scoped tracking lookup could have consulted.  The `lattice`
 argument feeds these entries.

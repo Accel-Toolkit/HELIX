@@ -692,6 +692,39 @@ def build_scan_point(input_path, *, beam_overrides=None, element_overrides=(),
     )
 
 
+def _threads_value(text: str) -> str:
+    from linac_gen.parallel.threads import parse_threads
+    try:
+        parse_threads(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+    return text
+
+
+def add_threads_argument(p: argparse.ArgumentParser) -> None:
+    """``--threads N|all`` (see :mod:`linac_gen.parallel.threads`)."""
+    p.add_argument(
+        "--threads", metavar="N|all", type=_threads_value, default=None,
+        help="CPU threads for the space-charge FFT, field maps and charge "
+             "deposition (default: $HELIX_THREADS, else $OMP_NUM_THREADS, "
+             "else every CPU).  Results are identical for any number.")
+
+
+def threads_parent() -> argparse.ArgumentParser:
+    """Parent parser that gives a subcommand ``--threads N|all``."""
+    p = argparse.ArgumentParser(add_help=False)
+    add_threads_argument(p)
+    return p
+
+
+def apply_threads_arg(args) -> None:
+    """Apply ``--threads`` when it was given."""
+    value = getattr(args, "threads", None)
+    if value is not None:
+        from linac_gen.parallel.threads import set_threads
+        set_threads(value)
+
+
 def make_console_encoding_safe() -> None:
     """Degrade non-encodable console characters instead of crashing.
 

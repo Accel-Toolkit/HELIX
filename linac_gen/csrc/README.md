@@ -90,3 +90,67 @@ float-to-int cast is platform-dependent; the dispatcher then runs the
 Python kernels.  Every PicSolver call with finite grid bounds is inside
 the envelope.  A direct call with malformed shapes raises `ValueError`.
 Runtime kill-switch: `LINAC_GEN_TSC_KERNEL=0` forces the Python kernels.
+
+## CIC deposit/gather (`_pic_kernels`)
+
+Same direct compile, but WITHOUT `-ffp-contract=off` -- the flags
+`setup.py` uses (pybind11 adds `-fvisibility=hidden`) -- plus the macOS
+OpenMP flags:
+
+```bash
+cd linac_gen/csrc
+c++ -O3 -march=native -shared -std=c++14 -fPIC -fvisibility=hidden \
+  -undefined dynamic_lookup \
+  -Xpreprocessor -fopenmp -I"$(brew --prefix libomp)/include" \
+  $(python3 -m pybind11 --includes) \
+  -I"$(python3 -c 'import sysconfig; print(sysconfig.get_paths()["include"])')" \
+  pic_kernels.cpp -o ../_pic_kernels$(python3-config --extension-suffix)
+```
+
+The CIC kernel has no Python twin to match bit for bit: clang and gcc
+contract its `acc += a * b` into an FMA by default, and every CIC result of
+a clang or gcc build of HELIX was computed that way (MSVC's `/fp:precise`
+does not contract).  Keep the contraction, or the last bits of every CIC
+run change.
+
+The deposit adds every cell's contributions in particle order, the order
+of a single-threaded loop, whatever the thread count.  On one thread it is
+that loop, each particle's eight corners in turn.  On several, the grid is
+cut into x-planes; plane `i` takes the particles of x-cell `i` (their
+low-x corners) and of x-cell `i-1` (their high-x corners), merged by
+particle index after a stable counting sort of the particles by x-cell
+(each particle's cell and weights are computed once, in the sorting
+pass).  The planes share no cells, so they run in parallel (dealt
+round-robin, a static schedule: `schedule(dynamic)` would need
+`__kmpc_dispatch_deinit`, which older libomp builds lack).  Both paths end
+as the old kernel did on one thread: each cell's sum is added to 0.0 (its
+reduce over threads), which turns the -0.0 of an FMA that underflows into
++0.0, then divided by the cell volume.  The arithmetic is the old
+per-thread-grid kernel's statement for statement, so the two give the same
+bits on one thread; `tests/pic/test_deposit_threads.py` pins 1, 2, 3, 4,
+7 and 14 threads against each other and, on macOS arm64, against golden
+values the old kernel wrote (`tests/pic/fixtures/cic_deposit_golden.npz`).
+The module reports this as `_deposit_order = "particle"`; a binary built
+before 2026-10-11 lacks the attribute.
+
+## Thread count (all three modules)
+
+`helix_threads.h` gives every module `set_num_threads(n)` and
+`get_num_threads()`, and every parallel region names its team with
+`num_threads(helix::num_threads())`.  `linac_gen.parallel.threads` sets
+it from the one HELIX thread setting (GUI "CPU threads", CLI
+`--threads`, `linac_gen.set_threads`, env `HELIX_THREADS`, else a user's
+`OMP_NUM_THREADS`), so the team does not depend on the calling thread's
+OpenMP default (a GUI run is a worker thread, and the GUI caps
+`OMP_NUM_THREADS` at 1).  The setting has internal linkage, so each module
+keeps its own whatever the visibility flags.  0, the value before Python
+sets one, keeps the OpenMP default.  `_team_size()` returns the team a
+parallel region gets from the calling thread (the tests call it from a
+thread whose OpenMP default is 1), and
+`tests/parallelization/test_threads.py` checks that every
+`#pragma omp parallel` in these sources names its team.  No result depends
+on the count -- in the default floating-point mode: a caller that turns on
+flush-to-zero (e.g. `torch.set_flush_denormal(True)`) changes subnormal
+values on its own thread only (on arm64 libomp does not copy the mode to
+its workers).  HELIX never does.  A module built before 2026-10-11 has no `set_num_threads`;
+HELIX logs a warning and the module keeps its OpenMP default.

@@ -9,6 +9,12 @@ batch run is **bit-identical** to the equivalent GUI run.
 python -m linac_gen <subcommand> …
 ```
 
+Every subcommand takes `--threads N|all`, the CPU threads for the
+space-charge FFT, the field maps and the charge deposition (default
+`$HELIX_THREADS`, else `$OMP_NUM_THREADS`, else every CPU; results are the
+same for any number —
+[CPU threads](15_threads.md)).
+
 | Subcommand | Purpose | Page |
 |---|---|---|
 | `run` | one headless simulation (envelope / mp / matrix) | [CLI: run](07_cli_run.md) |

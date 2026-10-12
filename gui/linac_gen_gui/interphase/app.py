@@ -11,9 +11,16 @@ from __future__ import annotations
 # they must be set before the first numpy import.  Both the `python -m
 # linac_gen_gui.interphase` and `python -m linac_gen_gui.interphase.app`
 # launch paths hit this module, so this is the single source of truth.
+# OMP_NUM_THREADS=1 holds third-party OpenMP code in GUI threads to one
+# thread; HELIX's own kernels, its FFT and torch take the "CPU threads"
+# setting instead (linac_gen.parallel.threads; Numerics tab, default every
+# CPU).
 import os
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-os.environ.setdefault("OMP_NUM_THREADS", "1")
+if "OMP_NUM_THREADS" not in os.environ:
+    os.environ["OMP_NUM_THREADS"] = "1"
+    # the GUI's cap, not the user's: HELIX's own threads ignore it
+    os.environ["HELIX_GUI_OMP_CAP"] = "1"
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
@@ -641,12 +648,11 @@ class InterphaseWindow(QMainWindow):
         # as _launch_update_check).
         if not os.environ.get("PYTEST_CURRENT_TEST"):
             QTimer.singleShot(0, self._restore_last_session)
-        # MIRAGE parity (2026-07-28): hands-free listening starts with
-        # the APP, not with the first click — the assistant panel is
-        # built hidden at startup so the wake stack (mic + VAD +
-        # Whisper) is live immediately and the orb reacts to the room.
-        # Saying the wake word pops the panel into view.
-        QTimer.singleShot(0, self._warm_assistant)
+        # The assistant is NOT started here (user decision 2026-10-11,
+        # reversing the 2026-07-28 warm start): its always-on listening
+        # (Whisper + voice-activity detection) used about as much CPU as
+        # a running simulation.  Tools → Assistant… starts it, listening
+        # included (_open_assistant).
         # Catch macOS Cmd+Q / system-menu Quit which doesn't fire the
         # window's closeEvent.  Has to run after QApplication exists,
         # which it does by the time __init__ runs (the launcher always
@@ -2913,12 +2919,16 @@ class InterphaseWindow(QMainWindow):
                 "manually")
             return
         try:
+            # without the copy of the thread setting that set_threads put
+            # in HELIX_THREADS: the relaunched GUI reads its saved choice
+            from linac_gen.parallel.threads import environment_without_mirror
             _subprocess.Popen(
                 ["/bin/sh", "-c",
                  f'while kill -0 {os.getpid()} 2>/dev/null; '
                  f'do sleep 0.3; done; sleep 0.5; '
                  f'exec /bin/bash "{launcher}"'],
                 cwd=str(root), start_new_session=True,
+                env=environment_without_mirror(),
                 stdin=_subprocess.DEVNULL, stdout=_subprocess.DEVNULL,
                 stderr=_subprocess.DEVNULL)
         except Exception as exc:                        # noqa: BLE001
@@ -3067,8 +3077,10 @@ class InterphaseWindow(QMainWindow):
 
     def _open_assistant(self) -> None:
         # OPTIONAL feature — lazy-imported here so nothing about the
-        # assistant loads at GUI startup; non-modal (show(), not exec())
-        # so the main window stays live while a run is in flight.
+        # assistant loads at GUI startup; the first call (Tools →
+        # Assistant…) builds the panel, which starts the AI brain and the
+        # hands-free listening.  Non-modal (show(), not exec()) so the
+        # main window stays live while a run is in flight.
         try:
             from linac_gen_gui.interphase.dialogs.assistant_panel import (
                 AssistantPanel)
@@ -3080,29 +3092,13 @@ class InterphaseWindow(QMainWindow):
         existing = getattr(self, "_assistant_panel", None)
         if existing is not None \
                 and not getattr(existing, "_closing", False):
-            existing.show()                 # incl. the hidden warm panel
+            existing.show()                 # incl. a panel hidden by ✕
             existing.raise_()
             existing.activateWindow()
             return
         self._assistant_panel = AssistantPanel(self, self.state)
         self._assistant_panel.show()
         self._assistant_panel.raise_()
-
-    def _warm_assistant(self) -> None:
-        """Build the assistant panel HIDDEN so hands-free wake listening
-        runs from app launch (MIRAGE parity).  Best-effort: any failure
-        leaves the lazy click-to-open path untouched."""
-        import os as _os
-        if _os.environ.get("HELIX_ASSIST_NO_PREWARM") == "1":
-            return                           # tests / opt-out
-        if getattr(self, "_assistant_panel", None) is not None:
-            return
-        try:
-            from linac_gen_gui.interphase.dialogs.assistant_panel import (
-                AssistantPanel)
-            self._assistant_panel = AssistantPanel(self, self.state)
-        except Exception:                    # noqa: BLE001
-            pass
 
     def _open_console(self) -> None:
         try:

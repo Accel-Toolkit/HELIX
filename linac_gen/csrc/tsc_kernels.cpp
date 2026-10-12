@@ -36,6 +36,8 @@
 #include <omp.h>
 #endif
 
+#include "helix_threads.h"
+
 #if defined(__clang__)
 #pragma clang fp contract(off)
 #endif
@@ -178,7 +180,8 @@ py::object interpolate_tsc_cpp(arr_d field_x, arr_d field_y, arr_d field_z,
     int declined = 0;
 
 #ifdef _OPENMP
-    #pragma omp parallel for schedule(static) reduction(|:declined)
+    #pragma omp parallel for schedule(static) reduction(|:declined) \
+        num_threads(helix::num_threads())
 #endif
     for (int64_t p = 0; p < N; ++p) {
         int64_t i, j, k;
@@ -222,6 +225,12 @@ PYBIND11_MODULE(_tsc_kernels, m) {
           "TSC field gather (bit-identical to Python); None outside the envelope",
           py::arg("field_x"), py::arg("field_y"), py::arg("field_z"), py::arg("positions"),
           py::arg("grid_min"), py::arg("grid_max"), py::arg("n_grid"));
+    m.def("set_num_threads", &helix::set_num_threads, py::arg("n"),
+          "Threads for this module's OpenMP loops (0 = the OpenMP default)");
+    m.def("get_num_threads", &helix::num_threads,
+          "Threads this module's OpenMP loops use");
+    m.def("_team_size", &helix::team_size,
+          "Team a parallel region gets from the calling thread (tests)");
 #ifdef _OPENMP
     m.attr("_openmp_enabled") = true;
 #else
