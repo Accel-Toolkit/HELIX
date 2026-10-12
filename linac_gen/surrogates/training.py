@@ -35,6 +35,10 @@ from linac_gen.surrogates.base import (
     Scope,
     SurrogateMetadata,
 )
+from linac_gen.parallel.threads import sync_torch as _sync_torch
+
+# a run that loads torch here keeps its CPU work on one thread
+_sync_torch()
 
 
 # ---------------------------------------------------------------------------

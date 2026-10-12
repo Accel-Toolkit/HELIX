@@ -112,8 +112,8 @@ def test_hdf5_provenance_names_the_method_that_ran(recorder, tmp_path):
 def test_hdf5_provenance_records_the_threads(recorder, tmp_path):
     """Without the run's own record (a results object built elsewhere), the
     thread setting in force is recorded (the results do not depend on it):
-    the count and where it came from, the FFT's, each kernel's and
-    torch's."""
+    the count and where it came from, the FFT's, each kernel's, and torch's
+    count in the saving thread."""
     import json
     import sys
 
@@ -122,6 +122,8 @@ def test_hdf5_provenance_records_the_threads(recorder, tmp_path):
     run_info = recorder.__dict__.pop("threads_info", None)
     with kept_thread_setting() as threads:
         threads.set_threads(3)
+        if "torch" in sys.modules:
+            sys.modules["torch"].set_num_threads(4)
         out = tmp_path / "r.h5"
         save_results_hdf5(recorder, str(out))
         with h5py.File(out, "r") as f:
@@ -137,7 +139,7 @@ def test_hdf5_provenance_records_the_threads(recorder, tmp_path):
                     want = 3 if getattr(mod, "_openmp_enabled", False) else 1
                     assert kernels[name.rsplit(".", 1)[1]] == want
             if "torch" in sys.modules:
-                assert prov["threads_torch"] == 3
+                assert prov["threads_torch"] == 4
     if run_info is not None:
         recorder.threads_info = run_info
 

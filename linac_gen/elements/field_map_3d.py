@@ -62,6 +62,10 @@ try:  # noqa: SIM105
     import torch  # type: ignore  # noqa: F401
 except Exception:                                     # pragma: no cover
     pass
+else:
+    # a run that loads torch here keeps its CPU work on one thread
+    from linac_gen.parallel.threads import sync_torch as _sync_torch
+    _sync_torch()
 try:
     from linac_gen._fieldmap_kernels import interp3_multi as _interp3_multi
     _KERNEL_AVAILABLE = True

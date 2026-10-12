@@ -222,15 +222,6 @@ class _CpuBackend:
         from linac_gen.parallel.threads import fft_threads
         return fft_threads()
 
-    @staticmethod
-    def _split_here() -> bool:
-        # Off the main thread scipy's own FFT pool is unsafe (a fork
-        # elsewhere in the process shuts it down mid-transform), so the
-        # transform is threaded by linac_gen.pic.fft_split instead -- the
-        # same bits either way.
-        import threading
-        return threading.current_thread() is not threading.main_thread()
-
     def to_device(self, arr):
         import numpy as _np
         return _np.asarray(arr, dtype=_np.float64)
@@ -239,23 +230,22 @@ class _CpuBackend:
         import numpy as _np
         return _np.asarray(arr)
 
+    # On every thread the transform is threaded by linac_gen.pic.fft_split,
+    # never by scipy (workers > 1): scipy's pool is unsafe beside a fork,
+    # and in some builds its result depends on the worker count.  The split
+    # gives scipy's one-thread result for any thread count.
     def rfftn(self, x):
         if not self._has_scipy:
             return self._fft.rfftn(x)
-        n = self._workers()
-        if n > 1 and self._split_here():
-            from linac_gen.pic import fft_split
-            return fft_split.rfftn(x, n)
-        return self._fft.rfftn(x, workers=n)
+        from linac_gen.pic import fft_split
+        return fft_split.rfftn(x, self._workers())
 
     def irfftn(self, x, s):
         if not self._has_scipy:
-            return self._fft.irfftn(x, s=s)
-        n = self._workers()
-        if n > 1 and self._split_here():
-            from linac_gen.pic import fft_split
-            return fft_split.irfftn(x, s, n)
-        return self._fft.irfftn(x, s=s, workers=n)
+            # numpy 2 wants the axes named whenever s is given
+            return self._fft.irfftn(x, s=s, axes=tuple(range(-len(s), 0)))
+        from linac_gen.pic import fft_split
+        return fft_split.irfftn(x, s, self._workers())
 
     def free_memory(self) -> None:
         pass

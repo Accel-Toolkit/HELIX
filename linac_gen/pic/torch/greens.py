@@ -15,6 +15,10 @@ from __future__ import annotations
 import torch
 
 from linac_gen.core.constants import EPSILON_0, PI
+from linac_gen.parallel.threads import sync_torch as _sync_torch
+
+# a run that loads torch here keeps its CPU work on one thread
+_sync_torch()
 
 __all__ = [
     "torch_antideriv_igf",

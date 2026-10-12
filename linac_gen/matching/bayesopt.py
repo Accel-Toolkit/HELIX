@@ -110,6 +110,8 @@ def run_bayesopt(
             "the 'bayesopt' algorithm requires botorch + gpytorch; "
             "install with: pip install botorch gpytorch"
         )
+    from linac_gen.parallel.threads import sync_torch
+    sync_torch()                        # torch's CPU work on one thread
 
     torch.manual_seed(int(seed))
     dtype = torch.double

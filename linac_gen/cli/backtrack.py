@@ -300,10 +300,13 @@ def _validate(args, lattice, beam_cfg, recorder, beam, end) -> int:
         sc = make_sc_solver(sc_cfg) if sc_cfg else None
     tracker = Tracker(lattice, vbeam, pic_solver=sc)
     # Forward sub-range replay: element loop with the table's entrance
-    # state (mirrors the backward walk's use of the replay table).
-    for i in range(args.start, end + 1):
-        tracker._track_element(lattice.elements[i])
-        tracker._check_aperture(lattice.elements[i])
+    # state (mirrors the backward walk's use of the replay table), as a
+    # run: the HELIX thread setting, torch and BLAS on one thread.
+    from linac_gen.parallel.threads import run_scope
+    with run_scope():
+        for i in range(args.start, end + 1):
+            tracker._track_element(lattice.elements[i])
+            tracker._check_aperture(lattice.elements[i])
 
     alive = vbeam.alive_mask
     p = vbeam.particles[alive]

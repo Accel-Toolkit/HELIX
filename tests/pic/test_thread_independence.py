@@ -1,8 +1,9 @@
 """A whole space-charge run gives the same bits for any thread count, on the
 main thread (as the CLI runs it) and in a worker thread (as the GUI does):
 the CIC deposit (one-thread loop vs parallel planes), the CIC and TSC
-gathers, the FFT (scipy's pool on the main thread, the split off it, on a
-grid large enough to split) and the torch space-charge engine."""
+gathers, the FFT (one scipy call on one thread, the split on more, on a grid
+large enough to split) and the torch space-charge engine (torch on one
+thread during runs)."""
 from __future__ import annotations
 
 import threading
@@ -70,23 +71,30 @@ def test_numpy_engine(case, monkeypatch):
     monkeypatch.delenv("LINAC_GEN_FFT_WORKERS", raising=False)
     with kept_thread_setting() as threads:
         one = _run(CASES[case], 1, False, threads)
-        assert split_calls == []                    # one thread: no split
-        four = _run(CASES[case], 4, True, threads)
-        assert split_calls and all(w == 4 for _, w in split_calls)
+        assert split_calls and all(w == 1 for _, w in split_calls)
         n = len(split_calls)
-        every = _run(CASES[case], "all", False, threads)
-        assert len(split_calls) == n                # main thread: scipy's pool
+        four = _run(CASES[case], 4, True, threads)
+        assert all(w == 4 for _, w in split_calls[n:])
+        n = len(split_calls)
+        every = _run(CASES[case], "all", False, threads)    # main thread too
+        assert all(w == threads.available_threads() for _, w in split_calls[n:])
     assert one[2]["threads"] == 1 and four[2]["threads"] == 4
     _same(one, four)
     _same(one, every)
 
 
 def test_torch_engine():
-    pytest.importorskip("torch")
+    """torch's CPU work runs on one thread during a run, whatever torch's
+    own count: torch splits its sums by thread and adds into the grid from
+    several threads at once (torch 2.14 on Linux: different last bits at 1
+    and 4 threads)."""
+    torch = pytest.importorskip("torch")
     sc = dict(nx=16, ny=16, nz=16, grid_extent=4.0, sc_backend="torch",
               grid_mode="adaptive")
     with kept_thread_setting() as threads:
+        torch.set_num_threads(4)                    # torch's own count
         one = _run(sc, 1, False, threads)
+        assert torch.get_num_threads() == 4         # back after the run
         four = _run(sc, 4, True, threads)
-    assert one[2]["torch"] == 1 and four[2]["torch"] == 4
+    assert one[2]["torch"] == 1 and four[2]["torch"] == 1
     _same(one, four)

@@ -10,6 +10,11 @@ from __future__ import annotations
 
 import torch
 
+from linac_gen.parallel.threads import sync_torch as _sync_torch
+
+# a run that loads torch here keeps its CPU work on one thread
+_sync_torch()
+
 __all__ = ["deposit_cic_torch", "cic_cells",
            "deposit_tsc_torch", "tsc_cells"]
 

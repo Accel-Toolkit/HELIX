@@ -1,28 +1,37 @@
-"""Threaded 3-D real FFTs that never use scipy's FFT thread pool.
+"""Threaded 3-D real FFTs: scipy's one-thread result, bit for bit, on any
+number of threads, and never scipy's own FFT thread pool.
 
-scipy.fft threads a transform (``workers > 1``) on one process-wide pool,
-which pocketfft shuts down before every ``fork()`` and restarts after it.
-A thread that submits work in between gets "Work item submitted after
-shutdown"; rarer interleavings strand a work item, so the transform waits
-forever, or leave a queued item that runs after its caller has gone
-(pocketfft ``thread_pool::submit``/``thread_map``, read 2026-10-11).  A GUI
-run is a worker thread while the main thread may start subprocesses -- the
-cause of the July 2026 failure 46 min into a GUI run (commit 7bc605a).
+A 3-D transform is three passes of 1-D transforms along one axis.  Each pass
+is cut into slabs across another axis, and each slab is one scipy call with
+``workers=1`` on a HELIX thread pool (one slab in the calling thread); the
+passes come in pocketfft's order -- rfftn: r2c along the last axis, then c2c
+along axis 0, then axis 1; irfftn: c2c along axis 0, then axis 1 (unscaled),
+then c2r along the last axis with the whole 1/N, which pocketfft applies as
+one multiplication of each output value.
 
-So off the main thread HELIX threads the transform itself.  A 3-D
-transform is three passes of 1-D transforms along one axis; each pass is
-cut into slabs across another axis, and each slab is one scipy call with
-``workers=1`` on a HELIX thread pool (one slab in the calling thread).
+Why not scipy's own threading (``workers > 1``):
 
-Bit-identical to ``scipy.fft.rfftn``/``irfftn``: pocketfft computes every
-1-D line on its own, and the passes come in pocketfft's order -- rfftn:
-r2c along the last axis, then c2c along axis 0, then axis 1; irfftn: c2c
-along axis 0, then axis 1 (unscaled), then c2r along the last axis with the
-whole 1/N, which pocketfft applies as one multiplication of each output
-value.  Pinned by tests/pic/test_fft_split.py.
+* its pool is shut down and restarted around every ``fork()``; a thread that
+  submits work in between gets "Work item submitted after shutdown", and
+  rarer interleavings strand a work item or leave one that runs after its
+  caller has gone (pocketfft ``thread_pool``, read 2026-10-11) -- a GUI run
+  is a worker thread while the main thread may start subprocesses (the July
+  2026 failure, commit 7bc605a);
+* its result can depend on the worker count.  pocketfft transforms the lines
+  of a call in vector batches (two lines at a time with NEON or SSE2) and an
+  odd last line on its own, and some builds round the two paths differently
+  (scipy 1.18.1's macOS arm64 wheel does; 1.17 does not).  A thread's share
+  of the lines then decides which lines go alone.
+
+The slabs here start on multiples of 8 lines (``ALIGN``; batches are 2, 4 or
+8 lines wide), so every slab batches its lines exactly as the one-thread call
+does and the odd last line stays last: the result is scipy's one-thread
+result for any slab count, in every build.  Pinned by
+tests/pic/test_fft_split.py.
 """
 from __future__ import annotations
 
+import math
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -32,6 +41,10 @@ import numpy as np
 #: Transforms with fewer grid points run as one scipy call on one thread:
 #: splitting them costs more than it saves.
 MIN_POINTS = 1 << 17
+
+#: Slab boundaries fall on multiples of this many lines (a multiple of every
+#: vector batch width pocketfft uses for doubles: 2, 4, 8).
+ALIGN = 8
 
 _lock = threading.Lock()
 _pool: ThreadPoolExecutor | None = None
@@ -62,16 +75,22 @@ if hasattr(os, "register_at_fork"):
     os.register_at_fork(after_in_child=_after_fork_in_child)
 
 
-def _slabs(n: int, k: int) -> list[tuple[int, int]]:
-    k = max(1, min(int(k), n))
-    b = [n * i // k for i in range(k + 1)]
+def _slabs(n: int, k: int, lines: int = 1) -> list[tuple[int, int]]:
+    """Up to ``k`` slabs of ``range(n)`` planes of ``lines`` lines each,
+    every boundary but the last on a multiple of :data:`ALIGN` lines."""
+    step = ALIGN // math.gcd(int(lines), ALIGN)      # planes per aligned unit
+    units = -(-n // step)
+    k = max(1, min(int(k), units))
+    b = [min(n, step * (units * i // k)) for i in range(k + 1)]
+    b[-1] = n
     return [(b[i], b[i + 1]) for i in range(k) if b[i + 1] > b[i]]
 
 
-def _each(fn, n: int, k: int) -> None:
-    """``fn(a, b)`` for every slab of ``range(n)`` cut ``k`` ways; returns
-    when all have finished (they write into arrays the caller owns)."""
-    slabs = _slabs(n, k)
+def _each(fn, n: int, k: int, lines: int) -> None:
+    """``fn(a, b)`` for every aligned slab of ``range(n)`` planes (``lines``
+    lines each) cut up to ``k`` ways; returns when all have finished (they
+    write into arrays the caller owns)."""
+    slabs = _slabs(n, k, lines)
     if len(slabs) == 1:
         fn(*slabs[0])
         return
@@ -121,9 +140,10 @@ def rfftn(x, workers: int) -> np.ndarray:
         v = out[a:b]
         _store(v, sfft.fft(v, axis=1, overwrite_x=True, workers=1))
 
-    _each(last, nx, workers)
-    _each(first, ny, workers)
-    _each(middle, nx, workers)
+    m = nz // 2 + 1
+    _each(last, nx, workers, ny)        # lines of plane i: (i, j), ny of them
+    _each(first, ny, workers, m)        # lines of plane j: (j, k), m of them
+    _each(middle, nx, workers, m)       # lines of plane i: (i, k), m of them
     return out
 
 
@@ -158,7 +178,8 @@ def irfftn(X, s, workers: int) -> np.ndarray:
         r = sfft.irfft(tmp[a:b], n=nz, axis=2, norm="forward", workers=1)
         np.multiply(r, fct, out=out[a:b])
 
-    _each(first, ny, workers)
-    _each(middle, nx, workers)
-    _each(last, nx, workers)
+    m = nz // 2 + 1
+    _each(first, ny, workers, m)
+    _each(middle, nx, workers, m)
+    _each(last, nx, workers, ny)
     return out

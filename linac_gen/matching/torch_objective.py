@@ -48,6 +48,10 @@ from linac_gen.tracking.matrix_tracking import _compute_element_matrix
 from linac_gen.tracking.torch_matrices import F64
 from linac_gen.tracking.torch_step_tracker import track_beam_torch_stepwise
 from linac_gen.tracking.torch_tracking import compute_transfer_matrix_torch
+from linac_gen.parallel.threads import sync_torch as _sync_torch
+
+# a run that loads torch here keeps its CPU work on one thread
+_sync_torch()
 
 __all__ = ["check_gradient_supported", "build_torch_residual",
            "build_torch_residual_sc"]

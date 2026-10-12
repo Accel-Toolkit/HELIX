@@ -6,8 +6,15 @@ The setting is the number of threads for
 * the compiled kernels' OpenMP loops -- the CIC charge deposit, the CIC and
   TSC field gathers, the field-map sampler and kick-drift step
   (``_pic_kernels``, ``_tsc_kernels``, ``_fieldmap_kernels``; the TSC
-  deposit runs on one thread),
-* torch's CPU thread pool (the torch space-charge paths).
+  deposit runs on one thread).
+
+torch's own CPU work (the torch space-charge engine, ML surrogates, the
+gradient, Bayesian and qNEHVI optimisers) stays on one thread while a run
+lasts (:func:`run_scope`, :func:`sync_torch`): with more threads its last
+bits change with the thread count -- torch splits long sums by thread, and on
+Linux its FFT is Intel MKL's, threaded the same way.  A module that loads
+torch and can be first imported inside a run calls :func:`sync_torch` right
+after (tests/parallelization/test_threads.py checks every one).
 
 It applies whatever the space-charge backend: on CUDA or MPS the FFT runs on
 the GPU and the threads serve everything that stays on the CPU.
@@ -17,12 +24,12 @@ small to split, and idle threaded-OpenBLAS workers keep spinning against the
 threads above.  The GUI caps it at start-up; a run elsewhere limits it for
 its duration (:func:`run_scope`).
 
-Every result is the same for any thread count: the FFT computes each line
-on its own whatever the split, the gathers and the field-map step compute
-each particle on its own, the CIC deposit sums every cell in particle order
-and the TSC deposit runs on one thread (tests/pic/test_deposit_threads.py,
-tests/pic/test_fft_split.py, tests/pic/test_thread_independence.py,
-tests/elements/test_fieldmap_step.py).
+Every result is the same for any thread count: the FFT gives scipy's
+one-thread result (linac_gen.pic.fft_split), the gathers and the field-map
+step compute each particle on its own, the CIC deposit sums every cell in
+particle order and the TSC deposit runs on one thread
+(tests/pic/test_deposit_threads.py, tests/pic/test_fft_split.py,
+tests/pic/test_thread_independence.py, tests/elements/test_fieldmap_step.py).
 
 Where the number comes from, first match wins: :func:`set_threads` (the GUI
 "CPU threads" control, the CLI ``--threads`` option, scripts), the
@@ -61,11 +68,15 @@ KERNEL_MODULES = ("linac_gen._pic_kernels", "linac_gen._tsc_kernels",
 #: Limit BLAS to one thread for the duration of a run (:func:`run_scope`).
 LIMIT_BLAS_IN_RUNS = True
 
+#: torch's CPU thread count in a run's thread while the run lasts.
+TORCH_THREADS_IN_RUNS = 1
+
 _lock = threading.Lock()
 _setting: int | None = None        # None: not set here (environment, else all)
 _requested: int | None = None      # what set_threads asked: None = "all"
 _env_before: tuple | None = None   # (HELIX_THREADS,) before set_threads
 _warned: set[str] = set()
+_tls = threading.local()           # per thread: run depth, torch's count before
 
 
 def available_threads() -> int:
@@ -180,8 +191,7 @@ def set_threads(value="all") -> int:
     and in the processes it starts from now on; returns the count.
 
     Takes effect at once: the compiled kernels at their next call, the FFT
-    at its next transform, torch in this thread (and in a run started
-    later).  The results do not depend on the count.
+    at its next transform.  The results do not depend on the count.
     """
     n = parse_threads(value)
     global _setting, _requested, _env_before
@@ -193,7 +203,6 @@ def set_threads(value="all") -> int:
         os.environ[ENV] = "all" if n is None else str(n)
         count = _setting
     sync_kernels()
-    _set_torch_threads(count)
     return count
 
 
@@ -211,7 +220,6 @@ def reset_threads() -> None:
                 os.environ[ENV] = env
             _env_before = None
     sync_kernels()
-    _set_torch_threads(get_threads())
 
 
 def environment_without_mirror() -> dict:
@@ -264,25 +272,25 @@ def kernel_threads() -> dict:
 
 
 def apply_in_this_thread() -> int:
-    """Bring the calling thread up to the setting; returns the count.
-
-    The kernels and the FFT read the setting process-wide, but torch keeps
-    an OpenMP thread count per thread, so a run started in a new thread (a
-    GUI worker) sets torch's count in that thread."""
-    n = sync_kernels()
-    _set_torch_threads(n)
-    return n
+    """Hand the setting to the kernels (they read it process-wide, from any
+    thread); returns the count."""
+    return sync_kernels()
 
 
-def _set_torch_threads(n: int) -> None:
+def _set_torch_threads(n: int):
+    """torch's thread count set to ``n``: in the calling thread (torch keeps
+    one per thread) and as torch's default for threads that have not used
+    torch yet.  Returns the calling thread's previous count, or None."""
     torch = sys.modules.get("torch")
     if torch is None:
-        return
+        return None
     try:
-        if torch.get_num_threads() != n:
-            torch.set_num_threads(n)
+        prev = int(torch.get_num_threads())
+        torch.set_num_threads(n)        # also when equal: sets the default
+        return prev
     except Exception as exc:                       # noqa: BLE001
         _warn_once("torch", "could not set torch's thread count: %s", exc)
+        return None
 
 
 def _torch_threads():
@@ -290,19 +298,45 @@ def _torch_threads():
     return int(torch.get_num_threads()) if torch is not None else None
 
 
+def sync_torch() -> None:
+    """While a run lasts in the calling thread, torch's CPU work in this
+    thread on :data:`TORCH_THREADS_IN_RUNS` thread; the run's end restores
+    the count torch had.  :func:`run_scope` calls it, and so do the modules
+    that load torch, for a run that is the first to load it (a fresh CLI
+    process).  Elsewhere it does nothing."""
+    if (getattr(_tls, "depth", 0)
+            and getattr(_tls, "torch_before", None) is None):
+        _tls.torch_before = _set_torch_threads(TORCH_THREADS_IN_RUNS)
+
+
 @contextlib.contextmanager
 def run_scope():
-    """For one run: the setting applied in the calling thread, BLAS on one
-    thread until the last overlapping run ends.  Yields what the run uses,
-    read in its own thread (the results file records it)."""
+    """For one run: the setting handed to the kernels, torch's CPU work in
+    this thread on one thread (:func:`sync_torch`) and BLAS on one thread,
+    both restored afterwards (BLAS when the last overlapping run ends).
+    Yields what the run uses, read in its own thread (the results file
+    records it)."""
     n = apply_in_this_thread()
-    info = {"threads": n, "source": thread_source(), "fft": fft_threads(),
-            "kernels": kernel_threads(), "torch": _torch_threads()}
-    with _blas_one_thread() as blas:
-        info["blas"] = blas
-        yield info
-    # kernel modules the run imported take the setting as they load
-    info["kernels"] = kernel_threads()
+    _tls.depth = getattr(_tls, "depth", 0) + 1
+    try:
+        sync_torch()
+        info = {"threads": n, "source": thread_source(),
+                "fft": fft_threads(), "kernels": kernel_threads(),
+                "torch": _torch_threads()}
+        with _blas_one_thread() as blas:
+            info["blas"] = blas
+            yield info
+            # what the run ended with (kernel modules and torch loaded by
+            # the run take their counts as they load)
+            info["kernels"] = kernel_threads()
+            info["torch"] = _torch_threads()
+    finally:
+        _tls.depth -= 1
+        if _tls.depth == 0:
+            before, _tls.torch_before = getattr(_tls, "torch_before",
+                                                None), None
+            if before is not None:
+                _set_torch_threads(before)
 
 
 def in_run_scope(fn):
@@ -373,7 +407,10 @@ def _limit_blas():
                 or now - _blas_controller_time > BLAS_RESCAN_S):
             _blas_controller = ThreadpoolController()
             _blas_controller_time = now
-        return _blas_controller.limit(limits=1, user_api="blas")
+        # select first: restoring then touches the BLAS libraries only (a
+        # limiter over every library resets OpenMP's count in the
+        # restoring thread too, torch's among them)
+        return _blas_controller.select(user_api="blas").limit(limits=1)
     except Exception as exc:                       # noqa: BLE001
         _warn_once("blas", "could not limit BLAS threads: %s", exc)
         return None

@@ -1,6 +1,8 @@
-"""The split FFT (linac_gen.pic.fft_split) gives scipy.fft.rfftn/irfftn bit
-for bit at any thread count.  The CPU backend uses it off the main thread,
-where scipy's own pool is never touched, and scipy's pool on the main thread.
+"""The split FFT (linac_gen.pic.fft_split) gives scipy's one-thread
+rfftn/irfftn bit for bit at any thread count -- its slabs start on multiples
+of 8 lines, so pocketfft batches every line as in the one-thread call (some
+builds round a batched and a lone line differently: scipy 1.18.1 on macOS
+arm64).  The CPU backend uses it on every thread and never scipy's own pool.
 Subprocesses started during transforms break nothing."""
 from __future__ import annotations
 
@@ -102,14 +104,36 @@ def test_backend_threads_the_transform_off_the_main_thread(monkeypatch):
     assert all(w == 1 for _, w in calls), calls
 
 
-def test_backend_uses_scipys_pool_on_the_main_thread(monkeypatch):
+def test_backend_splits_on_the_main_thread_too(monkeypatch):
+    """scipy's own threading is used nowhere: in some builds its result
+    depends on the worker count."""
     monkeypatch.delenv("LINAC_GEN_FFT_WORKERS", raising=False)
     be = _CpuBackend()
+    x = np.random.default_rng(6).normal(size=(64, 64, 64))
+    ref = sfft.rfftn(x, workers=1)
     calls = _spy_scipy(monkeypatch)
     with kept_thread_setting() as threads:
         threads.set_threads(3)
-        be.rfftn(np.zeros((64, 64, 64)))
-    assert calls == [("rfftn", 3)]
+        X = be.rfftn(x)
+    assert np.array_equal(X, ref)
+    assert {"rfft", "fft"} <= {n for n, _ in calls}
+    assert all(w == 1 for _, w in calls), calls
+
+
+@pytest.mark.parametrize("n, lines", [(64, 64), (96, 49), (65, 63), (80, 41),
+                                      (97, 89), (33, 47), (5, 3), (2, 1),
+                                      (130, 66), (7, 8)])
+def test_slabs_start_on_multiples_of_8_lines(n, lines):
+    """Why the split equals the one-thread call in every build: pocketfft
+    batches a call's lines 2, 4 or 8 at a time from its first line, and a
+    slab that starts on a multiple of 8 lines batches them the same way."""
+    for k in range(1, 20):
+        slabs = fft_split._slabs(n, k, lines)
+        assert slabs[0][0] == 0 and slabs[-1][1] == n
+        assert all(b0 == a1 for (_, b0), (a1, _) in zip(slabs, slabs[1:]))
+        assert all(a < b for a, b in slabs)
+        assert all((a * lines) % fft_split.ALIGN == 0 for a, _ in slabs)
+        assert len(slabs) <= k
 
 
 @pytest.mark.skipif(os.name != "posix", reason="fork is POSIX")

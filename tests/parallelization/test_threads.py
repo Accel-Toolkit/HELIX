@@ -1,13 +1,15 @@
 """The one HELIX thread setting (linac_gen.parallel.threads): where the
 number comes from, that it reaches the compiled kernels' teams from any
-thread and torch's count in a run's own thread, the share a pool worker
-gets, and BLAS on one thread while runs -- even overlapping ones -- last."""
+thread, the share a pool worker gets, and torch and BLAS on one thread while
+runs -- even nested or overlapping ones -- last."""
 from __future__ import annotations
 
 import logging
 import os
 import re
+import subprocess
 import sys
+import textwrap
 import threading
 import types
 from pathlib import Path
@@ -17,7 +19,8 @@ import pytest
 
 from tests.helpers import kept_thread_setting
 
-CSRC = Path(__file__).resolve().parents[2] / "linac_gen" / "csrc"
+ROOT = Path(__file__).resolve().parents[2]
+CSRC = ROOT / "linac_gen" / "csrc"
 
 
 @pytest.fixture
@@ -195,30 +198,217 @@ def test_a_kernel_without_thread_control_is_left_alone(threads, monkeypatch,
     assert threads.kernel_threads()["_tsc_kernels"].startswith("OpenMP default")
 
 
-def test_a_run_sets_torch_in_its_own_thread(threads):
-    """torch keeps a count per thread: a thread that used torch before the
-    setting changed keeps its old count until a run applies the setting."""
+def test_a_run_keeps_torch_on_one_thread(threads):
+    """torch splits its sums by thread, so in a run's thread torch's CPU work
+    runs on one thread whatever torch's own count and the setting; the run's
+    end restores torch's count (a nested run leaves that to the outer one).
+    set_threads leaves torch alone."""
     torch = pytest.importorskip("torch")
-    threads.set_threads(2)
-    changed, out = threading.Event(), {}
+    out = {}
 
     def run():
-        torch.ones(8).sum()                         # torch at 2 in this thread
-        out["before"] = torch.get_num_threads()
-        changed.wait(30)
-        out["stale"] = torch.get_num_threads()      # still 2
+        torch.set_num_threads(2)
+        threads.set_threads(5)
+        out["set"] = torch.get_num_threads()
         with threads.run_scope() as info:
             out["run"] = torch.get_num_threads()
-            out["info"] = info
+            with threads.run_scope() as inner:
+                pass
+            out["nested"] = torch.get_num_threads()
+        out["after"] = torch.get_num_threads()
+        out["info"], out["inner"] = info, inner
     t = threading.Thread(target=run)
     t.start()
-    while "before" not in out and t.is_alive():
-        t.join(0.01)
-    threads.set_threads(5)                          # from the main thread
-    changed.set()
     t.join()
-    assert out["before"] == 2 and out["stale"] == 2
-    assert out["run"] == 5 and out["info"]["torch"] == 5
+    assert out["set"] == 2
+    assert out["run"] == out["nested"] == 1
+    assert out["info"]["torch"] == out["inner"]["torch"] == 1
+    assert out["after"] == 2
+    assert out["info"]["threads"] == 5
+
+
+def test_sync_torch_outside_a_run_does_nothing(threads):
+    torch = pytest.importorskip("torch")
+    torch.set_num_threads(3)
+    threads.sync_torch()
+    assert torch.get_num_threads() == 3
+
+
+def _torch_count_in_a_new_thread(torch):
+    """torch's default for a thread that has not used torch yet."""
+    out = []
+    t = threading.Thread(target=lambda: out.append(torch.get_num_threads()))
+    t.start()
+    t.join()
+    return out[0]
+
+
+def test_torch_loaded_during_a_run(threads, monkeypatch):
+    """A run that is the first to load torch: the module that loads it
+    calls sync_torch, and the run's end restores torch's count, in this
+    thread and as torch's default for new threads."""
+    torch = pytest.importorskip("torch")
+    torch.set_num_threads(3)
+    monkeypatch.delitem(sys.modules, "torch")       # not loaded yet
+    with threads.run_scope() as info:
+        assert info["torch"] is None
+        monkeypatch.setitem(sys.modules, "torch", torch)   # the run loads it
+        threads.sync_torch()
+        inside = torch.get_num_threads()
+        during = _torch_count_in_a_new_thread(torch)
+    assert inside == 1 and info["torch"] == 1 and during == 1
+    assert torch.get_num_threads() == 3
+    assert _torch_count_in_a_new_thread(torch) == 3
+
+
+def test_the_blas_limit_leaves_openmp_alone(threads):
+    """Lifting the BLAS limit restores the BLAS libraries only: a limiter
+    over every library also resets OpenMP's count in the lifting thread,
+    torch's among them."""
+    torch = pytest.importorskip("torch")
+    torch.set_num_threads(3)
+    limiter = threads._limit_blas()
+    if limiter is None:
+        pytest.skip("threadpoolctl unavailable")
+    torch.set_num_threads(2)                        # changed during the run
+    limiter.restore_original_limits()
+    assert torch.get_num_threads() == 2
+
+
+def test_every_module_that_loads_torch_holds_it_in_runs():
+    """Every linac_gen module that imports torch when it loads calls
+    sync_torch at load time too: whichever is the first to load torch
+    inside a run then puts that run's torch work on one thread."""
+    import ast
+    missing = []
+    for path in sorted((ROOT / "linac_gen").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        stack, loads, calls = list(tree.body), False, False
+        while stack:                    # module level, try/if blocks included
+            node = stack.pop()
+            if isinstance(node, ast.Import):
+                loads |= any(a.name.split(".")[0] == "torch"
+                             for a in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                loads |= (node.module or "").split(".")[0] == "torch"
+            elif (isinstance(node, ast.Expr)
+                  and isinstance(node.value, ast.Call)
+                  and getattr(node.value.func, "id", None)
+                  in ("sync_torch", "_sync_torch")):
+                calls = True
+            elif isinstance(node, (ast.Try, ast.If)):
+                stack += node.body + node.orelse
+                stack += getattr(node, "finalbody", [])
+                for h in getattr(node, "handlers", []):
+                    stack += h.body
+        if loads and not calls:
+            missing.append(str(path.relative_to(ROOT)))
+    assert not missing, missing
+
+
+def _fresh_python(code):
+    """Run ``code`` in a new interpreter asking torch for 3 threads by
+    default; returns the words of its line that starts with TORCH."""
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("HELIX_THREADS", "HELIX_GUI_OMP_CAP",
+                        "LINAC_GEN_FFT_WORKERS")}
+    # torch's default count: OMP_NUM_THREADS, then MKL_NUM_THREADS (the
+    # GUI's start-up code, imported by other tests, sets the latter to 1);
+    # with Intel MKL (torch's Linux and Windows builds) MKL's own count,
+    # which stays within the physical cores unless MKL_DYNAMIC is off
+    env["OMP_NUM_THREADS"] = env["MKL_NUM_THREADS"] = "3"
+    env["MKL_DYNAMIC"] = "FALSE"
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(ROOT)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+    out = subprocess.run([sys.executable, "-c", textwrap.dedent(code)],
+                         cwd=ROOT, env=env, capture_output=True, text=True,
+                         timeout=300)
+    line = [s for s in out.stdout.splitlines() if s.startswith("TORCH")]
+    assert line, out.stdout + out.stderr
+    return line[0].split()[1:]
+
+
+def _torch_default():
+    """torch's count in such an interpreter right after loading torch (3
+    where torch honours the request; 1 on a one-core CI runner, where
+    restoring it cannot be told from leaving it)."""
+    return _fresh_python(
+        "import torch; print('TORCH', torch.get_num_threads())")[0]
+
+
+def test_a_fresh_process_loads_torch_in_its_first_run():
+    """The CLI's case: nothing loads torch before the first run, whose
+    space-charge solver loads it -- on one thread from then on, recorded,
+    and torch's own count back afterwards."""
+    pytest.importorskip("torch")
+    during, after = _fresh_python("""
+        import sys
+        from linac_gen.core.config import SpaceChargeConfig
+        from linac_gen.core.simulation import Simulation
+        from tests.test_simulation_e2e import _fodo_lattice, _gaussian_beam
+        assert "torch" not in sys.modules
+        sim = Simulation(_fodo_lattice(),
+                         _gaussian_beam(n=400, current=5.0, seed=1),
+                         space_charge=SpaceChargeConfig(
+                             nx=8, ny=8, nz=8, grid_extent=4.0,
+                             sc_backend="torch"))
+        rec = sim.run()
+        import torch
+        print("TORCH", rec.threads_info["torch"], torch.get_num_threads())
+    """)
+    assert during == "1"
+    assert after == _torch_default()   # torch's own count back
+
+
+def test_an_envelope_run_that_loads_torch():
+    """An envelope run meeting a field-map element loads torch through
+    the ML-surrogate registry: on one thread too."""
+    pytest.importorskip("torch")
+    during, after = _fresh_python("""
+        import sys
+        from linac_gen.core.lattice import Lattice
+        from linac_gen.core.particle import H_MINUS
+        from linac_gen.core.reference import ReferenceParticle
+        from linac_gen.elements.drift import Drift
+        from linac_gen.elements.ncells import NCells
+        from linac_gen.tracking.envelope import EnvelopeSolver
+        assert "torch" not in sys.modules
+        lat = Lattice()
+        lat.add(NCells("c", mode=1, n_cells=6, beta_g=0.5, eot_v_per_m=5e6,
+                       theta_s_deg=0.0, aperture_mm=15, p_flag=0,
+                       frequency_mhz=650.0))
+        lat.add(Drift("d", 100.0))
+        ref = ReferenceParticle(species=H_MINUS, w_kin=130.0,
+                                frequency=650.0)
+        twiss = dict(alpha_x=0.0, beta_x=1.0, emit_x=1e-6, alpha_y=0.0,
+                     beta_y=1.0, emit_y=1e-6, alpha_z=0.0, beta_z=1.0,
+                     emit_z=1e-6)
+        res = EnvelopeSolver(lat, ref, twiss, current=5.0).run()
+        assert "torch" in sys.modules
+        import torch
+        print("TORCH", res.threads_info["torch"], torch.get_num_threads())
+    """)
+    assert during == "1"
+    assert after == _torch_default()   # torch's own count back
+
+
+def test_error_study_runs_as_one_run(threads):
+    """ErrorStudy.run: its seeds run inside one run scope, recorded on
+    the results and on every seed's recorder."""
+    from linac_gen.core.config import BeamConfig
+    from linac_gen.core.lattice import Lattice
+    from linac_gen.elements.drift import Drift
+    from linac_gen.errors.error_model import ErrorStudy
+    threads.set_threads(2)
+    lat = Lattice()
+    lat.add(Drift(name="D1", length=20.0, aperture=50.0))
+    cfg = BeamConfig(species="H-", energy=2.0, frequency=162.5, current=0.0,
+                     n_particles=200, emit_nx=0.2, beta_x=0.5, emit_ny=0.2,
+                     beta_y=0.5, emit_z=0.06, beta_z=500.0)
+    res = ErrorStudy(lat, cfg, n_seeds=2).run()
+    assert res.threads_info["threads"] == 2
+    assert len(res._recorders) == 2
+    assert all(r.threads_info is res.threads_info for r in res._recorders)
 
 
 def test_run_scope_reports_what_the_run_uses(threads, monkeypatch):
@@ -232,8 +422,11 @@ def test_run_scope_reports_what_the_run_uses(threads, monkeypatch):
     assert info["kernels"]["_tsc_kernels"] == 3
     assert info["threads"] == 3 and info["source"] == "set"
     assert info["fft"] == 3
-    assert all(v == 3 for v in info["kernels"].values()
-               if isinstance(v, int)) or not info["kernels"]
+    for name, v in info["kernels"].items():
+        mod = sys.modules.get(f"linac_gen.{name}")
+        if isinstance(v, int) and name != "_tsc_kernels":
+            # a module built without OpenMP always runs one thread
+            assert v == (3 if getattr(mod, "_openmp_enabled", False) else 1)
 
 
 def test_in_run_scope_attaches_what_the_run_used(threads):

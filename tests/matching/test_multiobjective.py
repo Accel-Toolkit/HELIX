@@ -150,6 +150,31 @@ def test_qnehvi_returns_valid_pareto_front():
     assert _pareto_mask(res.pareto_F).all()
 
 
+@_needs_botorch
+def test_qnehvi_fits_on_one_torch_thread(monkeypatch):
+    """The Gaussian-process models are built inside the optimisation's run
+    scope: torch on one thread whatever its own count (its sums split by
+    thread), and torch's count back afterwards."""
+    import botorch.models
+    import torch
+    from tests.helpers import kept_thread_setting
+    seen = []
+    real = botorch.models.SingleTaskGP
+
+    def spy(*a, **k):
+        seen.append(torch.get_num_threads())
+        return real(*a, **k)
+    monkeypatch.setattr(botorch.models, "SingleTaskGP", spy)
+    with kept_thread_setting():
+        torch.set_num_threads(3)
+        res = pareto_optimize(
+            _two_quad_lattice(), _bcfg(), ["exit_sigma_x", "exit_sigma_y"],
+            algorithm="qnehvi", pop_size=6, n_gen=2, seed=0)
+        assert torch.get_num_threads() == 3
+    assert seen and set(seen) == {1}
+    assert res.threads_info["torch"] == 1
+
+
 def test_linked_variables_dedup_column_alignment():
     """Linked ADJUST cards collapse to one optimiser column.  The result's
     column-aligned labels (used by the CSV writer and GUI table) must match

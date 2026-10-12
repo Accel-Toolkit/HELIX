@@ -5,8 +5,8 @@
 # These env vars are only consulted at BLAS library init, so they MUST be
 # set before the first numpy import.  See:
 # https://github.com/numpy/numpy/issues/24555
-# (HELIX's own kernels, FFT and torch take the "CPU threads" setting, not
-# these -- see app.py.)
+# (HELIX's own kernels and FFT take the "CPU threads" setting, not these
+# -- see app.py.)
 import os
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 if "OMP_NUM_THREADS" not in os.environ:

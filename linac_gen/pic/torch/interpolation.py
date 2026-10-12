@@ -10,6 +10,10 @@ from __future__ import annotations
 import torch
 
 from linac_gen.pic.torch.deposition import cic_cells, tsc_cells
+from linac_gen.parallel.threads import sync_torch as _sync_torch
+
+# a run that loads torch here keeps its CPU work on one thread
+_sync_torch()
 
 __all__ = ["interpolate_cic_torch", "interpolate_tsc_torch"]
 

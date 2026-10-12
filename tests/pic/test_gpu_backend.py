@@ -71,16 +71,26 @@ def test_fft_threads_follow_the_setting(monkeypatch):
         assert gpu_backend._CpuBackend._workers() == 3
 
 
-def test_cpu_backend_rfftn_workers_bit_identical():
-    """scipy.fft is bit-identical for workers=1 vs workers=-1, so the FFT
-    thread count never changes a result."""
+def test_cpu_backend_fft_independent_of_thread_count():
+    """The backend's FFT equals scipy's one-thread transform at any thread
+    count.  (scipy's own workers=-1 need not: in some builds -- 1.18.1 on
+    macOS arm64 -- its result depends on the worker count, which is why the
+    backend never uses it.)"""
     pytest.importorskip("scipy")
     import numpy as np
     from scipy import fft as sfft
-    x = np.random.default_rng(3).standard_normal((32, 32, 32))
-    a = sfft.rfftn(x, workers=1)
-    b = sfft.rfftn(x, workers=-1)
-    assert np.array_equal(a, b)
+
+    from tests.helpers import kept_thread_setting
+    be = gpu_backend._CpuBackend()
+    for shape in ((32, 32, 32), (64, 64, 64), (65, 63, 127)):
+        x = np.random.default_rng(3).standard_normal(shape)
+        ref = sfft.rfftn(x, workers=1)
+        back = sfft.irfftn(ref, s=shape, workers=1)
+        with kept_thread_setting() as threads:
+            for n in (1, 3, 14):
+                threads.set_threads(n)
+                assert np.array_equal(be.rfftn(x), ref), (shape, n)
+                assert np.array_equal(be.irfftn(ref, shape), back), (shape, n)
 
 
 def test_grid_cells_argument_is_ignored(monkeypatch):

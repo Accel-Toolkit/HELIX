@@ -690,6 +690,10 @@ class ErrorStudy:
     def run(self, n_workers=1, should_stop=None, progress_cb=None):
         """Run Monte Carlo error study.
 
+        The seeds run inside one :func:`linac_gen.parallel.threads.run_scope`
+        (the HELIX thread setting; torch and BLAS on one thread), and the
+        results and every seed's recorder record it (``threads_info``).
+
         Returns ErrorStudyResults with aggregated statistics.
 
         ``n_workers`` is accepted for forward compatibility but the seed
@@ -709,6 +713,17 @@ class ErrorStudy:
         ``progress_cb`` (optional) is called as ``progress_cb(i_done,
         n_requested)`` after each completed seed.
         """
+        from linac_gen.parallel.threads import run_scope
+        with run_scope() as threads_info:
+            results = self._run_seeds(n_workers, should_stop, progress_cb)
+        results.threads_info = threads_info
+        for recorder in results._recorders:
+            if getattr(recorder, "threads_info", None) is None:
+                recorder.threads_info = threads_info
+        return results
+
+    def _run_seeds(self, n_workers, should_stop, progress_cb):
+        """The seed loop of :meth:`run`."""
         all_results = []
         all_corrections: list = []
         if int(n_workers) > 1:

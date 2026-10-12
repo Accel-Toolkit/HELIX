@@ -22,6 +22,11 @@ from dataclasses import dataclass
 
 import torch
 
+from linac_gen.parallel.threads import sync_torch as _sync_torch
+
+# a run that loads torch here keeps its CPU work on one thread
+_sync_torch()
+
 __all__ = [
     "RefKinematics",
     "drift_matrix", "quad_matrix", "solenoid_matrix",

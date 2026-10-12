@@ -20,6 +20,10 @@ from linac_gen.pic.torch.interpolation import (
     interpolate_cic_torch, interpolate_tsc_torch,
 )
 from linac_gen.pic.torch.poisson import TorchPoissonSolverFFT
+from linac_gen.parallel.threads import sync_torch as _sync_torch
+
+# a run that loads torch here keeps its CPU work on one thread
+_sync_torch()
 
 __all__ = ["torch_pic_sc_kick"]
 

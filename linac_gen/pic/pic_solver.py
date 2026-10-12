@@ -42,6 +42,10 @@ try:  # noqa: SIM105
     import torch  # type: ignore  # noqa: F401
 except Exception:
     pass
+else:
+    # a run that loads torch here keeps its CPU work on one thread
+    from linac_gen.parallel.threads import sync_torch as _sync_torch
+    _sync_torch()
 
 # Thread count: the kernels take the HELIX setting
 # (linac_gen.parallel.threads), not OMP_NUM_THREADS, and their results do

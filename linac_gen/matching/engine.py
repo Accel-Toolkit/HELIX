@@ -41,7 +41,7 @@ import numpy as np
 
 from linac_gen.core.config import BeamConfig
 from linac_gen.matching.constraints import Constraint, collect_constraints
-from linac_gen.parallel.threads import in_run_scope
+from linac_gen.parallel.threads import in_run_scope, sync_torch
 from linac_gen.matching.variables import (MatchingConfigError, Variable,
                                           collect_variables)
 
@@ -1562,6 +1562,7 @@ def match(lattice, beam_cfg: BeamConfig, *,
     else:  # gradient — exact-Jacobian Levenberg–Marquardt
         import torch
         from torch.autograd.functional import jacobian as _torch_jacobian
+        sync_torch()                    # torch's CPU work on one thread
         from linac_gen.distributions.factory import create_beam
         from linac_gen.matching.torch_objective import (
             build_torch_residual, build_torch_residual_sc,

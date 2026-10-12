@@ -34,6 +34,11 @@ import torch
 import torch.nn as nn
 
 from linac_gen.elements.base import FieldMapElement
+from linac_gen.parallel.threads import sync_torch as _sync_torch
+
+# a run that loads torch here (an envelope or tracking run meeting a field
+# map) keeps torch's CPU work on one thread
+_sync_torch()
 
 
 F64 = torch.float64

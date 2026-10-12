@@ -32,6 +32,7 @@ import numpy as np
 
 from linac_gen.core.config import BeamConfig
 from linac_gen.matching.variables import collect_variables
+from linac_gen.parallel.threads import in_run_scope, sync_torch
 from linac_gen.matching.engine import (
     _run_envelope, _run_mp, _apply_x,
     _link_group_index, _build_x0_and_bounds, _require_finite_bounds,
@@ -195,6 +196,7 @@ def _pareto_mask(F: np.ndarray) -> np.ndarray:
     return keep
 
 
+@in_run_scope
 def pareto_optimize(
     lattice, beam_cfg: BeamConfig, objective_names: List[str], *,
     algorithm: str = "nsga2",
@@ -353,6 +355,7 @@ def _run_qnehvi(forward, x0, lo, hi, n_obj, n_init, n_iter, seed):
         raise ImportError(
             "the 'qnehvi' multi-objective algorithm requires botorch + "
             "gpytorch; install with: pip install botorch gpytorch")
+    sync_torch()                        # torch's CPU work on one thread
 
     torch.manual_seed(int(seed))
     dtype = torch.double

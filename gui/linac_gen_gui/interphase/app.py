@@ -12,9 +12,9 @@ from __future__ import annotations
 # linac_gen_gui.interphase` and `python -m linac_gen_gui.interphase.app`
 # launch paths hit this module, so this is the single source of truth.
 # OMP_NUM_THREADS=1 holds third-party OpenMP code in GUI threads to one
-# thread; HELIX's own kernels, its FFT and torch take the "CPU threads"
-# setting instead (linac_gen.parallel.threads; Numerics tab, default every
-# CPU).
+# thread; HELIX's own kernels and its FFT take the "CPU threads" setting
+# instead (linac_gen.parallel.threads; Numerics tab, default every CPU), and
+# torch's own CPU work stays on one thread during runs.
 import os
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 if "OMP_NUM_THREADS" not in os.environ:

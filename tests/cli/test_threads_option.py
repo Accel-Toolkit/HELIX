@@ -51,9 +51,10 @@ def test_the_matcher_takes_it(tmp_path):
 def test_the_surrogate_cli_takes_it():
     from linac_gen.surrogates.cli import main as surrogate_main
     with kept_thread_setting() as threads:
+        n = threads.available_threads() + 1          # not what it defaults to
         with pytest.raises(SystemExit):              # no subcommand given
-            surrogate_main(["--threads", "3"])
-        assert threads.get_threads() != 3            # not applied on errors
+            surrogate_main(["--threads", str(n)])
+        assert threads.get_threads() != n            # not applied on errors
         with pytest.raises(SystemExit) as exc:
             surrogate_main(["--threads", "x", "train"])
         assert exc.value.code == 2

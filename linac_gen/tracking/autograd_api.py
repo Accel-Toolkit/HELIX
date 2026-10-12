@@ -32,6 +32,10 @@ from linac_gen.tracking.torch_matrices import F64
 from linac_gen.tracking.torch_tracking import (
     compute_transfer_matrix_torch, compute_twiss_torch,
 )
+from linac_gen.parallel.threads import sync_torch as _sync_torch
+
+# a run that loads torch here keeps its CPU work on one thread
+_sync_torch()
 
 __all__ = ["TunableParam", "DifferentiableLattice"]
 

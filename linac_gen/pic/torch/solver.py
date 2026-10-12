@@ -24,6 +24,10 @@ import numpy as np
 import torch
 
 from linac_gen.pic.torch.sc_kick import torch_pic_sc_kick
+from linac_gen.parallel.threads import sync_torch as _sync_torch
+
+# a run that loads torch here keeps its CPU work on one thread
+_sync_torch()
 
 __all__ = ["AdaptiveOnlyBackendWarning", "TorchPicSolver"]
 

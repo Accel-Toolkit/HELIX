@@ -32,6 +32,10 @@ from linac_gen.tracking.torch_matrices import (
     F64, RefKinematics, dipole_matrix, drift_matrix, edge_matrix,
     quad_matrix, solenoid_matrix,
 )
+from linac_gen.parallel.threads import sync_torch as _sync_torch
+
+# a run that loads torch here keeps its CPU work on one thread
+_sync_torch()
 
 
 def tilt_rotation_matrix_torch(tilt_deg: float) -> torch.Tensor:
