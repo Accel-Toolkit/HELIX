@@ -14,6 +14,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
+from linac_gen.pic.torch import cpu_kernels as _cpu
 from linac_gen.pic.torch.greens import (
     build_integrated_greens_torch,
     build_point_greens_torch,
@@ -24,6 +25,18 @@ from linac_gen.parallel.threads import sync_torch as _sync_torch
 _sync_torch()
 
 __all__ = ["TorchPoissonSolverFFT"]
+
+
+def _rfftn(x):
+    # torch's transform, on HELIX's threads where torch's FFT is pocketfft
+    # (linac_gen.pic.torch.cpu_kernels): the same numbers either way
+    out = _cpu.rfftn(x)
+    return torch.fft.rfftn(x) if out is None else out
+
+
+def _irfftn(X, s):
+    out = _cpu.irfftn(X, s)
+    return torch.fft.irfftn(X, s=s) if out is None else out
 
 
 class TorchPoissonSolverFFT:
@@ -52,7 +65,7 @@ class TorchPoissonSolverFFT:
         builder = (build_integrated_greens_torch if self.green_kind == "igf"
                    else build_point_greens_torch)
         G = builder(self.n_grid, self.dx, dtype=self.dtype, device=self.device)
-        self._G_fft = torch.fft.rfftn(G)
+        self._G_fft = _rfftn(G)
 
     def update_grid(self, grid_min, grid_max) -> None:
         """Re-target the solver to a new grid extent (rebuilds the Green's
@@ -80,10 +93,8 @@ class TorchPoissonSolverFFT:
         # the low corner — F.pad order is (z_lo, z_hi, y_lo, y_hi, x_lo, x_hi).
         padded = F.pad(rho * cell_vol, (0, nz, 0, ny, 0, nx))
 
-        phi_padded = torch.fft.irfftn(
-            torch.fft.rfftn(padded) * self._G_fft,
-            s=(2 * nx, 2 * ny, 2 * nz),
-        )
+        phi_padded = _irfftn(_rfftn(padded) * self._G_fft,
+                             (2 * nx, 2 * ny, 2 * nz))
         phi = phi_padded[:nx, :ny, :nz]
 
         # E = -grad(phi): central differences in the interior, one-sided at

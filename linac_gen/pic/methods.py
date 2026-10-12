@@ -554,6 +554,11 @@ def resolve_sc_kwargs(conv: Mapping | None = None,
                     f"space-charge method {shown!r} replaces the project's "
                     f"settings ({own or 'classic'}); {what} are used")
         kw = _apply_cli_flags(kw, cli)
+    # a setting outside the legacy keys that a project without sc_method
+    # stores by its field name
+    if "gpu_particles" not in kw and conv.get("gpu_particles") is not None:
+        kw["gpu_particles"] = coerce_field("gpu_particles",
+                                           conv["gpu_particles"])
     fields = set(_field_names())
     for key, raw in sc_over.items():
         if key not in fields:

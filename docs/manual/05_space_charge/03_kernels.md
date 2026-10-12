@@ -90,26 +90,35 @@ The IGF is built by evaluating the antiderivative once at each vertex
 of the (2n+1)³ cell-corner lattice and differencing neighbouring
 vertices.  This gives the same bits as evaluating it at the eight
 corners of every cell, at about one ninth of the cost (48³: 365 ms
-before, 41 ms now).  With
-`grid_mode="fixed"` it is built once per run.  With
+before, 41 ms after).  On the CPU the build runs on HELIX's
+[CPU threads](../06_running/15_threads.md), in pieces of whole grid
+planes, each value computed by the same operations as in a single call
+over the grid, so the result is the same for any number of threads.
+With `grid_mode="fixed"` it is built once per run.  With
 `grid_mode="adaptive"` it is rebuilt at every kick whose cell spacing
-changes, so its cost sets the adaptive kick time:
+changes, so its cost sets much of the adaptive kick time:
 
-| Adaptive ±6σ kick, PIP-II MEBT, 100 000 particles, 48³ | IGF from cell corners | IGF from shared vertices |
+| Building the IGF (14-core Mac) | 1 thread | 14 threads |
 |---|---|---|
-| CIC | 466 ms | 82 ms |
-| TSC (compiled kernel) | 471 ms | 89 ms |
+| 48³, full build | 32 ms | 8 ms |
+| 48³, symmetric build | 5 ms | 3 ms |
+| 96³, full build | 247 ms | 35 ms |
+| 96³, symmetric build | 37 ms | 9 ms |
+
+On a 545 m linac line with field-map cavities (5 000 particles, adaptive
+48³ grid with the full build, 31 487 rebuilds) a whole run took 563 s
+instead of 1520 s on 14 threads, with the same results bit for bit.
 
 A grid that only moves, with its spacing unchanged, keeps its Green's
 function.  *(Changed 2026-10: the IGF used to be evaluated at every
-cell corner.)*
+cell corner, and until 2026-10-12 it was built on one thread.)*
 
 `green_build="symmetric"` builds one octant and mirrors it: the
 Green's function is even in each coordinate, so the result equals the
 full build to rounding (about 5·10⁻¹³ of its peak at 48³) and is
-exactly even.  The build takes 14 ms instead of 76 ms at 48³ and 37 ms
-instead of 142 ms at 64³.  The named adaptive
-[methods](08_methods.md) use it; everything else keeps the full build.
+exactly even.  It costs about a sixth of the full build on one thread
+(see the table).  The named adaptive [methods](08_methods.md) use it;
+everything else keeps the full build.
 
 ## Configuration
 

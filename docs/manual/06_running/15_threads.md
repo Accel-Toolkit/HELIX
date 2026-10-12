@@ -2,7 +2,8 @@
 
 HELIX runs the costly parts of a simulation on several CPU threads at once:
 
-* the space-charge field solve (the FFTs of the Poisson solver);
+* the space-charge field solve (the FFTs of the Poisson solver) and its
+  Green's function, which an adaptive grid rebuilds at every kick;
 * the field maps (the field sampler and the kick-and-drift step of
   `FieldMap3D`);
 * the CIC charge deposition, and the CIC and TSC field gathers (the TSC
@@ -10,7 +11,9 @@ HELIX runs the costly parts of a simulation on several CPU threads at once:
 
 By default they use every CPU of the computer, in the GUI, the CLI and
 Python alike, and whatever the PIC backend: with `cuda` or `mps` the FFTs
-run on the GPU, and the threads serve everything that stays on the CPU.
+run on the GPU, and the threads serve everything that stays on the CPU
+(with `cuda` and `gpu_particles` the deposit and gather move to the GPU
+too; see [Installation](../01_getting_started/02_installation.md)).
 
 ## The results do not depend on the thread count
 
@@ -18,6 +21,9 @@ Every result is the same, bit for bit, for any number of threads:
 
 * the FFT gives scipy's one-thread result however many threads share it
   (see [How the FFT is threaded](#how-the-fft-is-threaded));
+* the Green's function is built in pieces of whole grid planes, every
+  value computed by the same operations as in a single call over the
+  whole grid;
 * the gathers and the field-map step compute each particle on its own;
 * the CIC deposit adds the contributions to every grid cell in particle
   order, the order of a single-threaded loop; the TSC deposit runs on one
@@ -91,11 +97,31 @@ torch's own CPU work — the torch space-charge engine
 (`sc_backend="torch"`), ML surrogates, and the gradient, Bayesian and
 qNEHVI optimisers — runs on one thread while a run lasts, whatever torch's
 own thread count.  With more threads torch's last digits change with the
-thread count: it splits long sums between its threads, and on Linux its
-FFT is Intel MKL's, which is threaded too (the torch engine gave different
+thread count: it splits long sums between its threads, and on Linux and
+Windows its FFT is Intel MKL's, which is threaded too (the torch engine gave different
 last digits at 1 and 4 threads on a Linux test machine).  A run sets torch
 to one thread in its own thread when it starts, or when HELIX loads torch
 during the run, and restores torch's previous count when it ends.
+
+The torch space-charge engine does not lose its speed to this.  Without a
+gradient — every normal run — its charge deposit and field gather run on
+HELIX's threads instead of torch's (C++ kernels written in torch's
+arithmetic), and its Green's function and the gather's sums run as torch
+code in fixed pieces on HELIX's threads, torch on one thread in each.
+Where torch's FFT is pocketfft (builds without Intel MKL: macOS and ARM
+machines), its FFTs are split as described in
+[How the FFT is threaded](#how-the-fft-is-threaded), every slab a torch
+call; a grid size is split only after the split of a fixed random array
+has reproduced torch's own transform bit for bit in that process.  On
+x86 Linux and Windows torch's FFT is Intel MKL's, whose last digits can
+depend on how an array sits in memory, so there the FFTs stay torch's, on
+one thread.  The result is torch's own, bit for bit, at any thread count.  One
+kick of 200,000 particles on a 32³ grid takes about 23 ms with CIC and
+25 ms with TSC, against 81 ms and 202 ms for torch's code on one thread
+and 36 ms and 74 ms on ten; on a 64³ grid with TSC it takes 56 ms, against
+309 ms and 115 ms (14-core Mac, HELIX on ten threads).  With a gradient
+(the differentiable tracker, the gradient matcher) torch's own code runs,
+on one thread.  `LINAC_GEN_TORCH_SC_KERNELS=0` runs torch's code always.
 
 Before version 1.16.0, GUI runs ran torch on one thread, and CLI and Python
 runs on torch's default count (the 10 performance cores of a 14-core Mac);
@@ -127,7 +153,9 @@ exactly as in scipy's one-thread transform: the result is scipy's
 one-thread result, bit for bit, for any number of threads and in every
 build.  A transform of fewer than 2¹⁷ grid points (for example 32³, the
 doubled grid of a 16³ beam grid) runs as one single-threaded call:
-splitting it would cost more than it saves.
+splitting it would cost more than it saves.  The torch engine's FFTs are
+split the same way on macOS (see
+[torch stays on one thread](#torch-stays-on-one-thread)).
 
 ## In the results file
 

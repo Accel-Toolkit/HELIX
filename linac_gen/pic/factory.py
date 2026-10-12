@@ -31,7 +31,10 @@ def make_sc_solver(config, *, purpose: str = "forward"):
         import dataclasses
         if (getattr(config, "sc_backend", "numpy") != "numpy"
                 and dataclasses.is_dataclass(config)):
-            config = dataclasses.replace(config, sc_backend="numpy")
+            from linac_gen.pic.gpu_backend import numpy_engine_use_gpu
+            config = dataclasses.replace(
+                config, sc_backend="numpy",
+                use_gpu=numpy_engine_use_gpu(config.use_gpu))
         return PicSolver(config)
     backend = getattr(config, "sc_backend", "numpy")
     if backend == "torch":

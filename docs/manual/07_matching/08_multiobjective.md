@@ -42,8 +42,12 @@ emittance.
 | `"nsga2"` (default) | NSGA-II genetic algorithm (pymoo) | robust, population-based; the standard lattice-design tool.  Best when the forward pass is cheap (envelope / surrogate). |
 | `"qnehvi"` | Bayesian multi-objective (BoTorch qNEHVI) | sample-efficient — far fewer forward passes — so better when each evaluation is expensive (`cost_solver="mp"` / space charge). |
 
-On the demo lattice qNEHVI reaches a comparable front in ~20 evaluations
-vs NSGA-II's ~200.
+On a two-quadrupole test lattice (minimising the exit σx and σy), qNEHVI's
+front after 21 evaluations covers 99.8 % of the area — the hypervolume —
+that NSGA-II's front covers after 200 (three seeds each, measured
+2026-10-12).  If a qNEHVI iteration cannot fit its Gaussian processes, it
+evaluates a Sobol point instead; the log and the result's `message` say
+how many did.
 
 ## Python API
 

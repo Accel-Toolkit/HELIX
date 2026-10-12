@@ -57,8 +57,25 @@ foil = Foil(name="STRIP", material="C", thickness_ug_cm2=600.0,
             seed=1234)        # fixed seed → reproducible kicks
 ```
 
-Pass a fixed `seed` in tests for reproducibility; leave it `None`
-(the default) in production so each run draws a fresh random stream.
+Without a `seed` (the default) the foil follows the run: a beam made by
+`create_beam` with a seed — the GUI and the CLI always give one, also for
+a beam read from a file — draws the foil's kicks from a stream seeded by
+that seed and the foil's name, so a run repeats exactly and two foils draw
+different numbers.  A `seed` on the foil itself fixes the stream instead,
+whatever the beam's seed.  Either way every new beam starts the stream
+afresh, so a run that reuses the lattice (as the GUI does) repeats too.  A
+beam built by hand without a seed, through a foil without one, draws a
+fresh random stream each run.  The bunches of a
+[bunch train](../15_multibunch/01_multibunch.md) share their seed, so they
+all see the same foil kicks, as they share their macroparticles.
+
+The rms energy loss is small, but it is uncorrelated with the beam: on a
+long, strongly chirped bunch — a phase–energy correlation of −0.9998, say —
+it widens the thin longitudinal ellipse a lot.  The Landau tail then makes
+the post-foil longitudinal emittance converge slowly with the particle
+count: in such a case it grew by between 5 % and 190 % over 20 foil seeds
+with 5 000 particles, and by 40–67 % with 500 000.  Use 50 000 particles or
+more when that number matters.
 
 ## API reference (developers)
 
@@ -78,7 +95,7 @@ linac_gen.elements.foil.Foil(
 | `material` | `"C"` | — | one of C / Be / Al / Cu / Mo / W |
 | `thickness_ug_cm2` | 600.0 | μg/cm² | areal density |
 | `aperture` | 0.0 | mm | round aperture (0 = none) |
-| `seed` | `None` | — | fix for reproducible scattering; a property — setting it rebuilds the generator |
+| `seed` | `None` | — | `None`: follow the beam's seed (see above); an integer fixes the stream, restarted for every beam |
 | `strip_model` | `"off"` | — | `"two_step"`: H⁻ → H⁰ → p with cross sections calibrated to the PIP-II anchors; unconverted ions on `Beam.unstripped_table` (not a loss) |
 | `dedx_model` | `"mip"` | — | `"bethe"`: β-dependent Bethe mean loss instead of the MIP floor |
 | `dx`, `dy` | 0.0 | mm | foil offset (the tracker/envelope wrap translates the beam into the foil frame) |

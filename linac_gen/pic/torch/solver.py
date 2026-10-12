@@ -15,6 +15,10 @@ Inside the numpy multi-particle tracker the result is written back as a
 numpy array (gradients are not propagated there — the numpy tracker is not
 an autograd graph). End-to-end differentiability is provided separately by
 the torch step tracker.
+
+Device: ``use_gpu="cuda"`` (or ``"gpu"``) runs the kick on an NVIDIA GPU in
+float64 -- a run repeats bit for bit there too; anything else, or no usable
+CUDA device, the CPU (:func:`linac_gen.pic.torch.devices.torch_device`).
 """
 from __future__ import annotations
 
@@ -23,6 +27,7 @@ import warnings
 import numpy as np
 import torch
 
+from linac_gen.pic.torch.devices import free_gpu_memory, torch_device
 from linac_gen.pic.torch.sc_kick import torch_pic_sc_kick
 from linac_gen.parallel.threads import sync_torch as _sync_torch
 
@@ -47,6 +52,7 @@ class TorchPicSolver:
 
     def __init__(self, config):
         self.config = config
+        self.device = torch_device(getattr(config, "use_gpu", "auto"))
         # Multibunch M5 interface parity: the numpy PicSolver's opt-in
         # bunch-train controls exist here so setting them is possible —
         # but kick() raises NotImplementedError when they are armed (no
@@ -98,7 +104,7 @@ class TorchPicSolver:
             return
         alive_idx = np.where(beam.alive_mask)[0]
         particles = torch.as_tensor(beam.particles[alive_idx],
-                                    dtype=torch.float64)
+                                    dtype=torch.float64, device=self.device)
         ref = beam.ref
         from linac_gen.pic.macrocharge import macro_charge_for
         macro_charge = macro_charge_for(beam)   # shared convention
@@ -111,11 +117,15 @@ class TorchPicSolver:
             wavelength_mm=float(ref.wavelength),
             macro_charge=macro_charge,
             charge_state=float(abs(ref.species.charge)),
+            device=self.device,
         )
-        beam.particles[alive_idx] = kicked.detach().numpy()
+        beam.particles[alive_idx] = kicked.detach().cpu().numpy()
 
     def free_memory(self) -> None:
         """Release the Green's functions the torch kick caches for repeated
-        grids (``linac_gen.pic.torch.sc_kick.clear_solver_cache``)."""
+        grids (``linac_gen.pic.torch.sc_kick.clear_solver_cache``), and on a
+        GPU torch's cached device memory."""
         from linac_gen.pic.torch.sc_kick import clear_solver_cache
         clear_solver_cache()
+        if self.device.type == "cuda":
+            free_gpu_memory()

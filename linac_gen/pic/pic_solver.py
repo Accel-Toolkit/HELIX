@@ -613,6 +613,7 @@ class PicSolver:
         self._train_solver: "PicSolver | None" = None
         self._train_engaged: bool = False
         self._solver: PoissonSolverFFT | None = None
+        self._gpu_particle_kicks = 0       # kicks with deposit+gather on GPU
         self._grid_min: np.ndarray | None = None
         self._grid_max: np.ndarray | None = None
         self._n_grid: np.ndarray | None = None
@@ -983,6 +984,23 @@ class PicSolver:
         # 4. Macro-particle charges
         charges = self._macro_charges(beam)
 
+        # 5-7 on an NVIDIA GPU when asked for and possible
+        # (linac_gen.pic.gpu_particles): the deposit, the solve and the
+        # gather there, the particles over once per kick
+        from linac_gen.pic import gpu_particles
+        if gpu_particles.requested(self.config):
+            why = gpu_particles.unavailable_reason(self._solver)
+            if why is None:
+                E = gpu_particles.rest_frame_field(
+                    self._solver, coords_rest, charges, self._grid_min,
+                    self._grid_max, self._n_grid,
+                    getattr(self.config, "kernel", "cic"), device="cuda")
+                self._gpu_particle_kicks += 1
+                return E
+            gpu_particles.warn_once(
+                "unavailable", "gpu_particles: the charge deposit and field "
+                "gather stay on the CPU: %s", why)
+
         # 5. Charge deposition (CIC or TSC, selected by config)
         deposit_fn, interpolate_fn = _select_kernel(
             getattr(self.config, "kernel", "cic")
@@ -1008,6 +1026,11 @@ class PicSolver:
         3x-long companion grid."""
         out = {"green_builds": int(getattr(self._solver, "n_green_builds",
                                            0))}
+        gpu_kicks = self._gpu_particle_kicks + (
+            self._train_solver._gpu_particle_kicks
+            if self._train_solver is not None else 0)
+        if gpu_kicks:
+            out["gpu_particle_kicks"] = int(gpu_kicks)
         if self._train_solver is not None:
             out["train_green_builds"] = int(getattr(
                 self._train_solver._solver, "n_green_builds", 0))

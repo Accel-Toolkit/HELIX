@@ -16,6 +16,7 @@ import torch
 
 from linac_gen.core.constants import EPSILON_0, PI
 from linac_gen.parallel.threads import sync_torch as _sync_torch
+from linac_gen.pic.torch import cpu_kernels as _cpu
 
 # a run that loads torch here keeps its CPU work on one thread
 _sync_torch()
@@ -78,6 +79,11 @@ def build_integrated_greens_torch(n_grid, dx, *,
     return _igf_torch_vertex(n_grid, dx, dtype=dtype, device=device)
 
 
+#: Points per vertex plane below which the antiderivative is one call:
+#: smaller slabs cost more in overhead than they save.
+_SLAB_PLANE_POINTS = 1024
+
+
 def _igf_torch_vertex(n_grid, dx, *, dtype, device) -> torch.Tensor:
     """Shared-vertex IGF: same doubles and term order as the per-corner form."""
     nx, ny, nz = (int(n) for n in n_grid)
@@ -85,13 +91,39 @@ def _igf_torch_vertex(n_grid, dx, *, dtype, device) -> torch.Tensor:
     vx = (torch.arange(-nx, nx + 1, dtype=dtype, device=device) - 0.5) * dxx
     vy = (torch.arange(-ny, ny + 1, dtype=dtype, device=device) - 0.5) * dyy
     vz = (torch.arange(-nz, nz + 1, dtype=dtype, device=device) - 0.5) * dzz
+    vol = dxx * dyy * dzz
     # Broadcastable axes (same per-element operations as full meshes).
-    F = torch_antideriv_igf(vx[:, None, None], vy[None, :, None],
-                            vz[None, None, :])
-    G = (
-        F[1:, 1:, 1:] - F[:-1, 1:, 1:] - F[1:, :-1, 1:] - F[1:, 1:, :-1]
-        + F[:-1, :-1, 1:] + F[:-1, 1:, :-1] + F[1:, :-1, :-1] - F[:-1, :-1, :-1]
-    ) / (dxx * dyy * dzz)
+    if (_cpu.enabled() and _cpu.plain(vx, vy, vz)
+            and (2 * ny + 1) * (2 * nz + 1) >= _SLAB_PLANE_POINTS):
+        # no gradient: slabs of 16 planes on HELIX's threads, each computed
+        # exactly as in one call (cpu_kernels.parallel)
+        F = torch.empty((2 * nx + 1, 2 * ny + 1, 2 * nz + 1), dtype=dtype,
+                        device=vx.device)
+
+        def antideriv(a, b):
+            F[a:b] = torch_antideriv_igf(vx[a:b, None, None],
+                                         vy[None, :, None],
+                                         vz[None, None, :])
+        _cpu.parallel(antideriv, 2 * nx + 1, 16)
+        G = torch.empty((2 * nx, 2 * ny, 2 * nz), dtype=dtype,
+                        device=vx.device)
+
+        def cells(a, b):
+            lo, hi = F[a:b], F[a + 1:b + 1]
+            G[a:b] = (
+                hi[:, 1:, 1:] - lo[:, 1:, 1:] - hi[:, :-1, 1:]
+                - hi[:, 1:, :-1] + lo[:, :-1, 1:] + lo[:, 1:, :-1]
+                + hi[:, :-1, :-1] - lo[:, :-1, :-1]
+            ) / vol
+        _cpu.parallel(cells, 2 * nx, 16)
+    else:
+        F = torch_antideriv_igf(vx[:, None, None], vy[None, :, None],
+                                vz[None, None, :])
+        G = (
+            F[1:, 1:, 1:] - F[:-1, 1:, 1:] - F[1:, :-1, 1:] - F[1:, 1:, :-1]
+            + F[:-1, :-1, 1:] + F[:-1, 1:, :-1] + F[1:, :-1, :-1]
+            - F[:-1, :-1, :-1]
+        ) / vol
     # Natural displacement order (-n ... n-1) -> Hockney wrap.
     G = torch.roll(G, shifts=(-nx, -ny, -nz), dims=(0, 1, 2))
     return G * (1.0 / (4.0 * PI * EPSILON_0))

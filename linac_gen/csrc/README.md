@@ -91,6 +91,26 @@ Python kernels.  Every PicSolver call with finite grid bounds is inside
 the envelope.  A direct call with malformed shapes raises `ValueError`.
 Runtime kill-switch: `LINAC_GEN_TSC_KERNEL=0` forces the Python kernels.
 
+### The torch engine's deposit and gather (`deposit_torch`, `gather_products_torch`)
+
+The same module carries the torch space-charge engine's CIC and TSC
+deposit and gather (`linac_gen/pic/torch/deposition.py`,
+`interpolation.py`) in torch's arithmetic, used by
+`linac_gen.pic.torch.cpu_kernels` whenever no gradient is needed: the same
+expressions in the same order (TSC `w-` is `0.5*((1-f)*(1-f))` there, not
+the numpy twin's `(0.5*(1-f))*(1-f)`), corners in torch's order, no
+contraction.  The deposit sums every cell in particle order, as torch's
+float64 `index_put_(accumulate=True)` does on the CPU (one thread), on any
+number of threads: each thread owns whole x-planes and merges the
+particles that reach its plane in index order; it returns the sums and
+torch divides by the cell volume.  The gather returns the products
+weight × field per particle and corner, shape `(3, N, corners)`, and
+torch sums them over the corners in its own order, which depends on the
+CPU's vector width.  Both return `None` outside the envelope above (the
+caller runs torch's code).  `tests/pic/test_torch_engine_kernels.py` pins
+torch's numbers at 1–14 threads.  Kill switch:
+`LINAC_GEN_TORCH_SC_KERNELS=0`.
+
 ## CIC deposit/gather (`_pic_kernels`)
 
 Same direct compile, but WITHOUT `-ffp-contract=off` -- the flags

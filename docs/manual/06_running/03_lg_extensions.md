@@ -47,7 +47,8 @@ noted above.
 | `nx`, `ny`, `nz` | int | 96 | grid size |
 | `grid_extent` | float | 5.0 | σ multiplier |
 | `boundary` | str | `open` | `open` only — the Poisson solve is open-boundary Hockney; periodic is refused at validation |
-| `use_gpu` | str | `auto` | `auto` / `cpu` / `gpu` / `cuda` / `mps` — `auto` never selects the FP32 `mps` backend; request it explicitly |
+| `use_gpu` | str | `auto` | `auto` / `cpu` / `gpu` / `cuda` / `mps` — `auto` never selects the FP32 `mps` backend; request it explicitly.  The torch engine runs on an NVIDIA GPU only for `cuda` / `gpu` |
+| `gpu_particles` | bool | `false` | with the CUDA backend, the charge deposit and field gather on the GPU too (needs torch with CUDA; not with `reuse_every` > 1); `LINAC_GEN_GPU_PARTICLES=1` / `=0` overrides |
 
 ### Tracker parameters
 

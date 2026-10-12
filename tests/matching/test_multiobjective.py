@@ -148,6 +148,10 @@ def test_qnehvi_returns_valid_pareto_front():
     )
     assert res.n_eval > 0
     assert _pareto_mask(res.pareto_F).all()
+    # every iteration fitted its Gaussian processes and maximised the
+    # acquisition: no Sobol probe stood in (it used to stand in for all --
+    # the model-list likelihood and the acquisition's arguments were wrong)
+    assert "Sobol probes" not in res.message, res.message
 
 
 @_needs_botorch

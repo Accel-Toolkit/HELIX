@@ -120,3 +120,31 @@ def test_scan_worker_carries_drift_single_push_per_point(qapp, mini_lattice, mon
     assert out["failed"] == [] and len(seen) == 2
     assert all(c.drift_single_push is False and c.integration_steps_per_metre == 20.0 for c in seen)
     assert mini_lattice.step_config is original
+
+
+def test_a_scan_takes_the_device_from_the_tab_s_config(qapp, mini_lattice,
+                                                       monkeypatch):
+    """The tab's config holds the device the run would use: for a
+    continuous beam on the torch engine with cuda and no cupy it is "auto"
+    (the numpy engine runs); the scan must not put the raw "cuda" back."""
+    from linac_gen.core.config import SpaceChargeConfig
+    from linac_gen.pic import gpu_backend
+    monkeypatch.setattr(gpu_backend, "_try_import_cupy", lambda: None)
+    tab = ConvergenceTab(AppState())
+    try:
+        tab._fixed_sc_backend.setCurrentText("torch")
+        tab._fixed_backend.setCurrentText("cuda")
+        base = tab.current_sc_config(5.0, continuous=True)
+    finally:
+        tab.deleteLater()
+    assert (base.sc_backend, base.use_gpu) == ("numpy", "auto")
+    w = _ScanWorker(mini_lattice, _beam_cfg(), AXIS_GRID, [16, 24],
+                    fixed_nx=16, fixed_extent=4.0, fixed_step1=10.0,
+                    fixed_step2=10.0, use_gpu="cuda", sc_base=base)
+    point = w._point_sc(24, 5.0)
+    assert (point.nx, point.grid_extent, point.use_gpu) == (24, 5.0, "auto")
+    plain = _ScanWorker(mini_lattice, _beam_cfg(), AXIS_GRID, [16],
+                        fixed_nx=16, fixed_extent=4.0, fixed_step1=10.0,
+                        fixed_step2=10.0, use_gpu="cpu")
+    assert plain._point_sc(16, 4.0).use_gpu == "cpu"
+    assert isinstance(plain._point_sc(16, 4.0), SpaceChargeConfig)

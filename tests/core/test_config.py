@@ -123,3 +123,17 @@ def test_sc_config_accepts_largest_grid_extent():
     from linac_gen.core.config import MAX_GRID_EXTENT_SIGMA
     assert SpaceChargeConfig(grid_extent=MAX_GRID_EXTENT_SIGMA).grid_extent == \
         MAX_GRID_EXTENT_SIGMA
+
+
+def test_the_grid_has_room_for_the_kernel_s_stencil():
+    """CIC reaches the next node, TSC one on each side: fewer nodes per
+    axis are refused (the torch engine's TSC wrapped silently)."""
+    import pytest
+    from linac_gen.core.config import SpaceChargeConfig
+    for n in (1, 2):
+        with pytest.raises(ValueError, match="TSC kernel needs at least 3"):
+            SpaceChargeConfig(nx=8, ny=n, nz=8, kernel="tsc")
+    with pytest.raises(ValueError, match="CIC kernel needs at least 2"):
+        SpaceChargeConfig(nx=8, ny=8, nz=1, kernel="cic")
+    SpaceChargeConfig(nx=2, ny=2, nz=2, kernel="cic")
+    SpaceChargeConfig(nx=3, ny=3, nz=3, kernel="tsc")

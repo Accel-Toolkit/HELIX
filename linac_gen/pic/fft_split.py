@@ -49,6 +49,15 @@ ALIGN = 8
 _lock = threading.Lock()
 _pool: ThreadPoolExecutor | None = None
 _pool_size = 0
+_local = threading.local()          # .pooled: this is one of the pool's
+
+
+def _mark_pooled() -> None:
+    _local.pooled = True
+
+
+def _in_pool() -> bool:
+    return getattr(_local, "pooled", False)
 
 
 def _executor(n: int) -> ThreadPoolExecutor:
@@ -59,7 +68,8 @@ def _executor(n: int) -> ThreadPoolExecutor:
             # The old pool is not shut down -- another thread may still be
             # submitting to it -- and its threads end when it is collected.
             _pool = ThreadPoolExecutor(max_workers=n,
-                                       thread_name_prefix="helix-fft")
+                                       thread_name_prefix="helix-fft",
+                                       initializer=_mark_pooled)
             _pool_size = n
         return _pool
 
@@ -90,25 +100,105 @@ def _each(fn, n: int, k: int, lines: int) -> None:
     """``fn(a, b)`` for every aligned slab of ``range(n)`` planes (``lines``
     lines each) cut up to ``k`` ways; returns when all have finished (they
     write into arrays the caller owns)."""
-    slabs = _slabs(n, k, lines)
-    if len(slabs) == 1:
-        fn(*slabs[0])
+    run_groups(fn, [[slab] for slab in _slabs(n, k, lines)])
+
+
+def _run_group(fn, group) -> None:
+    for a, b in group:
+        fn(a, b)
+
+
+def run_pieces(fn, pieces, workers: int, *, enter=None,
+               caller: bool = True) -> None:
+    """``fn(a, b)`` for every piece ``(a, b)``, on up to ``workers`` threads
+    -- the calling thread among them unless ``caller`` is false -- each
+    taking the next piece as it finishes one, so slower cores take fewer.
+    A pool thread runs its pieces inside ``enter()`` when given (a context
+    manager factory).  Returns when all have finished.  After an error or an
+    interrupt no further piece starts; the threads finish the pieces they
+    are on, and then the interrupt, else the first error, is raised.  Called
+    from one of the pool's own threads (a piece that splits again), all the
+    pieces run in that thread: no pool task ever waits for another."""
+    pieces = list(pieces)
+    workers = max(1, min(int(workers), len(pieces)))
+    if _in_pool() or (workers == 1 and caller):
+        if caller or enter is None:
+            _run_group(fn, pieces)
+        else:
+            with enter():
+                _run_group(fn, pieces)
         return
-    pool = _executor(len(slabs) - 1)
-    futures = [pool.submit(fn, a, b) for a, b in slabs[1:]]
-    error = None
-    try:
-        fn(*slabs[0])
-    except BaseException as exc:                    # noqa: BLE001
-        error = exc
-    for f in futures:
+    lock = threading.Lock()
+    queue = iter(pieces)
+    errors: list[BaseException] = []
+
+    def drain():
         try:
-            f.result()
+            while True:
+                with lock:
+                    piece = None if errors else next(queue, None)
+                if piece is None:
+                    return
+                fn(*piece)
         except BaseException as exc:                # noqa: BLE001
-            if error is None:
-                error = exc
-    if error is not None:
-        raise error
+            with lock:
+                errors.append(exc)
+
+    def pooled():
+        if enter is None:
+            drain()
+        else:
+            with enter():
+                drain()
+
+    helpers = workers - 1 if caller else workers
+    pool = _executor(helpers)
+    futures = [pool.submit(pooled) for _ in range(helpers)]
+    if caller:
+        drain()
+    _wait_all(futures, errors, lock)
+
+
+def _wait_all(futures, errors, lock) -> None:
+    """Wait for every future, even when interrupted while waiting (the
+    interrupt goes on ``errors``, which stops the threads taking pieces);
+    then raise an interrupt first, else the first error."""
+    for f in futures:
+        while True:
+            try:
+                f.result()
+                break
+            except BaseException as exc:            # noqa: BLE001
+                with lock:
+                    errors.append(exc)
+                if f.done():                        # the task's own error
+                    break
+    if errors:
+        stop = [e for e in errors if not isinstance(e, Exception)]
+        raise (stop or errors)[0]
+
+
+def run_groups(fn, groups) -> None:
+    """``fn(a, b)`` for every piece ``(a, b)`` of every group, one group per
+    thread: the first in the calling thread, the others on the pool.
+    Returns when all have finished; an error is raised after that (an
+    interrupt first).  Called from one of the pool's own threads, all the
+    groups run in that thread."""
+    groups = [g for g in groups if g]
+    if not groups:
+        return
+    if len(groups) == 1 or _in_pool():
+        for g in groups:
+            _run_group(fn, g)
+        return
+    pool = _executor(len(groups) - 1)
+    futures = [pool.submit(_run_group, fn, g) for g in groups[1:]]
+    errors: list[BaseException] = []
+    try:
+        _run_group(fn, groups[0])
+    except BaseException as exc:                    # noqa: BLE001
+        errors.append(exc)
+    _wait_all(futures, errors, threading.Lock())
 
 
 def _store(view: np.ndarray, result: np.ndarray) -> None:

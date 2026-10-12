@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import torch
 
+from linac_gen.pic.torch import cpu_kernels as _cpu
 from linac_gen.pic.torch.deposition import cic_cells, tsc_cells
 from linac_gen.parallel.threads import sync_torch as _sync_torch
 
@@ -37,6 +38,11 @@ def interpolate_cic_torch(field_x, field_y, field_z, positions,
     field_y = torch.as_tensor(field_y, dtype=dtype, device=device)
     field_z = torch.as_tensor(field_z, dtype=dtype, device=device)
 
+    # no gradient needed: HELIX's threaded kernel, torch's numbers
+    e = _cpu.gather("cic", field_x, field_y, field_z, positions, grid_min,
+                    grid_max, n_grid)
+    if e is not None:
+        return e
     cix, ciy, ciz, weights = cic_cells(positions, grid_min, grid_max, n_grid,
                                        dtype=dtype, device=device)
     ex = (weights * field_x[cix, ciy, ciz]).sum(dim=1)           # (N,)
@@ -65,6 +71,10 @@ def interpolate_tsc_torch(field_x, field_y, field_z, positions,
     field_y = torch.as_tensor(field_y, dtype=dtype, device=device)
     field_z = torch.as_tensor(field_z, dtype=dtype, device=device)
 
+    e = _cpu.gather("tsc", field_x, field_y, field_z, positions, grid_min,
+                    grid_max, n_grid)
+    if e is not None:
+        return e
     cix, ciy, ciz, weights = tsc_cells(positions, grid_min, grid_max, n_grid,
                                        dtype=dtype, device=device)
     ex = (weights * field_x[cix, ciy, ciz]).sum(dim=1)

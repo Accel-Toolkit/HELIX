@@ -25,6 +25,7 @@ are negated in the library), so a smaller value is always better.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
@@ -33,6 +34,8 @@ import numpy as np
 from linac_gen.core.config import BeamConfig
 from linac_gen.matching.variables import collect_variables
 from linac_gen.parallel.threads import in_run_scope, sync_torch
+
+_log = logging.getLogger(__name__)
 from linac_gen.matching.engine import (
     _run_envelope, _run_mp, _apply_x,
     _link_group_index, _build_x0_and_bounds, _require_finite_bounds,
@@ -347,10 +350,7 @@ def _run_qnehvi(forward, x0, lo, hi, n_obj, n_init, n_iter, seed):
         )
         from botorch.optim import optimize_acqf
         from botorch.utils.sampling import draw_sobol_samples
-        from botorch.utils.multi_objective.box_decompositions.non_dominated import (  # noqa: E501
-            FastNondominatedPartitioning,
-        )
-        from gpytorch.mlls import ExactMarginalLogLikelihood
+        from gpytorch.mlls import SumMarginalLogLikelihood
     except ImportError as exc:  # noqa: F841
         raise ImportError(
             "the 'qnehvi' multi-objective algorithm requires botorch + "
@@ -387,6 +387,7 @@ def _run_qnehvi(forward, x0, lo, hi, n_obj, n_init, n_iter, seed):
     for u in sob:
         ev(from_unit(u))
 
+    fallbacks, first_error = 0, None
     for _ in range(int(n_iter)):
         tx = torch.tensor(np.asarray(X_u), dtype=dtype)
         ty = torch.tensor(np.asarray(Y), dtype=dtype)
@@ -397,20 +398,32 @@ def _run_qnehvi(forward, x0, lo, hi, n_obj, n_init, n_iter, seed):
                 for i in range(n_obj)
             ]
             model = ModelListGP(*models)
-            mll = ExactMarginalLogLikelihood(model.likelihood, model)
+            # one independent GP per objective: their likelihoods summed
+            # (ExactMarginalLogLikelihood refuses a ModelListGP, and every
+            # iteration used to fall back to a Sobol probe without a word)
+            mll = SumMarginalLogLikelihood(model.likelihood, model)
             fit_gpytorch_mll(mll)
             ref_point = ty.min(dim=0).values - 0.1 * ty.std(dim=0).clamp(min=1e-6)
-            part = FastNondominatedPartitioning(ref_point=ref_point, Y=ty)
+            # the noisy variant partitions the baseline's Pareto front
+            # itself (a partitioning argument belongs to qLogEHVI)
             acqf = qLogNoisyExpectedHypervolumeImprovement(
                 model=model, ref_point=ref_point.tolist(),
-                X_baseline=tx, partitioning=part, prune_baseline=True,
+                X_baseline=tx, prune_baseline=True,
             )
             cand, _ = optimize_acqf(
                 acqf, bounds=unit_bounds, q=1,
                 num_restarts=8, raw_samples=128,
             )
             u_next = cand.squeeze(0).detach().cpu().numpy()
-        except Exception:  # noqa: BLE001 -- GP/acqf hiccup -> Sobol probe
+        except Exception as exc:  # noqa: BLE001
+            # a GP / acquisition failure on these points: probe a Sobol
+            # point instead -- said, and counted in the result's message
+            fallbacks += 1
+            if first_error is None:
+                first_error = f"{type(exc).__name__}: {exc}"
+                _log.warning("qNEHVI: the Gaussian-process step failed "
+                             "(%s); that iteration probes a Sobol point",
+                             first_error)
             u_next = draw_sobol_samples(
                 bounds=unit_bounds, n=1, q=1,
                 seed=int(seed) + 500 + len(X_u),
@@ -419,4 +432,8 @@ def _run_qnehvi(forward, x0, lo, hi, n_obj, n_init, n_iter, seed):
 
     # Report the *actual* initial-design size: the x0 seed plus the Sobol
     # batch of max(n_init, 2*d) points (not the bare n_init/pop_size arg).
-    return f"qNEHVI: {len(sob) + 1} init + {n_iter} BO iters"
+    msg = f"qNEHVI: {len(sob) + 1} init + {n_iter} BO iters"
+    if fallbacks:
+        msg += (f" ({fallbacks} of them Sobol probes after a failed "
+                f"Gaussian-process step; first: {first_error})")
+    return msg

@@ -12,9 +12,12 @@ torch's own CPU work (the torch space-charge engine, ML surrogates, the
 gradient, Bayesian and qNEHVI optimisers) stays on one thread while a run
 lasts (:func:`run_scope`, :func:`sync_torch`): with more threads its last
 bits change with the thread count -- torch splits long sums by thread, and on
-Linux its FFT is Intel MKL's, threaded the same way.  A module that loads
+Linux and Windows its FFT is Intel MKL's, threaded the same way.  A module that loads
 torch and can be first imported inside a run calls :func:`sync_torch` right
-after (tests/parallelization/test_threads.py checks every one).
+after (tests/parallelization/test_threads.py checks every one).  The torch
+space-charge engine keeps its speed: without a gradient its deposit,
+gather and Green's function run on HELIX's threads with torch's numbers
+(linac_gen.pic.torch.cpu_kernels).
 
 It applies whatever the space-charge backend: on CUDA or MPS the FFT runs on
 the GPU and the threads serve everything that stays on the CPU.
@@ -393,27 +396,55 @@ def _blas_one_thread():
                 _blas_limiter = None
 
 
-def _limit_blas():
+def _pool_controller():
+    """threadpoolctl's view of the loaded thread pools, rescanned at most
+    every :data:`BLAS_RESCAN_S` seconds; None without threadpoolctl."""
     global _blas_controller, _blas_controller_time
     try:
         from threadpoolctl import ThreadpoolController
     except ImportError:
-        _warn_once("threadpoolctl", "threadpoolctl is not installed: BLAS "
-                   "keeps its own thread count during runs")
         return None
+    now = time.monotonic()
+    if (_blas_controller is None
+            or now - _blas_controller_time > BLAS_RESCAN_S):
+        _blas_controller = ThreadpoolController()
+        _blas_controller_time = now
+    return _blas_controller
+
+
+def _limit_blas():
     try:
-        now = time.monotonic()
-        if (_blas_controller is None
-                or now - _blas_controller_time > BLAS_RESCAN_S):
-            _blas_controller = ThreadpoolController()
-            _blas_controller_time = now
+        controller = _pool_controller()
+        if controller is None:
+            _warn_once("threadpoolctl", "threadpoolctl is not installed: "
+                       "BLAS keeps its own thread count during runs")
+            return None
         # select first: restoring then touches the BLAS libraries only (a
         # limiter over every library resets OpenMP's count in the
         # restoring thread too, torch's among them)
-        return _blas_controller.select(user_api="blas").limit(limits=1)
+        return controller.select(user_api="blas").limit(limits=1)
     except Exception as exc:                       # noqa: BLE001
         _warn_once("blas", "could not limit BLAS threads: %s", exc)
         return None
+
+
+def hold_torch_at_one_here() -> None:
+    """torch's CPU work in the calling thread on one thread from now on,
+    leaving torch's default for other threads alone: the OpenMP count of
+    this thread only (torch.set_num_threads would set the default too),
+    after torch has set up this thread (else it would overwrite it).  For
+    HELIX's own pool threads (linac_gen.pic.torch.cpu_kernels.parallel)."""
+    torch = sys.modules.get("torch")
+    if torch is None or torch.get_num_threads() == 1:
+        return
+    try:
+        controller = _pool_controller()
+        if controller is not None:
+            controller.select(user_api="openmp").limit(limits=1)
+    except Exception:                              # noqa: BLE001
+        pass
+    if torch.get_num_threads() != 1:               # no OpenMP runtime seen
+        torch.set_num_threads(1)
 
 
 def worker_threads(n_workers: int) -> int:

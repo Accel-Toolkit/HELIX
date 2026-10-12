@@ -30,6 +30,8 @@ the ``LINAC_GEN_USE_GPU`` env var.  The FFT of the Green's function is
 cached on the chosen device, so only ρ and Ex/Ey/Ez cross the host/device
 boundary per solve.
 """
+import threading
+
 import numpy as np
 
 from linac_gen.core.constants import EPSILON_0, PI
@@ -106,6 +108,200 @@ def _antideriv_igf(xp, x, y, z):
     return F
 
 
+# ---------------------------------------------------------------------------
+# The integrated Green's function on the CPU, on HELIX's threads.
+#
+# An adaptive grid rebuilds the kernel at every kick, and the antiderivative
+# costs most of a rebuild (~35 of 40 ms at 48^3 on one thread).  On the CPU
+# both builds run in pieces of whole x planes on HELIX's threads
+# (linac_gen.parallel.threads), each thread taking the next piece as it
+# finishes one: the antiderivative at the vertices, then the 8-corner
+# difference of each cell written straight into the Hockney layout.  Every
+# element goes through the same numpy operations on the same doubles, in the
+# same order, as in one whole-grid call.  They are element-wise, so an
+# element's result does not depend on where it sits in an array; +, -, *, /
+# and sqrt are correctly rounded on every inner loop, and arctan and arcsinh
+# -- whose last digit can depend on which loop numpy picks (SVML or libm,
+# chosen by a memory-overlap test) -- run exactly in place, which numpy never
+# counts as an overlap.  So the kernel is the one-call kernel bit for bit,
+# whatever the pieces or the thread count (pinned by
+# tests/pic/test_greens_threads.py).
+# ---------------------------------------------------------------------------
+
+#: A phase of the build (vertices, cells) is cut into about this many
+#: pieces of whole x planes, each between these numbers of points (at least
+#: one plane).  Every numpy call holds Python's GIL for a few microseconds,
+#: so many small pieces scale worse than a few large ones: about six pieces
+#: was fastest from 32^3 to 128^3 on a 14-core Mac.
+GREEN_PIECES = 6
+GREEN_PIECE_POINTS = (1 << 14, 1 << 18)
+
+
+def _step(planes: int, plane: int) -> int:
+    """Planes per piece for ``planes`` planes of ``plane`` points."""
+    least, most = GREEN_PIECE_POINTS
+    target = min(max(planes * plane // GREEN_PIECES, least), most)
+    return max(1, -(-target // max(1, plane)))
+
+
+def _pieces(lo: int, hi: int, step: int) -> list[tuple[int, int]]:
+    """``range(lo, hi)`` in runs of ``step`` planes."""
+    return [(a, min(hi, a + step)) for a in range(lo, hi, step)]
+
+
+def _on_threads(fn, pieces) -> None:
+    """``fn(a, b)`` for every piece, on up to the setting's threads, under
+    the caller's numpy error handling (numpy keeps it per thread)."""
+    from linac_gen.parallel.threads import get_threads
+    from linac_gen.pic import fft_split
+    err = np.geterr()
+    fft_split.run_pieces(fn, pieces, get_threads(),
+                         enter=lambda: np.errstate(**err))
+
+
+def _pair(shape):
+    """Two scratch arrays of ``shape`` in one allocation, apart."""
+    size = int(np.prod(shape))
+    buf = np.empty(2 * size + 8, dtype=np.float64)
+    return (buf[:size].reshape(shape),
+            buf[size + 8:2 * size + 8].reshape(shape))
+
+
+def _antideriv_into(out, x, y, z, yz, ryz, r, s) -> None:
+    """``out[...] = _antideriv_igf(np, x, y, z)``: the same operations on
+    the same values in the same order, into the scratch arrays ``r`` and
+    ``s`` (``out``'s shape) instead of a fresh array per operation --
+    allocating the large temporaries costs more than the arithmetic and
+    does not scale across threads.  ``yz`` and ``ryz`` are ``y * z`` and
+    ``np.sqrt(y * y + z * z) + 1e-300``, the same for every piece."""
+    eps = 1e-300
+    np.add(x * x + y * y, z * z, out=r)
+    np.sqrt(r, out=r)
+    # -0.5 z^2 atan(xy / (z r + eps))
+    np.multiply(z, r, out=s)
+    np.add(s, eps, out=s)
+    np.divide(x * y, s, out=s)
+    np.arctan(s, out=s)
+    np.multiply(-0.5 * z * z, s, out=out)
+    # - 0.5 y^2 atan(xz / (y r + eps))
+    np.multiply(y, r, out=s)
+    np.add(s, eps, out=s)
+    np.divide(x * z, s, out=s)
+    np.arctan(s, out=s)
+    np.multiply(0.5 * y * y, s, out=s)
+    np.subtract(out, s, out=out)
+    # - 0.5 x^2 atan(yz / (x r + eps))
+    np.multiply(x, r, out=s)
+    np.add(s, eps, out=s)
+    np.divide(yz, s, out=s)
+    np.arctan(s, out=s)
+    np.multiply(0.5 * x * x, s, out=s)
+    np.subtract(out, s, out=out)
+    # + yz asinh(x / (sqrt(y^2 + z^2) + eps)), and the two like it
+    np.divide(x, ryz, out=s)
+    np.arcsinh(s, out=s)
+    np.multiply(yz, s, out=s)
+    np.add(out, s, out=out)
+    np.divide(y, np.sqrt(x * x + z * z) + eps, out=s)
+    np.arcsinh(s, out=s)
+    np.multiply(x * z, s, out=s)
+    np.add(out, s, out=out)
+    np.divide(z, np.sqrt(x * x + y * y) + eps, out=s)
+    np.arcsinh(s, out=s)
+    np.multiply(x * y, s, out=s)
+    np.add(out, s, out=out)
+
+
+def _vertex_antideriv(vx, vy, vz) -> np.ndarray:
+    """``_antideriv_igf`` at every vertex ``(vx[i], vy[j], vz[k])``."""
+    F = np.empty((len(vx), len(vy), len(vz)), dtype=np.float64)
+    plane = len(vy) * len(vz)
+    pieces = _pieces(0, len(vx), _step(len(vx), plane))
+    rows = max(b - a for a, b in pieces)
+    y, z = vy[None, :, None], vz[None, None, :]
+    yz, ryz = y * z, np.sqrt(y * y + z * z) + 1e-300
+    scratch = {}                        # thread -> its two scratch arrays
+
+    def piece(a, b):
+        pair = scratch.get(threading.get_ident())
+        if pair is None:
+            pair = scratch[threading.get_ident()] = _pair(
+                (rows, len(vy), len(vz)))
+        _antideriv_into(F[a:b], vx[a:b, None, None], y, z, yz, ryz,
+                        pair[0][:b - a], pair[1][:b - a])
+
+    _on_threads(piece, pieces)
+    return F
+
+
+def _cell_average(F, a, b, cell_vol):
+    """Cells ``a … b−1`` along x: the 8-corner difference of ``F`` (cell
+    ``i`` between vertices ``i`` and ``i + 1`` on each axis), in the
+    per-corner term order HHH − LHH − HLH − HHL + LLH + LHL + HLL − LLL,
+    over the cell volume, times 1/(4πε₀) -- the one-call expression's
+    operations, in place in one array."""
+    Hx, Lx = slice(a + 1, b + 1), slice(a, b)
+    H, L = slice(1, None), slice(None, -1)
+    g = np.subtract(F[Hx, H, H], F[Lx, H, H])
+    np.subtract(g, F[Hx, L, H], out=g)
+    np.subtract(g, F[Hx, H, L], out=g)
+    np.add(g, F[Lx, L, H], out=g)
+    np.add(g, F[Lx, H, L], out=g)
+    np.add(g, F[Hx, L, L], out=g)
+    np.subtract(g, F[Lx, L, L], out=g)
+    np.divide(g, cell_vol, out=g)
+    g *= 1.0 / (4.0 * PI * EPSILON_0)
+    return g
+
+
+def _greens_exact_cpu(nx, ny, nz, vx, vy, vz, cell_vol) -> np.ndarray:
+    """The exact build's kernel, in the Hockney layout: cell ``p`` (natural
+    order, displacement ``p − n``) lands at index ``(p + n) mod 2n`` on each
+    axis -- what ``np.roll(G, -n)`` does."""
+    F = _vertex_antideriv(vx, vy, vz)
+    G = np.empty((2 * nx, 2 * ny, 2 * nz), dtype=np.float64)
+
+    def piece(a, b):                    # never straddles nx
+        g = _cell_average(F, a, b, cell_vol)
+        m = a + nx if a < nx else a - nx
+        dst = G[m:m + (b - a)]
+        dst[:, :ny, :nz] = g[:, ny:, nz:]
+        dst[:, :ny, nz:] = g[:, ny:, :nz]
+        dst[:, ny:, :nz] = g[:, :ny, nz:]
+        dst[:, ny:, nz:] = g[:, :ny, :nz]
+
+    step = _step(2 * nx, (2 * ny) * (2 * nz))
+    _on_threads(piece, _pieces(0, nx, step) + _pieces(nx, 2 * nx, step))
+    return G
+
+
+def _greens_symmetric_cpu(nx, ny, nz, vx, vy, vz, cell_vol) -> np.ndarray:
+    """The symmetric build's kernel, in the Hockney layout: octant cell
+    ``i`` (``0 … n``) at index ``i`` (``i < n``) and ``2n − i``
+    (``i ≥ 1``) on each axis -- the copies ``G[ix_(m, m, m)]`` makes."""
+    F = _vertex_antideriv(vx, vy, vz)
+    G = np.empty((2 * nx, 2 * ny, 2 * nz), dtype=np.float64)
+
+    def put(dst, g):                    # mirror along y and z
+        dst[:, :ny, :nz] = g[:, :ny, :nz]
+        dst[:, :ny, nz:] = g[:, :ny, nz:0:-1]
+        dst[:, ny:, :nz] = g[:, ny:0:-1, :nz]
+        dst[:, ny:, nz:] = g[:, ny:0:-1, nz:0:-1]
+
+    def piece(a, b):
+        g = _cell_average(F, a, b, cell_vol)
+        lo, hi = a, min(b, nx)          # octant planes i < n at i
+        if hi > lo:
+            put(G[lo:hi], g[lo - a:hi - a])
+        lo, hi = max(a, 1), b           # planes 1 … n at 2n − i
+        if hi > lo:
+            put(G[2 * nx - hi + 1:2 * nx - lo + 1], g[lo - a:hi - a][::-1])
+
+    step = _step(nx + 1, (ny + 1) * (nz + 1))
+    _on_threads(piece, _pieces(0, nx + 1, step))
+    return G
+
+
 def _guarded_copy(a: np.ndarray) -> np.ndarray:
     """Copy of ``a`` (same shape, dtype, values and memory layout) placed
     inside a 1-D allocation one element larger on each side, so no other
@@ -121,6 +317,28 @@ def _guarded_copy(a: np.ndarray) -> np.ndarray:
     view = inner.transpose(np.argsort(order))
     view[...] = a
     return view
+
+
+def _field_from_potential(phi, dx, dy, dz, xp):
+    """E = -grad(phi): central differences inside, one-sided on the
+    boundary planes (``xp``: numpy, or the device's array module)."""
+    Ex = xp.zeros_like(phi)
+    Ey = xp.zeros_like(phi)
+    Ez = xp.zeros_like(phi)
+
+    # Central differences (interior)
+    Ex[1:-1, :, :] = -(phi[2:, :, :] - phi[:-2, :, :]) / (2.0 * dx)
+    Ey[:, 1:-1, :] = -(phi[:, 2:, :] - phi[:, :-2, :]) / (2.0 * dy)
+    Ez[:, :, 1:-1] = -(phi[:, :, 2:] - phi[:, :, :-2]) / (2.0 * dz)
+
+    # One-sided differences at boundaries
+    Ex[0, :, :] = -(phi[1, :, :] - phi[0, :, :]) / dx
+    Ex[-1, :, :] = -(phi[-1, :, :] - phi[-2, :, :]) / dx
+    Ey[:, 0, :] = -(phi[:, 1, :] - phi[:, 0, :]) / dy
+    Ey[:, -1, :] = -(phi[:, -1, :] - phi[:, -2, :]) / dy
+    Ez[:, :, 0] = -(phi[:, :, 1] - phi[:, :, 0]) / dz
+    Ez[:, :, -1] = -(phi[:, :, -1] - phi[:, :, -2]) / dz
+    return Ex, Ey, Ez
 
 
 class PoissonSolverFFT:
@@ -291,7 +509,8 @@ class PoissonSolverFFT:
         tests/pic/test_greens_vertex.py).
 
         Built on the backend's array module (numpy on CPU, cupy on GPU) so
-        the result is already on-device for the FFT.
+        the result is already on-device for the FFT; with numpy, on HELIX's
+        threads (:func:`_greens_exact_cpu`, the same numbers).
         """
         xp = self._backend.xp
         nx, ny, nz = int(self.n_grid[0]), int(self.n_grid[1]), int(self.n_grid[2])
@@ -302,6 +521,8 @@ class PoissonSolverFFT:
         vx = (xp.arange(-nx, nx + 1, dtype=xp.float64) - 0.5) * dx
         vy = (xp.arange(-ny, ny + 1, dtype=xp.float64) - 0.5) * dy
         vz = (xp.arange(-nz, nz + 1, dtype=xp.float64) - 0.5) * dz
+        if xp is np:
+            return _greens_exact_cpu(nx, ny, nz, vx, vy, vz, dx * dy * dz)
         # Broadcastable axes, not full meshes: every element still goes
         # through the same IEEE operations on the same doubles, while the
         # sub-expressions that depend on one or two axes are evaluated once
@@ -341,7 +562,8 @@ class PoissonSolverFFT:
         differ by the rounding of the 8-corner difference, which loses
         digits in the far cells (~5e-13 of the kernel's peak at 48³,
         growing with the grid).  The kernel is exactly even (pinned by
-        tests/pic/test_greens_symmetric.py).
+        tests/pic/test_greens_symmetric.py).  With numpy it is built on
+        HELIX's threads (:func:`_greens_symmetric_cpu`, the same numbers).
         """
         xp = self._backend.xp
         nx, ny, nz = int(self.n_grid[0]), int(self.n_grid[1]), int(self.n_grid[2])
@@ -350,6 +572,9 @@ class PoissonSolverFFT:
         vx = (xp.arange(0, nx + 2, dtype=xp.float64) - 0.5) * dx
         vy = (xp.arange(0, ny + 2, dtype=xp.float64) - 0.5) * dy
         vz = (xp.arange(0, nz + 2, dtype=xp.float64) - 0.5) * dz
+        if xp is np:
+            return _greens_symmetric_cpu(nx, ny, nz, vx, vy, vz,
+                                         dx * dy * dz)
         F = _antideriv_igf(xp, vx[:, None, None], vy[None, :, None],
                            vz[None, None, :])
         H, L = slice(1, None), slice(None, -1)
@@ -415,26 +640,33 @@ class PoissonSolverFFT:
 
         # Extract potential on original grid
         phi = phi_padded[:nx, :ny, :nz]
+        return _field_from_potential(phi, dx, dy, dz, np)
 
-        # E = -grad(phi) via finite differences
-        Ex = np.zeros_like(phi)
-        Ey = np.zeros_like(phi)
-        Ez = np.zeros_like(phi)
-
-        # Central differences (interior)
-        Ex[1:-1, :, :] = -(phi[2:, :, :] - phi[:-2, :, :]) / (2.0 * dx)
-        Ey[:, 1:-1, :] = -(phi[:, 2:, :] - phi[:, :-2, :]) / (2.0 * dy)
-        Ez[:, :, 1:-1] = -(phi[:, :, 2:] - phi[:, :, :-2]) / (2.0 * dz)
-
-        # One-sided differences at boundaries
-        Ex[0, :, :] = -(phi[1, :, :] - phi[0, :, :]) / dx
-        Ex[-1, :, :] = -(phi[-1, :, :] - phi[-2, :, :]) / dx
-        Ey[:, 0, :] = -(phi[:, 1, :] - phi[:, 0, :]) / dy
-        Ey[:, -1, :] = -(phi[:, -1, :] - phi[:, -2, :]) / dy
-        Ez[:, :, 0] = -(phi[:, :, 1] - phi[:, :, 0]) / dz
-        Ez[:, :, -1] = -(phi[:, :, -1] - phi[:, :, -2]) / dz
-
-        return Ex, Ey, Ez
+    def solve_device(self, rho_dev):
+        """:meth:`solve` for a charge density already on the backend's device
+        (an array of its ``xp``), returning the three fields there too: the
+        same arithmetic, the field differences on the device.  For the GPU
+        deposit and gather (:mod:`linac_gen.pic.gpu_particles`)."""
+        nx, ny, nz = (int(self.n_grid[0]), int(self.n_grid[1]),
+                      int(self.n_grid[2]))
+        dx, dy, dz = self.dx
+        cell_vol = dx * dy * dz
+        xp = self._backend.xp
+        if self._rho_padded is None:
+            self._rho_padded = xp.zeros((2 * nx, 2 * ny, 2 * nz),
+                                        dtype=xp.float64)
+        else:
+            self._rho_padded.fill(0.0)
+        self._rho_padded[:nx, :ny, :nz] = rho_dev * cell_vol
+        spectrum = self._backend.rfftn(self._rho_padded)
+        if isinstance(spectrum, np.ndarray):
+            np.multiply(spectrum, self._G_fft, out=spectrum)
+        else:
+            spectrum = spectrum * self._G_fft
+        phi_padded = self._backend.irfftn(spectrum, s=(2 * nx, 2 * ny, 2 * nz))
+        del spectrum
+        return _field_from_potential(phi_padded[:nx, :ny, :nz], dx, dy, dz,
+                                     xp)
 
     # ------------------------------------------------------------------
     def free_memory(self) -> None:

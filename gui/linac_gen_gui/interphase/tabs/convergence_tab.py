@@ -217,8 +217,10 @@ class _ScanWorker(QThread):
             from linac_gen.core.config import SpaceChargeConfig
             return SpaceChargeConfig(nx=nx, ny=nx, nz=nx, grid_extent=extent,
                                      use_gpu=self.use_gpu)
+        # the tab's config holds the device already (for a continuous beam
+        # it turned the torch engine's cuda/gpu into auto without cupy)
         return replace(self.sc_base, nx=nx, ny=nx, nz=nx,
-                       grid_extent=extent, use_gpu=self.use_gpu)
+                       grid_extent=extent)
 
     def _scan_sc_overrides(self) -> tuple:
         """The tab's settings for pool workers, minus what a scan point
@@ -359,7 +361,8 @@ class _ScanWorker(QThread):
                 nx=nx, grid_extent=extent,
                 step1=step1, step2=step2,
                 seed=42,
-                use_gpu=self.use_gpu,
+                use_gpu=(self.sc_base.use_gpu if self.sc_base is not None
+                         else self.use_gpu),
                 sc_overrides=self._scan_sc_overrides(),
                 drift_single_push=self.fixed_drift_single_push,
                 # a MAD8 deck re-parsed by the worker keeps the rigidity it
@@ -459,7 +462,11 @@ class ConvergenceTab(QWidget):
             "         warns). Errors if none.\n"
             "  cuda — force cupy/CUDA. Errors if cupy unavailable.\n"
             "  mps  — force torch.mps (Apple Silicon Metal GPU, FLOAT32:\n"
-            "         ~1e-7 field error, warns). Errors if unavailable."
+            "         ~1e-7 field error, warns). Errors if unavailable.\n"
+            "With the torch SC engine: cuda or gpu runs the whole kick on\n"
+            "an NVIDIA GPU (float64, repeatable run to run); every other\n"
+            "choice, or no CUDA device, runs it on the CPU (Apple GPUs have\n"
+            "no float64)."
         )
         # CPU threads for every run (linac_gen.parallel.threads): a setting
         # of this computer, kept in QSettings, not in the project.
@@ -1139,11 +1146,12 @@ class ConvergenceTab(QWidget):
             self._step_preset.blockSignals(False)
 
     def _on_sc_engine_changed(self, backend: str) -> None:
-        """The torch SC engine ignores grid mode, the FFT device backend
-        and the DC kernel — grey them out so the panel shows which
-        settings apply to which engine.  All three controls live in the
-        'Space charge & PIC' collapsible section, so the visual greying
-        is only visible when that section is expanded."""
+        """The torch SC engine ignores grid mode and the DC kernel — grey
+        them out so the panel shows which settings apply to which engine
+        (the PIC backend stays: cuda/gpu put the torch kick on an NVIDIA
+        GPU).  The controls live in the 'Space charge & PIC' collapsible
+        section, so the visual greying is only visible when that section
+        is expanded."""
         is_torch = (backend == "torch")
         if is_torch:
             # Remember the user's grid mode so switching back to numpy restores
@@ -1161,9 +1169,9 @@ class ConvergenceTab(QWidget):
                 # "adaptive" choice isn't silently overridden by a stale value
                 # on the next torch → numpy round-trip.
                 self._saved_grid_mode = None
-        for w in (self._fixed_grid_mode, self._fixed_backend,
-                  self._fixed_dc_kernel):
+        for w in (self._fixed_grid_mode, self._fixed_dc_kernel):
             w.setEnabled(not is_torch)
+        self._fixed_backend.setEnabled(True)
 
     # ------------------------------------------------------------------
     # Named space-charge method
@@ -1376,8 +1384,12 @@ class ConvergenceTab(QWidget):
         nx = self._fixed_nx.value()
         grid_mode = self._fixed_grid_mode.currentText()
         sc_backend = self._fixed_sc_backend.currentText()
+        use_gpu = self._fixed_backend.currentText()
         if sc_backend == "torch" and continuous:
             sc_backend = "numpy"
+            # cuda/gpu were chosen for the torch engine's GPU
+            from linac_gen.pic.gpu_backend import numpy_engine_use_gpu
+            use_gpu = numpy_engine_use_gpu(use_gpu)
         if sc_backend == "torch":
             # The torch PIC sizes its grid adaptively every kick — it has
             # no fixed-grid path — so label the config honestly.
@@ -1389,7 +1401,7 @@ class ConvergenceTab(QWidget):
             nx=nx, ny=nx, nz=nx,
             grid_extent=self._fixed_ext.value(),
             grid_mode=grid_mode,
-            use_gpu=self._fixed_backend.currentText(),
+            use_gpu=use_gpu,
             green_kind=self._fixed_green.currentText(),
             kernel=self._fixed_kernel.currentText(),
             dc_kernel=self._fixed_dc_kernel.currentText(),

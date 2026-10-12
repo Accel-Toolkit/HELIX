@@ -54,6 +54,7 @@ from __future__ import annotations
 import functools
 import math
 import warnings
+import zlib
 
 import numpy as np
 
@@ -216,9 +217,12 @@ class Foil(ThinKickElement):
         Aperture radius in mm (default 0 = unrestricted).
     seed : int or None, optional
         Seed for the per-particle random kick generator.  ``None`` (default)
-        means each call draws from a fresh non-deterministic stream — fine
-        for production but use a fixed seed in tests.  A property: setting
-        it (also through ``--set FOIL.seed=…``) rebuilds the generator.
+        follows the run: a beam made by ``create_beam`` with a seed (the GUI
+        and the CLI always give one) draws this foil's kicks from a stream
+        seeded by that seed and the foil's name, so a seeded run repeats
+        and two foils draw different numbers; a beam without a seed draws
+        from a fresh non-deterministic stream.  A property: setting it
+        (also through ``--set FOIL.seed=…``) rebuilds the generator.
     straggling : str, optional
         Energy-loss straggling model: ``"auto"`` (default — dispatch on
         the Vavilov thickness parameter kappa = xi/T_max, see
@@ -639,7 +643,7 @@ class Foil(ThinKickElement):
         de_mp = self._landau_delta_e_mp_MeV(beam_or_ref)
         return _LANDAU_MODE + (t_max - de_mp) / scale
 
-    def _sample_energy_loss_MeV(self, ref, n: int) -> np.ndarray:
+    def _sample_energy_loss_MeV(self, ref, n: int, rng=None) -> np.ndarray:
         """Draw ``n`` per-particle energy LOSSES (positive = loss, MeV)
         from the resolved straggling model.
 
@@ -668,12 +672,14 @@ class Foil(ThinKickElement):
         standard ΔE_mp parametrization and the full Bethe mean are in
         tests/elements/test_foil.py.
         """
+        if rng is None:
+            rng = self._rng
         de_mean = self._mean_energy_loss_MeV(ref)
         model = self.resolved_straggling_model(ref)
 
         if model == "gaussian":
             sigma = self._energy_loss_sigma_MeV(ref)
-            noise = (self._rng.normal(0.0, sigma, size=n)
+            noise = (rng.normal(0.0, sigma, size=n)
                      if sigma > 0.0 else 0.0)
             return de_mean + noise
 
@@ -694,7 +700,7 @@ class Foil(ThinKickElement):
                 "thin-absorber regime (lam_max < 10); use "
                 "straggling='gaussian' (or 'auto')."
             )
-        lam = landau.rvs(size=n, random_state=self._rng)
+        lam = landau.rvs(size=n, random_state=rng)
         # Kinematic cutoff at T_max: redraw the ~κ·N samples above it.
         oversized = lam > lam_max
         for _ in range(100):
@@ -702,7 +708,7 @@ class Foil(ThinKickElement):
             if n_bad == 0:
                 break
             lam[oversized] = landau.rvs(size=n_bad,
-                                        random_state=self._rng)
+                                        random_state=rng)
             oversized = lam > lam_max
         else:  # pragma: no cover — P(fail) ~ kappa^100
             lam = np.minimum(lam, lam_max)
@@ -710,6 +716,27 @@ class Foil(ThinKickElement):
         return de_mean + scale * (lam - lam_mean)
 
     # -- ThinKickElement API -----------------------------------------------
+
+    def _generator_for(self, beam):
+        """The generator ``beam``'s kicks draw from, kept on the beam so that
+        repeated passes continue it and every new beam starts afresh (a run
+        that reuses the lattice, as the GUI does, repeats): seeded by the
+        foil's own seed when it has one -- the stream it always drew first
+        -- else by the seed the beam was made with and the foil's name.  A
+        beam without a seed through an unseeded foil draws from the foil's
+        unseeded generator."""
+        own = self._seed
+        seed = own if own is not None else getattr(beam, "seed", None)
+        if seed is None:
+            return self._rng
+        streams = beam.__dict__.setdefault("_foil_rngs", {})
+        rng = streams.get(self.name)
+        if rng is None:
+            rng = (np.random.default_rng(own) if own is not None else
+                   np.random.default_rng([int(seed) % 2**63,
+                                          zlib.crc32(str(self.name).encode())]))
+            streams[self.name] = rng
+        return rng
 
     def apply_kick(self, beam) -> None:
         """Apply stochastic scattering + ionisation loss to alive particles.
@@ -738,27 +765,28 @@ class Foil(ThinKickElement):
             return
 
         theta_rms = self._highland_theta_rms(beam)            # radians
+        rng = self._generator_for(beam)
 
         # Particle layout: columns are (x, xp, y, yp, dphi, dw).
         # Highland gives plane-projected scatter: independent draws on xp,yp
         # (the small-angle plane projection of an isotropic 3-D Gaussian).
         if theta_rms > 0.0:
-            d_xp = self._rng.normal(0.0, theta_rms, size=n_hit)
-            d_yp = self._rng.normal(0.0, theta_rms, size=n_hit)
+            d_xp = rng.normal(0.0, theta_rms, size=n_hit)
+            d_yp = rng.normal(0.0, theta_rms, size=n_hit)
             # xp / yp are stored in **mrad** (HELIX convention — same as
             # Steerer's ``* 1e3``).  Convert radians → mrad.
             beam.particles[hit, 1] += d_xp * 1e3
             beam.particles[hit, 3] += d_yp * 1e3
 
         if self.thickness_ug_cm2 > 0.0:
-            losses = self._sample_energy_loss_MeV(beam.ref, n_hit)
+            losses = self._sample_energy_loss_MeV(beam.ref, n_hit, rng)
             # dw is stored in MeV; a LOSS decreases dw.
             beam.particles[hit, 5] -= losses
 
         if (getattr(self, "strip_model", "off") == "two_step"
                 and beam.ref.species.charge < 0):
             f_p, f_h0, _f_hm = self.stripping_fractions(beam.ref)
-            u = self._rng.uniform(0.0, 1.0, size=n_hit)
+            u = rng.uniform(0.0, 1.0, size=n_hit)
             ids = np.flatnonzero(hit)
             h0 = ids[(u >= f_p) & (u < f_p + f_h0)]
             hm = ids[u >= f_p + f_h0]

@@ -51,6 +51,9 @@ class Beam:
         self.duty_cycle = duty_cycle          # %
         self.particles = np.zeros((n_particles, 6), dtype=np.float64)
         self.lost = np.zeros(n_particles, dtype=bool)
+        # Seed the distribution was generated with (create_beam), or None;
+        # an unseeded foil draws its kicks from it (elements/foil.py).
+        self.seed = None
         self._loss_list: list = []
         self._unstripped_list: list = []
         # DC / continuous-beam flag.  ``False`` means a normal bunched

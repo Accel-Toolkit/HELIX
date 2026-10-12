@@ -42,7 +42,9 @@ In the GUI: **Numerics tab → SC engine → `torch`**.
 The same eight-step PIC cycle as the production engine
 ([PIC solver](02_pic_solver.md)) — Lorentz boost → grid → deposit →
 IGF Hockney FFT → gather → kicks → inverse boost — implemented in
-pure `torch.float64` ops on CPU.  No C++ kernel and no GPU dispatch.
+`torch.float64` ops, on the CPU or on an NVIDIA GPU (below).  Without a
+gradient the CPU's deposit, gather and Green's function run on HELIX's
+threads with the same numbers (see Implementation below).
 
 ## Scope — what it does NOT do
 
@@ -56,18 +58,36 @@ pure `torch.float64` ops on CPU.  No C++ kernel and no GPU dispatch.
   the numpy default `grid_mode="fixed"` the result differs by ~0.5%
   (the genuine fixed-vs-adaptive difference, not a bug).  The GUI
   forces `adaptive` automatically when `torch` is selected.
-* **CPU FP64 only.**  The `use_gpu` selector (cpu / cuda / mps) is
-  ignored — FP64 is required for parity with the numpy path and
-  Apple MPS is FP32-only.
+* **Device: the CPU, or an NVIDIA GPU on request.**  `use_gpu="cuda"`
+  (or `"gpu"`, or `LINAC_GEN_USE_GPU`) runs the whole kick on an NVIDIA
+  GPU in FP64; a run repeats bit for bit there too (torch's CUDA deposit
+  sums every cell in sorted order), and its results differ from the CPU's
+  in the last digits.  A CUDA device torch cannot run on (a wheel without
+  kernels for the card) counts as none.  Every
+  other setting — `"auto"` included — and a machine without a CUDA device
+  run it on the CPU.  Apple GPUs have no FP64: `"mps"` warns and stays on
+  the CPU.  The results file records the device
+  (`provenance/backend_torch_device`).  `scripts/verify_cuda.py` checks a
+  CUDA machine against the CPU.  *Not yet tested on an NVIDIA GPU*: new in
+  version 1.17.0, this option has so far only been tested with its code
+  running on the CPU (see
+  [Installation](../01_getting_started/02_installation.md)).
 
 ## When to use it
 
-The torch backend is **markedly slower** than the production PIC
-(~5× on a small MEBT lattice) for a plain forward run.  Pick it
-**only when you need gradients** — i.e. for gradient-based
+Pick it **when you need gradients** — i.e. for gradient-based
 matching/optimisation through non-linear space charge (see
-[Gradient algorithm](../07_matching/06_gradient_algorithm.md)).
-For ordinary multi-particle simulations use `sc_backend="numpy"`.
+[Gradient algorithm](../07_matching/06_gradient_algorithm.md)).  For
+ordinary multi-particle simulations use `sc_backend="numpy"`: it has
+fixed grids, continuous beams and bunch-train images, which the torch
+backend lacks.
+
+Speed is no longer a reason to avoid it.  In a plain forward run (no
+gradient) its charge deposit, field gather and Green's function run on
+HELIX's CPU threads (see [CPU threads](../06_running/15_threads.md)), and
+on the FODO test cell with the same 32³ adaptive grid it took 0.32 s for
+20,000 particles and 0.68 s for 100,000, against 0.53 s and 0.78 s for the
+numpy PIC (14-core Mac, 2026-10-11).
 
 ## Numerical parity
 
@@ -89,6 +109,17 @@ Tests under `tests/pic/torch/` and
 * `linac_gen.pic.torch.deposition` / `interpolation` — CIC + TSC
   deposit and gather using `index_put_(accumulate=True)`
   (autograd-safe scatter).
+* `linac_gen.pic.torch.cpu_kernels` — without a gradient, the deposit
+  and gather run in C++ kernels written in torch's arithmetic
+  (`linac_gen._tsc_kernels`), and the gather's sums and the Green's
+  function run as torch's own code in fixed pieces on HELIX's threads,
+  giving torch's numbers bit for bit at any thread count.  Where torch's
+  FFT is pocketfft (macOS, ARM machines) the FFTs run in pieces on HELIX's
+  threads too, checked once per grid size against torch's own transform;
+  on x86 Linux and Windows torch's FFT is Intel MKL's and stays on one
+  thread, since the differentiable path must give the same numbers (see
+  [CPU threads](../06_running/15_threads.md)).
+  `LINAC_GEN_TORCH_SC_KERNELS=0` runs torch's own code everywhere.
 * `linac_gen.pic.torch.sc_kick.torch_pic_sc_kick` — the
   differentiable kick (phase space → coords → adaptive grid →
   deposit → solve → gather → momentum kick).

@@ -72,6 +72,9 @@ def test_bayesopt_respects_bounds():
     res = match(lat, _bcfg(), algorithm="bayesopt", max_iter=15,
                 refine=False)
     assert 0.5 <= res.x_final[0] <= 12.0
+    # every iteration fitted its Gaussian process (a failure is counted
+    # in the message, never silent)
+    assert "Sobol probes" not in res.message, res.message
 
 
 def test_bayesopt_requires_finite_bounds():

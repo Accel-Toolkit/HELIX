@@ -446,3 +446,86 @@ def test_dat_round_trip_preserves_non_default_straggling(tmp_path):
     foils = [e for e in parsed.elements if isinstance(e, Foil)]
     assert len(foils) == 1
     assert foils[0].straggling == "gaussian"
+
+
+# ---------------------------------------------------------------------------
+# An unseeded foil follows the run's seed (2026-10-12): post-foil results
+# used to change from run to run (seed=None drew from system entropy).
+# ---------------------------------------------------------------------------
+def _seeded_beam(seed, n=3000):
+    from linac_gen.core.config import BeamConfig
+    from linac_gen.distributions.factory import create_beam
+    cfg = BeamConfig(species="H-", energy=800.0, frequency=162.5,
+                     current=0.0, n_particles=n, emit_nx=0.2, beta_x=5.0,
+                     emit_ny=0.2, beta_y=5.0, emit_z=0.3, beta_z=50.0)
+    return create_beam(cfg, seed=seed)
+
+
+def _kicks(beam, foil, passes=1):
+    out = []
+    for _ in range(passes):
+        before = beam.particles.copy()
+        foil.apply_kick(beam)
+        out.append(beam.particles - before)
+    return out
+
+
+def test_an_unseeded_foil_follows_the_run_s_seed():
+    """A seeded run repeats bit for bit; another beam seed or another foil
+    draws other numbers; repeated passes continue the stream; the foil's
+    own seed wins; a beam without a seed stays non-deterministic."""
+    k7 = _kicks(_seeded_beam(7), Foil("F1", "C", 600.0))[0]
+    assert np.array_equal(k7, _kicks(_seeded_beam(7), Foil("F1", "C", 600.0))[0])
+    assert not np.array_equal(k7, _kicks(_seeded_beam(8),
+                                         Foil("F1", "C", 600.0))[0])
+    assert not np.array_equal(k7, _kicks(_seeded_beam(7),
+                                         Foil("F2", "C", 600.0))[0])
+    first, second = _kicks(_seeded_beam(7), Foil("F1", "C", 600.0), passes=2)
+    assert np.array_equal(first, k7) and not np.array_equal(second, first)
+    own = [_kicks(_seeded_beam(s), Foil("F1", "C", 600.0, seed=3))[0]
+           for s in (7, 8)]
+    # the foil's seed wins: the same draws (to the rounding of
+    # after - before, which depends on each beam's coordinates)
+    assert np.allclose(own[0], own[1], rtol=0.0, atol=1e-12)
+    plain = []
+    for _ in range(2):
+        b = _seeded_beam(7)
+        b.seed = None                               # a beam without a seed
+        plain.append(_kicks(b, Foil("F1", "C", 600.0))[0])
+    assert not np.array_equal(plain[0], plain[1])
+
+
+def test_a_seeded_foil_repeats_when_the_lattice_is_reused():
+    """A foil with its own seed restarts its stream for every beam: two runs
+    through the same foil object give the same kicks, and the first run's
+    are the stream the seed always gave (numpy's default_rng(seed))."""
+    foil = Foil("F1", "C", 600.0, seed=1234)
+    first = _kicks(_seeded_beam(7), foil)[0]
+    again = _kicks(_seeded_beam(7), foil)[0]              # the same object
+    assert np.array_equal(first, again)
+    fresh = _kicks(_seeded_beam(7), Foil("F1", "C", 600.0, seed=1234))[0]
+    assert np.array_equal(first, fresh)
+    # the generator the setter makes, as a seeded foil used on its first run
+    old = Foil("F1", "C", 600.0, seed=1234)
+    old._generator_for = lambda beam: np.random.default_rng(1234)
+    assert np.array_equal(first, _kicks(_seeded_beam(7), old)[0])
+    # an unseeded foil reused by fresh beams repeats too
+    plain = Foil("F1", "C", 600.0)
+    assert np.array_equal(_kicks(_seeded_beam(7), plain)[0],
+                          _kicks(_seeded_beam(7), plain)[0])
+
+
+def test_a_seeded_run_through_a_foil_repeats():
+    from linac_gen.core.lattice import Lattice
+    from linac_gen.core.simulation import Simulation
+    from linac_gen.elements.drift import Drift
+    outs = []
+    for _ in range(2):
+        lat = Lattice()
+        lat.add(Drift("D1", length=100.0))
+        lat.add(Foil("STRIP", "C", 600.0))
+        lat.add(Drift("D2", length=100.0))
+        beam = _seeded_beam(11)
+        Simulation(lat, beam).run()
+        outs.append(beam.particles.copy())
+    assert np.array_equal(outs[0], outs[1])

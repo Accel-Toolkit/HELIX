@@ -35,9 +35,12 @@ mean module; it still cuts expensive evaluations when envelope tracks MP.
 """
 from __future__ import annotations
 
+import logging
 from typing import Callable, Optional
 
 import numpy as np
+
+_log = logging.getLogger(__name__)
 
 
 class _Res:
@@ -189,6 +192,7 @@ def run_bayesopt(
 
     # ---- Bayesian loop --------------------------------------------------
     n_bo = max(1, int(max_iter))
+    fallbacks, first_error = 0, None
     for _ in range(n_bo):
         train_x = torch.tensor(np.asarray(X_unit), dtype=dtype)
         train_y = torch.tensor(np.asarray(Y_neg), dtype=dtype).unsqueeze(-1)
@@ -209,7 +213,14 @@ def run_bayesopt(
                 num_restarts=10, raw_samples=256,
             )
             u_next = cand.squeeze(0).detach().cpu().numpy()
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            # said, and counted in the result's message
+            fallbacks += 1
+            if first_error is None:
+                first_error = f"{type(exc).__name__}: {exc}"
+                _log.warning("Bayesian optimisation: the Gaussian-process "
+                             "step failed (%s); that iteration probes a "
+                             "Sobol point", first_error)
             u_next = draw_sobol_samples(
                 bounds=unit_bounds, n=1, q=1,
                 seed=int(seed) + 100 + len(X_unit),
@@ -219,5 +230,8 @@ def run_bayesopt(
     msg = (f"Bayesian optimisation: {len(X_unit)} evals, "
            f"best cost {best_cost:.4e}"
            + ("  (physics-informed warm start)"
-              if prior_cost_fn is not None else ""))
+              if prior_cost_fn is not None else "")
+           + (f"  ({fallbacks} Sobol probes after a failed "
+              f"Gaussian-process step; first: {first_error})"
+              if fallbacks else ""))
     return _Res(x=best_x, success=True, message=msg, nit=len(X_unit))

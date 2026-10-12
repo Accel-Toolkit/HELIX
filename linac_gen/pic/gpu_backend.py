@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from typing import Literal, Optional
 
 Backend = Literal["cpu", "gpu"]
@@ -116,6 +117,19 @@ def _resolve_mode(use_gpu: str) -> str:
                 )
         return env_mode
     return mode
+
+
+def numpy_engine_use_gpu(use_gpu: str) -> str:
+    """``use_gpu`` for the numpy engine when the setting was chosen for the
+    torch engine (a torch run's backward walk, the GUI's continuous-beam
+    fallback).  ``"cuda"``/``"gpu"`` asked the torch engine for an NVIDIA
+    GPU; the numpy engine reaches one only through cupy, so without cupy
+    they become ``"auto"`` (the CPU) instead of failing -- or, for ``"gpu"``,
+    of falling back to the float32 MPS backend."""
+    mode = str(use_gpu or "auto").strip().lower()
+    if mode in ("cuda", "gpu") and _try_import_cupy() is None:
+        return "auto"
+    return use_gpu
 
 
 def effective_backend_info(use_gpu: str = "auto") -> dict:
@@ -280,6 +294,10 @@ class _GpuBackend:
     def free_memory(self) -> None:
         self._cp.get_default_memory_pool().free_all_blocks()
         self._cp.get_default_pinned_memory_pool().free_all_blocks()
+        # the GPU deposit and gather (gpu_particles) allocate through torch
+        if "torch" in sys.modules:
+            from linac_gen.pic.torch.devices import free_gpu_memory
+            free_gpu_memory()
 
 
 class _MpsBackend:

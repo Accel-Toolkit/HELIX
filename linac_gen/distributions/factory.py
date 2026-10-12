@@ -309,4 +309,6 @@ def create_beam(config: BeamConfig, seed: int = None) -> Beam:
             if off != 0.0:
                 beam.particles[:, col] += off
 
+    # the run's seed, which an unseeded foil's kicks follow
+    beam.seed = None if seed is None else int(seed)
     return beam

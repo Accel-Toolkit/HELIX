@@ -236,8 +236,14 @@ class SpaceChargeConfig:
     grid_mode: str | None = None
     # FFT backend for the Poisson solver.  "auto" picks GPU (cupy) when
     # importable and a CUDA device is visible, else CPU (scipy.fft).  The
-    # env var ``LINAC_GEN_USE_GPU`` overrides this field.
+    # env var ``LINAC_GEN_USE_GPU`` overrides this field.  The torch engine
+    # (sc_backend="torch") runs on an NVIDIA GPU only for "cuda" or "gpu"
+    # (linac_gen.pic.torch.devices).
     use_gpu: str = "auto"
+    # With the CUDA backend, also run the charge deposit and the field
+    # gather on the GPU (linac_gen.pic.gpu_particles); ignored on the CPU
+    # and MPS backends.  LINAC_GEN_GPU_PARTICLES=1 does the same.
+    gpu_particles: bool = False
     # Particle-mesh shape function for deposition AND gather.  "cic" is
     # the legacy 8-corner trilinear (1st-order); "tsc" is the 27-cell
     # quadratic that reduces grid noise at the cost of ~3.4× more work.
@@ -370,6 +376,15 @@ class SpaceChargeConfig:
             raise ValueError(
                 f"kernel must be one of {valid_kernel}, got {self.kernel!r}"
             )
+        # The stencils: CIC reaches the next node, TSC one node on each
+        # side.  Fewer nodes per axis index outside the grid (the torch
+        # engine's TSC then wrapped to the far side without a word).
+        need = 3 if self.kernel == "tsc" else 2
+        for attr in ("nx", "ny", "nz"):
+            if getattr(self, attr) < need:
+                raise ValueError(
+                    f"{attr}={getattr(self, attr)}: the {self.kernel.upper()} "
+                    f"kernel needs at least {need} grid nodes per axis")
         valid_green = {"igf", "point"}
         if self.green_kind not in valid_green:
             raise ValueError(
@@ -393,6 +408,17 @@ class SpaceChargeConfig:
                 f"sc_backend must be one of {valid_sc_backend}, got "
                 f"{self.sc_backend!r}"
             )
+        # True/False, 0/1 or a numpy bool; not text or a float
+        gp = self.gpu_particles
+        try:
+            ok = (not isinstance(gp, (str, bytes, float))
+                  and gp in (True, False))
+        except (TypeError, ValueError):
+            ok = False
+        if not ok:
+            raise ValueError(
+                f"gpu_particles must be true or false, got {gp!r}")
+        self.gpu_particles = bool(gp)
         if (isinstance(self.reuse_every, bool)
                 or not isinstance(self.reuse_every, numbers.Integral)
                 or self.reuse_every < 1):

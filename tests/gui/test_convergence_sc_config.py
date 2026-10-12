@@ -48,6 +48,21 @@ def test_torch_backend_forces_adaptive_grid(tab):
     assert sc.grid_mode == "adaptive"
 
 
+def test_the_pic_backend_stays_for_the_torch_engine(tab):
+    """cuda/gpu put the torch kick on an NVIDIA GPU, so the PIC backend is
+    not greyed out with the torch engine (grid mode and DC kernel are), and
+    the choice reaches the config."""
+    tab._fixed_sc_backend.setCurrentText("torch")
+    assert tab._fixed_backend.isEnabled()
+    assert not tab._fixed_grid_mode.isEnabled()
+    assert not tab._fixed_dc_kernel.isEnabled()
+    tab._fixed_backend.setCurrentText("cuda")
+    sc = tab.current_sc_config(5.0)
+    assert (sc.sc_backend, sc.use_gpu) == ("torch", "cuda")
+    tab._fixed_sc_backend.setCurrentText("numpy")
+    assert tab._fixed_backend.isEnabled()
+
+
 def test_torch_backend_falls_back_to_numpy_for_dc_beam(tab):
     tab._fixed_sc_backend.setCurrentText("torch")
     sc = tab.current_sc_config(5.0, continuous=True)

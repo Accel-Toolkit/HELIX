@@ -43,11 +43,13 @@ state is persisted per user across sessions:
   ([CPU threads](../06_running/15_threads.md));
   **SC engine** — `numpy` (production PIC, default) or `torch`
   (the differentiable PyTorch PIC). Pick `torch` for the
-  autograd-differentiable space-charge kick; it runs FP64 on CPU,
-  handles bunched beams only, and is markedly slower. Selecting it
-  greys out Grid mode, PIC backend and DC kernel (torch ignores
-  them — it always uses an adaptive grid); a continuous beam falls
-  back to `numpy` automatically.  Also: Green's function (IGF /
+  autograd-differentiable space-charge kick; it runs FP64 on the CPU,
+  or on an NVIDIA GPU when the PIC backend is `cuda` or `gpu` (not yet
+  tested on an NVIDIA GPU — see
+  [Installation](../01_getting_started/02_installation.md)), and
+  handles bunched beams only. Selecting it greys out Grid mode and DC
+  kernel (torch ignores them — it always uses an adaptive grid); a
+  continuous beam falls back to `numpy` automatically.  Also: Green's function (IGF /
   point), particle-mesh kernel (CIC / TSC), grid mode
   (fixed / adaptive), and the DC SC kernel (uniform / gaussian /
   pic2d) for continuous beams.

@@ -142,14 +142,16 @@ falls back to CPU.
 ## "I want to run a multi-particle simulation through the differentiable PIC"
 
 1. **Numerics tab** → **SC engine** → `torch`.
-2. (Grid mode, PIC backend, DC kernel will grey out — expected.)
+2. (Grid mode and DC kernel grey out — expected.  PIC backend `cuda` or
+   `gpu` runs the kick on an NVIDIA GPU — not yet tested on one.)
 3. **Toolbar** → click **Run Multi-particle**.
 
-The torch backend is ~5× slower than the default numpy PIC but
-matches it numerically.  Pick it only when you need an autograd-
+The torch backend matches the default numpy PIC numerically and, in
+a forward run, about as fast.  Pick it when you need an autograd-
 differentiable kick (e.g. chaining the simulation into a gradient-
 based optimiser); for ordinary forward runs leave SC engine on
-`numpy`.  See
+`numpy`, which also has fixed grids, continuous beams and bunch-train
+images.  See
 [Differentiable PIC](../05_space_charge/06_differentiable.md).
 
 ## "I want to match through non-linear PIC space charge"

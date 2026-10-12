@@ -58,6 +58,13 @@ class FieldReusePicSolver(PicSolver):
         self._since_solve = 0
         self.n_solves = 0
         self.n_reused = 0
+        if self.reuse_every > 1:
+            from linac_gen.pic import gpu_particles
+            if gpu_particles.requested(config):
+                gpu_particles.warn_once(
+                    "reuse", "gpu_particles is not used with reuse_every="
+                    "%d: field reuse keeps the CPU deposit and gather",
+                    self.reuse_every)
 
     # ------------------------------------------------------------------
     def set_grid_extent(self, extent_sigma: float) -> None:

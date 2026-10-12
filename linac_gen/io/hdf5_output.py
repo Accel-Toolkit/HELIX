@@ -153,6 +153,12 @@ def _write_provenance(f, lattice_path=None, seed=None, sc_config=None,
                     getattr(sc_config, "use_gpu", "auto"))
             except Exception:                               # noqa: BLE001
                 pass
+            if getattr(sc_config, "sc_backend", None) == "torch":
+                # the torch engine's own device (an NVIDIA GPU only when
+                # asked for; linac_gen.pic.torch.devices)
+                from linac_gen.pic.torch.devices import torch_device
+                info["torch_device"] = str(torch_device(
+                    getattr(sc_config, "use_gpu", "auto")))
             for key, val in info.items():
                 prov.attrs[f"backend_{key}"] = val
         except Exception:                                   # noqa: BLE001

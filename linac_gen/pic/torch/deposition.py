@@ -11,6 +11,7 @@ from __future__ import annotations
 import torch
 
 from linac_gen.parallel.threads import sync_torch as _sync_torch
+from linac_gen.pic.torch import cpu_kernels as _cpu
 
 # a run that loads torch here keeps its CPU work on one thread
 _sync_torch()
@@ -82,6 +83,12 @@ def deposit_cic_torch(positions, charges, grid_min, grid_max, n_grid, *,
     n_t = torch.tensor([nx, ny, nz], dtype=dtype, device=device)
     dx = (grid_max - grid_min) / (n_t - 1.0)
     cell_vol = dx[0] * dx[1] * dx[2]
+
+    # no gradient needed: HELIX's threaded kernel, torch's numbers
+    summed = _cpu.deposit("cic", positions, charges, grid_min, grid_max,
+                          n_grid)
+    if summed is not None:
+        return summed / cell_vol
 
     cix, ciy, ciz, weights = cic_cells(positions, grid_min, grid_max, n_grid,
                                        dtype=dtype, device=device)
@@ -162,6 +169,12 @@ def deposit_tsc_torch(positions, charges, grid_min, grid_max, n_grid, *,
     n_t = torch.tensor([nx, ny, nz], dtype=dtype, device=device)
     dx = (grid_max - grid_min) / (n_t - 1.0)
     cell_vol = dx[0] * dx[1] * dx[2]
+
+    # no gradient needed: HELIX's threaded kernel, torch's numbers
+    summed = _cpu.deposit("tsc", positions, charges, grid_min, grid_max,
+                          n_grid)
+    if summed is not None:
+        return summed / cell_vol
 
     cix, ciy, ciz, weights = tsc_cells(positions, grid_min, grid_max, n_grid,
                                        dtype=dtype, device=device)

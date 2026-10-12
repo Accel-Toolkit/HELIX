@@ -181,11 +181,35 @@ Enable per-run via:
 
 Resolution order:
 
-* `"auto"` — best available: cupy → MPS → CPU.
+* `"auto"` — cupy (FP64) when available, else CPU; never the FP32 MPS
+  backend.
 * `"gpu"`  — any GPU; raises if neither cupy nor MPS is available.
 * `"cuda"` — force cupy; raises if no CUDA device.
 * `"mps"`  — force torch.mps; raises if MPS is unavailable.
 * `"cpu"`  — force scipy.fft on the host.
+
+With the CUDA backend the charge deposit and the field gather can run on
+the GPU as well (they need torch with CUDA besides cupy):
+`SpaceChargeConfig(gpu_particles=True)`, `--sc gpu_particles=true` on the
+CLI, or `LINAC_GEN_GPU_PARTICLES=1` (`=0` turns it off whatever the config
+says).  The particles then cross to the GPU once per kick instead of the
+charge grid and the potential.  The deposit and gather are the torch
+engine's; a run repeats bit for bit (torch's CUDA deposit sums every cell
+in sorted order), and results differ from the CPU kernels' in the last
+digits.  The deposit builds every particle's stencil at once: about
+0.6 kB (CIC) or 1.6 kB (TSC) of GPU memory per particle besides torch's
+sort buffers.  Field reuse (`reuse_every` > 1) keeps the CPU kernels, and
+a request that cannot be met (no cupy, a CPU-only torch) is said once in
+the log.  `scripts/verify_cuda.py` checks this, and the torch engine's
+GPU option, against the CPU on a CUDA machine.
+
+!!! warning "Not yet tested on an NVIDIA GPU"
+    The GPU deposit and gather (`gpu_particles`) and the torch engine on
+    CUDA are new in version 1.17.0 and have not yet been run on an NVIDIA
+    GPU: so far the tests run their code on the CPU only.  Run
+    `python scripts/verify_cuda.py` on your CUDA machine before relying on
+    them.  Everything that runs on the CPU is tested on Linux, macOS and
+    Windows.
 
 Numerical parity:
 

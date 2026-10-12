@@ -24,7 +24,23 @@ PUBLIC_URL="https://github.com/Accel-Toolkit/HELIX.git"
 DEV_ROOT=$(git rev-parse --show-toplevel)
 STAGE="$DEV_ROOT/../HELIX_public"
 
-echo "── 0/5 version check ──────────────────────────────────────────"
+echo "── 0/5 commit and version check ───────────────────────────────"
+# The stage is this checkout's HEAD (git archive below), so HEAD must be
+# what the dev repo publishes: origin/master.  A checkout left on a
+# feature branch once staged the wrong commit (2026-10-11).  Release from
+# master, or from a worktree of it.
+git -C "$DEV_ROOT" fetch -q origin master
+HEAD_SHA=$(git -C "$DEV_ROOT" rev-parse HEAD)
+ORIGIN_SHA=$(git -C "$DEV_ROOT" rev-parse origin/master)
+if [ "$HEAD_SHA" != "$ORIGIN_SHA" ]; then
+  echo "REFUSED: HEAD is not origin/master"
+  echo "  HEAD          : $(git -C "$DEV_ROOT" log --oneline -1 HEAD)"
+  echo "  origin/master : $(git -C "$DEV_ROOT" log --oneline -1 origin/master)"
+  echo "Check out master (git switch master && git pull), or cut from a"
+  echo "worktree of it: git worktree add <dir> origin/master"
+  exit 1
+fi
+echo "HEAD is origin/master ($(git -C "$DEV_ROOT" log --oneline -1 HEAD | cut -c1-60))"
 # The tree's version strings ARE the release version (the in-app update
 # checker compares linac_gen.__version__ against the GitHub tag) — bump
 # them in a commit FIRST, then cut.  A mismatched cut is refused.
