@@ -57,6 +57,10 @@ def _cases():
     }
 
 
+def _bits(a):
+    return np.ascontiguousarray(a).view(np.uint64)
+
+
 def _grid(pos, n, box):
     if box is not None:
         return box[0], box[1]
@@ -87,9 +91,8 @@ def test_repeated_calls_identical():
 
 @needs
 def test_independent_of_thread_count():
-    """The gather at 1, 3 and 14 threads, set through the module's own
-    control (OMP_NUM_THREADS no longer reaches the kernels); the deposit
-    is single-threaded and is pinned for repeatability above."""
+    """The gather and both deposits at 1, 3 and 14 threads, set through the
+    module's own control (OMP_NUM_THREADS no longer reaches the kernels)."""
     if not K._openmp_enabled:
         pytest.skip("single-threaded build: the thread count cannot change anything")
     if not hasattr(K, "set_num_threads"):
@@ -108,6 +111,9 @@ def test_independent_of_thread_count():
             assert K.get_num_threads() == t
             outs.append((K.deposit_tsc(pos, q, gmin, gmax, n),
                          K.interpolate_tsc(*E, pos, gmin, gmax, n)))
+            if hasattr(K, "deposit_tsc_planes"):
+                assert np.array_equal(_bits(_planes(pos, q, gmin, gmax, n)),
+                                      _bits(outs[0][0])), t
     finally:
         sync_kernels()
     for rho, e in outs[1:]:
@@ -174,6 +180,9 @@ def test_picsolver_kick_identical_to_python_kernels(monkeypatch):
         return wrapper
 
     monkeypatch.setattr(ps, "_cpp_deposit_tsc", counted(ps._cpp_deposit_tsc, "deposit"))
+    if ps._cpp_deposit_tsc_planes is not None:
+        monkeypatch.setattr(ps, "_cpp_deposit_tsc_planes",
+                            counted(ps._cpp_deposit_tsc_planes, "deposit"))
     monkeypatch.setattr(ps, "_cpp_interpolate_tsc",
                         counted(ps._cpp_interpolate_tsc, "gather"))
     with_cpp = kick_once()
@@ -301,3 +310,198 @@ def test_direct_call_validates_shapes():
         K.interpolate_tsc(np.zeros((8, 8, 7)), E[1], E[2], pos, gmin, gmax, n)
     with pytest.raises(ValueError):
         K.interpolate_tsc(*E, pos[:, :2], gmin, gmax, n)
+
+
+# ---------------------------------------------------------------------------
+# The threaded deposit (deposit_tsc_planes): each thread owns whole x-planes
+# and adds every cell's terms in np.add.at order, so its raw bits equal the
+# one-thread deposit_tsc's, Python's, and the golden values that the
+# one-thread kernel wrote (2026-10-12), at any thread count.
+# ---------------------------------------------------------------------------
+
+has_planes = pytest.mark.skipif(not (HAS and hasattr(K, "deposit_tsc_planes")),
+                                reason="kernel built before deposit_tsc_planes")
+THREADS = (1, 2, 3, 4, 7, 14)
+GOLDEN = os.path.join(os.path.dirname(__file__), "fixtures", "tsc_deposit_golden.npz")
+
+
+@pytest.fixture
+def kernel_threads():
+    """K.set_num_threads(t), checking that a parallel region of the module
+    really gets t threads -- OMP_THREAD_LIMIT or OMP_DYNAMIC could quietly
+    give fewer, and the threaded path would go untested."""
+    from linac_gen.parallel.threads import sync_kernels
+
+    def set_threads(t):
+        K.set_num_threads(t)
+        team = K._team_size()
+        if team != t:
+            pytest.skip(f"a parallel region gets {team} threads, not {t}")
+    yield set_threads
+    sync_kernels()
+
+
+def _planes(*args):
+    """deposit_tsc_planes on the whole team the setting asks for, however few
+    the particles (team_particles=0); the default team is tested apart."""
+    return K.deposit_tsc_planes(*args, team_particles=0)
+
+
+@has_planes
+@pytest.mark.parametrize("name", list(_cases()))
+def test_threaded_deposit_equals_the_one_thread_deposit(name, kernel_threads):
+    pos, q, n, box = _cases()[name]
+    n = np.asarray(n, dtype=np.int64)
+    gmin, gmax = _grid(pos, n, box)
+    ref = K.deposit_tsc(pos, q, gmin, gmax, n)
+    assert np.array_equal(_bits(ref), _bits(py_dep(pos, q, gmin, gmax, n)))
+    for t in THREADS:
+        kernel_threads(t)
+        assert np.array_equal(_bits(_planes(pos, q, gmin, gmax, n)),
+                              _bits(ref)), t
+
+
+@has_planes
+@pytest.mark.parametrize("key", ["a", "b", "c"])
+def test_threaded_deposit_equals_the_golden_values(key, kernel_threads):
+    """Inputs and output written by the one-thread kernel before the threaded
+    one existed: mixed-sign charges and particles beyond every face (a), one
+    x bucket on a 3-node axis (b), particles on nodes and signed-zero charges
+    (c).  The kernel is built without FMA contraction, so they hold on every
+    platform."""
+    g = np.load(GOLDEN)
+    args = [g[f"{key}_{k}"] for k in ("pos", "q", "lo", "hi", "ng")]
+    want = _bits(g[f"{key}_rho"])
+    assert np.array_equal(_bits(py_dep(*args)), want)
+    for t in THREADS:
+        kernel_threads(t)
+        assert np.array_equal(_bits(_planes(*args)), want), t
+
+
+def _threaded_edge_cases():
+    rng = np.random.default_rng(23)
+    g = lambda lo, hi: (np.full(3, float(lo)), np.full(3, float(hi)))  # noqa: E731
+    x = rng.normal(0, 1, (4000, 3))
+    x[:, 0] = 0.123                                     # every particle in one plane
+    yield "one_plane", x, np.full(4000, -2.0), g(-3, 3), (24, 24, 24)
+    yield "one_bucket", rng.normal(0, 0.3, (3000, 3)), rng.uniform(-1, 1, 3000), \
+        g(-1, 1), (3, 9, 9)
+    yield "smallest", rng.normal(0, 0.5, (500, 3)), np.ones(500), g(-1, 1), (3, 3, 3)
+    q = rng.uniform(0.5, 1.5, 30000) * np.where(rng.random(30000) < 0.5, -1, 1)
+    yield "mixed_signs", rng.normal(0, 1, (30000, 3)), q, g(-4, 4), (33, 47, 29)
+    q = np.full(2000, 1.0)
+    q[::3] = -0.0
+    q[1::3] = 0.0
+    yield "signed_zero_charges", rng.normal(0, 1, (2000, 3)), q, g(-3, 3), (12, 12, 12)
+    x = rng.normal(0, 1, (5000, 3))
+    x[:100] *= 50.0                                     # far beyond every face
+    yield "beyond_faces", x, np.full(5000, 3.0), g(-2, 2), (16, 20, 24)
+    yield "one_particle", np.array([[0.31, -0.2, 0.05]]), np.array([2.5]), \
+        g(-1, 1), (5, 6, 7)
+
+
+@has_planes
+@pytest.mark.parametrize("case", list(_threaded_edge_cases()), ids=lambda c: c[0])
+def test_threaded_deposit_on_edge_inputs(case, kernel_threads):
+    _, pos, q, (gmin, gmax), n = case
+    n = np.asarray(n, dtype=np.int64)
+    ref = K.deposit_tsc(pos, q, gmin, gmax, n)
+    assert np.array_equal(_bits(ref), _bits(py_dep(pos, q, gmin, gmax, n)))
+    for t in THREADS + (32,):
+        kernel_threads(t)
+        assert np.array_equal(_bits(_planes(pos, q, gmin, gmax, n)),
+                              _bits(ref)), t
+
+
+@has_planes
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.parametrize("case", DECLINED)
+def test_threaded_deposit_declines_outside_the_envelope(case, kernel_threads):
+    pos, q, gmin, gmax, n = _edge_case(case)
+    for t in (1, 4):
+        kernel_threads(t)
+        assert _planes(pos, q, gmin, gmax, n) is None
+        assert K.deposit_tsc_planes(pos, q, gmin, gmax, n) is None
+
+
+@has_planes
+def test_threaded_deposit_validates_shapes():
+    pos, _rng = _beam(100)
+    q = np.full(len(pos), 1e-15)
+    n = np.array([8, 8, 8], dtype=np.int64)
+    gmin, gmax = _grid(pos, n, None)
+    for bad in ((pos[:, :2], q, gmin, gmax, n), (pos, q[:-1], gmin, gmax, n),
+                (pos, q, gmin[:2], gmax, n),
+                (pos, q, gmin, gmax, np.array([8, 2, 8], dtype=np.int64))):
+        with pytest.raises(ValueError):
+            _planes(*bad)
+        with pytest.raises(ValueError):
+            K.deposit_tsc_planes(*bad)
+
+
+@has_planes
+def test_threaded_deposit_sizes_its_team_by_the_particle_count(kernel_threads):
+    """About sqrt(N / team_particles) threads (default 700), at most the
+    setting, and one thread runs deposit_tsc itself: the same bits whatever
+    the team."""
+    rng = np.random.default_rng(31)
+    n = np.array([20, 24, 28], dtype=np.int64)
+    kernel_threads(8)
+    for N in (1, 349, 350, 1049, 1050, 5000, 60000):
+        pos = rng.normal(0, 1, (N, 3))
+        q = rng.uniform(0.5, 1.5, N)
+        gmin, gmax = np.full(3, -4.0), np.full(3, 4.5)
+        ref = K.deposit_tsc(pos, q, gmin, gmax, n)
+        assert ref is not None
+        for team in (None, 0, 1.0, 100.0, 700.0, 4096.0, -5.0):
+            kw = {} if team is None else {"team_particles": team}
+            out = K.deposit_tsc_planes(pos, q, gmin, gmax, n, **kw)
+            assert np.array_equal(_bits(out), _bits(ref)), (N, team)
+
+
+@has_planes
+def test_threaded_deposit_computes_in_the_callers_fp_environment(kernel_threads):
+    """With flush-to-zero on in the calling thread, the threads flush too:
+    the bits of deposit_tsc, which runs in that thread (charges whose
+    weighted terms are subnormal, so the setting changes the result)."""
+    torch = pytest.importorskip("torch")
+    rng = np.random.default_rng(41)
+    pos = rng.normal(0, 1, (20000, 3))
+    q = np.full(len(pos), 3e-308)
+    n = np.array([16, 16, 16], dtype=np.int64)
+    gmin, gmax = np.full(3, -4.0), np.full(3, 4.0)
+    plain = K.deposit_tsc(pos, q, gmin, gmax, n)
+    if not torch.set_flush_denormal(True):
+        pytest.skip("no flush-to-zero control on this CPU")
+    got = {}
+    try:
+        want = K.deposit_tsc(pos, q, gmin, gmax, n)
+        for t in (2, 4, 8):
+            kernel_threads(t)
+            got[t] = _planes(pos, q, gmin, gmax, n)
+    finally:
+        torch.set_flush_denormal(False)
+    assert not np.array_equal(_bits(plain), _bits(want))
+    for t, g in got.items():
+        assert np.array_equal(_bits(g), _bits(want)), t
+
+
+@has_planes
+def test_dispatch_uses_the_threaded_deposit_unless_told_not_to(monkeypatch):
+    """The dispatcher takes deposit_tsc_planes; LINAC_GEN_TSC_DEPOSIT_PLANES=0
+    or a module built before it falls back to deposit_tsc -- the same bits."""
+    pos, _rng = _beam(20000)
+    q = np.full(len(pos), 1e-15)
+    n = np.array([24, 24, 24], dtype=np.int64)
+    gmin, gmax = _grid(pos, n, None)
+    assert ps._cpp_tsc_deposit_kernel() is ps._cpp_deposit_tsc_planes
+    threaded = ps.deposit_tsc(pos, q, gmin, gmax, n)
+    monkeypatch.setenv("LINAC_GEN_TSC_DEPOSIT_PLANES", "0")
+    assert ps._cpp_tsc_deposit_kernel() is ps._cpp_deposit_tsc
+    switched_off = ps.deposit_tsc(pos, q, gmin, gmax, n)
+    monkeypatch.delenv("LINAC_GEN_TSC_DEPOSIT_PLANES")
+    monkeypatch.setattr(ps, "_cpp_deposit_tsc_planes", None)
+    assert ps._cpp_tsc_deposit_kernel() is ps._cpp_deposit_tsc
+    old_module = ps.deposit_tsc(pos, q, gmin, gmax, n)
+    assert np.array_equal(_bits(threaded), _bits(switched_off))
+    assert np.array_equal(_bits(threaded), _bits(old_module))

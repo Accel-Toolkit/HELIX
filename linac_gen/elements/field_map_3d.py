@@ -769,9 +769,14 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
         if not items or any(ch_enum not in packs for ch_enum, _ in items):
             return False
         idx = np.flatnonzero(alive)
-        # phases and phasors exactly as below, in numpy
-        dphi_deg = P[idx, 4]
-        phi_total_rad = phi_sync_rad + dphi_deg * (np.pi / 180.0)
+        # phases and phasors exactly as below, in numpy (none for a map whose
+        # channels are all static: their phasor is 1)
+        phi_total_rad = None
+        if not all(ch_enum.is_static for ch_enum, _ in items):
+            dphi_deg = P[idx, 4]
+            phi_total_rad = phi_sync_rad + dphi_deg * (np.pi / 180.0)
+        elif idx.size and idx[-1] >= P.shape[0]:
+            return False        # a mask longer than the beam: numpy raises
         chans = []
         for ch_enum, _comp in items:
             gx, gy, gz, stacked, names = packs[ch_enum]

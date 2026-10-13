@@ -5,9 +5,8 @@ HELIX runs the costly parts of a simulation on several CPU threads at once:
 * the space-charge field solve (the FFTs of the Poisson solver) and its
   Green's function, which an adaptive grid rebuilds at every kick;
 * the field maps (the field sampler and the kick-and-drift step of
-  `FieldMap3D`);
-* the CIC charge deposition, and the CIC and TSC field gathers (the TSC
-  deposition runs on one thread).
+  `FieldMap3D`, and the step of 1-D on-axis maps in `FieldMap`);
+* the CIC and TSC charge depositions and field gathers.
 
 By default they use every CPU of the computer, in the GUI, the CLI and
 Python alike, and whatever the PIC backend: with `cuda` or `mps` the FFTs
@@ -24,10 +23,13 @@ Every result is the same, bit for bit, for any number of threads:
 * the Green's function is built in pieces of whole grid planes, every
   value computed by the same operations as in a single call over the
   whole grid;
-* the gathers and the field-map step compute each particle on its own;
+* the gathers, the field-map steps and the solve's field differences
+  compute each value on its own;
 * the CIC deposit adds the contributions to every grid cell in particle
-  order, the order of a single-threaded loop; the TSC deposit runs on one
-  thread, in a fixed order.
+  order, the order of a single-threaded loop; the TSC deposit gives each
+  thread whole planes of the grid and adds every cell's contributions in
+  the order of its single-threaded loop (27 stencil passes, particles in
+  order within each).
 
 This holds since 2026-10-11.  Before, the CIC deposit added up per-thread
 partial sums, so its last digits depended on the thread count.  GUI runs
@@ -153,9 +155,35 @@ exactly as in scipy's one-thread transform: the result is scipy's
 one-thread result, bit for bit, for any number of threads and in every
 build.  A transform of fewer than 2¹⁷ grid points (for example 32³, the
 doubled grid of a 16³ beam grid) runs as one single-threaded call:
-splitting it would cost more than it saves.  The torch engine's FFTs are
-split the same way on macOS (see
+splitting it would cost more than it saves.  A larger one uses at most
+about √(points / 50 000) threads of the setting -- 2 for the 64³ doubled
+grid of a 32³ beam grid, 4 at 96³ (48³), 9 at 160³ (80³): every thread
+costs a fixed time in each pass, so beyond that number threads cost more
+than they save (on a 14-core Mac a 48³ solve takes 2.3 ms on 4 FFT threads
+and 3.1 ms on 14).  `LINAC_GEN_FFT_WORKERS`, when set, is used as it is.
+The torch engine's FFTs are split the same way on macOS (see
 [torch stays on one thread](#torch-stays-on-one-thread)).
+
+The space-charge solve transforms a charge that fills one corner of its
+doubled grid, and keeps one corner of the result.  Its transforms skip the
+lines that are all zeros and the lines nobody reads: the forward transform
+does about 1/4 of its first pass and 1/2 of its second, the inverse 1/2 of
+its second and 1/4 of its last.  Each line that is computed is still
+batched as in the full transform (every call has a multiple of 8 lines),
+and the skipped lines' values are the full transform's own.  The first
+solve on a new grid size captures them by transforming zeros once, and
+checks the skipping against the full transforms of a random charge; a grid
+where the two differ keeps the full transforms.  That first solve takes a
+few solves' time and, for a moment, about three spectra's memory (some
+125 MB more on a 96³ beam grid); the skipping applies to doubled grids of
+2¹⁷ to 2²³ points (beam grids of about 26³ to 100³), larger grids keeping
+the full transforms.  The solve also no longer zeroes its padded charge
+buffer before every kick (only its charge block is ever written),
+transforms the spectrum back in place, and computes the field from the
+potential in a compiled kernel on the threads (numpy takes over, with its
+warnings, for a potential that raises a floating-point exception).
+`LINAC_GEN_PRUNED_FFT=0` keeps the full transforms;
+`LINAC_GEN_LEAN_SOLVE=0` restores the whole earlier solve.
 
 ## In the results file
 
@@ -166,7 +194,7 @@ own thread:
 |---|---|
 | `threads` | the thread count |
 | `threads_source` | where it came from: `set`, `env` (`HELIX_THREADS`), `omp` (`OMP_NUM_THREADS`) or `all` |
-| `threads_fft` | the FFT's thread count |
+| `threads_fft` | the most threads an FFT uses (a smaller transform uses fewer) |
 | `threads_kernels` | each compiled kernel module's thread count |
 | `threads_torch` | torch's thread count in the run's thread: 1 (absent when torch was not loaded) |
 | `threads_blas` | 1 when BLAS was held on one thread |

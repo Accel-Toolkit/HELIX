@@ -213,6 +213,14 @@ def select_backend(use_gpu: str = "auto",
 # FFT backend interface
 # ---------------------------------------------------------------------------
 
+def _n_points(x=None, s=None) -> int:
+    """Grid points of an array ``x`` (anything with a shape, or that numpy
+    can shape: a torch tensor, a nested list), or of a shape ``s``."""
+    import math
+    import numpy as _np
+    return math.prod(int(v) for v in (_np.shape(x) if s is None else s))
+
+
 class _CpuBackend:
     """scipy.fft / numpy.fft dispatcher (FP64, multi-threaded via workers)."""
 
@@ -230,11 +238,13 @@ class _CpuBackend:
             self._has_scipy = False
 
     @staticmethod
-    def _workers() -> int:
+    def _workers(points=None) -> int:
         """FFT threads (linac_gen.parallel.threads.fft_threads):
-        ``LINAC_GEN_FFT_WORKERS`` when set, else the HELIX thread setting."""
+        ``LINAC_GEN_FFT_WORKERS`` when set, else the HELIX thread setting,
+        for a transform of ``points`` grid points at most about
+        sqrt(points / FFT_TEAM_POINTS) of them."""
         from linac_gen.parallel.threads import fft_threads
-        return fft_threads()
+        return fft_threads(points)
 
     def to_device(self, arr):
         import numpy as _np
@@ -252,14 +262,31 @@ class _CpuBackend:
         if not self._has_scipy:
             return self._fft.rfftn(x)
         from linac_gen.pic import fft_split
-        return fft_split.rfftn(x, self._workers())
+        return fft_split.rfftn(x, self._workers(_n_points(x)))
 
-    def irfftn(self, x, s):
+    def irfftn(self, x, s, overwrite_x=False):
+        """``overwrite_x``: the caller gives ``x`` up (see fft_split.irfftn)."""
         if not self._has_scipy:
             # numpy 2 wants the axes named whenever s is given
             return self._fft.irfftn(x, s=s, axes=tuple(range(-len(s), 0)))
         from linac_gen.pic import fft_split
-        return fft_split.irfftn(x, s, self._workers())
+        return fft_split.irfftn(x, s, self._workers(_n_points(s=s)),
+                                overwrite_x=overwrite_x)
+
+    # The Poisson solve's pruned pair (fft_split.rfftn_padded and
+    # irfftn_corner): None where pruning does not apply.
+    def rfftn_padded(self, x, corner):
+        if not self._has_scipy:
+            return None
+        from linac_gen.pic import fft_split
+        return fft_split.rfftn_padded(x, corner, self._workers(_n_points(x)))
+
+    def irfftn_corner(self, x, s, corner, overwrite_x=False):
+        if not self._has_scipy:
+            return None
+        from linac_gen.pic import fft_split
+        return fft_split.irfftn_corner(x, s, corner, self._workers(_n_points(s=s)),
+                                       overwrite_x=overwrite_x)
 
     def free_memory(self) -> None:
         pass
@@ -288,8 +315,8 @@ class _GpuBackend:
     def rfftn(self, x):
         return self._fft.rfftn(x)
 
-    def irfftn(self, x, s):
-        return self._fft.irfftn(x, s=s)
+    def irfftn(self, x, s, overwrite_x=False):
+        return self._fft.irfftn(x, s=s)         # (overwrite_x: CPU only)
 
     def free_memory(self) -> None:
         self._cp.get_default_memory_pool().free_all_blocks()
@@ -380,7 +407,7 @@ class _MpsBackend:
         t = self._to_mps(x)
         return self._torch.fft.rfftn(t)
 
-    def irfftn(self, x, s):
+    def irfftn(self, x, s, overwrite_x=False):     # (overwrite_x: CPU only)
         t = self._to_mps(x)
         # torch.fft.irfftn expects a sequence for ``s``.
         return self._torch.fft.irfftn(t, s=tuple(int(v) for v in s))
@@ -429,7 +456,7 @@ def _maybe_emit_banner(backend_name: str) -> None:
             _log.info("PicSolver: using MPS backend (torch)")
             return
     _log.info(
-        "PicSolver: using CPU backend (scipy.fft, %d threads)",
+        "PicSolver: using CPU backend (scipy.fft, up to %d threads)",
         _CpuBackend._workers(),
     )
 

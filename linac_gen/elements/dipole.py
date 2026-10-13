@@ -4,7 +4,7 @@ import math
 from linac_gen.elements.base import TransferMapElement
 from linac_gen.elements.mixins import Misalignment, FieldError
 from linac_gen.core.reference import ReferenceParticle
-from linac_gen.core.beam import Beam
+from linac_gen.core.beam import Beam, transport_alive
 
 
 class Dipole(TransferMapElement, Misalignment, FieldError):
@@ -492,11 +492,10 @@ class Dipole(TransferMapElement, Misalignment, FieldError):
         beam.ref.s += L
         beam.ref.phi_s += 360.0 * L / (beam.ref.beta * beam.ref.wavelength)
         M = self.transfer_matrix(beam.ref, ds=L)
-        alive = beam.alive_mask
-        beam.particles[alive] = (M @ beam.particles[alive].T).T
+        transport_alive(beam, M)
         # Field error: constant deflection of the design orbit (no-op,
         # and bit-identical, for δ = 0).  The roll is applied by the
         # tracker's misalignment wrapper (roll_exit_offset).
         o = self.orbit_offset(beam.ref, ds=L)
         if o is not None:
-            beam.particles[alive] += o
+            beam.particles[beam.alive_mask] += o

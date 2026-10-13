@@ -174,7 +174,10 @@ def test_every_parallel_region_names_its_team():
         for line in text.splitlines():
             if re.match(r"\s*#\s*pragma\s+omp\s+parallel\b", line):
                 regions.append((src, line.strip()))
-    assert len(regions) >= 8        # 4 CIC, 1 TSC, 2 field-map, 1 probe
+    # CIC 4, TSC 7 (gather, the threaded deposit's one region, the torch
+    # engine's 5), field map 3 (3-D sampling, the 3-D step, the 1-D step),
+    # the probe 1
+    assert len(regions) >= 15
     missing = [r for r in regions if "num_threads(" not in r[1]]
     assert not missing, missing
 

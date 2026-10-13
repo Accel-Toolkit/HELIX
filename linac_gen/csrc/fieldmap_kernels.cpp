@@ -372,6 +372,138 @@ void kd_step(py::array particles, py::array idx_in,
     }
 }
 
+// The particle part of one FieldMap.track_rk4 slice for maps whose every
+// channel is 1-D on-axis (geometry 1), bit for bit -- the numpy code's
+// arithmetic, not kd_step's, which differs in three places: the scaling is
+// (scale * phasor) * F, the damping factor's denominator comes from the
+// caller (ref.beta ** 2 * ref.gamma * mass, computed in Python), and the
+// Lorentz kick reads x' and y' AFTER the damping.  Per channel (in the
+// caller's order): (scale, electric, phasor or None, Fz on axis, dFz/dz on
+// axis); the paraxial field is Fr = (-0.5 * r) * dFz/dz, decomposed as
+// Fr * (x / safe_r) with safe_r = r if r > 1e-12 else 1, and set to +0.0
+// where r < 1e-12 (numpy's two comparisons, kept apart).  r = hypot(x, y)
+// comes from numpy (rs), as do the phasors; the accumulators start at +0.0
+// and add term by term, as numpy's in-place sums do.  Each particle is
+// independent (disjoint rows), so the result does not depend on the thread
+// count; every thread computes in the caller's floating-point environment.
+// The team grows as the square root of the particle count (helix::team_for).
+void fm1d_step(py::array particles, py::array idx_in, py::array rs_in,
+               py::list channels, double charge, double ds_m, double dW_ref,
+               bool do_damp, double damp_denom, bool do_slip, double slip,
+               bool do_kick, double factor_E, double factor_B,
+               double team_particles) {
+    if (particles.ndim() != 2 || particles.shape(1) != 6
+        || !py::isinstance<py::array_t<double>>(particles)
+        || !(particles.flags() & py::array::c_style)
+        || !particles.writeable())
+        throw std::invalid_argument(
+            "particles must be a writeable C-contiguous float64 (N, 6) array");
+    double* P = static_cast<double*>(particles.mutable_data());
+    const long N = static_cast<long>(particles.shape(0));
+    if (!py::isinstance<py::array_t<std::int64_t>>(idx_in)
+        || idx_in.ndim() != 1)
+        throw std::invalid_argument("idx must be a 1-D int64 array");
+    auto idx = py::array_t<std::int64_t, py::array::c_style>::ensure(idx_in);
+    auto ix = idx.unchecked<1>();
+    const long n = static_cast<long>(ix.shape(0));
+    using arr = py::array_t<double, py::array::c_style | py::array::forcecast>;
+    arr rs_arr = arr::ensure(rs_in);
+    if (!rs_arr || rs_arr.ndim() != 1 || rs_arr.shape(0) != n)
+        throw std::invalid_argument("rs must have shape (n,)");
+    const double* rs = rs_arr.data();
+
+    struct Chan1 {
+        double scale; bool electric; const double* phasor; double fz, dfz;
+    };
+    std::vector<Chan1> chans;
+    std::vector<py::object> keep;      // holds converted arrays alive
+    for (auto item : channels) {
+        if (!py::isinstance<py::tuple>(item))
+            throw std::invalid_argument("each channel must be a tuple");
+        py::tuple t = py::reinterpret_borrow<py::tuple>(item);
+        if (t.size() != 5)
+            throw std::invalid_argument("channel tuple needs 5 entries");
+        Chan1 c;
+        c.scale = t[0].cast<double>();
+        c.electric = t[1].cast<bool>();
+        c.phasor = nullptr;
+        if (!t[2].is_none()) {
+            arr ph = arr::ensure(t[2]);
+            if (!ph || ph.ndim() != 1 || ph.shape(0) != n)
+                throw std::invalid_argument("phasor must have shape (n,)");
+            c.phasor = ph.data();
+            keep.push_back(ph);
+        }
+        c.fz = t[3].cast<double>();
+        c.dfz = t[4].cast<double>();
+        chans.push_back(c);
+    }
+    for (long k = 0; k < n; ++k) {
+        if (ix(k) < 0 || ix(k) >= N)
+            throw std::invalid_argument("particle index out of range");
+        if (k > 0 && ix(k) <= ix(k - 1))
+            throw std::invalid_argument(
+                "particle indices must be strictly increasing");
+    }
+
+    const helix::FpEnv fpenv;           // the caller's, for every thread
+    // about sqrt(n / team_particles) threads (helix::team_for; with the
+    // default 1500 the best teams measured on a 14-core Mac: 1 at 2k
+    // particles, 4 at 5k-20k, 8 at 50k-200k); a few particles -- the
+    // envelope's twelve probes -- on this thread
+    const int team = helix::team_for(static_cast<double>(n), team_particles);
+    py::gil_scoped_release release;
+#ifdef _OPENMP
+#pragma omp parallel num_threads(team) if(team > 1)
+#endif
+    {
+    const helix::FpEnv::Use use_fpenv(fpenv);
+#ifdef _OPENMP
+#pragma omp for schedule(static)
+#endif
+    for (long k = 0; k < n; ++k) {
+        double* p = P + 6 * ix(k);
+        const double x = p[0], y = p[2], r = rs[k];
+        double Ex = 0.0, Ey = 0.0, Ez = 0.0;
+        double Bx = 0.0, By = 0.0, Bz = 0.0;
+        for (const Chan1& c : chans) {
+            const double Fr = (-0.5 * r) * c.dfz;
+            const double safe_r = r > 1e-12 ? r : 1.0;
+            double Fx = Fr * (x / safe_r);
+            double Fy = Fr * (y / safe_r);
+            if (r < 1e-12) { Fx = 0.0; Fy = 0.0; }
+            const double Fz = c.fz;
+            const double sp = c.scale * (c.phasor ? c.phasor[k] : 1.0);
+            if (c.electric) {
+                Ex = Ex + sp * Fx; Ey = Ey + sp * Fy; Ez = Ez + sp * Fz;
+            } else {
+                Bx = Bx + sp * Fx; By = By + sp * Fy; Bz = Bz + sp * Fz;
+            }
+        }
+        const double dW = (charge * Ez) * ds_m;
+        p[5] = p[5] + (dW - dW_ref);
+        if (do_damp) {
+            const double d = 1.0 / (1.0 + dW / damp_denom);
+            p[1] = p[1] * d;
+            p[3] = p[3] * d;
+        }
+        if (do_slip) p[4] = p[4] + slip * p[5];
+        if (do_kick) {
+            const double xp_rad = p[1] * 1e-3;     // after the damping
+            const double yp_rad = p[3] * 1e-3;
+            const double dxp = charge * (factor_E * Ex
+                                         + factor_B * (yp_rad * Bz - By));
+            const double dyp = charge * (factor_E * Ey
+                                         + factor_B * (Bx - xp_rad * Bz));
+            p[1] = p[1] + dxp * 1e3;
+            p[3] = p[3] + dyp * 1e3;
+        }
+        p[0] = p[0] + p[1] * ds_m;
+        p[2] = p[2] + p[3] * ds_m;
+    }
+    }
+}
+
 PYBIND11_MODULE(_fieldmap_kernels, m) {
     m.doc() = "Fused trilinear field-map sampling (bitwise-mirrors scipy "
               "RGI linear with fill_value=0) and the fused KD step";
@@ -384,6 +516,13 @@ PYBIND11_MODULE(_fieldmap_kernels, m) {
           py::arg("dW_ref"), py::arg("do_damp"), py::arg("damp_denom"),
           py::arg("do_slip"), py::arg("slip"), py::arg("do_kick"),
           py::arg("factor_E"), py::arg("factor_B"));
+    m.def("fm1d_step", &fm1d_step,
+          py::arg("particles"), py::arg("idx"), py::arg("rs"),
+          py::arg("channels"), py::arg("charge"), py::arg("ds_m"),
+          py::arg("dW_ref"), py::arg("do_damp"), py::arg("damp_denom"),
+          py::arg("do_slip"), py::arg("slip"), py::arg("do_kick"),
+          py::arg("factor_E"), py::arg("factor_B"),
+          py::arg("team_particles") = 1500.0);
     m.def("set_num_threads", &helix::set_num_threads, py::arg("n"),
           "Threads for this module's OpenMP loops (0 = the OpenMP default)");
     m.def("get_num_threads", &helix::num_threads,

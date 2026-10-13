@@ -19,6 +19,7 @@ import numpy as np
 
 from linac_gen.elements.base import PassiveElement
 from linac_gen.core.reference import ReferenceParticle
+from linac_gen.core.beam import transport_alive
 
 
 class Edge(PassiveElement):
@@ -48,9 +49,8 @@ class Edge(PassiveElement):
     def apply(self, beam) -> None:
         """Apply the linear edge kick to alive particles."""
         M = self.transfer_matrix(beam.ref)
-        alive = beam.alive_mask
-        if np.any(alive):
-            beam.particles[alive] = (M @ beam.particles[alive].T).T
+        if np.any(beam.alive_mask):
+            transport_alive(beam, M)
 
     def transfer_matrix(self, ref: ReferenceParticle) -> np.ndarray:
         M = np.eye(6)

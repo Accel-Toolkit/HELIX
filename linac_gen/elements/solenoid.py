@@ -5,7 +5,7 @@ import math
 from linac_gen.elements.base import TransferMapElement
 from linac_gen.elements.mixins import Misalignment, FieldError
 from linac_gen.core.reference import ReferenceParticle
-from linac_gen.core.beam import Beam
+from linac_gen.core.beam import Beam, transport_alive
 from linac_gen.units import FIELD_ZERO_TOL
 
 
@@ -121,5 +121,4 @@ class Solenoid(TransferMapElement, Misalignment, FieldError):
         beam.ref.s += L
         beam.ref.phi_s += 360.0 * L / (beam.ref.beta * beam.ref.wavelength)
         M = self.transfer_matrix(beam.ref, ds=L)
-        alive = beam.alive_mask
-        beam.particles[alive] = (M @ beam.particles[alive].T).T
+        transport_alive(beam, M)

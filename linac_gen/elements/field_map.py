@@ -27,6 +27,9 @@ converts B[T] to MV/m-equivalent units.
 """
 from __future__ import annotations
 
+import os
+import sys
+
 import numpy as np
 
 from linac_gen.elements.base import FieldMapElement as FieldMapBase
@@ -37,6 +40,36 @@ from linac_gen.tracking.rk4 import numerical_jacobian_batched
 # Speed-of-light conversion c [m/s] × 1e-6 [MeV/V].
 # Ensures B[T] × _C_LIGHT is numerically equivalent to E[MV/m].
 _C_LIGHT = 299.792458
+
+# The particle part of a slice of a 1-D on-axis map (geometry 1) in the
+# compiled kernel (linac_gen._fieldmap_kernels.fm1d_step), bit for bit,
+# on the HELIX thread setting; LINAC_GEN_FIELDMAP1D_KERNEL=0, or a module
+# built without it, keeps the numpy code (tests/elements/test_fieldmap1d_step.py).
+# Looked up at the first such slice, not on import (every deck parse imports
+# this module), and never by importing torch: on macOS the kernel binds the
+# OpenMP runtime torch loads (as in field_map_3d.py), so until something has
+# imported torch -- a PIC run's solver, a 3-D map -- the numpy code runs and
+# the lookup is tried again at the next slice.
+_fm1d_kernel = None                 # the kernel; False: none to be had
+
+
+def _fm1d_lookup():
+    """The 1-D step kernel, or None: none yet (see above), no module, or a
+    module built before it."""
+    global _fm1d_kernel
+    kernel = _fm1d_kernel
+    if kernel is None:
+        if sys.platform == "darwin" and "torch" not in sys.modules:
+            return None
+        try:
+            from linac_gen._fieldmap_kernels import fm1d_step as kernel
+        except ImportError:
+            kernel = False
+        else:
+            from linac_gen.parallel.threads import sync_kernels
+            sync_kernels()
+        _fm1d_kernel = kernel
+    return kernel or None
 
 
 def _bilinear_2d(Fz_grid: np.ndarray, r_axis: np.ndarray, z_axis: np.ndarray,
@@ -610,6 +643,9 @@ class FieldMap(FieldMapBase, Misalignment, FieldError):
         alive = beam.alive_mask
         if not np.any(alive):
             return
+        if self._fm1d_step(beam, alive, z_pos, phi_sync_rad, charge_num,
+                           ds, ds_m, dW_ref, mass_MeV, wavelength):
+            return
 
         xs = beam.particles[alive, 0]
         ys = beam.particles[alive, 2]
@@ -717,6 +753,71 @@ class FieldMap(FieldMapBase, Misalignment, FieldError):
         # ---- Drift -----------------------------------------------------
         beam.particles[alive, 0] += beam.particles[alive, 1] * ds_m
         beam.particles[alive, 2] += beam.particles[alive, 3] * ds_m
+
+    def _fm1d_step(self, beam, alive, z_pos, phi_sync_rad, charge_num, ds,
+                   ds_m, dW_ref, mass_MeV, wavelength) -> bool:
+        """The particle part of a track_rk4 slice (the code after this call)
+        in the compiled kernel, bit for bit; False when it does not apply: no
+        kernel, LINAC_GEN_FIELDMAP1D_KERNEL=0, a channel that is not 1-D
+        on-axis (geometry 1), a particle array that is not C-contiguous
+        float64, or a lost-mask that is not one bool per particle.
+        Everything numpy computes in the code below with a transcendental, a
+        power or an interpolation -- the phasors, r, the on-axis samples, the
+        prefactors -- is computed here the same way; the kernel does the rest
+        in the same order."""
+        if os.environ.get("LINAC_GEN_FIELDMAP1D_KERNEL", "1") == "0":
+            return False
+        kernel = _fm1d_lookup()
+        if kernel is None:
+            return False
+        P = beam.particles
+        if (P.dtype != np.float64 or P.ndim != 2 or P.shape[1] != 6
+                or not P.flags.c_contiguous or not P.flags.writeable):
+            return False
+        # a malformed lost-mask makes the numpy code raise: let it
+        if (not isinstance(alive, np.ndarray) or alive.dtype != np.bool_
+                or alive.shape != (P.shape[0],)):
+            return False
+        channels = list(self.field_data.channels.items())
+        if not channels or any(ch.geometry != 1 for _, ch in channels):
+            return False
+        idx = np.flatnonzero(alive)
+        xs = P[idx, 0]
+        ys = P[idx, 2]
+        dphi_deg = P[idx, 4]
+        phi_i = phi_sync_rad + dphi_deg * (np.pi / 180.0)
+        rs = np.hypot(xs, ys)
+        chans = []
+        for ch_enum, ch in channels:
+            scale = self._scale(ch_enum, ch)
+            if ch_enum.is_static:
+                phasor = None                   # np.ones(n) below: x 1.0
+            elif ch_enum.is_electric:
+                phasor = np.cos(phi_i)
+            else:  # RF magnetic
+                phasor = np.sin(phi_i)
+            Fz_on = float(np.interp(z_pos, ch.z, ch.Fz, left=0.0, right=0.0))
+            dFz_dz = float(np.interp(
+                z_pos, ch.z, np.gradient(ch.Fz, ch.z), left=0.0, right=0.0))
+            chans.append((float(scale), bool(ch_enum.is_electric), phasor,
+                          Fz_on, dFz_dz))
+        ref = beam.ref
+        do_damp = ref.beta > 0 and ref.gamma > 0 and mass_MeV > 0
+        do_slip = wavelength > 0 and ref.beta > 0 and ref.gamma > 0
+        beta = ref.beta
+        gamma = ref.gamma
+        do_kick = beta > 0 and gamma > 0
+        kernel(
+            P, idx, rs, chans, float(charge_num), float(ds_m), float(dW_ref),
+            do_damp,
+            ref.beta ** 2 * ref.gamma * mass_MeV if do_damp else 1.0,
+            do_slip,
+            (-360.0 * ds / (ref.beta ** 3 * ref.gamma ** 3
+                            * mass_MeV * wavelength)) if do_slip else 0.0,
+            do_kick,
+            ds_m / (gamma * beta * beta * mass_MeV) if do_kick else 0.0,
+            ds_m * _C_LIGHT / (gamma * beta * mass_MeV) if do_kick else 0.0)
+        return True
 
     # ------------------------------------------------------------------ #
     #  Exact backward step (algebraic inverse of track_rk4)

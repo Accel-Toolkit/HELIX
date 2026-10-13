@@ -154,3 +154,19 @@ class Beam:
         if not self._unstripped_list:
             return np.array([], dtype=UNSTRIPPED_DTYPE)
         return np.array(self._unstripped_list, dtype=UNSTRIPPED_DTYPE)
+
+
+def transport_alive(beam: "Beam", M: np.ndarray) -> None:
+    """``particles[alive] = (M @ particles[alive].T).T``: the matrix M
+    applied to the particles still in the beam.  With none lost and a
+    C-contiguous array the product is formed on the array itself instead of
+    on a masked copy -- the same BLAS call on the same layout (the copy is
+    C-contiguous too), so the same bits (as Drift.track does), without
+    copying the array out and back in."""
+    P = beam.particles
+    alive = ~beam.lost
+    if (P.flags.c_contiguous and alive.dtype == np.bool_
+            and alive.shape == P.shape[:1] and alive.all()):
+        P[:] = (M @ P.T).T
+    else:
+        P[alive] = (M @ P[alive].T).T

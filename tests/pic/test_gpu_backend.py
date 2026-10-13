@@ -1,4 +1,5 @@
 """Backend-selection logic for the PIC GPU/CPU switch."""
+import numpy as np
 import pytest
 
 from linac_gen.pic import gpu_backend
@@ -44,6 +45,39 @@ def test_cpu_backend_rfftn_matches_numpy(monkeypatch):
     y_ref = np.fft.rfftn(x)
     y_be  = be.to_host(be.rfftn(be.to_device(x)))
     assert np.allclose(y_be, y_ref, atol=1e-12, rtol=1e-12)
+
+
+def test_cpu_backend_sizes_any_array_like():
+    """The thread count is sized from the input's shape: a torch tensor or a
+    nested list transforms as before."""
+    be = gpu_backend._CpuBackend()
+    want = np.fft.rfftn(np.arange(8.0).reshape(2, 4))
+    assert np.allclose(be.rfftn([[0.0, 1.0, 2.0, 3.0], [4.0, 5.0, 6.0, 7.0]]), want)
+    torch = pytest.importorskip("torch")
+    t = torch.arange(8.0, dtype=torch.float64).reshape(2, 4)
+    assert np.allclose(be.rfftn(t), want)
+
+
+def test_fft_threads_shrink_for_small_transforms(monkeypatch):
+    """For a transform of P grid points the FFT takes at most about
+    sqrt(P / FFT_TEAM_POINTS) threads of the setting; LINAC_GEN_FFT_WORKERS,
+    when set, is taken as it is."""
+    from linac_gen.parallel import threads as thr
+    from tests.helpers import kept_thread_setting
+    monkeypatch.delenv("LINAC_GEN_FFT_WORKERS", raising=False)
+    with kept_thread_setting():
+        thr.set_threads(14)
+        w = gpu_backend._CpuBackend._workers
+        assert w() == 14                                   # no size: the setting
+        assert w(64 ** 3) == 2                             # sqrt(262144 / 5e4) = 2.3
+        assert w(96 ** 3) == 4
+        assert w(160 ** 3) == 9
+        assert w(1000 ** 3) == 14                          # never past the setting
+        assert w(10) == 1
+        thr.set_threads(3)
+        assert w(96 ** 3) == 3
+        monkeypatch.setenv("LINAC_GEN_FFT_WORKERS", "12")
+        assert w(64 ** 3) == 12
 
 
 def test_fft_threads_follow_the_setting(monkeypatch):

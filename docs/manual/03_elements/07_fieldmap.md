@@ -159,6 +159,37 @@ finer).
 The reference particle's W and φ_s are updated at every substep,
 so the FieldMap correctly accelerates the design beam.
 
+#### Compiled step for 1-D maps
+
+When every channel of the map is 1-D on axis (geometry 1, as in
+solenoid maps), the particle part of each slice -- the paraxial fields,
+the energy kick, the adiabatic damping, the phase slip, the Lorentz kick
+and the drift -- runs in one compiled pass over the particles
+(`fm1d_step` in `linac_gen._fieldmap_kernels`) on the
+[CPU threads](../06_running/15_threads.md) setting, instead of a long
+sequence of numpy array operations.  It gives the numpy code's results
+**bit for bit** for every value that is not NaN, at any thread count: the
+same expressions in the same order, with the cos/sin phasors, the radius
+and the on-axis field samples still computed by numpy
+(`tests/elements/test_fieldmap1d_step.py`).  A particle that already holds
+a NaN keeps NaN, but its sign bit may differ on some platforms, and for
+non-finite values (NaN, ±inf) numpy's floating-point warnings are not
+raised, nor errors under `numpy.errstate(all="raise")`.  Maps with a 2-D
+or quadrupole-gradient channel keep the numpy code.
+
+Time per slice of a 1-D solenoid map on a 14-core Mac (2026-10-12; the
+kernel takes about √(n / 1 500) of the threads, so the envelope's twelve
+probes stay on one):
+
+| Particles | numpy | Compiled |
+|---|---|---|
+| 12 (the envelope's probes) | 56 µs | 20 µs |
+| 5,000 | 489 µs | 85 µs |
+| 50,000 | 4.55 ms | 0.54 ms |
+
+`LINAC_GEN_FIELDMAP1D_KERNEL=0` keeps the numpy code, as does a compiled
+module built before the step existed.
+
 ### Transfer matrix and per-step Lorentz integration
 
 Unlike Drift, Quadrupole, and Solenoid, a FieldMap has **no closed-

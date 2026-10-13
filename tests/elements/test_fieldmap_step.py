@@ -111,6 +111,20 @@ def test_fused_step_is_bit_identical(monkeypatch, kinds):
 
 
 @needs
+def test_a_map_of_static_channels_only(monkeypatch):
+    """Static electric and magnetic channels and no RF one: the fused step
+    forms no per-particle phase (every phasor is 1) and gives the numpy
+    step's bits."""
+    fd = _map(kinds=("STAT_E", "STAT_B"))
+    calls = _spied(monkeypatch)
+    a = _run(fd, fused=True)
+    assert len(calls) == 60
+    b = _run(fd, fused=False)
+    assert np.array_equal(a.particles, b.particles, equal_nan=True)
+    assert np.array_equal(a.lost, b.lost)
+
+
+@needs
 def test_scipy_sampling_keeps_the_numpy_path(monkeypatch):
     fd = _map()
     calls = _spied(monkeypatch)

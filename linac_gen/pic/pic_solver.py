@@ -70,8 +70,13 @@ except ImportError:
 # TSC: separate C++ module, bit-identical to the Python kernels (same
 # expressions, np.add.at summation order, no FMA contraction -- pinned by
 # tests/pic/test_tsc_kernels_cpp.py on every CI platform).
-# LINAC_GEN_TSC_KERNEL=0 forces the Python kernels.
+# LINAC_GEN_TSC_KERNEL=0 forces the Python kernels.  The deposit runs on
+# HELIX's threads (deposit_tsc_planes: whole x-planes per thread, every
+# cell's terms in the same order, so the same bits) when the module has it;
+# LINAC_GEN_TSC_DEPOSIT_PLANES=0, or a module built before it, keeps the
+# one-thread deposit_tsc.
 _USE_CPP_TSC = False
+_cpp_deposit_tsc_planes = None
 if os.environ.get("LINAC_GEN_TSC_KERNEL", "1") != "0":
     try:
         from linac_gen._tsc_kernels import (
@@ -82,6 +87,12 @@ if os.environ.get("LINAC_GEN_TSC_KERNEL", "1") != "0":
         _log.info("PIC: using C++ TSC kernels (linac_gen._tsc_kernels)")
     except ImportError:
         _log.info("PIC: C++ TSC kernels unavailable; using the Python TSC kernels")
+    else:
+        try:
+            from linac_gen._tsc_kernels import (
+                deposit_tsc_planes as _cpp_deposit_tsc_planes)
+        except ImportError:                 # a module built before it
+            _cpp_deposit_tsc_planes = None
 
 if _USE_CPP or _USE_CPP_TSC:
     # the HELIX thread setting for the kernels' OpenMP loops
@@ -112,11 +123,21 @@ def _cpp_tsc_ok(positions, grid_min, grid_max, n_grid) -> bool:
             and n_grid.shape == (3,) and int(n_grid.min()) >= 3)
 
 
+def _cpp_tsc_deposit_kernel():
+    """The C++ TSC deposit to use: the threaded one unless switched off
+    (LINAC_GEN_TSC_DEPOSIT_PLANES=0) or absent; the same bits either way."""
+    if (_cpp_deposit_tsc_planes is not None
+            and os.environ.get("LINAC_GEN_TSC_DEPOSIT_PLANES", "1") != "0"):
+        return _cpp_deposit_tsc_planes
+    return _cpp_deposit_tsc
+
+
 def _deposit_tsc_dispatch(positions, charges, grid_min, grid_max, n_grid):
     if _cpp_tsc_ok(positions, grid_min, grid_max, n_grid):
         q = np.broadcast_to(np.asarray(charges, dtype=np.float64),
                             (positions.shape[0],))
-        rho = _cpp_deposit_tsc(positions, q, grid_min, grid_max, n_grid)
+        rho = _cpp_tsc_deposit_kernel()(positions, q, grid_min, grid_max,
+                                        n_grid)
         if rho is not None:
             return rho
     return _py_deposit_tsc(positions, charges, grid_min, grid_max, n_grid)

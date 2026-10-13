@@ -52,6 +52,29 @@ threading add `-Xpreprocessor -fopenmp -I"$(brew --prefix libomp)/include"`
 as for `_tsc_kernels` below; `_openmp_enabled` reports the build.  Kill
 switch: `LINAC_GEN_FIELDMAP_STEP=0` (the numpy step; the sampler stays).
 
+`fm1d_step` is the particle part of one `FieldMap.track_rk4` slice for maps
+whose every channel is 1-D on axis (geometry 1).  It follows that numpy
+code, not `kd_step`, which differs in three places: the field is scaled as
+`(scale * phasor) * F`, the damping denominator is `ref.beta ** 2 *
+ref.gamma * mass` (computed in Python and passed in), and the Lorentz kick
+reads x' and y' after the damping.  numpy still computes the phasors,
+`r = hypot(x, y)` and the on-axis samples `Fz` and `dFz/dz` (`np.interp`
+of the map and of `np.gradient` of it); the kernel adds the channels in
+the map's order from +0.0, forms `Fr = (-0.5 * r) * dFz/dz` and
+`Fr * (x / safe_r)` with numpy's two comparisons (`r > 1e-12` for
+`safe_r`, `r < 1e-12` for the zeroed field), then applies the energy
+kick, damping, slip, Lorentz kick and drift.  Particles are independent,
+so it is threaded over them, on about sqrt(n / 1500) threads
+(`helix::team_for`, `team_particles`: a thread costs a fixed time to start
+in every region, so the best team grows as the square root of the work;
+the envelope's twelve probes stay on the calling thread), every thread in
+the caller's floating-point environment (`helix::FpEnv`).
+`tests/elements/test_fieldmap1d_step.py` pins it with raw-bit comparisons
+(electric, static and RF magnetic channels, several at once, r = 0 and
+r = 1e-12, lost and non-finite particles, a frequency jump, `p_flag = 1`,
+the envelope's matrices, 1/2/7/14 threads).  Kill switch:
+`LINAC_GEN_FIELDMAP1D_KERNEL=0`.
+
 ## TSC deposit/gather twin (`_tsc_kernels`)
 
 Same direct compile, with the source and module name swapped:
@@ -75,10 +98,37 @@ threaded.
 The kernel is bit-identical to the Python TSC kernels
 (`linac_gen/pic/charge_deposition.py`, `field_interpolation.py`): same
 expressions, the deposit sums every cell in `np.add.at` order (27 offset
-passes, single-threaded), the gather is threaded over particles only
-(disjoint writes), and `-ffp-contract=off` forbids FMA re-rounding.
-`tests/pic/test_tsc_kernels_cpp.py` pins this with `np.array_equal`,
-including a thread-count comparison.
+passes, particles in index order inside a pass), the gather is threaded
+over particles only (disjoint writes), and `-ffp-contract=off` forbids FMA
+re-rounding.  `deposit_tsc` does the deposit in one loop on one thread;
+`deposit_tsc_planes` (what `linac_gen.pic.pic_solver` uses) runs it on the
+thread setting, each thread owning whole x-planes: a stable counting sort
+buckets the particles by x-cell, and plane X adds, for pass a, the bucket
+X+1−a, so every cell gets its terms in the same order and the bits do not
+depend on the thread count.  It takes the memory `deposit_tsc` takes (96
+bytes per particle), uses about sqrt(N / 700) threads (`team_particles`,
+`helix::team_for`: the best teams measured on a 14-core Mac were 2 at 2k
+particles, 4 at 5k-20k, 8 at 50k, 14 at 200k), on one thread runs
+`deposit_tsc` itself, and hands the caller's floating-point
+environment (rounding mode, flush-to-zero) to its threads (`helix::FpEnv`
+in `helix_threads.h`; libomp copies it on x86 only).
+`LINAC_GEN_TSC_DEPOSIT_PLANES=0`, or a module built before it, keeps
+`deposit_tsc`.  `tests/pic/test_tsc_kernels_cpp.py` pins all of it with
+raw-bit comparisons at 1–32 threads, including golden values the
+one-thread kernel wrote (`tests/pic/fixtures/tsc_deposit_golden.npz`).
+
+The same module holds `field_from_potential`, the Poisson solve's field
+E = -grad(phi) (`linac_gen.pic.poisson_solver._field_from_potential`) bit
+for bit: `-(phi[i+1] - phi[i-1]) / (2.0 * d)` inside and the one-sided
+`/ d` differences on the boundary planes, per axis, on a possibly strided
+phi (the padded potential's corner), into fresh C-contiguous arrays,
+threaded over x-planes on about sqrt(points / 7000) threads (`team_points`;
+every value is computed on its own), in the caller's floating-point
+environment.  It returns None -- numpy then computes the same values and
+warns or raises as before -- for an axis of fewer than 2 nodes or when a
+thread raised a floating-point exception numpy reports (invalid,
+divide-by-zero, overflow, underflow).  `LINAC_GEN_LEAN_SOLVE=0` keeps numpy;
+`tests/pic/test_lean_solve.py` pins it.
 
 The identity is proven inside an envelope.  `linac_gen.pic.pic_solver`
 sends the kernel only float64 `(N, 3)` positions with `N > 0`, float64

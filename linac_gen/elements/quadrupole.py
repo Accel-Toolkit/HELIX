@@ -4,7 +4,7 @@ import math
 from linac_gen.elements.base import TransferMapElement
 from linac_gen.elements.mixins import Misalignment, FieldError
 from linac_gen.core.reference import ReferenceParticle
-from linac_gen.core.beam import Beam
+from linac_gen.core.beam import Beam, transport_alive
 
 
 def _transverse_rotation(theta_rad: float) -> np.ndarray:
@@ -133,8 +133,7 @@ class Quadrupole(TransferMapElement, Misalignment, FieldError):
         # No-op when all of g3..g6 are zero (the common case).
         self._apply_higher_multipole_kick(beam, ds_slice=L, fraction=0.5)
         M = self.transfer_matrix(beam.ref, ds=L)
-        alive = beam.alive_mask
-        beam.particles[alive] = (M @ beam.particles[alive].T).T
+        transport_alive(beam, M)
         self._apply_higher_multipole_kick(beam, ds_slice=L, fraction=0.5)
 
     def _apply_higher_multipole_kick(self, beam: Beam,

@@ -30,6 +30,8 @@ the ``LINAC_GEN_USE_GPU`` env var.  The FFT of the Green's function is
 cached on the chosen device, so only ρ and Ex/Ey/Ez cross the host/device
 boundary per solve.
 """
+import os
+import sys
 import threading
 
 import numpy as np
@@ -319,9 +321,56 @@ def _guarded_copy(a: np.ndarray) -> np.ndarray:
     return view
 
 
+def _lean_solve() -> bool:
+    """The solve without its redundant work, the same bits: the padded charge
+    buffer is not zeroed again (only its charge block is ever written -- in
+    solve and solve_device -- and no backend's forward FFT writes its input,
+    so the rest keeps the +0.0 it was allocated with), the inverse FFT works
+    in place on the spectrum, which solve gives up, and on the CPU the FFTs
+    are pruned (fft_split.rfftn_padded, irfftn_corner) and the field
+    differences run in the compiled kernel (_field_kernel).
+    LINAC_GEN_LEAN_SOLVE=0 restores the old path; LINAC_GEN_PRUNED_FFT=0
+    alone keeps the full transforms."""
+    return os.environ.get("LINAC_GEN_LEAN_SOLVE", "1") != "0"
+
+
+_FIELD_KERNEL = None        # linac_gen._tsc_kernels.field_from_potential
+
+
+def _field_kernel():
+    """The compiled field differences (bit for bit the numpy code below, on
+    HELIX's threads), looked up at first use, or None: no module, or one
+    built before it.  torch is never imported for it: on macOS the kernel
+    binds the OpenMP runtime torch loads, so until something has imported
+    torch (a PIC run's solver does) the numpy code runs and the lookup is
+    tried again at the next call."""
+    global _FIELD_KERNEL
+    kernel = _FIELD_KERNEL
+    if kernel is None:
+        if sys.platform == "darwin" and "torch" not in sys.modules:
+            return None
+        try:
+            from linac_gen._tsc_kernels import field_from_potential as kernel
+        except ImportError:
+            kernel = False
+        else:
+            from linac_gen.parallel.threads import sync_kernels
+            sync_kernels()
+        _FIELD_KERNEL = kernel
+    return kernel or None
+
+
 def _field_from_potential(phi, dx, dy, dz, xp):
     """E = -grad(phi): central differences inside, one-sided on the
-    boundary planes (``xp``: numpy, or the device's array module)."""
+    boundary planes (``xp``: numpy, or the device's array module).  On the
+    CPU the compiled kernel does it (see _field_kernel and _lean_solve)."""
+    if xp is np and _lean_solve():
+        kernel = _field_kernel()
+        if (kernel is not None and isinstance(phi, np.ndarray)
+                and phi.dtype == np.float64 and phi.ndim == 3):
+            fields = kernel(phi, float(dx), float(dy), float(dz))
+            if fields is not None:
+                return fields
     Ex = xp.zeros_like(phi)
     Ey = xp.zeros_like(phi)
     Ez = xp.zeros_like(phi)
@@ -617,16 +666,28 @@ class PoissonSolverFFT:
         # first solve so the shape is known; reused on subsequent solves to
         # avoid the per-kick host alloc + H→D copy.  Shape is fixed by config.
         xp = self._backend.xp
-        if self._rho_padded is None:
-            self._rho_padded = xp.zeros((2 * nx, 2 * ny, 2 * nz), dtype=xp.float64)
-        else:
+        shape = (2 * nx, 2 * ny, 2 * nz)
+        lean = _lean_solve()
+        if (self._rho_padded is None
+                or tuple(self._rho_padded.shape) != shape):
+            self._rho_padded = xp.zeros(shape, dtype=xp.float64)
+        elif not lean:
             self._rho_padded.fill(0.0)
         rho_dev = self._backend.to_device(rho * cell_vol)  # (nx, ny, nz) → device
         self._rho_padded[:nx, :ny, :nz] = rho_dev
 
         # Convolution via FFT on the chosen backend.  Green's-function FFT
         # is pre-cached on device so only rho / phi cross the H↔D boundary.
-        spectrum = self._backend.rfftn(self._rho_padded)
+        # On the CPU the pair is pruned where it applies (the lines of zeros
+        # and the unread lines skipped, the same bits: fft_split), the
+        # inverse then giving an array whose corner is the potential.
+        corner = (nx, ny, nz)
+        spectrum = None
+        if lean and hasattr(self._backend, "rfftn_padded"):
+            spectrum = self._backend.rfftn_padded(self._rho_padded, corner)
+        pruned = spectrum is not None
+        if not pruned:
+            spectrum = self._backend.rfftn(self._rho_padded)
         if isinstance(spectrum, np.ndarray):
             # In place: no third array is allocated beside the two inputs,
             # and the guarded spectrum (see _precompute_greens_fft) keeps the
@@ -634,7 +695,12 @@ class PoissonSolverFFT:
             np.multiply(spectrum, self._G_fft, out=spectrum)
         else:
             spectrum = spectrum * self._G_fft
-        phi_dev = self._backend.irfftn(spectrum, s=(2 * nx, 2 * ny, 2 * nz))
+        phi_dev = None
+        if pruned:
+            phi_dev = self._backend.irfftn_corner(spectrum, shape, corner,
+                                                  overwrite_x=True)
+        if phi_dev is None:
+            phi_dev = self._backend.irfftn(spectrum, s=shape, overwrite_x=lean)
         del spectrum
         phi_padded = self._backend.to_host(phi_dev)
 
@@ -652,10 +718,12 @@ class PoissonSolverFFT:
         dx, dy, dz = self.dx
         cell_vol = dx * dy * dz
         xp = self._backend.xp
-        if self._rho_padded is None:
-            self._rho_padded = xp.zeros((2 * nx, 2 * ny, 2 * nz),
-                                        dtype=xp.float64)
-        else:
+        shape = (2 * nx, 2 * ny, 2 * nz)
+        lean = _lean_solve()
+        if (self._rho_padded is None
+                or tuple(self._rho_padded.shape) != shape):
+            self._rho_padded = xp.zeros(shape, dtype=xp.float64)
+        elif not lean:
             self._rho_padded.fill(0.0)
         self._rho_padded[:nx, :ny, :nz] = rho_dev * cell_vol
         spectrum = self._backend.rfftn(self._rho_padded)
@@ -663,7 +731,7 @@ class PoissonSolverFFT:
             np.multiply(spectrum, self._G_fft, out=spectrum)
         else:
             spectrum = spectrum * self._G_fft
-        phi_padded = self._backend.irfftn(spectrum, s=(2 * nx, 2 * ny, 2 * nz))
+        phi_padded = self._backend.irfftn(spectrum, s=shape, overwrite_x=lean)
         del spectrum
         return _field_from_potential(phi_padded[:nx, :ny, :nz], dx, dy, dz,
                                      xp)

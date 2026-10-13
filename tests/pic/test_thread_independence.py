@@ -1,9 +1,10 @@
 """A whole space-charge run gives the same bits for any thread count, on the
 main thread (as the CLI runs it) and in a worker thread (as the GUI does):
-the CIC deposit (one-thread loop vs parallel planes), the CIC and TSC
-gathers, the FFT (one scipy call on one thread, the split on more, on a grid
-large enough to split) and the torch space-charge engine (torch on one
-thread during runs)."""
+the CIC deposit (one-thread loop vs parallel planes), the TSC deposit (the
+same, at most one thread per 1024 particles), the CIC and TSC gathers, the
+FFT (one scipy call on one thread, the split on more, on a grid large enough
+to split; the solve's pruned pair) and the torch space-charge engine (torch
+on one thread during runs)."""
 from __future__ import annotations
 
 import threading
@@ -62,22 +63,30 @@ CASES = {
 def test_numpy_engine(case, monkeypatch):
     assert (64 ** 3) >= fft_split.MIN_POINTS
     split_calls = []
-    real = fft_split.rfftn
+    real, real_padded = fft_split.rfftn, fft_split.rfftn_padded
 
     def spy(x, workers):
         split_calls.append((x.size, workers))
         return real(x, workers)
+
+    def spy_padded(x, corner, workers):     # the solve's pruned transform
+        split_calls.append((x.size, workers))
+        return real_padded(x, corner, workers)
     monkeypatch.setattr(fft_split, "rfftn", spy)
+    monkeypatch.setattr(fft_split, "rfftn_padded", spy_padded)
     monkeypatch.delenv("LINAC_GEN_FFT_WORKERS", raising=False)
     with kept_thread_setting() as threads:
         one = _run(CASES[case], 1, False, threads)
         assert split_calls and all(w == 1 for _, w in split_calls)
         n = len(split_calls)
+        # the setting, at most about sqrt(points / FFT_TEAM_POINTS) threads
         four = _run(CASES[case], 4, True, threads)
-        assert all(w == 4 for _, w in split_calls[n:])
+        assert all(w == min(4, threads.fft_threads(size))
+                   for size, w in split_calls[n:])
         n = len(split_calls)
         every = _run(CASES[case], "all", False, threads)    # main thread too
-        assert all(w == threads.available_threads() for _, w in split_calls[n:])
+        assert all(w == min(threads.available_threads(), threads.fft_threads(size))
+                   for size, w in split_calls[n:])
     assert one[2]["threads"] == 1 and four[2]["threads"] == 4
     _same(one, four)
     _same(one, every)

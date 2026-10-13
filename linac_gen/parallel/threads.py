@@ -3,10 +3,9 @@
 The setting is the number of threads for
 
 * the space-charge FFT (:class:`linac_gen.pic.gpu_backend._CpuBackend`),
-* the compiled kernels' OpenMP loops -- the CIC charge deposit, the CIC and
-  TSC field gathers, the field-map sampler and kick-drift step
-  (``_pic_kernels``, ``_tsc_kernels``, ``_fieldmap_kernels``; the TSC
-  deposit runs on one thread).
+* the compiled kernels' OpenMP loops -- the CIC and TSC charge deposits and
+  field gathers, the field-map sampler and the kick-drift steps of 3-D and
+  1-D maps (``_pic_kernels``, ``_tsc_kernels``, ``_fieldmap_kernels``).
 
 torch's own CPU work (the torch space-charge engine, ML surrogates, the
 gradient, Bayesian and qNEHVI optimisers) stays on one thread while a run
@@ -29,10 +28,12 @@ its duration (:func:`run_scope`).
 
 Every result is the same for any thread count: the FFT gives scipy's
 one-thread result (linac_gen.pic.fft_split), the gathers and the field-map
-step compute each particle on its own, the CIC deposit sums every cell in
-particle order and the TSC deposit runs on one thread
-(tests/pic/test_deposit_threads.py, tests/pic/test_fft_split.py,
-tests/pic/test_thread_independence.py, tests/elements/test_fieldmap_step.py).
+step compute each particle on its own, and the CIC and TSC deposits sum
+every cell in the order of their one-thread loops
+(tests/pic/test_deposit_threads.py, tests/pic/test_tsc_kernels_cpp.py,
+tests/pic/test_fft_split.py,
+tests/pic/test_thread_independence.py, tests/elements/test_fieldmap_step.py,
+tests/elements/test_fieldmap1d_step.py).
 
 Where the number comes from, first match wins: :func:`set_threads` (the GUI
 "CPU threads" control, the CLI ``--threads`` option, scripts), the
@@ -45,6 +46,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import logging
+import math
 import os
 import sys
 import threading
@@ -172,10 +174,20 @@ def requested_threads() -> int | None:
     return _from_environment()[1]
 
 
-def fft_threads() -> int:
+#: A CPU FFT of P grid points uses at most about sqrt(P / FFT_TEAM_POINTS)
+#: threads of the setting: every thread costs a fixed time in each of the
+#: transform's passes, so the best count grows as the square root of the
+#: size (measured on a 14-core Mac, 2026-10-12: a solve on a 48^3 grid is
+#: fastest on 4 FFT threads, 2.3 ms, against 3.1 ms on 14; 10 at 80^3).
+FFT_TEAM_POINTS = 50_000
+
+
+def fft_threads(points: int | None = None) -> int:
     """Threads for a CPU FFT: ``LINAC_GEN_FFT_WORKERS`` when set (scipy's
-    convention, -1 = every CPU), else the setting.  (Off the main thread a
-    transform smaller than ``fft_split.MIN_POINTS`` runs on one.)"""
+    convention, -1 = every CPU), else the setting -- for a transform of
+    ``points`` grid points at most about sqrt(points / FFT_TEAM_POINTS) of
+    them.  (A transform smaller than ``fft_split.MIN_POINTS`` runs on one.)
+    The thread count never changes a result (linac_gen.pic.fft_split)."""
     raw = os.environ.get("LINAC_GEN_FFT_WORKERS")
     if raw:
         try:
@@ -186,7 +198,11 @@ def fft_threads() -> int:
             return n
         if n < 0:
             return max(1, (os.cpu_count() or 1) + 1 + n)
-    return get_threads()
+    n = get_threads()
+    if points is not None:
+        team = int(math.sqrt(max(int(points), 0) / FFT_TEAM_POINTS) + 0.5)
+        n = max(1, min(n, team))
+    return n
 
 
 def set_threads(value="all") -> int:

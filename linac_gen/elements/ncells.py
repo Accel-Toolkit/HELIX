@@ -36,6 +36,7 @@ import numpy as np
 
 from linac_gen.core.constants import C_LIGHT
 from linac_gen.elements.base import FieldMapElement
+from linac_gen.core.beam import transport_alive
 
 
 # --------------------------------------------------------------------------- #
@@ -550,9 +551,8 @@ class NCells(FieldMapElement):
         ref = beam.ref
         M = self._drift_matrix(ref, L_mm)
         self._ref_drift(ref, L_mm)
-        alive = beam.alive_mask
-        if np.any(alive):
-            beam.particles[alive] = (M @ beam.particles[alive].T).T
+        if np.any(beam.alive_mask):
+            transport_alive(beam, M)
 
     # ------------------------------------------------------------------ #
     # Geometric synchronism factor (TraceWin-internal T(β), 2026-07-21)

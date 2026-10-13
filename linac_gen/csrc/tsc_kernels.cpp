@@ -14,8 +14,10 @@
 //       contribution = ((wx*wy)*wz)*q ;  rho /= cell_vol at the end
 //   * the deposit sums each cell in np.add.at order: 27 offset passes
 //     (di, dj, dk each -1, 0, +1, nested as in Python), particles in index
-//     order inside a pass.  Single-threaded by design, so the result does not
-//     depend on the OpenMP thread count;
+//     order inside a pass.  deposit_tsc does it in one loop on one thread;
+//     deposit_tsc_planes on HELIX's threads, each owning whole x-planes and
+//     adding every cell's terms in that same order, so the result does not
+//     depend on the thread count (deposit_tsc stays as its reference);
 //   * the gather sums the 27 terms per particle from 0.0 in the same order
 //     (parallel over particles: disjoint writes, so bit-safe);
 //   * no FMA contraction: built with -ffp-contract=off (Unix) or /fp:precise
@@ -33,6 +35,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <vector>
 
@@ -154,6 +157,293 @@ py::object deposit_tsc_cpp(arr_d positions, arr_d charges, arr_d grid_min,
                 }
     for (size_t c = 0; c < cells; ++c) rho[c] /= cell_vol;
     return result;
+}
+
+
+// deposit_tsc_planes_cpp's team: about sqrt(N / kTeamParticles) threads
+// (helix::team_for; the best teams measured on a 14-core Mac, 2026-10-12:
+// 2 threads at 2k particles, 4 at 5k-20k, 8 at 50k, 14 at 200k).  Any team
+// gives the same bits; this only sets the speed.
+constexpr double kTeamParticles = 700.0;
+
+// One particle's deposit inputs, in bucket order (deposit_tsc_planes_cpp).
+struct Sorted {
+    double wx[3], wy[3], wz[3], q;
+    int64_t iy, iz;
+};
+
+// deposit_tsc_cpp on HELIX's threads, with its bits.  Every cell gets the same
+// terms in the same order: pass (a, b, d) outermost in np.add.at order, the
+// particles of a pass in index order.  A particle with base x-cell i reaches
+// plane i - 1 + a in pass a only, so plane X takes, for a = 0, 1, 2, the
+// particles of bucket X + 1 - a (a stable counting sort keeps index order in a
+// bucket), then b, then d, then those particles.  Planes are owned by one
+// thread each: no cell is shared, and no thread count changes the result.
+// Memory: one Sorted (96 bytes) per particle -- what deposit_tsc_cpp's arrays
+// take -- left uninitialised until the parallel loops fill it; a particle's
+// cells and weights are computed twice (to count it, then to place it), by
+// the same functions, so with the same bits.  Every allocation happens
+// before the GIL is released (a failure is a MemoryError, not a terminate),
+// and every thread computes in the caller's floating-point environment.
+// The team: helix::team_for(N, team_particles), the whole setting for
+// team_particles <= 0; one thread runs deposit_tsc_cpp itself, which is
+// faster there.
+py::object deposit_tsc_planes_cpp(arr_d positions, arr_d charges, arr_d grid_min,
+                                  arr_d grid_max, arr_i n_grid,
+                                  double team_particles) {
+    check_grid(positions, grid_min, grid_max, n_grid);
+    if (charges.ndim() != 1 || charges.shape(0) != positions.shape(0))
+        throw std::invalid_argument("charges must have shape (N,)");
+    const int nc = helix::team_for(static_cast<double>(positions.shape(0)),
+                                   team_particles);
+    if (nc <= 1)
+        return deposit_tsc_cpp(positions, charges, grid_min, grid_max, n_grid);
+    auto pos = positions.unchecked<2>();
+    auto q = charges.unchecked<1>();
+    const double* gmin = grid_min.data();
+    const double* gmax = grid_max.data();
+    const int64_t* ng = n_grid.data();
+    const Axis ax = axis(gmin, gmax, ng, 0), ay = axis(gmin, gmax, ng, 1), az = axis(gmin, gmax, ng, 2);
+    const int64_t nx = ng[0], ny = ng[1], nz = ng[2];
+    const int64_t N = pos.shape(0);
+    const double cell_vol = ax.dx * ay.dx * az.dx;
+    const size_t plane = static_cast<size_t>(ny) * nz;
+
+    py::array_t<double> result({nx, ny, nz});
+    double* rho = result.mutable_data();
+    std::unique_ptr<Sorted[]> ps(new Sorted[static_cast<size_t>(N)]);
+    std::vector<int64_t> start(static_cast<size_t>(nx) + 1, 0);
+    // per chunk and base x-cell: the count, then the next free slot; and the
+    // end of that chunk's part of the bucket
+    std::vector<int64_t> slot(static_cast<size_t>(nc) * nx, 0);
+    std::vector<int64_t> limit(static_cast<size_t>(nc) * nx, 0);
+    // planes for each thread, heaviest first to the least loaded (any
+    // assignment gives the same bits: a plane's sums are its own)
+    std::vector<int64_t> work(static_cast<size_t>(nx), 0);
+    std::vector<int64_t> plane_order(static_cast<size_t>(nx));
+    std::vector<int64_t> load(static_cast<size_t>(nc), 0);
+    std::vector<int> owner(static_cast<size_t>(nx), 0);
+    const auto heavier = [&work](int64_t u, int64_t v) {
+        return work[u] > work[v] || (work[u] == work[v] && u < v);
+    };
+    const helix::FpEnv fpenv;           // the caller's, for every thread
+    int declined = 0;
+    {
+        py::gil_scoped_release release;
+#ifdef _OPENMP
+        #pragma omp parallel num_threads(nc)
+#endif
+        {
+            const helix::FpEnv::Use use_fpenv(fpenv);
+#ifdef _OPENMP
+            const int tid = omp_get_thread_num();
+            const int team = omp_get_num_threads();
+#else
+            const int tid = 0, team = 1;
+#endif
+            // Chunk t (particles N*t/team .. N*(t+1)/team - 1) counts its
+            // particles per base x-cell, and finds any outside the envelope.
+#ifdef _OPENMP
+            #pragma omp for schedule(static) reduction(|:declined)
+#endif
+            for (int t = 0; t < team; ++t) {
+                const int64_t a = N * t / team, b = N * (t + 1) / team;
+                int64_t* cnt = &slot[static_cast<size_t>(t) * nx];
+                for (int64_t p = a; p < b; ++p) {
+                    int64_t i, j, k;
+                    double fx, fy, fz;
+                    if (!locate(pos(p, 0), ax, i, fx) || !locate(pos(p, 1), ay, j, fy)
+                            || !locate(pos(p, 2), az, k, fz)) {
+                        declined |= 1;                 // outside the envelope
+                        break;
+                    }
+                    cnt[i]++;
+                }
+            }
+            // (the loop's barrier makes `declined` final for every thread)
+            if (!declined) {
+                // Buckets laid out cell-major then chunk-minor, so a bucket
+                // holds its particles in index order (as deposit_torch_cpp).
+#ifdef _OPENMP
+                #pragma omp single
+#endif
+                {
+                    int64_t run = 0;
+                    for (int64_t x = 0; x < nx; ++x) {
+                        start[x] = run;
+                        for (int t = 0; t < team; ++t) {
+                            int64_t& sl = slot[static_cast<size_t>(t) * nx + x];
+                            const int64_t c = sl;
+                            sl = run;
+                            run += c;
+                        }
+                    }
+                    start[nx] = run;
+                    for (int t = 0; t < team; ++t)
+                        for (int64_t x = 0; x < nx; ++x)
+                            limit[static_cast<size_t>(t) * nx + x] =
+                                t + 1 < team ? slot[static_cast<size_t>(t + 1) * nx + x]
+                                             : start[x + 1];
+                    // plane X reads buckets X-1, X, X+1 (bucket = base cell)
+                    for (int64_t x = 0; x < nx; ++x) {
+                        for (int a = 0; a < 3; ++a) {
+                            const int64_t base = x + 1 - a;
+                            if (base >= 0 && base < nx)
+                                work[x] += start[base + 1] - start[base];
+                        }
+                        plane_order[x] = x;
+                    }
+                    std::sort(plane_order.begin(), plane_order.end(), heavier);
+                    for (int64_t k = 0; k < nx; ++k) {
+                        const int64_t x = plane_order[k];
+                        int best = 0;
+                        for (int t = 1; t < team; ++t)
+                            if (load[t] < load[best]) best = t;
+                        owner[x] = best;
+                        load[best] += work[x] + 1;
+                    }
+                }
+                // Chunk t places its particles' weights, cells and charges in
+                // their slots, so each plane reads its buckets from contiguous
+                // memory (the values, and each bucket's index order, as is).
+                // The checks only fail if the positions changed since they
+                // were counted (another thread writing them while the GIL is
+                // released): the call then returns None, as for a decline,
+                // instead of writing outside a bucket.
+#ifdef _OPENMP
+                #pragma omp for schedule(static) reduction(|:declined)
+#endif
+                for (int t = 0; t < team; ++t) {
+                    const int64_t a = N * t / team, b = N * (t + 1) / team;
+                    int64_t* sl = &slot[static_cast<size_t>(t) * nx];
+                    const int64_t* lim = &limit[static_cast<size_t>(t) * nx];
+                    for (int64_t p = a; p < b; ++p) {
+                        int64_t i, j, k;
+                        double fx, fy, fz;
+                        if (!locate(pos(p, 0), ax, i, fx) || !locate(pos(p, 1), ay, j, fy)
+                                || !locate(pos(p, 2), az, k, fz) || sl[i] >= lim[i]) {
+                            declined |= 1;
+                            break;
+                        }
+                        Sorted& o = ps[static_cast<size_t>(sl[i]++)];
+                        weights(fx, o.wx);
+                        weights(fy, o.wy);
+                        weights(fz, o.wz);
+                        o.q = q(p);
+                        o.iy = j;
+                        o.iz = k;
+                    }
+                }
+            }
+            // (again final for every thread: every slot is filled unless set)
+            if (!declined) {
+                // Each thread its own planes; no cell is shared.
+                for (int64_t X = 0; X < nx; ++X) {
+                    if (owner[X] != tid) continue;
+                    double* pl = rho + static_cast<size_t>(X) * plane;
+                    for (size_t c = 0; c < plane; ++c) pl[c] = 0.0;
+                    for (int a = 0; a < 3; ++a) {
+                        const int64_t base = X + 1 - a;
+                        if (base < 0 || base >= nx) continue;
+                        const Sorted* b0 = ps.get() + start[base];
+                        const Sorted* b1 = ps.get() + start[base + 1];
+                        for (int b = 0; b < 3; ++b)
+                            for (int d = 0; d < 3; ++d)
+                                for (const Sorted* o = b0; o < b1; ++o) {
+                                    const double w = o->wx[a] * o->wy[b] * o->wz[d] * o->q;
+                                    const size_t idx = static_cast<size_t>(o->iy - 1 + b) * nz
+                                                       + static_cast<size_t>(o->iz - 1 + d);
+                                    pl[idx] += w;
+                                }
+                    }
+                    for (size_t c = 0; c < plane; ++c) pl[c] /= cell_vol;
+                }
+            }
+        }
+    }
+    if (declined) return py::none();
+    return result;
+}
+
+
+// E = -grad(phi) as linac_gen.pic.poisson_solver._field_from_potential
+// computes it, bit for bit: along each axis -(phi[i+1] - phi[i-1]) / (2.0 * d)
+// inside, -(phi[1] - phi[0]) / d and -(phi[n-1] - phi[n-2]) / d on the two
+// boundary planes -- the difference, its negation, then the division, as
+// numpy does them (an axis of 2 nodes has only the boundary planes).  phi may
+// be a strided view (solve passes the corner of the padded potential); the
+// three results are fresh C-contiguous arrays with every element written.
+// None when an axis has fewer than 2 nodes (numpy raises IndexError there)
+// or when any thread raised a floating-point exception that numpy reports
+// (invalid, divide-by-zero, overflow, underflow): numpy then recomputes the
+// same values and warns or raises as the caller's numpy.errstate says.
+// Each element is computed on its own, so threading over x-planes gives the
+// same bits at any thread count; every thread computes in the caller's
+// floating-point environment.
+py::object field_from_potential_cpp(py::array_t<double> phi_in, double dx,
+                                    double dy, double dz, double team_points) {
+    if (phi_in.ndim() != 3)
+        throw std::invalid_argument("phi must be a 3-D array");
+    const int64_t nx = phi_in.shape(0), ny = phi_in.shape(1), nz = phi_in.shape(2);
+    if (nx < 2 || ny < 2 || nz < 2) return py::none();
+    auto phi = phi_in.unchecked<3>();
+    py::array_t<double> ex({nx, ny, nz}), ey({nx, ny, nz}), ez({nx, ny, nz});
+    double* Ex = ex.mutable_data();
+    double* Ey = ey.mutable_data();
+    double* Ez = ez.mutable_data();
+    const double tdx = 2.0 * dx, tdy = 2.0 * dy, tdz = 2.0 * dz;
+    const helix::FpEnv fpenv;           // the caller's, for every thread
+    // about sqrt(points / team_points) threads (helix::team_for; with the
+    // default 7000 the best teams measured on a 14-core Mac: 1 at 24^3, 2 at
+    // 32^3, 4 at 40^3-48^3, 8 at 64^3)
+    const int team = helix::team_for(static_cast<double>(nx) * ny * nz,
+                                     team_points);
+    int raised = 0;
+    {
+        py::gil_scoped_release release;
+#ifdef _OPENMP
+        #pragma omp parallel num_threads(team) if(team > 1) reduction(|:raised)
+#endif
+        {
+        const helix::FpEnv::Use use_fpenv(fpenv);
+        std::feclearexcept(FE_ALL_EXCEPT);
+#ifdef _OPENMP
+        #pragma omp for schedule(static)
+#endif
+        for (int64_t i = 0; i < nx; ++i) {
+            // the two nodes and the divisor of this x-plane
+            const bool xb = (i == 0 || i == nx - 1);
+            const int64_t ip = i == 0 ? 1 : (i == nx - 1 ? nx - 1 : i + 1);
+            const int64_t im = i == 0 ? 0 : (i == nx - 1 ? nx - 2 : i - 1);
+            const double divx = xb ? dx : tdx;
+            for (int64_t j = 0; j < ny; ++j) {
+                const bool yb = (j == 0 || j == ny - 1);
+                const int64_t jp = j == 0 ? 1 : (j == ny - 1 ? ny - 1 : j + 1);
+                const int64_t jm = j == 0 ? 0 : (j == ny - 1 ? ny - 2 : j - 1);
+                const double divy = yb ? dy : tdy;
+                const size_t row = (static_cast<size_t>(i) * ny + j) * nz;
+                double* ox = Ex + row;
+                double* oy = Ey + row;
+                double* oz = Ez + row;
+                for (int64_t k = 0; k < nz; ++k)
+                    ox[k] = -(phi(ip, j, k) - phi(im, j, k)) / divx;
+                for (int64_t k = 0; k < nz; ++k)
+                    oy[k] = -(phi(i, jp, k) - phi(i, jm, k)) / divy;
+                oz[0] = -(phi(i, j, 1) - phi(i, j, 0)) / dz;
+                for (int64_t k = 1; k < nz - 1; ++k)
+                    oz[k] = -(phi(i, j, k + 1) - phi(i, j, k - 1)) / tdz;
+                oz[nz - 1] = -(phi(i, j, nz - 1) - phi(i, j, nz - 2)) / dz;
+            }
+        }
+        if (std::fetestexcept(FE_INVALID | FE_DIVBYZERO | FE_OVERFLOW
+                              | FE_UNDERFLOW))
+            raised |= 1;
+        }
+    }
+    // numpy reports these (a warning, or an error under numpy.errstate):
+    // leave them to its code, whose values are these
+    if (raised) return py::none();
+    return py::make_tuple(ex, ey, ez);
 }
 
 
@@ -510,6 +800,18 @@ PYBIND11_MODULE(_tsc_kernels, m) {
           "TSC charge deposition (bit-identical to Python); None outside the envelope",
           py::arg("positions"), py::arg("charges"), py::arg("grid_min"), py::arg("grid_max"),
           py::arg("n_grid"));
+    m.def("deposit_tsc_planes", &deposit_tsc_planes_cpp,
+          "deposit_tsc on HELIX's threads (about sqrt(N / team_particles) of "
+          "them; 0: the whole setting), the same bits at any thread count; "
+          "None outside the envelope",
+          py::arg("positions"), py::arg("charges"), py::arg("grid_min"), py::arg("grid_max"),
+          py::arg("n_grid"), py::arg("team_particles") = kTeamParticles);
+    m.def("field_from_potential", &field_from_potential_cpp,
+          "(Ex, Ey, Ez) = -grad(phi) as poisson_solver._field_from_potential "
+          "computes it, bit for bit, on HELIX's threads; None when an axis has "
+          "fewer than 2 nodes",
+          py::arg("phi"), py::arg("dx"), py::arg("dy"), py::arg("dz"),
+          py::arg("team_points") = 7000.0);
     m.def("interpolate_tsc", &interpolate_tsc_cpp,
           "TSC field gather (bit-identical to Python); None outside the envelope",
           py::arg("field_x"), py::arg("field_y"), py::arg("field_z"), py::arg("positions"),
