@@ -175,7 +175,11 @@ class FailureStudy:
             apply_element_override(work, sel, val)
         if self.mode == "mp":
             sc = make_sc_config(self.beam_config, {}, {})
-            step = make_step_config({}, {})
+            # the lattice's RFQ solver choice is kept (the GUI sets it)
+            from dataclasses import replace
+            from linac_gen.core.step_config import rfq_fields
+            step = replace(make_step_config({}, {}),
+                           **rfq_fields(getattr(work, "step_config", None)))
             # run_mp_sim returns (recorder, beam) — take the recorder.
             res, _beam = run_mp_sim(work, copy.deepcopy(self.beam_config),
                                     sc, step, seed=self.seed)

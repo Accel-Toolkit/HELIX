@@ -17,10 +17,10 @@ Geometry per vane at fixed z (x-vane at +x shown; others by symmetry):
                 α ∈ [−α_max, +α_max]
 
 so P(0) is the tip and the surface curves AWAY from the axis — the
-correct convex electrode.  Electrode voltages follow the vane file
-convention (vane 1/3 on ±x at +V/2; vane 2/4 on ±y at −V/2), i.e. the
-returned normalised potential is +1 on the x-pair and −1 on the
-y-pair.
+correct convex electrode.  The returned normalised potential is +1
+on the x-pair and −1 on the y-pair — this helper's own sign convention
+(the PXIE vane file has the x-pair at −V/2 and the y-pair at +V/2; see
+``io/tracewin_vane.py`` for the pole numbering).
 
 z-registration (resolved 2026-07-30): the ``.vane`` table's own z is
 element-local with NO offset against the RFQ_CELL chain cumulative z
@@ -108,8 +108,8 @@ def vane_aperture_functions(vane, z_start_mm: float):
     default), which matches the untabulated front-gap/tail spans.
     """
     z_tab_mm = np.asarray(vane.z) * 1e3
-    a1 = np.asarray(vane.aperture_v1) * 1e3
-    a2 = np.asarray(vane.aperture_v2) * 1e3
+    a1 = np.asarray(vane.aperture_x) * 1e3      # +x pole (file pole 2)
+    a2 = np.asarray(vane.aperture_y) * 1e3      # +y pole (file pole 1)
 
     def ax(z):
         return float(np.interp(z_start_mm + z, z_tab_mm, a1))

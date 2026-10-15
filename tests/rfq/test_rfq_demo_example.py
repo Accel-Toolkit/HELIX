@@ -8,7 +8,8 @@ RFQ model with zero executable evidence that it works.
 
 `examples/rfq_demo/` is generated from textbook two-term design
 relations at parameters unlike any real machine, so it ships publicly
-and these tests always run.
+and these tests always run.  They pin the per-cell model (the default RFQ
+solver "auto" would track this RFQ in time; tests/rfq_td cover that solver).
 """
 from __future__ import annotations
 
@@ -28,6 +29,8 @@ def _run(current, space_charge, n=1200, periodic=True):
     from linac_gen.distributions.factory import create_beam
     from linac_gen.io.tracewin_parser import parse_tracewin
     lat, meta = parse_tracewin(str(DEMO / "rfq_demo.dat"))
+    import dataclasses
+    lat.step_config = dataclasses.replace(lat.step_config, rfq_solver="cells")
     cfg = BeamConfig(
         species="proton", energy=0.075, frequency=352.21, current=current,
         n_particles=n, distribution="gaussian", cutoff=4.0,

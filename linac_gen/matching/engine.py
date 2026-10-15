@@ -352,7 +352,10 @@ def _run_mp(lattice, beam_cfg: BeamConfig, *, space_charge: bool,
     elif not space_charge:
         sc_config = "off"
     if step_config is None:
-        step_config = StepConfig()
+        # default densities; the lattice's RFQ solver choice is kept
+        from linac_gen.core.step_config import rfq_fields
+        step_config = StepConfig(
+            **rfq_fields(getattr(lattice, "step_config", None)))
     # Override the beam-config's particle count for this match.
     # ``create_beam`` reads ``cfg.n_particles``; make a temporary
     # shallow copy so we don't mutate the caller's BeamConfig.

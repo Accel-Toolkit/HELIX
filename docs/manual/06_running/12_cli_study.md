@@ -39,9 +39,14 @@ Like every subcommand, `study` takes `--threads N|all`, the CPU threads for the 
 **Selectors** use the same grammar as `run --set` / `scan --vary`:
 `NAME.attr` or `@N.attr` (1-based) for element parameters, a bare
 `BeamConfig` field name for beam parameters, and
-`nx / grid_extent / step1 / step2 / drift_single_push` for numerics
-(`"numerics": {"drift_single_push": false}` keeps the sub-stepped drift
-walk for every point).
+`nx / grid_extent / step1 / step2 / drift_single_push / rfq_td_steps`
+for numerics (`"numerics": {"drift_single_push": false}` keeps the
+sub-stepped drift walk for every point; `"numerics": {"rfq_solver":
+"cells"}` tracks every point's RFQ with the per-cell model instead of
+the default `"auto"`, which uses the
+[time-domain solver](../03_elements/20_rfq_time_domain.md) whenever it
+can, and `rfq_td_steps` sets that solver's time steps per RF period).  The GUI Study tab
+passes the Numerics tab's RFQ solver the same way.
 
 **Strategies** — `oat` (one-at-a-time around per-parameter `baseline`s,
 with an all-nominal reference as run 0), `zip` (equal-length lists

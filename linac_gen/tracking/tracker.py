@@ -387,6 +387,14 @@ class Tracker:
         self._progress_callback = progress_callback
         self._should_abort = should_abort
         self.aborted = False
+        # time-domain RFQ driver (set by run() when the RFQ solver resolves
+        # to "time_domain"); None everywhere else, incl. direct
+        # _track_element callers
+        self._rfq_td = None
+        # (solver, note) when the caller already resolved StepConfig.
+        # rfq_solver (Simulation does, before arming the vane profile);
+        # None: run() resolves it
+        self.rfq_solver_resolved = None
         # ``TrackState`` carries run-time state (energy, phase shift, sync
         # mode, error cutoff) that ``LatticeCommand.apply_command`` mutates
         # at its position in the lattice.  Bind to the live beam ref so
@@ -457,6 +465,26 @@ class Tracker:
         if self.pic_solver is None \
                 and not getattr(self.beam, "continuous", False):
             self._warn_if_sc_missing("from the start of the run")
+        # the step settings this run uses (provenance: the live lattice's
+        # can change before the results are written)
+        self.recorder.step_config = getattr(self.lattice, "step_config", None)
+        # RFQ solver (StepConfig.rfq_solver, "auto" resolved): the
+        # time-domain driver validates before anything is tracked
+        self._rfq_td = None
+        from linac_gen.elements.rfq_cell import RfqCell
+        if any(isinstance(e, RfqCell) for e in self.lattice.elements):
+            from linac_gen.rfq_td.chain import resolve_rfq_solver
+            used, note = (self.rfq_solver_resolved
+                          or resolve_rfq_solver(self.lattice, self.beam,
+                                                self._element_entry_hook,
+                                                self._element_exit_hook))
+            if used == "time_domain":
+                from linac_gen.rfq_td.chain import RfqTdDriver
+                self._rfq_td = RfqTdDriver(self)
+            # provenance: what tracked the RFQ, and why "auto" did not
+            # pick the time-domain solver
+            self.recorder.rfq_solver_used = used
+            self.recorder.rfq_solver_note = note
         # Record initial state
         self.recorder.record(self.beam, self.beam.ref.s, element_name="INPUT")
         n_el = len(self.lattice.elements)
@@ -476,6 +504,9 @@ class Tracker:
             if self._should_abort is not None and self._should_abort():
                 self.aborted = True
                 return self.recorder
+            if self._rfq_td is not None and self._rfq_td.owns(element):
+                self._rfq_td.note_entry(
+                    element, getattr(self.beam, "continuous", False))
             # DC → bunched transition: the first RF bunching element seen
             # by a continuous beam flips the flag.  From this element on,
             # SC dispatches to the normal PIC path and longitudinal
@@ -512,7 +543,14 @@ class Tracker:
                 _kk = self._hom_kick_map.get(i)
                 if _kk is not None:
                     self._apply_train_hom_kick(*_kk)
-            self._track_element(element)
+            try:
+                self._track_element(element)
+            except Exception as exc:
+                from linac_gen.rfq_td.tracker import Aborted
+                if isinstance(exc, Aborted):
+                    self.aborted = True
+                    return self.recorder
+                raise
             if self._element_exit_hook is not None:
                 self._element_exit_hook(element, i, self.beam)
             if self._pending_bunch_train:
@@ -539,7 +577,9 @@ class Tracker:
                     # Progress hook failures must never break the run.
                     pass
             # When _record_substeps is on, drifts / field maps already
-            # recorded their end state; avoid logging a duplicate row.
+            # recorded their end state (a time-domain RFQ cell too: its
+            # replay records its sub-step planes, the last at the exit);
+            # avoid logging a duplicate row.
             substep_already_recorded = (
                 self._record_substeps
                 and isinstance(element, (TransferMapElement, FieldMapElement))
@@ -615,7 +655,11 @@ class Tracker:
             self.beam.particles[alive, 1] = c * xp + s * yp
             self.beam.particles[alive, 3] = -s * xp + c * yp
 
-        if isinstance(element, TransferMapElement):
+        if self._rfq_td is not None and self._rfq_td.owns(element):
+            # time-domain RFQ: the chain was tracked as a whole at its first
+            # cell; this loads the element's exit state (linac_gen.rfq_td)
+            self._rfq_td.track(element)
+        elif isinstance(element, TransferMapElement):
             from linac_gen.elements.drift import Drift
             from linac_gen.elements.matrix_element import MatrixElement
             if isinstance(element, Drift):

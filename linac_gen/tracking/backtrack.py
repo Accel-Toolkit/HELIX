@@ -362,6 +362,15 @@ class _Backtracker:
         elements = self.lattice.elements
         species = self.beam.ref.species
         n_total = self.end - self.start + 1
+        if getattr(getattr(self.lattice, "step_config", None),
+                   "rfq_solver", "auto") != "cells":
+            from linac_gen.elements.rfq_cell import RfqCell
+            if any(isinstance(elements[k], RfqCell)
+                   for k in range(self.start, self.end + 1)):
+                warnings.warn(
+                    "the time-domain RFQ solver tracks forward only: the "
+                    "backward walk undoes the RFQ cell by cell with the "
+                    "per-cell model", BacktrackWarning, stacklevel=2)
 
         exit_state = self.table[self.end + 1]
         self.recorder.record(self.beam, exit_state.s, element_name="INPUT")

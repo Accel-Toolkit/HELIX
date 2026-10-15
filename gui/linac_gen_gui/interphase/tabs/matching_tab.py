@@ -840,24 +840,17 @@ class MatchingTab(QWidget):
         to None / default StepConfig if the chain breaks (the engine
         constructs a sane default when these are None).
         """
-        from linac_gen.core.step_config import StepConfig
         try:
             ct = self.window().convergence_tab    # type: ignore[attr-defined]
         except AttributeError:
             return None, None
         try:
             cfg = self.state.beam_config
-            step1 = ct._fixed_step1.value()
-            step2 = ct._fixed_step2.value()
             # the Numerics tab's own builder (one source for every run)
             sc_cfg = ct.current_sc_config(
                 cfg.current, continuous=bool(getattr(cfg, "continuous",
                                                      False)))
-            step_cfg = StepConfig(
-                integration_steps_per_metre=float(step1),
-                sc_steps_per_metre=float(step2),
-                drift_single_push=bool(ct._drift_single_push.isChecked()),
-            )
+            step_cfg = ct.current_step_config()
             return sc_cfg, step_cfg
         except Exception:                                  # noqa: BLE001
             # Numerics tab not fully initialised (e.g. on test

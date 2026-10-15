@@ -187,6 +187,7 @@ class HaloActionScanPopup(_PopupPlot):
         # (the curves keep their names for Ctrl+S export).
         self._map = pg.PlotWidget()
         style_plot(self._map, _N_ELL, "")
+        fix_plot_range(self._map)       # framed on s and the n cap at every redraw
         self._map.setMinimumHeight(220)             # the main display
         self._image = pg.ImageItem(axisOrder="row-major")
         self._image.setZValue(-10)

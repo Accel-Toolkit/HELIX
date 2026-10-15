@@ -511,15 +511,14 @@ longitudinal channel stays on the card, so the validated energy ramp
 is untouched.
 
 `mode="antisym"` (default) applies the x-plane profile
-antisymmetrically to both planes — best envelope fidelity and the most
-Toutatis-like loss profile on the PXIE benchmark.  `mode="per_plane"`
-uses the independently solved y-plane gradient — best total
-transmission on that benchmark, at the cost of σ_y running ≈ 10 % low.
-The two bracket the Toutatis reference.
+antisymmetrically to both planes; it carries no axisymmetric (RF-
+defocus) part.  `mode="per_plane"` uses the independently solved
+y-plane gradient as well, i.e. the quad flutter AND the real vanes'
+RF defocus.
 
-The solver prefers [pyamg](https://github.com/pyamg/pyamg) (optional
-dependency) and falls back to SciPy `spsolve` on a coarser grid with a
-warning when pyamg is not installed.
+The solver uses [pyamg](https://github.com/pyamg/pyamg) (installed with
+HELIX) and falls back to SciPy `spsolve` on a coarser grid with a
+warning when pyamg is missing.
 
 **Real-boundary losses.**  Arming the geometry also switches the
 cells' loss model (`boundary_losses=True`, default) from the two-term
@@ -543,55 +542,65 @@ bunched, the isolated solve is both more
 accurate on the grid and TraceWin's own downstream semantics.  Beams
 born bunched are never affected.
 
-With all three refinements the PXIE identical-beam benchmark closes:
-5 mA RFQ transmission 80.9 % vs Toutatis 80.3 % (the two-term card
-model alone gives 65.9 %).
+The PXIE identical-beam numbers for each mode are in the table under
+"The vane-file pole numbering" below.  Before that fix the 5 mA
+agreement of `per_plane` (81 % vs 80.4 %) was compensatory: the
+inverted defocus channel and the swapped loss boundary cancelled.
 
 * `linac_gen/elements/rfq_geometry_profile.py` (profile builder)
 * `linac_gen/io/rfq_geometry_helper.py` (lattice wiring)
 * `linac_gen/pic/pic_solver.py` (`_kick_bunch_train`)
 
-### Known issues — the defocus channel (2026-08-03)
+### The vane-file pole numbering (fixed 2026-10-13)
 
-A per-particle loss-location campaign against a genuine Toutatis run
-of the PXIE line found that the headline transmission agreement above
-is partly **compensatory**, and traced the mechanism:
+Until HELIX 1.18 the `.vane` reader took **pole 1 as +x**.  The
+TraceWin/Toutatis convention is **pole 1 = +y, pole 2 = +x, pole 3 = −y,
+pole 4 = −x**.  Two things were read rotated by 90°:
 
-* **The armed profile's axisymmetric defocus channel is
-  sign-inverted.**  Splitting the fitted gradients into the quad
-  flutter G = (gx−gy)/2 and the axisymmetric part D = (gx+gy)/2, the
-  impulse the tracking clock accumulates from D opposes the analytic
-  RF defocus (the card model's cos-clocked C2 term) in **100 % of
-  scored PXIE cells, at 0.81× magnitude** — net RF *focusing* where
-  physics requires *defocusing*.  The quad channel is immune (it is
-  parity-degenerate, which is why phase advance always matched), and
-  `mode="antisym"` sidesteps the issue by carrying no net D at all.
-  Consequences measured with identical seeds: Toutatis expels the
-  doomed, transversely-large particles in one burst at the
-  gentle-buncher squeeze (z ≈ 0.8 m, loss centroid 1.115 m); the
-  inverted channel shelters them through the squeeze and the envelope
-  beat removes them gradually downstream instead (centroid 1.95 m) —
-  the right totals for the wrong reasons.
-* **`apply_rfq_geometry` now audits the first arming per lattice and
-  mode**, logging the measured sign agreement and impulse ratio at
-  INFO when the channel is clean or absent (`antisym` drops D by
-  construction), and emitting a loud KNOWN-ISSUE warning when the
-  inversion is detected.
-* **`mode="per_plane_dflip"` (EXPERIMENTAL)** carries the corrected
-  sign, with `d_scale` restoring the magnitude (the audit reports the
-  suggested value; PXIE: 1.23, at which the armed impulse verifies at
-  1.00× the analytic defocus).  With it, the 5 mA identical-beam loss
-  centroid lands exactly on Toutatis (1.115 m) and the σ_y offset
-  vanishes; the transmission total is then **honestly low**
-  (≈ 72 % vs 80.4 %) because two further physics gaps remain open:
-  the RFQ **entrance-gap lens** (the vane end faces act as a strong
-  RF-averaged focusing element that neither the cards, the vane file,
-  nor any 2-term model contains — measured from Toutatis per-particle
-  data: Δx′ ≈ −31·x, Δy′ ≈ −50·y mrad/mm across the radial matcher),
-  and the per-phase in-cell kick structure that a phase-correlated
-  post-RM beam probes.  Both are under active investigation; do not
-  treat any geometry mode as Toutatis-equivalent for loss *location*
-  studies until they land.
+* **The geometry profile.**  The cards fix the quadrupole polarity, so
+  the profile's vane modulation landed in the wrong plane relative to it.
+  Its axisymmetric RF-defocus channel D = (gx+gy)/2 therefore had the
+  opposite sign to the cards' analytic defocus in every PXIE cell (found
+  on 2026-08-03; `mode="per_plane_dflip"` was the workaround).
+* **The cards' loss boundary** (`vane_apertures`), which had been
+  validated against the same rotated reading.  In every modulated cell
+  the x opening was the y vane's, up to 55 % off in the late PXIE cells.
+
+Tracking through the 3-D field of the PXIE vane file reproduces
+Toutatis's σx > σy / σx < σy pattern at 97–99 % of the cell exits when
+the file is read with pole 1 = +y.  Read with pole 1 = +x, it gives the
+opposite pattern.  With the fix, the profile's D channel agrees in sign
+with the cards in more than 95 % of the PXIE cells.
+
+**RFQ transmission** on the PXIE benchmark, using Toutatis's own input
+particles (7786, at the RFQ entrance):
+
+| Model | 0 mA before | 0 mA after | 5 mA before | 5 mA after |
+|---|---|---|---|---|
+| cards (`rfq_geometry="off"`) | 93.5 % | 97.2 % | 66.8 % | 77.3 % |
+| `antisym` (auto default) | 96.2 % | 98.8 % | 77.8 % | 83.5 % |
+| `per_plane` | 96.9 % | 98.3 % | 81.3 % | 85.2 % |
+| `per_plane_dflip`, d = 1.23 | 93.1 % | 97.0 % | 70.9 % | 81.0 % |
+| Toutatis | 98.4 % | | 80.4 % | |
+
+The per-cell models now bracket Toutatis at 5 mA.  Their exit energy
+stays about 23 keV (1.1 %) below Toutatis's beam, which comes from the
+cards' acceleration model.  The time-domain solver matches both
+quantities.
+
+`per_plane_dflip` is kept.  It is now `per_plane` with D scaled by
+`d_scale`, so `d_scale = 1` is `per_plane`.  Its kicks are unchanged by
+the fix to within the profile's plateau normalisation (0.15 %); its
+transmission moved only through the corrected loss boundary.
+
+## Time-domain solver
+
+By default (`StepConfig.rfq_solver = "auto"`), multiparticle runs track
+the whole RFQ in time through the 3-D field of its vanes whenever that
+solver can run the lattice and beam; it reproduces Toutatis on the PXIE
+benchmark.  This per-cell model tracks the RFQ otherwise, in envelope
+runs and backtracking, and with `rfq_solver = "cells"`; see
+[Time-domain RFQ solver](20_rfq_time_domain.md).
 
 ## See also
 

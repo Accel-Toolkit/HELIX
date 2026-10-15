@@ -298,17 +298,17 @@ def solve_cell_coeffs(z_start_mm: float, z_end_mm: float,
 
     # Use the cell-mean of √(a₁·a₂) across samples as r₀ reference.
     z_m = (z_start_mm + z_offsets_rel) * 1e-3
-    a1_m = np.interp(z_m, vane.z, vane.aperture_v1)   # m
-    a2_m = np.interp(z_m, vane.z, vane.aperture_v2)
-    a3_m = np.interp(z_m, vane.z, vane.aperture_v3)
-    a4_m = np.interp(z_m, vane.z, vane.aperture_v4)
+    a1_m = np.interp(z_m, vane.z, vane.aperture_x)   # m
+    a2_m = np.interp(z_m, vane.z, vane.aperture_y)
+    a3_m = np.interp(z_m, vane.z, vane.aperture_mx)
+    a4_m = np.interp(z_m, vane.z, vane.aperture_my)
     r0_mm = float(np.sqrt(np.mean(a1_m) * np.mean(a2_m)) * 1000.0)
 
     # Vane voltages at samples (V).
-    v1 = np.interp(z_m, vane.z, vane.voltage_v1)
-    v2 = np.interp(z_m, vane.z, vane.voltage_v2)
-    v3 = np.interp(z_m, vane.z, vane.voltage_v3)
-    v4 = np.interp(z_m, vane.z, vane.voltage_v4)
+    v1 = np.interp(z_m, vane.z, vane.voltage_x)
+    v2 = np.interp(z_m, vane.z, vane.voltage_y)
+    v3 = np.interp(z_m, vane.z, vane.voltage_mx)
+    v4 = np.interp(z_m, vane.z, vane.voltage_my)
     V_half = 0.5 * V_amp_volts
 
     # Build the 4*n_z × 8 BC system: rows are [vane1,vane2,vane3,vane4]

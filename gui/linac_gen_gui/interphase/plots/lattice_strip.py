@@ -24,6 +24,7 @@ from PyQt6.QtCore import Qt, QRectF
 from PyQt6.QtGui import QBrush, QColor, QPen
 
 from linac_gen_gui.interphase import theme
+from linac_gen_gui.interphase.plots.plot_style import fix_plot_range
 
 
 # Element-type names that carry physical meaning even with zero length.
@@ -73,11 +74,13 @@ class LatticeStripWidget(pg.PlotWidget):
     # TraceWin and MAD-X plotting tools.
     STRIP_HEIGHT_PX: int = 36
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, scale: float = 1.0) -> None:
         # Disable the default Auto-range/Mouse menu — read-only widget.
         super().__init__(parent=parent, background=theme.BG_1)
         self._items: list = []    # references so Python doesn't GC them
         self._total_length_mm: float = 0.0
+        # Plot x per lattice mm: 1 for plots in mm, 1e-3 for plots in m.
+        self._scale = float(scale)
 
         # No axes, no grid, no mouse.
         plot_item = self.getPlotItem()
@@ -97,7 +100,9 @@ class LatticeStripWidget(pg.PlotWidget):
 
         # Vertical extent is purely cosmetic.  Use a (0, 1) y-range so
         # rectangle heights are normalised — easy to reason about.
-        self.setYRange(0.0, 1.0, padding=0.0)
+        # A designed frame: re-arming the plots of a popup restores it and
+        # never switches the strip to auto-range.
+        fix_plot_range(self, yrange=(0.0, 1.0), padding=0.0)
 
     # ------------------------------------------------------------------
     # Public API
@@ -130,10 +135,42 @@ class LatticeStripWidget(pg.PlotWidget):
                 # else: silently skip unknown zero-length elements.
             s_cursor_mm += length
         self._total_length_mm = s_cursor_mm
-        # Initial x-range covers the whole lattice; setXLink (below)
-        # will then keep it in sync with the data plot.
         if s_cursor_mm > 0.0:
-            self.setXRange(0.0, s_cursor_mm, padding=0.0)
+            self._frame_lattice(s_cursor_mm * self._scale)
+
+    def _frame_lattice(self, x_end: float) -> None:
+        """Show the whole lattice, [0, x_end].  Before the strip is linked it
+        frames itself.  Once linked it follows the data plot and must never
+        set its own x range: pyqtgraph forwards a follower's range change
+        to the plot it follows and switches that plot's x auto-range off,
+        clipping its data.  A data plot with no data to show is framed on
+        the lattice instead (see :meth:`frame_host_if_empty`)."""
+        vb = self.getPlotItem().getViewBox()
+        try:
+            host = vb.linkedView(pg.ViewBox.XAxis)
+        except RuntimeError:
+            return
+        if host is None:
+            self.setXRange(0.0, x_end, padding=0.0)
+            return
+        self.frame_host_if_empty()
+
+    def frame_host_if_empty(self) -> None:
+        """Frame the data plot this strip follows on the whole lattice when
+        it has no data to show, so the strip shows the lattice rather than
+        pyqtgraph's [0, 1] or a frame left over from an earlier lattice.  Its
+        x auto-range is left off -- a cursor line alone would otherwise
+        re-centre it -- and the next new plot re-arms it (rearm_autorange).
+        A plot with data keeps its frame."""
+        if self._total_length_mm <= 0.0:
+            return
+        try:
+            host = self.getPlotItem().getViewBox().linkedView(pg.ViewBox.XAxis)
+            if host is not None and not _has_x_extent(host):
+                host.setXRange(0.0, self._total_length_mm * self._scale,
+                               padding=0.0)
+        except RuntimeError:
+            pass
 
     def link_x_to(self, other_plot) -> None:
         """Link x-axis to another pyqtgraph plot.
@@ -144,9 +181,9 @@ class LatticeStripWidget(pg.PlotWidget):
         the first ``pg.PlotWidget`` child found via ``findChildren``.
 
         After linking, pan/zoom on ``other_plot`` automatically moves
-        this strip.  The link is one-way (strip follows, not drives) —
-        the strip has mouse-interaction disabled so it cannot drive
-        anyway.
+        this strip.  The strip follows and never drives: its mouse is off,
+        and :meth:`set_lattice` no longer sets its x range once linked
+        (pyqtgraph would forward it to ``other_plot``).
         """
         if other_plot is None:
             return
@@ -188,7 +225,8 @@ class LatticeStripWidget(pg.PlotWidget):
                    color: str, elem) -> None:
         """Add a filled rectangle for a finite-length element."""
         # pyqtgraph's QGraphicsRectItem in data coordinates.
-        rect = QRectF(s_start_mm, 0.05, length_mm, 0.90)
+        rect = QRectF(s_start_mm * self._scale, 0.05,
+                      length_mm * self._scale, 0.90)
         item = pg.QtWidgets.QGraphicsRectItem(rect)
         brush = QBrush(QColor(color))
         pen = QPen(QColor(color))
@@ -210,7 +248,8 @@ class LatticeStripWidget(pg.PlotWidget):
         """Add a thin vertical line for a physically-meaningful
         zero-length element."""
         pen = pg.mkPen(QColor(color), width=1.5, style=Qt.PenStyle.SolidLine)
-        line = pg.InfiniteLine(pos=s_mm, angle=90, pen=pen, movable=False)
+        line = pg.InfiniteLine(pos=s_mm * self._scale, angle=90, pen=pen,
+                               movable=False)
         # InfiniteLine doesn't support hover tooltips natively — bake the
         # name into a custom text via the label= keyword (small, sparse).
         # Skip the label if the element is unnamed.
@@ -224,10 +263,22 @@ class LatticeStripWidget(pg.PlotWidget):
         self._items.append(line)
 
 
+def _has_x_extent(vb) -> bool:
+    """True when the items of ``vb`` span a finite, non-zero x interval."""
+    try:
+        xr = vb.childrenBounds()[0]
+    except (RuntimeError, AttributeError, IndexError, TypeError):
+        return False
+    if xr is None:
+        return False
+    lo, hi = float(xr[0]), float(xr[1])
+    return lo == lo and hi == hi and hi > lo and abs(hi - lo) != float("inf")
+
+
 def make_lattice_strip(parent, main_plot: pg.PlotWidget,
-                        lattice) -> LatticeStripWidget:
-    """Build a :class:`LatticeStripWidget`, populate it from ``lattice``,
-    and link its x-axis to ``main_plot``.
+                        lattice, scale: float = 1.0) -> LatticeStripWidget:
+    """Build a :class:`LatticeStripWidget`, link its x-axis to ``main_plot``
+    and populate it from ``lattice``.
 
     Parameters
     ----------
@@ -238,17 +289,22 @@ def make_lattice_strip(parent, main_plot: pg.PlotWidget,
         the strip will still build but won't auto-pan.
     lattice : Lattice or None
         HELIX lattice object.  ``None`` returns an empty strip.
+    scale : float
+        Plot x per lattice millimetre: 1 when ``main_plot`` shows s in mm,
+        1e-3 when it shows s in m.
 
     Returns
     -------
     LatticeStripWidget
         Ready to be inserted into a vertical layout above ``main_plot``.
     """
-    strip = LatticeStripWidget(parent=parent)
-    if lattice is not None:
-        strip.set_lattice(lattice)
+    strip = LatticeStripWidget(parent=parent, scale=scale)
+    # Link first: a data plot with nothing to show yet is then framed on
+    # the whole lattice (``_frame_lattice``) instead of pyqtgraph's [0, 1].
     if main_plot is not None:
         strip.link_x_to(main_plot)
+    if lattice is not None:
+        strip.set_lattice(lattice)
     return strip
 
 

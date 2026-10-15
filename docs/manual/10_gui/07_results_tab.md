@@ -420,10 +420,31 @@ Each tile popup shows:
   legend hides or shows that curve, and the view then refits the
   curves that remain (both axes, or only the vertical one when the
   horizontal axis is shared with other panels or the lattice strip);
-  this also ends any manual zoom.  Plots with a deliberately fixed
-  scale (SCC f_c, the halo slice, the ORM trim response, tune
-  depression) keep their scale.  ++ctrl+s++ still exports hidden
+  this also ends any manual zoom.  ++ctrl+s++ still exports hidden
   curves.
+* **Auto-scaling.**  Every plot fits all its data, on both axes,
+  whenever it is drawn anew: when its popup opens, when a new run's
+  results arrive, when a live match preview ends on the committed
+  result, and when a selector above the plot picks another quantity,
+  element, plane or range.  A plot with no data yet is framed on the
+  whole lattice.  A zoom (mouse wheel or drag) lasts until the next new
+  plot: live updates (the match preview itself, a click on the card of
+  a popup that is already open) leave it, although a few plots refit
+  their vertical axis whenever they redraw (the beam-density plots, the
+  halo-scan emittance strip, the σ plots after a lattice edit).
+  **View All** in the right-click menu, the small **A** button in the
+  plot's corner and the axis menu's **Auto** option switch
+  auto-scaling back on, and it stays on; on a lower panel they act on
+  the horizontal axis it shares with the panel above.  Charts with a
+  designed frame keep it: the Hofmann and tune-depression charts, the
+  halo-scan map and slice, the transmission panel (0–100 %) and SCC
+  f_c (0–1).  View All fits a designed axis once (the other axis keeps
+  fitting), and the next new plot restores the frame.  The plots in the
+  other tabs and dialogs follow the same rule: a new study, parameter
+  scan, failure study, convergence scan, calibration, campaign or
+  multi-bunch result is a new plot, while the points of a study or scan
+  in progress keep a zoom; the bunch-pattern strip and the ORM trim
+  response keep their frames.
 * An optional **lattice-element strip** along the s-axis — a
   colour-coded impression of the lattice, toggled by a checkbox and
   drawn without obscuring the curves.

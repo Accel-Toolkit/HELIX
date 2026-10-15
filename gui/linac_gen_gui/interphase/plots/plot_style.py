@@ -134,36 +134,325 @@ class HelixItemSample(pg.ItemSample):
 
 
 def refit_view_to_visible(item) -> None:
-    """Re-enable auto-range on the item's ViewBox — y always, x only when
-    the x axis is not linked to another view (re-enabling x on a linked
-    view would take x auto-range away from the whole group) — and refit
-    now.  Skipped for items that take no part in the bounds
+    """Re-enable auto-range on the item's ViewBox and refit now, by the
+    rule of :func:`_rearm_view`: y always, x only when the view does not
+    follow another view's x (a follower that auto-ranged x would drive its
+    leader).  Skipped for items that take no part in the bounds
     (``ignoreBounds``) and for plots that opted out with
     :func:`fix_plot_range` (deliberate fixed scales)."""
     try:
         vb = item.getViewBox()
     except Exception:                                        # noqa: BLE001
         return
-    if vb is None or getattr(vb, "_helix_fixed_range", False):
+    if vb is None or _is_fixed(vb):
         return
     if item not in getattr(vb, "addedItems", ()):
         return
     vb.itemBoundsChanged(item)
     for other in getattr(item, "_helix_linked", ()) or ():
         vb.itemBoundsChanged(other)
-    vb.enableAutoRange(pg.ViewBox.YAxis, True)
-    if vb.linkedView(0) is None:
-        vb.enableAutoRange(pg.ViewBox.XAxis, True)
+    _rearm_view(vb)
     vb.updateAutoRange()
 
 
-def fix_plot_range(p) -> None:
+def fix_plot_range(p, xrange=None, yrange=None, padding=None) -> None:
     """Mark a plot's view as deliberately scaled: legend clicks still hide
-    curves but never refit it."""
+    curves but never refit it, and View All fits it once instead of
+    switching auto-range on.  ``xrange`` / ``yrange`` (``(lo, hi)``, with
+    pyqtgraph's ``padding``) are its designed frame: set now, and restored
+    by :func:`rearm_autorange` whenever the plot is drawn anew.  Plots that
+    set their frame at every redraw just call ``fix_plot_range(p)``."""
     try:
-        p.getPlotItem().getViewBox()._helix_fixed_range = True
+        vb = p.getPlotItem().getViewBox()
     except Exception:                                        # noqa: BLE001
+        return
+    vb._helix_fixed_range = True
+    if xrange is not None or yrange is not None:
+        vb._helix_frame = (
+            None if xrange is None else (float(xrange[0]), float(xrange[1])),
+            None if yrange is None else (float(yrange[0]), float(yrange[1])),
+            padding,
+        )
+        _restore_frame(vb)
+
+
+# ---------------------------------------------------------------------------
+# Auto-range: every plot fits all its data whenever it is drawn
+# ---------------------------------------------------------------------------
+# pyqtgraph turns a view's auto-range off whenever its range is set: by
+# code, by a mouse zoom or pan, and by the menu's "View All" itself, which
+# fits once.  The plots here live for the whole session and are drawn again
+# for every run, so a view once fitted by hand stayed frozen.  The rules:
+#   * a newly drawn plot is re-armed (rearm_autorange): y auto-range on
+#     every view, x on every view that does not follow another view's x.
+#     A follower (a lower panel, a lattice strip) keeps x auto-range off:
+#     pyqtgraph forwards a follower's range change to its leader and
+#     switches the leader's x auto-range off, so a follower must never
+#     fit x itself.
+#   * "View All", the "A" button and the x "Auto" option switch auto-range
+#     on and leave it on, the x of a follower on its leader.
+#   * plots with a designed frame (fix_plot_range) keep it, axis by axis:
+#     re-arming restores the recorded frame on the axes it covers and arms
+#     the others; View All, the "A" button and the x "Auto" option fit a
+#     framed axis once and keep fitting an unframed one.  A fixed follower
+#     never touches its leader's x.
+
+def _is_fixed(vb) -> bool:
+    return bool(getattr(vb, "_helix_fixed_range", False))
+
+
+def _x_leader(vb):
+    """The view whose x range ``vb`` follows, or None."""
+    try:
+        return vb.linkedView(pg.ViewBox.XAxis)
+    except (RuntimeError, AttributeError):
+        return None
+
+
+def _frame(vb):
+    """``(xrange, yrange, padding)`` recorded by fix_plot_range, or Nones."""
+    return getattr(vb, "_helix_frame", None) or (None, None, None)
+
+
+def _restore_frame(vb) -> None:
+    xr, yr, padding = _frame(vb)
+    if xr is not None and _x_leader(vb) is None:
+        vb.setXRange(xr[0], xr[1], padding=padding)
+    if yr is not None:
+        vb.setYRange(yr[0], yr[1], padding=padding)
+
+
+def _rearm_view(vb) -> None:
+    """Give one view the auto-range of a newly drawn plot (rules above):
+    an axis with a recorded frame gets the frame back, every other axis
+    auto-ranges -- x only on a view that does not follow another's x."""
+    if vb is None:
+        return
+    try:
+        xr, yr, padding = _frame(vb)
+        if _x_leader(vb) is not None:
+            vb.enableAutoRange(pg.ViewBox.XAxis, False)
+        elif xr is not None:
+            vb.setXRange(xr[0], xr[1], padding=padding)
+        else:
+            vb.enableAutoRange(pg.ViewBox.XAxis, True)
+        if yr is not None:
+            vb.setYRange(yr[0], yr[1], padding=padding)
+        else:
+            vb.enableAutoRange(pg.ViewBox.YAxis, True)
+    except RuntimeError:                       # C++ side already deleted
         pass
+
+
+def _views_under(root):
+    """The ViewBoxes of the plots in ``root`` (a popup, tab, dialog or
+    plot widget): every PlotWidget, and every PlotItem of every
+    GraphicsLayoutWidget (DensityPanel, heat plots); colour bars excluded."""
+    widgets = []
+    if isinstance(root, (pg.PlotWidget, pg.GraphicsLayoutWidget)):
+        widgets.append(root)
+    try:
+        widgets.extend(root.findChildren(pg.PlotWidget))
+        widgets.extend(root.findChildren(pg.GraphicsLayoutWidget))
+    except (RuntimeError, AttributeError):
+        pass
+    views, seen = [], set()
+    for w in widgets:
+        try:
+            if isinstance(w, pg.PlotWidget):
+                items = [w.getPlotItem()]
+            else:
+                items = list(w.ci.items.keys())
+        except (RuntimeError, AttributeError):
+            continue
+        for item in items:
+            if not isinstance(item, pg.PlotItem) or isinstance(item, pg.ColorBarItem):
+                continue
+            try:
+                vb = item.getViewBox()
+            except RuntimeError:
+                continue
+            if vb is not None and id(vb) not in seen:
+                seen.add(id(vb))
+                views.append(vb)
+    return views
+
+
+def rearm_autorange(root) -> None:
+    """Re-arm every plot in ``root`` as a newly drawn plot: auto-range on
+    (x on the views that lead, y on all), designed frames restored.  Call
+    it before drawing a NEW result into long-lived plots (a popup opened,
+    a new run, a new study or scan) -- not on live updates, so that a zoom
+    lasts until the next new plot."""
+    if root is None:
+        return
+    views = _views_under(root)
+    # Followers' x off first: switching a follower's pending x auto-range
+    # off runs it once more, which would reach a leader already re-armed.
+    for vb in views:
+        try:
+            if _x_leader(vb) is not None:
+                vb.enableAutoRange(pg.ViewBox.XAxis, False)
+        except RuntimeError:
+            pass
+    for vb in views:
+        _rearm_view(vb)
+
+
+def _fit_and_keep(vb) -> None:
+    """What View All and the "A" button do: switch auto-range on and leave
+    it on -- y on this view, x on the view it follows (or on itself) unless
+    that one is fixed.  On a fixed view an axis with a designed frame (or
+    every axis, when the view records none) is fitted once instead, and a
+    fixed follower leaves its leader's x alone."""
+    if vb is None:
+        return
+    try:
+        if _is_fixed(vb):
+            _fit_fixed(vb, x=True, y=True)
+            return
+        vb.enableAutoRange(pg.ViewBox.YAxis, True)
+        _fit_and_keep_x(vb)
+    except RuntimeError:                       # C++ side already deleted
+        pass
+
+
+def _fit_fixed(vb, x: bool, y: bool) -> None:
+    xr, yr, _padding = _frame(vb)
+    framed = getattr(vb, "_helix_frame", None) is not None
+    if y:
+        if yr is not None or not framed:
+            _fit_once(vb, 1)
+        else:
+            vb.enableAutoRange(pg.ViewBox.YAxis, True)
+    if x and _x_leader(vb) is None:
+        if xr is not None or not framed:
+            _fit_once(vb, 0)
+        else:
+            vb.enableAutoRange(pg.ViewBox.XAxis, True)
+
+
+def _fit_once(vb, axis: int) -> None:
+    """Fit one axis to the items' bounds once (auto-range left off)."""
+    import numpy as np
+    try:
+        r = vb.childrenBounds()[axis]
+    except (RuntimeError, AttributeError, IndexError, TypeError):
+        return
+    if r is None or not np.all(np.isfinite(r)):
+        return
+    if axis == 0:
+        vb.setXRange(float(r[0]), float(r[1]))
+    else:
+        vb.setYRange(float(r[0]), float(r[1]))
+
+
+def _menu_view(menu):
+    try:
+        return menu.view()
+    except (RuntimeError, TypeError, AttributeError):
+        return None
+
+
+def _view_all(self, *args) -> None:
+    """ViewBoxMenu "View All": fit and keep fitting (pyqtgraph fits once)."""
+    _fit_and_keep(_menu_view(self))
+
+
+def _x_auto(menu, stock_name: str, *args) -> None:
+    """ViewBoxMenu x "Auto" (and its percentage): pyqtgraph's own on a view
+    that leads and is not fixed; a follower auto-ranges its leader's x; a
+    fixed view fits a framed x once and leaves a leader alone."""
+    vb = _menu_view(menu)
+    if vb is None:
+        return
+    try:
+        if _is_fixed(vb):
+            _fit_fixed(vb, x=True, y=False)
+        elif _x_leader(vb) is not None:
+            _fit_and_keep_x(vb)
+        else:
+            stock = _PG_STOCK.get(stock_name)
+            if stock is not None:
+                stock(menu, *args)
+            else:
+                vb.enableAutoRange(pg.ViewBox.XAxis, True)
+    except RuntimeError:
+        pass
+
+
+def _x_auto_clicked(self, *args) -> None:
+    _x_auto(self, "xAutoClicked")
+
+
+def _x_auto_spin_changed(self, val=None, *args) -> None:
+    if val is None:
+        _x_auto(self, "xAutoClicked")
+    else:
+        _x_auto(self, "xAutoSpinChanged", val)
+
+
+def _fit_and_keep_x(vb) -> None:
+    """x auto-range on, and left on: on the view itself when it leads, else
+    on its leader (unless that one is fixed), the follower's own x off."""
+    leader = _x_leader(vb)
+    try:
+        if leader is None:
+            vb.enableAutoRange(pg.ViewBox.XAxis, True)
+            return
+        vb.enableAutoRange(pg.ViewBox.XAxis, False)
+        if not _is_fixed(leader):
+            leader.enableAutoRange(pg.ViewBox.XAxis, True)
+    except RuntimeError:
+        pass
+
+
+def _auto_button(self, *args) -> None:
+    """PlotItem "A" button: as View All."""
+    try:
+        if getattr(self.autoBtn, "mode", "auto") != "auto":
+            self.disableAutoRange()
+            return
+        _fit_and_keep(self.getViewBox())
+        self.autoBtn.hide()
+    except RuntimeError:
+        pass
+
+
+# pyqtgraph's own slots, kept on the patched class itself so that a reload
+# of this module still finds them.
+_PG_STOCK: dict = {}
+
+
+def _install_view_patches() -> None:
+    """Route View All, the x "Auto" option and the "A" button through
+    :func:`_fit_and_keep`.  Done at import: PyQt binds these slots when each
+    menu or plot is built, so plots built earlier keep pyqtgraph's own.
+    Plain functions taking ``*args`` (a ``@Slot`` would be connected to the
+    original method or refused).  A pyqtgraph without one of the methods
+    keeps its own behaviour for it."""
+    global _PG_STOCK
+    try:
+        from pyqtgraph.graphicsItems.ViewBox.ViewBoxMenu import ViewBoxMenu
+        from pyqtgraph.graphicsItems.PlotItem.PlotItem import PlotItem
+    except ImportError:
+        return
+    stock = getattr(ViewBoxMenu, "_helix_stock", None)
+    if stock is None:
+        stock = {}
+        for cls, name, fn in (
+                (ViewBoxMenu, "autoRange", _view_all),
+                (ViewBoxMenu, "xAutoClicked", _x_auto_clicked),
+                (ViewBoxMenu, "xAutoSpinChanged", _x_auto_spin_changed),
+                (PlotItem, "autoBtnClicked", _auto_button)):
+            if callable(getattr(cls, name, None)):
+                stock[name] = getattr(cls, name)
+                setattr(cls, name, fn)
+        ViewBoxMenu._helix_stock = stock
+    _PG_STOCK = stock
+
+
+_install_view_patches()
 
 
 def add_legend(p: pg.PlotWidget, offset: tuple[int, int] = (-10, 10)):

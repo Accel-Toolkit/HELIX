@@ -30,29 +30,22 @@ _log = logging.getLogger(__name__)
 # numpy >= 2.0 removed np.trapz (house pattern: analysis/phase_advance.py)
 _trapz = getattr(np, "trapezoid", None) or np.trapz
 
-#: modes for the y-plane gradient (2026-08-02 identical-beam study,
-#: revised 2026-08-03 loss-location campaign):
-#:  "antisym"   — gy = −gx: best envelope fidelity in BOTH planes and
-#:                the most Toutatis-like loss profile (default);
-#:  "per_plane" — gy from the y-plane solve (= −G+D signed): best total
-#:                transmission on the PXIE benchmark, but σ_y runs
-#:                8–10 % low.  The two bracket Toutatis.
-#:  "per_plane_dflip" — EXPERIMENTAL (2026-08-03): per-plane split with
-#:                the axisymmetric defocus component D = (gx+gy)/2 sign-
-#:                corrected and scaled by ``d_scale``:
-#:                    gx' =  G − d_scale·D,   gy' = −G − d_scale·D,
-#:                G = (gx−gy)/2.  Rationale: under the per-cell phase
-#:                reset the armed D channel accumulates RF *focusing*
-#:                where the analytic defocus (card C2 term, cos-clocked)
-#:                requires *defocusing* — measured on PXIE: wrong sign
-#:                in 100 % of cells at 0.81× magnitude, making
-#:                "per_plane" transmission agreement compensatory
-#:                (right totals, wrong loss locations).  With
-#:                d_scale = 1/0.81 ≈ 1.23 the 5 mA identical-beam loss
-#:                centroid lands exactly on Toutatis (1.115 m) and the
-#:                σ_y offset vanishes; total transmission is then
-#:                honest-but-low pending the entrance-gap treatment.
-#:                See the manual's RFQ "Known issues" section.
+#: modes for the y-plane gradient:
+#:  "antisym"   — gy = −gx: the x-plane profile mirrored, no axisymmetric
+#:                (RF-defocus) part D at all (default);
+#:  "per_plane" — gx and gy from their own planes' solves: the quad
+#:                flutter G = (gx−gy)/2 AND the axisymmetric part
+#:                D = (gx+gy)/2 of the real vanes.
+#:  "per_plane_dflip" — "per_plane" with D scaled by ``d_scale``:
+#:                    gx' =  G + d_scale·D,   gy' = −G + d_scale·D
+#:                (d_scale = 1 is exactly "per_plane").  Introduced on
+#:                2026-08-03 as a sign flip of D, which the profile then
+#:                carried inverted in every cell; that inversion was the
+#:                vane file's pole numbering read rotated by 90°
+#:                (io/tracewin_vane.py, fixed 2026-10-13).  On the
+#:                corrected profile the flip is no longer needed, and
+#:                this definition keeps every per_plane_dflip result
+#:                identical to before the fix.
 _MODES = ("antisym", "per_plane", "per_plane_dflip")
 
 
@@ -75,9 +68,10 @@ def apply_rfq_geometry(lattice: Lattice,
     mode : "antisym" (default), "per_plane" or "per_plane_dflip" — see
         ``_MODES``.
     d_scale : defocus-channel scale for ``mode="per_plane_dflip"``
-        only (ignored, with a warning, for the other modes).  1.0
-        reproduces the pure sign flip; the arm-time audit's reported
-        |impulse| ratio suggests the analytic value (PXIE: ≈1.23).
+        only (ignored, with a warning, for the other modes).  1.0 is
+        exactly ``mode="per_plane"``; the arm-time audit reports the
+        |impulse| ratio against the cards' analytic RF defocus (PXIE
+        historical choice: 1.23).
     margin_mm : profile overhang kept on each side of a cell so the
         per-substep interpolation never clamps mid-cell.
     boundary_losses : also switch the cells' loss model from the
@@ -188,8 +182,8 @@ def apply_rfq_geometry(lattice: Lattice,
         if mode == "per_plane_dflip":
             g_quad = 0.5 * (prof.gx[sel] - prof.gy[sel])
             d_axi = 0.5 * (prof.gx[sel] + prof.gy[sel])
-            cell._geom_gx = (g_quad - d_scale * d_axi) * comp
-            cell._geom_gy = (-g_quad - d_scale * d_axi) * comp
+            cell._geom_gx = (g_quad + d_scale * d_axi) * comp
+            cell._geom_gy = (-g_quad + d_scale * d_axi) * comp
         else:
             cell._geom_gx = prof.gx[sel] * comp
             cell._geom_gy = gy_glob[sel] * comp
@@ -222,9 +216,9 @@ def _audit_defocus_channel(cells):
     ``I_sin = ∫ D(z)·S(z)·sin(φs + 180°·z/L) dz`` with
     D = (gx+gy)/2, against the analytic RF-defocus impulse of the card
     model (C2 term, cos-clocked) in the same normalised units.  A
-    correct channel agrees in SIGN with the analytic defocus; the
-    shipped "per_plane" registration measured 0 % agreement at 0.81×
-    magnitude on PXIE (2026-08-03 loss-location campaign).
+    correct channel agrees in SIGN with the analytic defocus.  Before
+    the 2026-10-13 pole-numbering fix "per_plane" measured 0 %
+    agreement on PXIE (the vane file read rotated by 90°).
 
     Returns ``(n_scored, frac_sign_agree, median_ratio)`` —
     ``(n, None, None)`` when fewer than 10 cells could be scored, and
@@ -282,35 +276,17 @@ def _warn_defocus_channel(cells, mode):
             med, n,
             " -- mode='antisym' drops D by construction"
             if mode == "antisym" else "")
-    elif mode == "per_plane_dflip":
-        if frac < 0.5:
-            _log.warning(
-                "apply_rfq_geometry: per_plane_dflip audit UNEXPECTED "
-                "-- the flipped defocus channel still opposes the "
-                "analytic sign in %.0f %% of %d cells.  This deck's "
-                "profile registration may already be correct; the flip "
-                "would then double-invert.  Verify against a reference "
-                "before trusting results.", 100 * (1 - frac), n)
-        else:
-            _log.info(
-                "apply_rfq_geometry: per_plane_dflip defocus-channel "
-                "sign verified against the analytic RF defocus "
-                "(%.0f %% of %d cells agree; |impulse| ratio %.2f).",
-                100 * frac, n, med)
     elif frac < 0.5:
         _log.warning(
-            "apply_rfq_geometry: KNOWN ISSUE -- the armed profile's "
-            "axisymmetric defocus channel accumulates the OPPOSITE "
-            "sign vs the analytic RF defocus in %.0f %% of %d scored "
-            "cells (|impulse| ratio ~%.2f): net RF *focusing* where "
-            "physics requires *defocusing*.  Transmission agreement in "
-            "mode=%r can be compensatory (right totals, wrong loss "
-            "locations -- measured vs Toutatis on PXIE, 2026-08-03).  "
-            "mode='per_plane_dflip' with d_scale~%.2f carries the "
-            "corrected sign (EXPERIMENTAL); see the manual's RFQ "
-            "'Known issues' section.",
-            100 * (1 - frac), n, med, mode,
-            1.0 / med if med > 0 else float("nan"))
+            "apply_rfq_geometry: the armed profile's axisymmetric "
+            "(RF-defocus) channel has the OPPOSITE sign to the cards' "
+            "RF defocus in %.0f %% of %d scored cells (|impulse| ratio "
+            "~%.2f, mode=%r).  The vane file is most likely numbered "
+            "differently from TraceWin/Toutatis (pole 1 = +y, pole 2 = "
+            "+x): with it the vane modulation sits in the wrong plane "
+            "relative to the cards' quadrupole.  Check the file before "
+            "trusting results.",
+            100 * (1 - frac), n, med, mode)
     else:
         _log.info(
             "apply_rfq_geometry: defocus-channel audit clean for "

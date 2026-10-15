@@ -10,9 +10,14 @@ Both workers expose:
 * ``aborted()`` — emitted if the user pressed Stop mid-run.
 * ``request_stop()`` — thread-safe cancel; the solver exits cleanly at
   the next element boundary.
+
+The multi-particle worker also emits ``status(str)``: the time-domain RFQ
+solver's progress lines (its field-map build on a first run takes minutes
+with nothing else moving).
 """
 from __future__ import annotations
 
+import logging
 import math
 import threading
 from typing import Any, Optional
@@ -29,6 +34,47 @@ from PyQt6.QtCore import QThread, pyqtSignal
 #: thread never takes it; acquire through acquire_walk_lock so a worker told
 #: to stop while queued can still honour the stop.
 WALK_LOCK = threading.Lock()
+
+
+class _SignalLogHandler(logging.Handler):
+    """Forwards log records to a Qt signal (emit is thread-safe)."""
+
+    def __init__(self, signal):
+        super().__init__(logging.INFO)
+        self._signal = signal
+
+    def emit(self, record) -> None:
+        try:
+            self._signal.emit(record.getMessage())
+        except Exception:                               # noqa: BLE001
+            pass                    # worker torn down mid-run
+
+
+# INFO must be enabled on the logger for a handler to see INFO records; a
+# retired run can overlap the next one, so the level is reference-counted
+_STATUS_LOGGER = "linac_gen.rfq_td"
+_status_lock = threading.Lock()
+_status_users = {"n": 0, "level": logging.NOTSET}
+
+
+def _attach_status(handler) -> None:
+    log = logging.getLogger(_STATUS_LOGGER)
+    with _status_lock:
+        if _status_users["n"] == 0:
+            _status_users["level"] = log.level
+            if log.getEffectiveLevel() > logging.INFO:
+                log.setLevel(logging.INFO)
+        _status_users["n"] += 1
+        log.addHandler(handler)
+
+
+def _detach_status(handler) -> None:
+    log = logging.getLogger(_STATUS_LOGGER)
+    with _status_lock:
+        log.removeHandler(handler)
+        _status_users["n"] -= 1
+        if _status_users["n"] == 0:
+            log.setLevel(_status_users["level"])
 
 
 def acquire_walk_lock(should_stop, poll_s: float = 0.2) -> bool:
@@ -138,6 +184,7 @@ class MultiparticleWorker(QThread):
     progress = pyqtSignal(int)
     progress_s = pyqtSignal(float, float)
     aborted = pyqtSignal()
+    status = pyqtSignal(str)        # time-domain RFQ progress lines
 
     def __init__(self, lattice, beam, space_charge,
                  record_substeps: bool = False,
@@ -194,6 +241,14 @@ class MultiparticleWorker(QThread):
             WALK_LOCK.release()
 
     def _run_locked(self) -> None:
+        handler = _SignalLogHandler(self.status)
+        _attach_status(handler)
+        try:
+            self._run_sim()
+        finally:
+            _detach_status(handler)
+
+    def _run_sim(self) -> None:
         try:
             from linac_gen.core.simulation import Simulation
             sim = Simulation(

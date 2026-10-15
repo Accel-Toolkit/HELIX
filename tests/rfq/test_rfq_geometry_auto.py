@@ -2,9 +2,13 @@
 
 TraceWin's Partran mode hands the RFQ to Toutatis (vane geometry) when
 RFQ_GEOM is present, while its envelope mode stays on the cards.  HELIX
-mirrors that: multiparticle Simulation.run() auto-uses the vane profile
-when the RFQ_GEOM file exists; run_envelope() never does.
+mirrors that: with the per-cell RFQ model, multiparticle Simulation.run()
+auto-uses the vane profile when the RFQ_GEOM file exists; run_envelope()
+never does.  (The default RFQ solver "auto" tracks such an RFQ in time
+instead -- tests/rfq_td -- so the runs here choose the per-cell model,
+except where the test is about what "auto" keeps.)
 """
+import dataclasses
 import logging
 
 import numpy as np
@@ -86,9 +90,14 @@ class TestParserRecordsVane:
         assert lat.rfq_geom_file is None
 
 
+def _cells(lat):
+    lat.step_config = dataclasses.replace(lat.step_config, rfq_solver="cells")
+    return lat
+
+
 class TestAutoArm:
     def test_mp_run_uses_profile_and_disarms_after(self, deck, caplog):
-        lat, _ = parse_tracewin(str(deck))
+        lat = _cells(parse_tracewin(str(deck))[0])
         with caplog.at_level(logging.INFO):
             Simulation(lat, _beam(), space_charge="off",
                        rfq_geometry="auto").run()
@@ -101,9 +110,15 @@ class TestAutoArm:
     def test_off_switch(self, deck, caplog):
         lat, _ = parse_tracewin(str(deck))
         with caplog.at_level(logging.INFO):
-            Simulation(lat, _beam(), space_charge="off",
-                       rfq_geometry="off").run()
+            rec = Simulation(lat, _beam(), space_charge="off",
+                             rfq_geometry="off").run()
         assert not any("vane-geometry profile" in r.message
+                       for r in caplog.records)
+        # "off" asks for the card model: the default solver keeps the cells
+        assert rec.rfq_solver_used == "cells"
+        assert "rfq_geometry='off'" in rec.rfq_solver_note
+        assert not any(r.levelno >= logging.WARNING
+                       and "RFQ solver auto" in r.message
                        for r in caplog.records)
 
     def test_missing_vane_falls_back_to_cards(self, deck, caplog):
@@ -121,11 +136,11 @@ class TestAutoArm:
                        rfq_geometry="antisym").run()
 
     def test_profile_changes_the_physics(self, deck):
-        lat, _ = parse_tracewin(str(deck))
+        lat = _cells(parse_tracewin(str(deck))[0])
         b1 = _beam()
         Simulation(lat, b1, space_charge="off",
                    rfq_geometry="off").run()
-        lat2, _ = parse_tracewin(str(deck))
+        lat2 = _cells(parse_tracewin(str(deck))[0])
         b2 = _beam()
         Simulation(lat2, b2, space_charge="off",
                    rfq_geometry="auto").run()
@@ -140,10 +155,13 @@ class TestAutoArm:
         n = apply_rfq_geometry(lat, str(deck.parent / "test.vane"),
                                **_BUILD)
         assert n == 35
-        Simulation(lat, _beam(), space_charge="off").run()
+        rec = Simulation(lat, _beam(), space_charge="off").run()
         armed = [c for c in lat.elements
                  if getattr(c, "_geom_z", None) is not None]
         assert len(armed) == 35
+        # an explicitly armed profile is a per-cell set-up: "auto" keeps it
+        assert rec.rfq_solver_used == "cells"
+        assert "armed" in rec.rfq_solver_note
 
     def test_envelope_never_auto_arms(self, deck, caplog):
         lat, _ = parse_tracewin(str(deck))

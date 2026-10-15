@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 )
 
 from linac_gen_gui.interphase import theme
+from linac_gen_gui.interphase.plots.plot_style import rearm_autorange
 
 
 class _MoWorker(QThread):
@@ -256,6 +257,7 @@ class MultiObjectiveDialog(QDialog):
         names = res.objective_names
         F = res.pareto_F
         allF = res.all_F
+        rearm_autorange(self._plot)        # a new front: a new plot
         # Plot first two objectives.
         self._plot.setLabel("bottom", names[0])
         self._plot.setLabel("left", names[1] if len(names) > 1 else names[0])

@@ -67,7 +67,7 @@ print(f"{len(lattice.elements)} elements, "
 | `beam_errors` | `list[BeamErrorDef]` | input-beam jitter specs |
 | `error_ratios` | `list[float]` | TraceWin `ERROR_SET_RATIO` values |
 | `error_cutoff` | `float` | gaussian truncation in σ |
-| `step_config` | `StepConfig` | step density (PARTRAN_STEP): `step_config.integration_steps_per_metre`, `step_config.sc_steps_per_metre`, and `step_config.drift_single_push` (one push per field-free drift, default on) |
+| `step_config` | `StepConfig` | step density (PARTRAN_STEP): `step_config.integration_steps_per_metre`, `step_config.sc_steps_per_metre`, `step_config.drift_single_push` (one push per field-free drift, default on), and the RFQ solver `step_config.rfq_solver` (`"auto"` default: the time-domain solver whenever it can run, else the per-cell model; or `"cells"`, `"time_domain"`) with `rfq_td_steps_per_period` (48) and `rfq_td_sc_every` (4) |
 
 ### Methods
 

@@ -268,7 +268,11 @@ def _forward_metrics(lattice, beam_cfg, cost_solver: str, seed: int = 42) -> dic
     from linac_gen.failures.study import recorder_metrics
     if cost_solver == "mp":
         sc = make_sc_config(beam_cfg, {}, {})
-        step = make_step_config({}, {})
+        # the lattice's RFQ solver choice is kept (the GUI sets it)
+        from dataclasses import replace
+        from linac_gen.core.step_config import rfq_fields
+        step = replace(make_step_config({}, {}),
+                       **rfq_fields(getattr(lattice, "step_config", None)))
         # run_mp_sim returns (recorder, beam) — take the recorder.
         res, _beam = run_mp_sim(lattice, beam_cfg, sc, step, seed=seed)
     else:

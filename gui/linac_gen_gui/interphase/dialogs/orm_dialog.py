@@ -36,7 +36,7 @@ from linac_gen_gui.interphase import theme
 from linac_gen_gui.interphase.app_settings import make_settings
 from linac_gen_gui.interphase.commands import MacroCommand, ParamChangeCommand
 from linac_gen_gui.interphase.plots.plot_style import (
-    HelixItemSample, fix_plot_range, style_plot)
+    HelixItemSample, fix_plot_range, rearm_autorange, style_plot)
 
 _STAGES = ("trims", "trims+quads", "trims+quads+bpms")
 _PLANE_NAME = {"x": "horizontal (x)", "y": "vertical (y)"}
@@ -874,6 +874,10 @@ class OrmCalibrationDialog(QDialog):
     # ---------------------------------------------------------------- fit views
     def _refresh_fit(self) -> None:
         fit = self._fit
+        # a new fit: new plots (the trim plot's x fits; its ±1.3 y frame
+        # is set again by _refresh_trim_plot)
+        for p in (self._quad_plot, self._resid_plot, self._trim_plot):
+            rearm_autorange(p)
         self._quad_table.setRowCount(0); self._quad_plot.clear(); self._resid_plot.clear()
         if fit is None:
             return

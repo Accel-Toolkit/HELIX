@@ -266,6 +266,28 @@ def apply_element_override(lattice, selector: str, value) -> None:
 # ---------------------------------------------------------------------------
 # config builders
 # ---------------------------------------------------------------------------
+def rfq_settings(conv: dict, cli: dict) -> dict:
+    """The RFQ solver fields of ``StepConfig`` — CLI override > project
+    value (``convergence`` keys of the same names) > default.  Checked and
+    normalised by ``StepConfig``: a bad value raises ``ValueError`` here,
+    before anything runs."""
+    from linac_gen.core.step_config import StepConfig
+    d = StepConfig()
+    conv = conv or {}
+    s = StepConfig(
+        rfq_solver=str(_first(cli.get("rfq_solver"), conv.get("rfq_solver"),
+                              d.rfq_solver)),
+        rfq_td_steps_per_period=int(_first(
+            cli.get("rfq_td_steps"), conv.get("rfq_td_steps_per_period"),
+            d.rfq_td_steps_per_period)),
+        rfq_td_sc_every=int(_first(cli.get("rfq_td_sc_every"),
+                                   conv.get("rfq_td_sc_every"),
+                                   d.rfq_td_sc_every)))
+    return dict(rfq_solver=s.rfq_solver,
+                rfq_td_steps_per_period=s.rfq_td_steps_per_period,
+                rfq_td_sc_every=s.rfq_td_sc_every)
+
+
 def make_step_config(conv: dict, cli: dict):
     """Build a ``StepConfig`` — CLI override > project value > default."""
     from linac_gen.core.step_config import StepConfig
@@ -279,7 +301,8 @@ def make_step_config(conv: dict, cli: dict):
                     d.drift_single_push)
     return StepConfig(integration_steps_per_metre=float(step1),
                       sc_steps_per_metre=float(step2),
-                      drift_single_push=_as_bool(single))
+                      drift_single_push=_as_bool(single),
+                      **rfq_settings(conv, cli))
 
 
 def check_sc_choice(cli: dict, conv: dict | None = None) -> None:
@@ -689,6 +712,7 @@ def build_scan_point(input_path, *, beam_overrides=None, element_overrides=(),
                            if k not in ("nx", "grid_extent", "use_gpu")),
         drift_single_push=single,
         lattice_beam=lattice_beam,
+        **rfq_settings(conv, cli),
     )
 
 

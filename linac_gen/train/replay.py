@@ -444,6 +444,10 @@ class HybridReplayRunner:
                     step1=float(step.integration_steps_per_metre),
                     step2=float(step.sc_steps_per_metre),
                     drift_single_push=bool(getattr(step, "drift_single_push", True)),
+                    rfq_solver=str(getattr(step, "rfq_solver", "auto")),
+                    rfq_td_steps_per_period=int(getattr(
+                        step, "rfq_td_steps_per_period", 48)),
+                    rfq_td_sc_every=int(getattr(step, "rfq_td_sc_every", 4)),
                     seed=int(self.train.seed), use_gpu=use_gpu,
                     element_overrides=tuple(results.replay_overrides[s]),
                     sc_overrides=sc_overrides,

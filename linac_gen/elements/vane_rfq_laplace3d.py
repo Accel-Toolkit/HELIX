@@ -58,6 +58,7 @@ try:
 except ImportError:
     _HAVE_PYAMG = False
 
+from linac_gen.core.amg import seeded
 from linac_gen.elements.vane_rfq_laplace2d import (
     _Caches,
     _vane_masks,
@@ -271,14 +272,16 @@ class Laplace3DCache:
         self.z_mm = vane.z[idx] * 1000.0
         self.z_m = vane.z[idx].copy()
 
-        self._a1 = np.asarray(vane.aperture_v1[idx], dtype=float)
-        self._a2 = np.asarray(vane.aperture_v2[idx], dtype=float)
-        self._a3 = np.asarray(vane.aperture_v3[idx], dtype=float)
-        self._a4 = np.asarray(vane.aperture_v4[idx], dtype=float)
-        self._V1 = np.asarray(vane.voltage_v1[idx], dtype=float)
-        self._V2 = np.asarray(vane.voltage_v2[idx], dtype=float)
-        self._V3 = np.asarray(vane.voltage_v3[idx], dtype=float)
-        self._V4 = np.asarray(vane.voltage_v4[idx], dtype=float)
+        # mask slots 1..4 = +x, +y, -x, -y (_vane_masks); the file's
+        # pole numbering differs (pole 1 = +y) -- use the plane accessors
+        self._a1 = np.asarray(vane.aperture_x[idx], dtype=float)
+        self._a2 = np.asarray(vane.aperture_y[idx], dtype=float)
+        self._a3 = np.asarray(vane.aperture_mx[idx], dtype=float)
+        self._a4 = np.asarray(vane.aperture_my[idx], dtype=float)
+        self._V1 = np.asarray(vane.voltage_x[idx], dtype=float)
+        self._V2 = np.asarray(vane.voltage_y[idx], dtype=float)
+        self._V3 = np.asarray(vane.voltage_mx[idx], dtype=float)
+        self._V4 = np.asarray(vane.voltage_my[idx], dtype=float)
 
         # ---- transverse grid -----------------------------------------
         a_max_m = float(np.max([self._a1.max(), self._a2.max(),
@@ -332,8 +335,9 @@ class Laplace3DCache:
         if verbose:
             print(f"  solving with {self.solver}...")
         if self.solver == "pyamg":
-            ml = pyamg.smoothed_aggregation_solver(L)
-            phi_flat, _ = self._pyamg_solve(ml, rhs, verbose=verbose)
+            with seeded():      # the same solver, and solution, every time
+                ml = pyamg.smoothed_aggregation_solver(L)
+                phi_flat, _ = self._pyamg_solve(ml, rhs, verbose=verbose)
         else:
             phi_flat = spsolve(L, rhs)
         self.phi_static = phi_flat.reshape(

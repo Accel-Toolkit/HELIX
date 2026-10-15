@@ -38,17 +38,24 @@ cross-check cards.
 
 ## Results
 
-2000 particles, matched input (α = 0, β = 0.01 mm/mrad,
-ε_n = 0.20 π·mm·mrad):
+2000 particles (seed 42), matched input (α = 0, β = 0.01 mm/mrad,
+ε_n = 0.20 π·mm·mrad), with each RFQ solver:
 
-| | transmission | exit energy |
-|---|---|---|
-| no space charge | 71.8 % | 1.900 ± 28 keV |
-| 15 mA, 32³ adaptive PIC | 64.3 % | 1.898 ± 62 keV |
+| | RFQ solver | transmission | exit energy |
+|---|---|---|---|
+| no space charge | time domain (the default) | 91.1 % | 1.913 MeV ± 27 keV |
+| 15 mA, 32³ adaptive PIC | time domain (the default) | 84.8 % | 1.917 MeV ± 22 keV |
+| no space charge | per cell | 80.8 % | 1.899 MeV ± 28 keV |
+| 15 mA, 32³ adaptive PIC | per cell | 76.0 % | 1.898 MeV ± 26 keV |
 
-Transmission and capture are the **same number** — every surviving
-particle is accelerated, so nothing exits as un-bunched low-energy
-junk.
+Exit energy: mean ± rms of the accelerated particles (above 0.9 of the
+reference energy).  With the per-cell model every surviving particle
+is accelerated; the time-domain solver also brings a few unaccelerated
+particles to the exit (0.3 % of the beam without space charge, 1.1 % at
+15 mA).  The deck has no `RFQ_GEOM` vane file, so the
+[time-domain solver](../03_elements/20_rfq_time_domain.md) builds the
+vanes from the `RFQ_CELL` cards; its first run builds their field map
+(about 2.5 minutes) and caches it.
 
 !!! note "A teaching deck, not an optimised design"
     A production RFQ iterates the gentle-buncher ramp for >95 %
@@ -60,9 +67,14 @@ junk.
 
 ## What it exercises
 
-* **`field_model="tw2term"`**, the default — per-particle longitudinal
-  phase slip and vane-tip aperture losses, without which a DC beam
-  cannot bunch at all. See [RFQ cell](../03_elements/09_rfqcell.md).
+* **The time-domain RFQ solver**, the default for multiparticle runs
+  (`rfq_solver = "auto"`): the whole RFQ tracked in time through the
+  3-D field of vanes built from the cards.  See
+  [Time-domain RFQ solver](../03_elements/20_rfq_time_domain.md).
+* **`field_model="tw2term"`**, the per-cell model's default field model
+  (`rfq_solver = "cells"`) — per-particle longitudinal phase slip and
+  vane-tip aperture losses, without which a DC beam cannot bunch at all.
+  See [RFQ cell](../03_elements/09_rfqcell.md).
 * **The DC → bunched transition**, taken automatically at the first
   cell.
 * **[`periodic_phase`](../04_beam/03_beam_config.md)**, enabled in the
@@ -74,8 +86,10 @@ junk.
 * **Space charge through an RFQ** — the 15 mA row above, the hardest
   place for the PIC path (tight bore, strong bunching).
 
-Pinned by `tests/rfq/test_rfq_demo_example.py`, which — unlike the rest
-of `tests/rfq/` — needs no external reference data and therefore runs
-on any checkout.
+The per-cell model on this deck is pinned by
+`tests/rfq/test_rfq_demo_example.py`, which — unlike the rest of
+`tests/rfq/` — needs no external reference data and therefore runs on
+any checkout; the time-domain solver has its own tests on a small
+synthetic RFQ (`tests/rfq_td/`).
 
 ← [Eigenemittance](09_eigenemittance.md)

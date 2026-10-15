@@ -152,12 +152,16 @@ def test_writer_warns_when_error_study_would_be_lost(tmp_path):
 
 # ── grouped low-stakes hints ─────────────────────────────────────────────
 def test_fit_hint_cards_grouped_single_line_not_strict_fatal(tmp_path):
-    deck = ("RFQ_GEOM 1 2 3\nRFQ_GAP_RMS_FFS 0.5\nMATCH_FAM_GRAD 1\n"
-            "DRIFT 100 15 0\nEND\n")
-    _, meta = _parse(tmp_path, deck)
+    deck = ("RFQ_GEOM 1 2 3\nRFQ_GAP_RMS_FFS 0.5 0.7\nMATCH_FAM_GRAD 1\n"
+            "MATCH_FAM_FIELD 2\nDRIFT 100 15 0\nEND\n")
+    lat, meta = _parse(tmp_path, deck)
     hints = [w for w in meta["warnings"] if "no-op cards" in w]
     assert len(hints) == 1, meta["warnings"]
-    assert "RFQ_GEOM" in hints[0] and "MATCH_FAM_GRAD" in hints[0]
+    assert "MATCH_FAM_GRAD" in hints[0] and "MATCH_FAM_FIELD" in hints[0]
+    # the RFQ setup cards are read (vane-geometry profile, time-domain RFQ)
+    assert "RFQ_GEOM" not in hints[0] and "RFQ_GAP" not in hints[0]
+    assert lat.rfq_geom_file.endswith("3")
+    assert lat.rfq_gaps_mm == (0.5, 0.7)
     # hints are informative, NOT physics downgrades — strict still parses:
     _parse(tmp_path, deck, strict=True)
 

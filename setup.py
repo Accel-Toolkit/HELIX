@@ -211,7 +211,8 @@ class _Pybind11WithOpenMP(build_ext):
                 ]
                 # MSVC links the OpenMP runtime automatically when the switch
                 # is set; no extra linker args needed.
-                if ext.name.endswith(("_fieldmap_kernels", "_tsc_kernels")):
+                if ext.name.endswith(("_fieldmap_kernels", "_tsc_kernels",
+                                       "_rfq_td_kernels")):
                     # The field-map kernel's bit-identity contract with scipy
                     # RGI (tests/elements/test_fieldmap_kernels.py) forbids FMA
                     # contraction.  VS2022's /fp:precise emits no contractions
@@ -224,7 +225,8 @@ class _Pybind11WithOpenMP(build_ext):
                     ext.extra_compile_args.append("/fp:precise")
         elif ctype in ("mingw32", "cygwin"):
             for ext in self.extensions:
-                if ext.name.endswith(("_fieldmap_kernels", "_tsc_kernels")):
+                if ext.name.endswith(("_fieldmap_kernels", "_tsc_kernels",
+                                       "_rfq_td_kernels")):
                     # GCC defaults to -ffp-contract=fast in C++ — the
                     # same contraction ban as every other toolchain.
                     ext.extra_compile_args = list(
@@ -274,6 +276,18 @@ ext_modules = [
     Pybind11Extension(
         "linac_gen._tsc_kernels",
         ["linac_gen/csrc/tsc_kernels.cpp"],
+        depends=_DEPENDS,
+        extra_compile_args=_fieldmap_compile,
+        extra_link_args=_link,
+        include_dirs=_includes,
+        cxx_std=14,
+        optional=not _require_cpp,
+    ),
+    # Time-domain RFQ field gather: no FP contraction, so it agrees with
+    # the numpy reference (linac_gen/rfq_td/fieldmap.py) to rounding.
+    Pybind11Extension(
+        "linac_gen._rfq_td_kernels",
+        ["linac_gen/csrc/rfq_td_kernels.cpp"],
         depends=_DEPENDS,
         extra_compile_args=_fieldmap_compile,
         extra_link_args=_link,

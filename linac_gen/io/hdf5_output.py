@@ -36,7 +36,9 @@ def _hash_file(path) -> str | None:
 
 def _write_provenance(f, lattice_path=None, seed=None, sc_config=None,
                       lattice=None, input_beam_path=None, grid_cards=None,
-                      solver_stats=None, threads_info=None):
+                      solver_stats=None, threads_info=None, rfq_td=None,
+                      step_config=None, rfq_solver_used=None,
+                      rfq_solver_note=None):
     """``provenance/`` attr group: everything needed to say WHICH code,
     WHICH machine description and WHICH numerical configuration produced
     this file.  A results file without these cannot reproduce its run
@@ -174,6 +176,16 @@ def _write_provenance(f, lattice_path=None, seed=None, sc_config=None,
         import json as _json
         prov.attrs["sc_solver_stats"] = _json.dumps(dict(solver_stats),
                                                     default=str)
+    if rfq_td:
+        # time-domain RFQ run: field-map key, numerics, losses, timing
+        import json as _json
+        prov.attrs["rfq_td"] = _json.dumps(dict(rfq_td), default=str)
+    if rfq_solver_used:
+        # what tracked the RFQ (StepConfig.rfq_solver with "auto" resolved)
+        # and, when "auto" kept the per-cell model, why
+        prov.attrs["rfq_solver_used"] = str(rfq_solver_used)
+        if rfq_solver_note:
+            prov.attrs["rfq_solver_note"] = str(rfq_solver_note)
 
     # ---- referenced-input hashes & run configuration (2026-07) --------
     # lattice_sha256 covers the .dat text only, not the files it points
@@ -197,7 +209,10 @@ def _write_provenance(f, lattice_path=None, seed=None, sc_config=None,
             prov.attrs["input_beam_sha256"] = digest
             prov.attrs["input_beam_path"] = str(input_beam_path)
     if lattice is not None:
-        cfg = getattr(lattice, "step_config", None)
+        # the run's own settings when it recorded them (the lattice's can
+        # have changed since, e.g. in the GUI)
+        cfg = (step_config if step_config is not None
+               else getattr(lattice, "step_config", None))
         if cfg is not None:
             try:
                 prov.attrs["integration_steps_per_metre"] = float(
@@ -206,6 +221,12 @@ def _write_provenance(f, lattice_path=None, seed=None, sc_config=None,
                     cfg.sc_steps_per_metre)
                 prov.attrs["drift_single_push"] = bool(
                     getattr(cfg, "drift_single_push", True))
+                prov.attrs["rfq_solver"] = str(
+                    getattr(cfg, "rfq_solver", "auto"))
+                prov.attrs["rfq_td_steps_per_period"] = int(
+                    getattr(cfg, "rfq_td_steps_per_period", 48))
+                prov.attrs["rfq_td_sc_every"] = int(
+                    getattr(cfg, "rfq_td_sc_every", 4))
             except Exception:                               # noqa: BLE001
                 pass
         # Parser downgrade ledger (attached by cli.common.load_lattice).
@@ -668,7 +689,13 @@ def save_results_hdf5(recorder, filepath: str, beam_config=None,
                                              None),
                           solver_stats=getattr(recorder, "sc_solver_stats",
                                                None),
-                          threads_info=getattr(recorder, "threads_info", None))
+                          threads_info=getattr(recorder, "threads_info", None),
+                          rfq_td=getattr(recorder, "rfq_td", None),
+                          step_config=getattr(recorder, "step_config", None),
+                          rfq_solver_used=getattr(recorder, "rfq_solver_used",
+                                                  None),
+                          rfq_solver_note=getattr(recorder, "rfq_solver_note",
+                                                  None))
         # ── envelope ─────────────────────────────────────────────────────────
         env = f.create_group("envelope")
         env.create_dataset("s", data=np.array(recorder.s))

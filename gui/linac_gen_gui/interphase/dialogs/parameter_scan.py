@@ -29,7 +29,8 @@ from PyQt6.QtWidgets import (
 )
 
 from linac_gen_gui.interphase import theme
-from linac_gen_gui.interphase.plots.plot_style import style_plot
+from linac_gen_gui.interphase.plots.plot_style import (
+    rearm_autorange, style_plot)
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +208,11 @@ class _ScanWorker(QThread):
             s1 = self.convergence.get("step1")
             s2 = self.convergence.get("step2")
             if s1 is not None and s2 is not None and self._lattice is not None:
-                self._lattice.step_config = StepConfig(
+                from dataclasses import replace as _replace
+                base = getattr(self._lattice, "step_config", None) \
+                    or StepConfig()
+                self._lattice.step_config = _replace(
+                    base,
                     integration_steps_per_metre=float(s1),
                     sc_steps_per_metre=float(s2),
                     drift_single_push=bool(self.convergence.get("drift_single_push", True)),
@@ -609,8 +614,11 @@ class ParameterScanDialog(QDialog):
         label, attr, reducer, unit = _OUTPUT_CHOICES[out_idx]
         mode = "env" if self._mode_env.isChecked() else "mp"
 
-        # Reset plot + progress
+        # Reset plot + progress.  A new scan is a new plot: auto-range on,
+        # so the view follows the points as they arrive -- a previous scan's
+        # frame never persists, and a zoom made during this scan is kept.
         self._curve.setData([], [])
+        rearm_autorange(self._plot)
         self._plot.setLabel("left", f"{label}", units=unit)
         self._plot.setLabel("bottom",
                             f"{type(el).__name__}.{param}",
@@ -659,25 +667,10 @@ class ParameterScanDialog(QDialog):
         xs_finite = xs[mask]
         ys_finite = ys[mask]
         self._curve.setData(xs_finite, ys_finite)
-        # Force the plot to re-fit its view to the actual data range.
-        # Without this, a previous scan's view box can persist (e.g.
-        # if the prior run left a wide x-range and the new scan is in
-        # a narrow region, the new curve appears as a tiny dot at the
-        # edge or off-screen).  We also handle the degenerate "all
-        # y values are identical" case (where pyqtgraph's autoRange
-        # collapses the y axis to zero height) by padding the y range.
-        if xs_finite.size > 0:
-            try:
-                vb = self._plot.getViewBox()
-                vb.enableAutoRange(axis='xy', enable=True)
-                # Guard against a flat horizontal line by giving the y
-                # axis at least 10% padding if y is identical.
-                if ys_finite.size >= 2 and float(ys_finite.max()) == float(ys_finite.min()):
-                    yval = float(ys_finite[0])
-                    pad = max(abs(yval) * 0.1, 1e-6)
-                    self._plot.setYRange(yval - pad, yval + pad, padding=0)
-            except Exception:                                  # noqa: BLE001
-                pass
+        # The view follows the points by auto-range (re-armed when the scan
+        # started; a zoom made since is kept).  A flat line -- every y equal
+        # -- stays visible: pyqtgraph centres a zero-height range on the
+        # value and keeps the previous scale (ViewBox.setRange).
         # Also surface the latest value in the status line so the user
         # can see SOMETHING moving even if the plot range is hard to read.
         self._status.setText(

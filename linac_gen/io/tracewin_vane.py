@@ -12,21 +12,36 @@ slice and 17 columns describing the four-vane RFQ geometry at that z:
   cols 9-12: same for vane 3 (180°)
   cols 13-16: same for vane 4 (270°)
 
-Vane indexing convention (used throughout this module):
+Pole numbering (the TraceWin/Toutatis convention, Toutatis manual
+Fig. 3 — beam travelling out of the page):
 
-  ``vane 1`` lies along +x (θ = 0)
-  ``vane 2`` lies along +y (θ = π/2)
-  ``vane 3`` lies along −x (θ = π)
-  ``vane 4`` lies along −y (θ = 3π/2)
+  ``pole 1`` lies along +y (top)
+  ``pole 2`` lies along +x (right)
+  ``pole 3`` lies along −y
+  ``pole 4`` lies along −x
 
-Pairs (1,3) and (2,4) sit at orthogonal angles.  Their voltages always
-have opposite signs in a four-vane RFQ — usually V₁=V₃=+V/2 and
-V₂=V₄=−V/2 — but this module does not assume that and reports the
-voltages it reads.
+The ``aperture_v1`` … ``flag_v4`` fields are the file's columns in that
+order; code that needs a PLANE must use the ``aperture_x`` /
+``aperture_y`` (… ``voltage_x``, ``Tc_y`` …) accessors below.
+
+Until HELIX 1.18 this module documented pole 1 as +x, which rotated
+every vane-geometry model by 90° relative to the file's own convention:
+the quadrupole kept its polarity (cards set it) while the modulation —
+which plane is narrow at a cell entrance — was swapped.  That is the
+"inverted defocus channel" the geometry profile showed in every cell.
+Verified 2026-10-13 against a Toutatis run of the PXIE RFQ: tracking
+through the 3-D field of the file read with pole 1 = +y reproduces
+Toutatis's σ_x > σ_y / σ_x < σ_y pattern at 97-99 % of the cell exits;
+read with pole 1 = +x it gives the opposite pattern.
+
+Opposite poles carry the same voltage and the two pairs opposite
+signs in a four-vane RFQ (PXIE: +y pair +30 kV, +x pair −30 kV); this
+module does not assume it and reports the voltages it reads.
 
 This reader is intentionally lightweight: it returns a dataclass
-holding the per-slice arrays.  Higher-level code (the VaneRFQ element)
-turns that geometry into fields and matrices.
+holding the per-slice arrays.  Higher-level code (the VaneRFQ element,
+the geometry profile, the time-domain RFQ solver) turns that geometry
+into fields.
 """
 from __future__ import annotations
 
@@ -46,10 +61,10 @@ class VaneGeometry:
     """
 
     z: np.ndarray             # (N,)  m       longitudinal position
-    aperture_v1: np.ndarray   # (N,)  m       tip distance from axis, vane 1 (along +x)
-    aperture_v2: np.ndarray   # (N,)  m       vane 2 (along +y)
-    aperture_v3: np.ndarray   # (N,)  m       vane 3 (along −x)
-    aperture_v4: np.ndarray   # (N,)  m       vane 4 (along −y)
+    aperture_v1: np.ndarray   # (N,)  m       tip distance from axis, pole 1 (+y)
+    aperture_v2: np.ndarray   # (N,)  m       pole 2 (+x)
+    aperture_v3: np.ndarray   # (N,)  m       pole 3 (−y)
+    aperture_v4: np.ndarray   # (N,)  m       pole 4 (−x)
     Tc_v1: np.ndarray         # (N,)  m       transverse curvature, vane 1
     Tc_v2: np.ndarray
     Tc_v3: np.ndarray
@@ -67,13 +82,68 @@ class VaneGeometry:
     def n_slices(self) -> int:
         return int(self.z.size)
 
+    # ---- plane accessors (pole 1 = +y, 2 = +x, 3 = −y, 4 = −x) ----------
+    @property
+    def aperture_x(self) -> np.ndarray:
+        """Tip distance of the +x pole (file pole 2), m."""
+        return self.aperture_v2
+
+    @property
+    def aperture_y(self) -> np.ndarray:
+        """Tip distance of the +y pole (file pole 1), m."""
+        return self.aperture_v1
+
+    @property
+    def aperture_mx(self) -> np.ndarray:
+        """Tip distance of the −x pole (file pole 4), m."""
+        return self.aperture_v4
+
+    @property
+    def aperture_my(self) -> np.ndarray:
+        """Tip distance of the −y pole (file pole 3), m."""
+        return self.aperture_v3
+
+    @property
+    def Tc_x(self) -> np.ndarray:
+        return self.Tc_v2
+
+    @property
+    def Tc_y(self) -> np.ndarray:
+        return self.Tc_v1
+
+    @property
+    def Tc_mx(self) -> np.ndarray:
+        return self.Tc_v4
+
+    @property
+    def Tc_my(self) -> np.ndarray:
+        return self.Tc_v3
+
+    @property
+    def voltage_x(self) -> np.ndarray:
+        """Voltage of the +x pole (file pole 2), V."""
+        return self.voltage_v2
+
+    @property
+    def voltage_y(self) -> np.ndarray:
+        """Voltage of the +y pole (file pole 1), V."""
+        return self.voltage_v1
+
+    @property
+    def voltage_mx(self) -> np.ndarray:
+        return self.voltage_v4
+
+    @property
+    def voltage_my(self) -> np.ndarray:
+        return self.voltage_v3
+
     @property
     def length_m(self) -> float:
         return float(self.z[-1] - self.z[0])
 
     def inter_vane_voltage(self) -> float:
-        """Inter-vane voltage = ``V₁ − V₂`` (typically the user's
-        ``V`` parameter, e.g. 60 000 V for PXIE).
+        """Inter-vane voltage = ``V₁ − V₂`` = V(+y pole) − V(+x pole)
+        (typically the user's ``V`` parameter, e.g. 60 000 V for PXIE).
 
         Returns the *first-slice* value; if the .vane file modulates
         voltages along z, callers should access ``voltage_v*`` arrays

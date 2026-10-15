@@ -44,7 +44,7 @@ from linac_gen.io.tracewin_vane import VaneGeometry, parse_vane_file
 
 _log = logging.getLogger(__name__)
 
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2      # 2: vane pole numbering fixed (pole 1 = +y)
 
 
 @dataclass
@@ -144,8 +144,8 @@ def _fit_slices(cache, iz_keep: np.ndarray, vane: VaneGeometry):
     potential is boundary fill, not field — never enter the fit.
     """
     zv = vane.z * 1e3
-    a_h = 0.5 * (vane.aperture_v1 + vane.aperture_v3) * 1e3
-    a_v = 0.5 * (vane.aperture_v2 + vane.aperture_v4) * 1e3
+    a_h = 0.5 * (vane.aperture_x + vane.aperture_mx) * 1e3
+    a_v = 0.5 * (vane.aperture_y + vane.aperture_my) * 1e3
     order = np.argsort(zv)
     zv, a_h, a_v = zv[order], a_h[order], a_v[order]
 

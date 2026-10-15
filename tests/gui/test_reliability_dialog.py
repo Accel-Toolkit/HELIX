@@ -315,3 +315,18 @@ def test_export_and_import_through_the_buttons(win, deck, tmp_path):
     assert not dlg._export_btn.isEnabled() and not dlg._import_btn.isEnabled() and not dlg._blocks_template.isEnabled()
     win.wait_worker(dlg._worker)
     assert dlg._export_btn.isEnabled() and dlg._import_btn.isEnabled()
+
+
+def test_spec_carries_the_numerics_rfq_solver(win, deck):
+    """The campaign's multiparticle runs use the Numerics tab's RFQ
+    solver (kept on the lattice's StepConfig); the default needs no key."""
+    dlg = _open(win, deck)
+    assert "rfq_solver" not in dlg._build_spec(deck).numerics
+    win.convergence_tab._rfq_solver.setCurrentIndex(2)       # time domain
+    win.convergence_tab._rfq_td_steps.setValue(72)
+    num = dlg._build_spec(deck).numerics
+    assert (num["rfq_solver"], num["rfq_td_steps"]) == ("time_domain", 72)
+    # an explicit per-cell choice is carried (the default is auto)
+    win.convergence_tab._rfq_td_steps.setValue(48)
+    win.convergence_tab._rfq_solver.setCurrentIndex(1)       # per cell
+    assert dlg._build_spec(deck).numerics["rfq_solver"] == "cells"

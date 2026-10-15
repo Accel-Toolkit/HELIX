@@ -41,6 +41,7 @@ from PyQt6.QtWidgets import (
 
 from linac_gen_gui.interphase import theme
 from linac_gen_gui.interphase.app_settings import make_settings
+from linac_gen_gui.interphase.plots.plot_style import rearm_autorange
 from linac_gen_gui.interphase.commands import MacroCommand, ParamChangeCommand
 from linac_gen_gui.interphase.dialogs._fingerprint import optics_fingerprint
 
@@ -676,6 +677,20 @@ class ReliabilityStudyDialog(QDialog):
                                           "k": int(self._comp_k.value())},
                             availability=availability, foil=foil,
                             execution={"max_workers": int(self._workers.value()), "serial": self._workers.value() <= 1})
+        # the Numerics tab's RFQ solver (kept on the lattice's StepConfig);
+        # the default needs no key
+        from linac_gen.core.step_config import StepConfig
+        st = getattr(getattr(self.state, "lattice", None), "step_config", None)
+        if st is not None and (
+                getattr(st, "rfq_solver", StepConfig().rfq_solver)
+                != StepConfig().rfq_solver
+                or int(getattr(st, "rfq_td_steps_per_period", 48))
+                != StepConfig().rfq_td_steps_per_period
+                or int(getattr(st, "rfq_td_sc_every", 4))
+                != StepConfig().rfq_td_sc_every):
+            spec.numerics = dict(spec.numerics or {}, rfq_solver=st.rfq_solver,
+                                 rfq_td_steps=int(st.rfq_td_steps_per_period),
+                                 rfq_td_sc_every=int(st.rfq_td_sc_every))
         circ = self._circuits.text().strip()
         if not circ and (deck.parent / "circuits.json").exists():
             circ = str(deck.parent / "circuits.json")
@@ -950,6 +965,7 @@ class ReliabilityStudyDialog(QDialog):
                 t.setItem(i, j, QTableWidgetItem("" if v is None else str(v)))
 
     def _render_bar(self, faults) -> None:
+        rearm_autorange(self._bar)      # campaign results: a new plot
         self._bar.clear()
         rows = [r for r in faults if r.get("criticality") and r.get("bracket") == "rephased" and r.get("case_id") != "baseline"]
         rows.sort(key=lambda r: -float(r["criticality"]))
@@ -961,7 +977,8 @@ class ReliabilityStudyDialog(QDialog):
         self._bar.addItem(pg.BarGraphItem(x=xs, height=ys, width=0.7, brush=theme.ACCENT))
         self._bar.getAxis("bottom").setTicks([[(i, (top[i].get("elements") or top[i]["case_id"]).replace(";", "+"))
                                                for i in range(len(top))]])
-        self._bar.setYRange(0.0, max(ys) * 1.1, padding=0)
+        # framed by auto-range, updated now rather than at the first paint
+        self._bar.getViewBox().updateAutoRange()
 
     def _fill_comp_table(self, comps) -> None:
         self._comp_rows = list(comps)

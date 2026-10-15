@@ -167,12 +167,21 @@ def vane_apertures(r0_mm: float, A10: float, length_mm: float,
         x_lim² / r0² = 1 − s·A10·I0(k·x_lim)·cos(πz/L)
         y_lim² / r0² = 1 + s·A10·I0(k·y_lim)·cos(πz/L)
 
-    with k = π/L and s = −sign(type), by fixed-point iteration on the
-    Bessel factor.  Validated directly against the PXIE ``pxie-rfq.vane``
-    tip table (2026-07-30): mean error 0.03–0.14 % across cells spanning
-    A10 = 0.01–0.69 — the exact condition needs NO empirical factor
-    (DYNAC's 0.7523 patches its parabolic profile approximation, not
-    the physics).
+    with k = π/L and s = +sign(type), by fixed-point iteration on the
+    Bessel factor: a type −2 cell opens wide in x and narrow in y at
+    its entrance.  Validated against the PXIE ``pxie-rfq.vane`` tip
+    table (mean error 0.03–0.25 % across cells spanning A10 =
+    0.01–0.69, no empirical factor — DYNAC's 0.7523 patches its
+    parabolic profile approximation, not the physics), with the file's
+    own pole numbering: x against the +x pole (file pole 2).
+
+    Until HELIX 1.18 the sign was s = −sign(type): the validation then
+    compared x against file pole 1, which is the +y pole, so the loss
+    boundary of every modulated cell had the x and y openings swapped
+    (wrong by up to 55 % in the late PXIE cells).  The cards' focusing
+    polarity — and so which plane is which — is fixed by the quad term,
+    which matches TraceWin's per-cell matrices and Toutatis's x/y
+    envelope pattern; see ``io/tracewin_vane.py``.
 
     For ±3 front-end / exit cells the real vanes FLARE far beyond r0
     (the PXIE radial-matching section opens to ≈3.5·r0); callers skip
@@ -182,7 +191,7 @@ def vane_apertures(r0_mm: float, A10: float, length_mm: float,
     from scipy.special import i0
     if length_mm <= 0 or r0_mm <= 0:
         return r0_mm, r0_mm
-    s = -1.0 if cell_type > 0 else 1.0
+    s = 1.0 if cell_type > 0 else -1.0
     c = float(np.cos(np.pi * z_local_mm / length_mm))
     k = np.pi / length_mm
     term = s * A10 * c
@@ -210,8 +219,9 @@ def modulation_consistency(r0_mm: float, A10: float, m: float,
     from scipy.special import i0
     if m <= 1.0 or A10 <= 0.0 or length_mm <= 0 or r0_mm <= 0:
         return 0.0, 0.0
-    a_mm, _ = vane_apertures(r0_mm, A10, length_mm, cell_type=-2,
-                             z_local_mm=0.0)
+    # a = the narrower opening at the cell entrance (either plane)
+    a_mm = min(vane_apertures(r0_mm, A10, length_mm, cell_type=-2,
+                              z_local_mm=0.0))
     k = np.pi / length_mm
     ka = k * a_mm
     denom = m * m * float(i0(ka)) + float(i0(m * ka))

@@ -1466,6 +1466,11 @@ def _parameter_scan(ctx, element: str, attribute: str, start: float,
     step1 = float(getattr(step, "integration_steps_per_metre", 100.0))
     step2 = float(getattr(step, "sc_steps_per_metre", 50.0))
     single = bool(getattr(step, "drift_single_push", True))
+    rfq_kw = dict(
+        rfq_solver=str(getattr(step, "rfq_solver", "auto")),
+        rfq_td_steps_per_period=int(getattr(step, "rfq_td_steps_per_period",
+                                            48)),
+        rfq_td_sc_every=int(getattr(step, "rfq_td_sc_every", 4)))
     # Prefer the NAME selector when it is unique in the session lattice —
     # robust against structural in-memory edits shifting indices between
     # this lattice and the re-parsed file.  Fall back to @index (1-based).
@@ -1509,7 +1514,7 @@ def _parameter_scan(ctx, element: str, attribute: str, start: float,
                           beam_config=dict(beam_dict),
                           **point_sc,
                           step1=step1, step2=step2,
-                          drift_single_push=single,
+                          drift_single_push=single, **rfq_kw,
                           mode=("envelope" if mode != "mp" else "mp"),
                           element_overrides=((selector, float(v)),))
         try:
@@ -1582,13 +1587,23 @@ def _run_envelope(ctx, progress_callback=None, should_abort=None,
                             "description": "also record the halo action "
                             "scan (particles outside the n·ε_rms ellipses "
                             "per step and plane; Results tab → Halo action "
-                            "scan)"}},
+                            "scan)"},
+            "rfq_solver": {"type": "string",
+                           "enum": ["auto", "cells", "time_domain"],
+                           "description": "RFQ model for this run: auto "
+                           "(time_domain whenever that solver can run the "
+                           "lattice and beam, else cells), cells (one "
+                           "RFQ_CELL at a time along z) or time_domain (the "
+                           "whole RFQ tracked in time through the 3-D field "
+                           "of its vanes: the RFQ_GEOM vane file, else vanes "
+                           "built from the cards); default: the session's "
+                           "Numerics setting"}},
         "required": []},
        "compute")
 def _run_mp(ctx, n_particles: int | None = None, seed: int = 42,
             space_charge: bool = True, grid: int | None = None,
             grid_extent: float | None = None, action_scan: bool = False,
-            sc_method: str | None = None,
+            sc_method: str | None = None, rfq_solver: str | None = None,
             progress_callback=None, should_abort=None,
             _assist_prov=None):
     gate = _need(ctx, "lattice", "beam_config")
@@ -1612,11 +1627,21 @@ def _run_mp(ctx, n_particles: int | None = None, seed: int = 42,
 
     def _go():
         beam = create_beam(cfg, seed=int(seed))
-        sim = Simulation(ctx.lattice, beam, space_charge=sc,
-                         record_action_scan=bool(action_scan),
-                         progress_callback=progress_callback,
-                         should_abort=should_abort)
-        rec = sim.run()
+        saved = getattr(ctx.lattice, "step_config", None)
+        if rfq_solver and saved is not None:
+            import dataclasses as _dc
+            # for this call only; the session's setting is restored below
+            ctx.lattice.step_config = _dc.replace(saved,
+                                                  rfq_solver=str(rfq_solver))
+        try:
+            sim = Simulation(ctx.lattice, beam, space_charge=sc,
+                             record_action_scan=bool(action_scan),
+                             progress_callback=progress_callback,
+                             should_abort=should_abort)
+            rec = sim.run()
+        finally:
+            if saved is not None:
+                ctx.lattice.step_config = saved
         rec.beam = beam
         return rec
     out, refusal, warns = _capture(_go)

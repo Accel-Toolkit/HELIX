@@ -148,3 +148,26 @@ class TestHelper:
                        A10=0.0, modulation=1.0, length_mm=7.5,
                        phi_s_deg=-90.0, cell_type=2)
         assert cell._geom_z is None
+
+
+def test_a_pyamg_build_repeats_bit_for_bit():
+    """The vane field solve runs under linac_gen.core.amg.seeded: two
+    pyamg builds of one profile agree to the last bit whatever the caller's
+    random state, and that state is left as it was."""
+    pytest.importorskip("pyamg")
+
+    def build():
+        return build_rfq_geometry_profile(
+            _synthetic_vane(), plateau_z_mm=(100.0, 250.0),
+            nx=21, z_subsample=6, window_mm=400.0, pad_mm=50.0,
+            solver="pyamg", use_cache=False)
+    np.random.seed(7)
+    a = build()
+    drawn = np.random.rand(3)
+    np.random.seed(7)
+    np.testing.assert_array_equal(drawn, np.random.rand(3))
+    np.random.seed(8)
+    b = build()
+    np.testing.assert_array_equal(a.gx, b.gx)
+    np.testing.assert_array_equal(a.gy, b.gy)
+    assert a.g_plateau == b.g_plateau

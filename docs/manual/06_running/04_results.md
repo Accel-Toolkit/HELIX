@@ -186,7 +186,12 @@ resolved **field-map data files** and (via `input_beam_path=`) an
 imported beam file, the **parser downgrade ledger** (`parse_downgrades`
 — attached to the lattice by the CLI loader), the diagnostic cadence
 (`integration_steps_per_metre` / `sc_steps_per_metre` /
-`drift_single_push`), the effective
+`drift_single_push`), the RFQ solver (`rfq_solver`,
+`rfq_td_steps_per_period`, `rfq_td_sc_every`; a run through an RFQ
+adds `rfq_solver_used`, `"time_domain"` or `"cells"`, and
+`rfq_solver_note` when `"auto"` kept the per-cell model, saying why; a
+time-domain RFQ run adds `rfq_td`, a JSON record of its field map,
+numerics, losses and timing), the effective
 FP precision (`fp_dtype`), the CIC deposit's summation order
 (`cic_deposit_order`), the threads in use (`threads`, `threads_source`,
 `threads_fft`, `threads_kernels`, `threads_torch` — they do not change the

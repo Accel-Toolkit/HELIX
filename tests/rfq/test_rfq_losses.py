@@ -42,8 +42,8 @@ def test_vane_apertures_match_vane_file(pxie_deck):
         c = cells[ci]
         m = (vg.z >= ent[ci]) & (vg.z <= ent[ci + 1])
         zl = (vg.z[m] - ent[ci]) * 1e3
-        ax = vg.aperture_v1[m] * 1e3
-        ay = vg.aperture_v2[m] * 1e3
+        ax = vg.aperture_x[m] * 1e3      # +x pole (file pole 2)
+        ay = vg.aperture_y[m] * 1e3      # +y pole (file pole 1)
         got = np.array([vane_apertures(c.r0_mm, c.A10, c.length,
                                        c.cell_type, z) for z in zl])
         errx = np.abs(got[:, 0] - ax) / ax

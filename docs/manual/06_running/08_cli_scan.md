@@ -26,7 +26,7 @@ product** of the value sets.
 | Kind of `VAR` | Example | What it sweeps |
 |---|---|---|
 | a beam field | `current`, `energy`, `emit_nx` | a `BeamConfig` scalar |
-| a grid / step parameter | `nx`, `grid_extent`, `step1`, `step2`, `drift_single_push` (0 or 1) | a PIC / integration setting |
+| a grid / step parameter | `nx`, `grid_extent`, `step1`, `step2`, `drift_single_push` (0 or 1), `rfq_td_steps` | a PIC / integration setting (`rfq_td_steps`: time steps per RF period of the time-domain RFQ solver) |
 | an element parameter | `QF.gradient`, `@12.angle` | one element's parameter |
 
 ## Options
@@ -62,6 +62,8 @@ takes precedence over its fixed value at that point.
 | `--step1` | float | integration steps / m |
 | `--step2` | float | space-charge kicks / m |
 | `--drift-single-push` | `on` \| `off` | single push of field-free drifts, as in [`run`](07_cli_run.md) (applies to every point) |
+| `--rfq-solver` | `auto` \| `cells` \| `time_domain` | RFQ model for every `mp` point, as in [`run`](07_cli_run.md) |
+| `--rfq-td-steps` | int ≥ 8 | time-domain RFQ: leapfrog steps per RF period (every point) |
 | `--backend` | `auto` \| `cpu` \| `gpu` | compute backend (forced to `cpu` when `--parallel > 1`) |
 | `--kernel` | `cic` \| `tsc` | PIC deposit kernel (every point) |
 | `--sc-method` | name \| `list` | a named [space-charge method](../05_space_charge/08_methods.md) for every point, as in [`run`](07_cli_run.md) |

@@ -120,9 +120,12 @@ class TrainConfigDialog(QDialog):
         # time, that is the pulse, somewhere?").
         import pyqtgraph as pg
 
-        from linac_gen_gui.interphase.plots.plot_style import style_plot
+        from linac_gen_gui.interphase.plots.plot_style import (
+            fix_plot_range, style_plot)
         self._pattern_plot = pg.PlotWidget()
         style_plot(self._pattern_plot, "", "")
+        # y is a 0/1 fill: a designed frame (the time axis keeps fitting)
+        fix_plot_range(self._pattern_plot, yrange=(-0.1, 1.1), padding=0)
         self._pattern_plot.setFixedHeight(96)
         self._pattern_plot.setLabel("bottom", "time in pulse [µs]")
         self._pattern_plot.hideAxis("left")          # y is just 0/1 fill
@@ -395,13 +398,13 @@ class TrainSummaryDialog(QDialog):
         row = QHBoxLayout()
         row.addWidget(QLabel("Quantity"))
         self._quantity = QComboBox()
-        self._quantity.currentTextChanged.connect(self._replot)
+        self._quantity.currentTextChanged.connect(self._on_choice)
         row.addWidget(self._quantity, stretch=1)
         self._us_axis = QCheckBox("time axis [µs]")
         self._us_axis.setToolTip(
             "Plot against time in the pulse (slot / bunch frequency) "
             "instead of slot index.")
-        self._us_axis.toggled.connect(self._replot)
+        self._us_axis.toggled.connect(self._on_choice)
         row.addWidget(self._us_axis)
         lay.addLayout(row)
         self._freq_MHz = 0.0
@@ -457,6 +460,8 @@ class TrainSummaryDialog(QDialog):
 
     # ------------------------------------------------------------------
     def set_results(self, results) -> None:
+        from linac_gen_gui.interphase.plots.plot_style import rearm_autorange
+        rearm_autorange(self._plot)     # new results: a new plot
         self._results = results
         self._series = {}
         self._prog.setVisible(False)
@@ -523,6 +528,12 @@ class TrainSummaryDialog(QDialog):
 
     #: results_tab popup contract name — kept for API symmetry.
     refresh = set_results
+
+    def _on_choice(self, *_a) -> None:
+        """Another quantity or time axis: a new plot, fitted to its data."""
+        from linac_gen_gui.interphase.plots.plot_style import rearm_autorange
+        rearm_autorange(self._plot)
+        self._replot()
 
     def _replot(self, *_a) -> None:
         self._plot.clear()

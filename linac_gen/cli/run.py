@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from linac_gen.cli import common
+from linac_gen.core.step_config import RFQ_SOLVERS
 
 _EXT = {"hdf5": ".h5", "openpmd": ".opmd.h5", "partran": ".txt"}
 
@@ -49,6 +50,20 @@ def add_arguments(p) -> None:
                         "sub-step diagnostics or aperture bookkeeping sits "
                         "between its sub-steps (losses located analytically); "
                         "default on, project value or off")
+    p.add_argument("--rfq-solver", choices=RFQ_SOLVERS,
+                   default=None, dest="rfq_solver",
+                   help="RFQ model for multiparticle runs: auto (the "
+                        "default: time_domain whenever that solver can run "
+                        "the lattice and beam, else cells, with a notice "
+                        "saying why), cells (one RFQ_CELL at a time along "
+                        "z) or time_domain (the whole RFQ tracked in time "
+                        "through the 3-D field of its vanes: the RFQ_GEOM "
+                        "vane file, else vanes built from the RFQ_CELL "
+                        "cards; a case it cannot run is an error)")
+    p.add_argument("--rfq-td-steps", type=int, default=None,
+                   dest="rfq_td_steps",
+                   help="time-domain RFQ: leapfrog steps per RF period "
+                        "(default 48)")
     p.add_argument("--kernel", help="PIC deposit kernel (cic / tsc)")
     p.add_argument("--sc-method", dest="sc_method", metavar="NAME",
                    action=common.ScMethodAction,
@@ -97,6 +112,7 @@ def _cli_overrides(args) -> dict:
         "step1": args.step1, "step2": args.step2,
         "drift_single_push": (None if args.drift_single_push is None
                               else args.drift_single_push == "on"),
+        "rfq_solver": args.rfq_solver, "rfq_td_steps": args.rfq_td_steps,
         "kernel": args.kernel, "backend": args.backend,
         "sc_method": args.sc_method,
         "fieldmap_sampling": args.fieldmap_sampling,
@@ -121,6 +137,7 @@ def run(args) -> int:
             common.apply_element_override(lattice, sel.strip(), val.strip())
         cli = _cli_overrides(args)
         common.check_sc_choice(cli, conv)
+        common.rfq_settings(conv, cli)          # a bad value fails here
         common.apply_fieldmap_settings(conv, cli)
     except (ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)

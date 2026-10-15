@@ -33,6 +33,10 @@ from linac_gen_gui.interphase.app_settings import make_settings
 from linac_gen_gui.interphase import theme
 from linac_gen_gui.interphase.icons import icon
 from linac_gen_gui.interphase.state import AppState
+from linac_gen.core.step_config import RFQ_SOLVERS
+
+#: StepConfig.rfq_solver value of each RFQ solver combo entry, in order
+_RFQ_SOLVER_VALUES = RFQ_SOLVERS
 
 
 # --- Axis vocabulary --------------------------------------------------------
@@ -222,6 +226,15 @@ class _ScanWorker(QThread):
         return replace(self.sc_base, nx=nx, ny=nx, nz=nx,
                        grid_extent=extent)
 
+    def _scan_rfq_fields(self) -> dict:
+        """The lattice's RFQ solver settings, for scan points."""
+        st = getattr(self.lattice, "step_config", None)
+        return dict(
+            rfq_solver=str(getattr(st, "rfq_solver", "auto")),
+            rfq_td_steps_per_period=int(getattr(st, "rfq_td_steps_per_period",
+                                                48)),
+            rfq_td_sc_every=int(getattr(st, "rfq_td_sc_every", 4)))
+
     def _scan_sc_overrides(self) -> tuple:
         """The tab's settings for pool workers, minus what a scan point
         carries itself (grid size, extent, device)."""
@@ -293,8 +306,12 @@ class _ScanWorker(QThread):
                 if n_part != self.cfg.n_particles:
                     cfg_i = replace(self.cfg, n_particles=int(n_part))
 
-                # Apply step config by mutating the lattice in place
-                self.lattice.step_config = StepConfig(
+                # Apply step config by mutating the lattice in place (the
+                # scan varies the step densities; every other StepConfig
+                # field, e.g. the RFQ solver, stays the tab's setting)
+                from dataclasses import replace as _replace
+                self.lattice.step_config = _replace(
+                    original_step,
                     integration_steps_per_metre=float(step1),
                     sc_steps_per_metre=float(step2),
                     drift_single_push=self.fixed_drift_single_push,
@@ -365,6 +382,7 @@ class _ScanWorker(QThread):
                          else self.use_gpu),
                 sc_overrides=self._scan_sc_overrides(),
                 drift_single_push=self.fixed_drift_single_push,
+                **self._scan_rfq_fields(),
                 # a MAD8 deck re-parsed by the worker keeps the rigidity it
                 # was loaded with, whatever the Beam tab says now
                 lattice_beam=getattr(self.lattice, "mad8_import_beam", None),
@@ -447,6 +465,38 @@ class ConvergenceTab(QWidget):
             "Untick to keep the sub-stepped walk in every case (results as in HELIX\n"
             "1.9.1).  Note: with this on, a step1 convergence scan at zero current\n"
             "only probes field maps — drifts no longer move.")
+        # RFQ solver for multiparticle runs (StepConfig.rfq_solver), in
+        # the order of _RFQ_SOLVER_VALUES
+        self._rfq_solver = QComboBox()
+        self._rfq_solver.addItems(["Auto (time domain when possible)",
+                                   "Per cell (two-term model)",
+                                   "Time domain (3-D vane field)"])
+        self._rfq_solver.setToolTip(
+            "How multiparticle runs track an RFQ.\n"
+            "Auto (default): time domain whenever it can run the lattice\n"
+            "and beam, otherwise per cell, with a log notice that says why.\n"
+            "Per cell: one RFQ_CELL element at a time along z, with the\n"
+            "two-term cell model (also used by envelope runs and\n"
+            "backtracking).\n"
+            "Time domain: the whole RFQ tracked in time through the 3-D\n"
+            "field of its vanes (the deck's RFQ_GEOM .vane file, else vanes\n"
+            "built from the RFQ_CELL cards), with space charge of the bunch\n"
+            "train and losses on the electrodes -- the Toutatis approach; a\n"
+            "case it cannot run stops the run with the reason.\n"
+            "Only the RFQ cells change solver: the rest of the lattice is\n"
+            "tracked as before.  The field map is built once per RFQ (a few\n"
+            "minutes) and cached.")
+        self._rfq_td_steps = QSpinBox()
+        self._rfq_td_steps.setRange(8, 1000)
+        self._rfq_td_steps.setValue(48)
+        self._rfq_td_steps.setSuffix(" / RF period")
+        self._rfq_td_steps.setToolTip(
+            "Time-domain RFQ: leapfrog steps per RF period (48 is converged:\n"
+            "96 gives the same transmission and emittances).")
+        self._rfq_td_sc_every = 4      # no control; kept from project/lattice
+        self._rfq_solver.currentIndexChanged.connect(self._on_rfq_solver)
+        self._rfq_td_steps.valueChanged.connect(self._on_rfq_td_steps)
+        self._rfq_td_steps.setEnabled(True)     # "auto" may use them
         # PIC FFT backend.  'auto' picks GPU when cupy is installed and a
         # CUDA device is visible, else CPU.  'gpu' forces GPU and errors if
         # unavailable.  'cpu' disables GPU even if present.
@@ -834,6 +884,8 @@ class ConvergenceTab(QWidget):
         sec_step.addRow("Base step1 (integration)", self._fixed_step1)
         sec_step.addRow("Base step2 (SC kicks)",    self._fixed_step2)
         sec_step.addRow(self._drift_single_push)
+        sec_step.addRow("RFQ solver", self._rfq_solver)
+        sec_step.addRow("RFQ time steps", self._rfq_td_steps)
         # Switching to "Custom" on any manual edit -- otherwise the
         # preset label and the spinbox values would drift apart silently.
         self._fixed_step1.valueChanged.connect(self._on_step_manual_edit)
@@ -1104,6 +1156,8 @@ class ConvergenceTab(QWidget):
         self._apply_fieldmap_sampling()
         self._fixed_csr.toggled.connect(_mark_dirty)
         self._drift_single_push.toggled.connect(_mark_dirty)
+        self._rfq_solver.currentIndexChanged.connect(_mark_dirty)
+        self._rfq_td_steps.valueChanged.connect(_mark_dirty)
         # snapshot controls are serialized into the project too
         self._snapshot_every_n.valueChanged.connect(_mark_dirty)
         self._snapshot_elements.textChanged.connect(_mark_dirty)
@@ -1364,7 +1418,69 @@ class ConvergenceTab(QWidget):
             integration_steps_per_metre=float(self._fixed_step1.value()),
             sc_steps_per_metre=float(self._fixed_step2.value()),
             drift_single_push=bool(self._drift_single_push.isChecked()),
+            **self.current_rfq_settings(),
         )
+
+    def _on_rfq_solver(self, index: int) -> None:
+        try:
+            self._rfq_td_steps.setEnabled(
+                _RFQ_SOLVER_VALUES[int(index)] != "cells")
+        except RuntimeError:
+            return                                  # widget destroyed
+        self._write_rfq_to_lattice()
+
+    def _on_rfq_td_steps(self, _value: int) -> None:
+        try:
+            self._write_rfq_to_lattice()
+        except RuntimeError:
+            pass                                    # widget destroyed
+
+    def current_rfq_solver(self) -> str:
+        """``"auto"``, ``"cells"`` or ``"time_domain"`` from the RFQ solver
+        combo."""
+        return _RFQ_SOLVER_VALUES[max(0, self._rfq_solver.currentIndex())]
+
+    def current_rfq_settings(self) -> dict:
+        """The RFQ solver fields of ``StepConfig`` these settings describe
+        (the space-charge interval has no control; it is kept from the
+        project or lattice)."""
+        return dict(rfq_solver=self.current_rfq_solver(),
+                    rfq_td_steps_per_period=int(self._rfq_td_steps.value()),
+                    rfq_td_sc_every=int(self._rfq_td_sc_every))
+
+    def set_rfq_solver(self, solver: str, steps: int | None = None,
+                       sc_every: int | None = None) -> None:
+        """Show a StepConfig's RFQ settings without marking the tab dirty."""
+        for w in (self._rfq_solver, self._rfq_td_steps):
+            w.blockSignals(True)
+        value = str(solver).strip().lower().replace("-", "_")
+        self._rfq_solver.setCurrentIndex(
+            _RFQ_SOLVER_VALUES.index(value)
+            if value in _RFQ_SOLVER_VALUES else 0)
+        if steps is not None:
+            self._rfq_td_steps.setValue(int(steps))
+        if sc_every is not None:
+            self._rfq_td_sc_every = int(sc_every)
+        self._rfq_td_steps.setEnabled(self.current_rfq_solver() != "cells")
+        for w in (self._rfq_solver, self._rfq_td_steps):
+            w.blockSignals(False)
+        self._write_rfq_to_lattice()
+
+    def _write_rfq_to_lattice(self) -> None:
+        """Keep the live lattice's StepConfig on the RFQ settings shown.
+
+        Every GUI run path reads ``lattice.step_config`` (error, failure
+        and parameter studies copy the lattice), and a lattice edit
+        re-syncs this tab from it -- so the choice is written as soon as
+        it is made, or an edit would silently put the combo back."""
+        lat = getattr(self.state, "lattice", None)
+        st = getattr(lat, "step_config", None)
+        if st is None:
+            return
+        from dataclasses import replace
+        new = self.current_rfq_settings()
+        if any(getattr(st, k, None) != v for k, v in new.items()):
+            lat.step_config = replace(st, **new)
 
     def current_sc_config(self, current: float, *, continuous: bool = False):
         """Build the SpaceChargeConfig these settings describe.
@@ -1506,6 +1622,10 @@ class ConvergenceTab(QWidget):
         self._drift_single_push.blockSignals(True)
         self._drift_single_push.setChecked(bool(getattr(sc, "drift_single_push", True)))
         self._drift_single_push.blockSignals(False)
+        # The RFQ solver is a run setting, not lattice data (a lattice file
+        # never carries it): a new or re-loaded lattice takes the tab's
+        # choice instead of resetting it (a project load sets it after)
+        self._write_rfq_to_lattice()
         # Detect which preset (if any) the project matches.
         self._step_preset.blockSignals(True)
         if (s1, s2) == (100.0, 50.0):
@@ -1575,6 +1695,9 @@ class ConvergenceTab(QWidget):
             for c in range(1, 7):
                 self._table.setItem(r, c, QTableWidgetItem("—"))
         self._curve_ex.setData([], []); self._curve_sy.setData([], [])
+        # a new scan: a new plot, fitted to its points as they arrive
+        from linac_gen_gui.interphase.plots.plot_style import rearm_autorange
+        rearm_autorange(self._plot)
         self._progress.setValue(0)
         self._badge.setText("running…")
         self._apply_btn.setEnabled(False)

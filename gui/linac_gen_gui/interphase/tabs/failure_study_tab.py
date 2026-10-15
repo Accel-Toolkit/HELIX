@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
 )
 
 from linac_gen_gui.interphase import theme
+from linac_gen_gui.interphase.plots.plot_style import rearm_autorange
 from linac_gen_gui.interphase.state import AppState
 
 _TYPE_LABELS = [("cavity", "Cavity"), ("quad", "Quad"),
@@ -330,7 +331,6 @@ class FailureStudyTab(QWidget):
             self._heat_cbar.setImageItem(self._heat_img, insert_in=self._heat.plotItem)
         except Exception:                      # noqa: BLE001 — degrade gracefully
             self._heat_cbar = None
-        self._heat_ranged = False
         rsplit.addWidget(self._heat)
         rsplit.setSizes([260, 200, 200])
         root.addWidget(rsplit, stretch=1)
@@ -389,7 +389,6 @@ class FailureStudyTab(QWidget):
             combo = self._combo.currentText()
             self._run_combo = combo
             self._pair_mat = None
-            self._heat_ranged = False
             # empty selection ("none = all") must mean None, not an empty filter
             only = (self._selected_names() or None) if combo != "custom" else None
             comp_cfg = CompensationConfig(
@@ -471,7 +470,6 @@ class FailureStudyTab(QWidget):
         self._heat.getAxis("bottom").setTicks(None)
         self._heat.getAxis("left").setTicks(None)
         self._heat.setTitle("")
-        self._heat_ranged = False
 
     def _render_heatmap(self, M, names):
         """Draw the N×N pair-criticality matrix with element-name ticks, a
@@ -498,13 +496,13 @@ class FailureStudyTab(QWidget):
         self._heat.getAxis("left").setTicks(
             self._thinned_ticks(labels, max(1, -(-N // 40))))   # ≤ ~40 down
         self._heat.setTitle("pair-failure criticality")
-        if not self._heat_ranged:              # fit the view once
-            vb = self._heat.getViewBox()
-            # do NOT lock aspect: a square N×N image in the wide/short pane
-            # would scale to the short side and sit as a band in the centre.
-            vb.setAspectLocked(False)
-            vb.setRange(xRange=(0, N), yRange=(0, N), padding=0.02)
-            self._heat_ranged = True
+        vb = self._heat.getViewBox()
+        # do NOT lock aspect: a square N×N image in the wide/short pane
+        # would scale to the short side and sit as a band in the centre.
+        vb.setAspectLocked(False)
+        # auto-range (re-armed when the study starts) fits the N×N image and
+        # keeps a zoom made during the run; updated now, not at first paint
+        vb.updateAutoRange()
 
     def _bar_label(self, im) -> str:
         """Short element/scenario label for a bar tick (FMAP_016 -> 016, pair
@@ -515,8 +513,9 @@ class FailureStudyTab(QWidget):
     def _render_bar(self, impacts):
         """Criticality bar: top-15 worst impacts so far (worst on the left),
         each tick labelled with its element(s). Shared by the live incremental
-        fill and the final render; sets the Y-range explicitly (a BarGraphItem
-        does not auto-range the view)."""
+        fill and the final render; framed by auto-range (re-armed when the
+        study starts, so a zoom made during the run is kept), updated at
+        once rather than at the first paint."""
         self._bar.clear()
         top = sorted(impacts, key=lambda im: im.criticality, reverse=True)[:15]
         ys = [float(im.criticality) for im in top]
@@ -528,9 +527,7 @@ class FailureStudyTab(QWidget):
                                           brush=theme.ACCENT))
         self._bar.getAxis("bottom").setTicks(
             [[(i, self._bar_label(top[i])) for i in range(len(top))]])
-        ymax = max(ys) or 1.0
-        self._bar.setXRange(-0.6, len(ys) - 0.4, padding=0)
-        self._bar.setYRange(0.0, ymax * 1.08, padding=0)
+        self._bar.getViewBox().updateAutoRange()
 
     def _on_progress(self, done, total):
         self._progress.setValue(int(100 * done / max(1, total)))
@@ -538,6 +535,7 @@ class FailureStudyTab(QWidget):
 
     def _on_prepared(self, names, total):
         """Worker has enumerated: set up the live pair matrix + count/hint."""
+        rearm_autorange(self)                  # a new study: new plots
         self._status.setText(f"running… 0/{total}")
         self._seen_impacts = []
         self._bar.clear()
@@ -549,7 +547,6 @@ class FailureStudyTab(QWidget):
             self._pair_idx = {n: i for i, n in enumerate(names)}
             n = len(names)
             self._pair_mat = np.full((n, n), np.nan)
-            self._heat_ranged = False
             self._render_heatmap(self._pair_mat, self._pair_names)
             if total > 60:
                 self._status.setText(

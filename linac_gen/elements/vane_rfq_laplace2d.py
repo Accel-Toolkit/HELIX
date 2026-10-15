@@ -333,14 +333,16 @@ class Laplace2DCache:
         self.z_m = vane.z[idx].copy()             # m  (internal)
 
         # Per-slice apertures & voltages (m, V).
-        self._a1 = np.asarray(vane.aperture_v1[idx], dtype=float)
-        self._a2 = np.asarray(vane.aperture_v2[idx], dtype=float)
-        self._a3 = np.asarray(vane.aperture_v3[idx], dtype=float)
-        self._a4 = np.asarray(vane.aperture_v4[idx], dtype=float)
-        self._V1 = np.asarray(vane.voltage_v1[idx], dtype=float)
-        self._V2 = np.asarray(vane.voltage_v2[idx], dtype=float)
-        self._V3 = np.asarray(vane.voltage_v3[idx], dtype=float)
-        self._V4 = np.asarray(vane.voltage_v4[idx], dtype=float)
+        # mask slots 1..4 = +x, +y, -x, -y (_vane_masks); the file's
+        # pole numbering differs (pole 1 = +y) -- use the plane accessors
+        self._a1 = np.asarray(vane.aperture_x[idx], dtype=float)
+        self._a2 = np.asarray(vane.aperture_y[idx], dtype=float)
+        self._a3 = np.asarray(vane.aperture_mx[idx], dtype=float)
+        self._a4 = np.asarray(vane.aperture_my[idx], dtype=float)
+        self._V1 = np.asarray(vane.voltage_x[idx], dtype=float)
+        self._V2 = np.asarray(vane.voltage_y[idx], dtype=float)
+        self._V3 = np.asarray(vane.voltage_mx[idx], dtype=float)
+        self._V4 = np.asarray(vane.voltage_my[idx], dtype=float)
 
         # ---- transverse grid -----------------------------------------
         a_max_m = float(np.max([self._a1.max(), self._a2.max(),

@@ -23,7 +23,8 @@ from pathlib import Path
 import numpy as np
 import pyqtgraph as pg
 
-from linac_gen_gui.interphase.plots.plot_style import HelixItemSample
+from linac_gen_gui.interphase.plots.plot_style import (
+    HelixItemSample, rearm_autorange)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QGridLayout,
@@ -285,9 +286,15 @@ class _Plot1DPanel(QWidget):
         self.plot.addLegend(offset=(10, 10), sampleType=HelixItemSample)
         v.addWidget(self.plot)
         for w_ in (self.x, self.y, self.group):
-            w_.currentTextChanged.connect(self.redraw)
-        self.logx.toggled.connect(self.redraw)
-        self.logy.toggled.connect(self.redraw)
+            w_.currentTextChanged.connect(self._on_choice)
+        self.logx.toggled.connect(self._on_choice)
+        self.logy.toggled.connect(self._on_choice)
+
+    def _on_choice(self, *_a) -> None:
+        """Another quantity or scale: a new plot, fitted to its data (a
+        study run finishing only redraws, keeping any zoom)."""
+        rearm_autorange(self.plot)
+        self.redraw()
 
     def refresh_choices(self) -> None:
         m = self.model
@@ -351,7 +358,12 @@ class _Plot2DPanel(QWidget):
         v.addWidget(self.plot)
         self._cbar = None
         for w_ in (self.x, self.y, self.z):
-            w_.currentTextChanged.connect(self.redraw)
+            w_.currentTextChanged.connect(self._on_choice)
+
+    def _on_choice(self, *_a) -> None:
+        """Another quantity: a new plot, fitted to its data."""
+        rearm_autorange(self.plot)
+        self.redraw()
 
     def refresh_choices(self) -> None:
         m = self.model
@@ -440,14 +452,19 @@ class _OverlayPanel(QWidget):
         left.addWidget(QLabel("Quantity"))
         left.addWidget(self.qty)
         draw = QPushButton("Draw")
-        draw.clicked.connect(self.redraw)
+        draw.clicked.connect(self._on_choice)
         left.addWidget(draw)
         h.addLayout(left)
         self.plot = pg.PlotWidget(background="k")
         self.plot.showGrid(x=True, y=True, alpha=0.25)
         self.plot.addLegend(offset=(10, 10), sampleType=HelixItemSample)
         h.addWidget(self.plot, stretch=1)
-        self.qty.currentTextChanged.connect(self.redraw)
+        self.qty.currentTextChanged.connect(self._on_choice)
+
+    def _on_choice(self, *_a) -> None:
+        """Other runs or another quantity: a new plot, fitted to its data."""
+        rearm_autorange(self.plot)
+        self.redraw()
 
     def refresh_choices(self) -> None:
         self.runs.clear()
@@ -492,7 +509,12 @@ class StudyAnalysisPanel(QTabWidget):
         self.addTab(self.p2d, "Map")
         self.addTab(self.overlay, "Overlay σ(z)")
 
-    def load_study(self, study_dir) -> None:
+    def load_study(self, study_dir, new_plot: bool = True) -> None:
+        """Load (or reload) a study and redraw.  ``new_plot``: a study
+        started or opened -- every plot fits its data; False for the reload
+        after each finished run, which keeps any zoom."""
+        if new_plot:
+            rearm_autorange(self)
         self.model.load(study_dir)
         self.refresh_all()
 

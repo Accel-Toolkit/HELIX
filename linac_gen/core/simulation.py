@@ -115,6 +115,8 @@ class Simulation:
         # The PIC solver of the last forward run() — run_backtrack()
         # reuses it so a fixed-grid solver undoes its own kicks exactly.
         self._pic_solver = None
+        # (solver, note) of the RFQ for the current run(), set by run()
+        self._rfq_solver = None
 
     def _suspend_rfq_geometry(self) -> list:
         """rfq_geometry="off": stash any armed profile for this run."""
@@ -137,6 +139,15 @@ class Simulation:
         explicitly via apply_rfq_geometry() are never touched.
         """
         if self.rfq_geometry == "off":
+            return []
+        if self._rfq_solver is None:
+            self._rfq_solver = self._resolve_rfq_solver()
+        if self._rfq_solver[0] == "time_domain":
+            # the time-domain solver tracks the RFQ in place of its cells,
+            # so their vane-geometry profile would have no effect
+            if self.rfq_geometry != "auto":
+                _log.info("rfq_geometry=%r has no effect with the "
+                          "time-domain RFQ solver", self.rfq_geometry)
             return []
         vane = getattr(self.lattice, "rfq_geom_file", None)
         if not vane:
@@ -189,8 +200,31 @@ class Simulation:
             "classic card model.", os.path.basename(str(vane)), n, mode)
         return [c for c in cells if c._geom_z is not None]
 
+    def _resolve_rfq_solver(self):
+        """``(solver, note)`` for this run's RFQ: StepConfig.rfq_solver with
+        "auto" resolved (:func:`linac_gen.rfq_td.chain.resolve_rfq_solver`);
+        ``(None, None)`` without RFQ cells.  An ``rfq_geometry`` other than
+        "auto" sets up the per-cell model's vane geometry ("off": the card
+        model): "auto" keeps the per-cell model for it."""
+        from linac_gen.elements.rfq_cell import RfqCell
+        if not any(isinstance(e, RfqCell) for e in self.lattice.elements):
+            return None, None
+        from linac_gen.rfq_td.chain import keep_cells, resolve_rfq_solver
+        if (getattr(getattr(self.lattice, "step_config", None),
+                    "rfq_solver", "auto") == "auto"
+                and self.rfq_geometry != "auto"):
+            return keep_cells(self.lattice, f"rfq_geometry="
+                              f"{self.rfq_geometry!r} sets up the per-cell "
+                              "model", quiet=True)
+        return resolve_rfq_solver(self.lattice, self.beam,
+                                  self.element_entry_hook,
+                                  self.element_exit_hook)
+
     def run(self):
         from linac_gen.parallel.threads import run_scope
+        # decided before the vane profile is armed: a time-domain run
+        # tracks the RFQ without it, a per-cell run with it
+        self._rfq_solver = self._resolve_rfq_solver()
         suspended = (self._suspend_rfq_geometry()
                      if self.rfq_geometry == "off" else [])
         armed = self._arm_rfq_geometry()
@@ -254,6 +288,8 @@ class Simulation:
         if self.record_action_scan:
             tracker.recorder.configure_action_scan()
         self._pic_solver = pic
+        if self._rfq_solver is not None:
+            tracker.rfq_solver_resolved = self._rfq_solver
         self._results = tracker.run()
         # Attach the per-particle loss record to the results: every loss
         # site already calls Beam.record_loss (aperture, RFQ boundary,

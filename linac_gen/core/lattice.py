@@ -21,6 +21,11 @@ class Lattice:
         # (Simulation(rfq_geometry=...)); envelope/matrix runs stay on
         # the cards, mirroring TraceWin's own mode split.
         self.rfq_geom_file: str | None = None
+        # RFQ_GAP_RMS_FFS operands (mm): the gap between the entrance
+        # plate and the vane start, and between the vane end and the exit
+        # plate.  Used by the time-domain RFQ solver; None when the deck
+        # has no such card.
+        self.rfq_gaps_mm: tuple | None = None
         # Beam-error specs from ``ERROR_BEAM_STAT`` — perturbation sigmas /
         # half-widths on BeamConfig per seed.  See linac_gen.errors for shape.
         self.beam_errors: list = []

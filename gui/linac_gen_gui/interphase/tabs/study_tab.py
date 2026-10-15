@@ -352,6 +352,20 @@ class StudyTab(QWidget):
                                and getattr(sc, f.name) is not None}
             except Exception:                           # noqa: BLE001
                 pass
+        # the RFQ solver chosen on the Numerics tab (kept on the lattice's
+        # StepConfig); the default needs no key
+        from linac_gen.core.step_config import StepConfig
+        st = getattr(self.state.lattice, "step_config", None)
+        if st is not None and (
+                getattr(st, "rfq_solver", StepConfig().rfq_solver)
+                != StepConfig().rfq_solver
+                or int(getattr(st, "rfq_td_steps_per_period", 48))
+                != StepConfig().rfq_td_steps_per_period
+                or int(getattr(st, "rfq_td_sc_every", 4))
+                != StepConfig().rfq_td_sc_every):
+            numerics.update(rfq_solver=st.rfq_solver,
+                            rfq_td_steps=int(st.rfq_td_steps_per_period),
+                            rfq_td_sc_every=int(st.rfq_td_sc_every))
         return StudySpec(
             name=self._name.text().strip() or "study",
             input=str(self.state.lattice_path or ""),
@@ -484,7 +498,8 @@ class StudyTab(QWidget):
         if self._study_dir is None:
             return
         try:
-            self._analysis.load_study(self._study_dir)
+            self._analysis.load_study(self._study_dir,
+                                      new_plot=False)
         except Exception:                               # noqa: BLE001
             pass
 
@@ -512,7 +527,8 @@ class StudyTab(QWidget):
              f"complete — summary in {self._study_dir}/summary/"))
         if self._study_dir is not None:
             try:
-                self._analysis.load_study(self._study_dir)
+                self._analysis.load_study(self._study_dir,
+                                          new_plot=False)
             except Exception:                           # noqa: BLE001
                 pass
         self._finish_ui()

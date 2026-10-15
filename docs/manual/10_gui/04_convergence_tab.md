@@ -23,7 +23,22 @@ state is persisted per user across sessions:
   once when nothing sits between its sub-steps, and a loss inside it
   is located exactly on the particle's straight line; untick it to
   keep the sub-stepped walk of HELIX ≤ 1.9.1.  With it on, a step1
-  scan at zero current only probes field maps.
+  scan at zero current only probes field maps.  **RFQ solver**: *Auto
+  (time domain when possible)* (default) tracks the RFQ in time
+  whenever the time-domain solver can run the lattice and beam, and
+  otherwise cell by cell, with a log notice that says why; *Per cell
+  (two-term model)* tracks an RFQ one `RFQ_CELL` at a time along z;
+  *Time domain (3-D vane field)* always tracks the whole RFQ in time
+  through the field of its vanes and stops a run it cannot do.  **RFQ
+  time steps** per RF period (default 48) apply whenever the
+  time-domain solver runs — see [Time-domain RFQ solver](../03_elements/20_rfq_time_domain.md).
+  Only the RFQ cells change solver; the rest of the lattice is tracked
+  as before.
+  The choice applies to multiparticle runs from every tab (toolbar run,
+  scans, matching, error, failure and parameter studies); envelope runs
+  and backtracking keep the per-cell model.  It is a run setting, not
+  part of the lattice: loading or re-applying a lattice keeps it, and a
+  project sets it (per cell when the project does not say).
 * **Space charge & PIC** — **Space-charge method**: a named
   [method](../05_space_charge/08_methods.md) with its label and a
   one-line summary.  Choosing one sets the settings that define it
@@ -115,7 +130,7 @@ physics paper.  E.g. the IGF tooltip cites Qiang et al. 2006.
 
 Every "fixed" setting in this tab (PIC grid, SC engine, Green's
 function, particle-mesh kernel, integrator, interp, step1 / step2,
-single-push drifts, CSR flag) is serialised into the `.lgproj` JSON.  Changing any of
+single-push drifts, RFQ solver, CSR flag) is serialised into the `.lgproj` JSON.  Changing any of
 them marks the project as dirty so closing without Save Project
 triggers a warning.  Section-collapse toggles and scan-axis widgets
 don't flag the project — collapse states persist per user via

@@ -352,6 +352,9 @@ def _open_project_sc_previous():
     return _NO_SC_PREVIOUS
 
 from linac_gen_gui.interphase import theme
+# Before any plot exists: View All and the "A" button keep plots fitting
+# (plot_style patches pyqtgraph's slots, which PyQt binds per plot).
+from linac_gen_gui.interphase.plots import plot_style as _plot_style  # noqa: F401
 from linac_gen_gui.interphase.icons import icon
 from linac_gen_gui.interphase.scrollwrap import scroll_wrap
 from linac_gen_gui.interphase.state import AppState, TABS
@@ -1476,6 +1479,7 @@ class InterphaseWindow(QMainWindow):
             "density_extent":   float(ct._density_extent.value()),
             "csr_enabled":      bool(ct._fixed_csr.isChecked()),
             "drift_single_push": bool(ct._drift_single_push.isChecked()),
+            **ct.current_rfq_settings(),
         }
         # The undo record of scripts/sc_method_migrate.py --switch is not
         # shown in the tab; keep it from the open project's file so that
@@ -1655,6 +1659,30 @@ class InterphaseWindow(QMainWindow):
             if "drift_single_push" in conv:
                 from linac_gen.cli.common import _as_bool
                 ct._drift_single_push.setChecked(_as_bool(conv["drift_single_push"]))
+            # RFQ solver: like space charge, a key the project does not
+            # store gets its default, never the previous project's
+            from linac_gen.core.step_config import StepConfig as _Step
+            _d = _Step()
+            try:
+                _st = _Step(
+                    rfq_solver=conv.get("rfq_solver", _d.rfq_solver),
+                    rfq_td_steps_per_period=int(conv.get(
+                        "rfq_td_steps_per_period",
+                        _d.rfq_td_steps_per_period)),
+                    rfq_td_sc_every=int(conv.get("rfq_td_sc_every",
+                                                 _d.rfq_td_sc_every)))
+            except (TypeError, ValueError) as exc:
+                _st = _d
+                _warn("Numerics", f"RFQ solver setting in project is "
+                      f"invalid:\n{exc}\nShown instead: the default "
+                      f"({_d.rfq_solver}).")
+            ct.set_rfq_solver(_st.rfq_solver, _st.rfq_td_steps_per_period,
+                              _st.rfq_td_sc_every)
+            if ct._rfq_td_steps.value() != _st.rfq_td_steps_per_period:
+                _warn("Numerics",
+                      f"RFQ time steps {_st.rfq_td_steps_per_period} per RF "
+                      "period is outside the control's range; shown and "
+                      f"used: {ct._rfq_td_steps.value()}.")
             if "snapshot_every_n" in conv:
                 ct._snapshot_every_n.setValue(int(conv["snapshot_every_n"]))
             if "snapshot_elements" in conv:
@@ -2400,6 +2428,8 @@ class InterphaseWindow(QMainWindow):
         self._mp_worker.finished_ok.connect(self._mp_done)
         self._mp_worker.failed.connect(self._env_fail)
         self._mp_worker.aborted.connect(self._mp_aborted)
+        # time-domain RFQ: field-map build / tracking lines to the status bar
+        self._mp_worker.status.connect(self.state.status_message)
         self._mp_worker.start()
 
     def _mp_done(self, results) -> None:

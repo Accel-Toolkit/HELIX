@@ -69,7 +69,7 @@ project file as the baseline, and vary only what changes from the shell.
 |---|---|---|
 | **Beam** | any `BeamConfig` field | `--current 5` · `--beam emit_nx=0.3` |
 | **Element** | any element parameter | `--set QF.gradient=8.5` · `--set @12.angle=10` |
-| **Convergence / PIC** | step density, grid, kernel, backend | `--nx 64` · `--step1 100` · `--sc green_kind=point` (the single-push drift option comes from the project file's `drift_single_push` key) |
+| **Convergence / PIC** | step density, grid, kernel, backend | `--nx 64` · `--step1 100` · `--sc green_kind=point` (the single-push drift option and the RFQ solver come from the project file's `drift_single_push` and `rfq_solver` keys) |
 
 An **element selector** is `NAME.attr` (the element whose `.name` is
 `NAME`) or `@N.attr` (the N-th element, 1-based, over `lattice.elements`).

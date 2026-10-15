@@ -51,7 +51,9 @@ def ref():
 
 def _flat_vane(L_mm: float, n: int = 50,
                a_m: float = 5.0e-3, V: float = 60_000.0) -> VaneGeometry:
-    """Synthetic constant-aperture matcher vane (m=1 everywhere)."""
+    """Synthetic constant-aperture matcher vane (m=1 everywhere), x-pair
+    at +V/2 and y-pair at -V/2.  File pole numbering: pole 1 = +y,
+    pole 2 = +x, pole 3 = -y, pole 4 = -x."""
     z = np.linspace(0.0, L_mm * 1e-3, n)
     a = np.full_like(z, a_m)
     Tc = np.full_like(z, 4.183e-3)
@@ -60,10 +62,10 @@ def _flat_vane(L_mm: float, n: int = 50,
     Vn = np.full_like(z, -V * 0.5)
     return VaneGeometry(
         z=z,
-        aperture_v1=a, Tc_v1=Tc, voltage_v1=Vp, flag_v1=flag,
-        aperture_v2=a, Tc_v2=Tc, voltage_v2=Vn, flag_v2=flag,
-        aperture_v3=a, Tc_v3=Tc, voltage_v3=Vp, flag_v3=flag,
-        aperture_v4=a, Tc_v4=Tc, voltage_v4=Vn, flag_v4=flag,
+        aperture_v1=a, Tc_v1=Tc, voltage_v1=Vn, flag_v1=flag,
+        aperture_v2=a, Tc_v2=Tc, voltage_v2=Vp, flag_v2=flag,
+        aperture_v3=a, Tc_v3=Tc, voltage_v3=Vn, flag_v3=flag,
+        aperture_v4=a, Tc_v4=Tc, voltage_v4=Vp, flag_v4=flag,
     )
 
 

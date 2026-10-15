@@ -12,8 +12,10 @@ import sys
 from pathlib import Path
 
 from linac_gen.cli import common
+from linac_gen.core.step_config import RFQ_SOLVERS
 
-_STRUCTURAL = ("nx", "grid_extent", "step1", "step2", "drift_single_push")
+_STRUCTURAL = ("nx", "grid_extent", "step1", "step2", "drift_single_push",
+               "rfq_td_steps")
 _METRICS = ("sigma_x", "sigma_y", "sigma_phi", "sigma_w", "emit_x", "emit_y",
             "emit_z", "transmission", "ref_w_kin", "x_max", "y_max",
             "elapsed")
@@ -27,8 +29,8 @@ def add_arguments(p) -> None:
                    metavar="VAR=start:stop:step",
                    help="variable to sweep (repeatable → Cartesian product); "
                         "VAR is a beam field, nx/grid_extent/step1/step2/"
-                        "drift_single_push (0 or 1), or an element param "
-                        "ELEM.attr.  Also VAR=v1,v2,v3")
+                        "drift_single_push (0 or 1)/rfq_td_steps, or an "
+                        "element param ELEM.attr.  Also VAR=v1,v2,v3")
     p.add_argument("--out", default="scan.csv", help="CSV output (default scan.csv)")
     p.add_argument("--mode", choices=("envelope", "mp"), default="envelope",
                    help="solver mode (default envelope)")
@@ -57,6 +59,12 @@ def add_arguments(p) -> None:
                         "sub-step diagnostics or aperture bookkeeping sits "
                         "between its sub-steps (losses located analytically); "
                         "default on, project value or off")
+    p.add_argument("--rfq-solver", choices=RFQ_SOLVERS,
+                   default=None, dest="rfq_solver",
+                   help="RFQ model for multiparticle points (see `run`)")
+    p.add_argument("--rfq-td-steps", type=int, default=None,
+                   dest="rfq_td_steps",
+                   help="time-domain RFQ: leapfrog steps per RF period")
     p.add_argument("--backend", help="compute backend (auto / cpu / gpu)")
     p.add_argument("--kernel", help="fixed PIC deposit kernel (cic / tsc)")
     p.add_argument("--sc-method", dest="sc_method", metavar="NAME",
@@ -138,6 +146,8 @@ def run(args) -> int:
                      "step1": args.step1, "step2": args.step2,
                      "drift_single_push": (None if args.drift_single_push is None
                                            else args.drift_single_push == "on"),
+                     "rfq_solver": args.rfq_solver,
+                     "rfq_td_steps": args.rfq_td_steps,
                      "backend": args.backend}
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)

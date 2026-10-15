@@ -1360,18 +1360,28 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                                  # cell-local parameters off each RFQ_CELL
                                  # line directly.
                                  "RFQ_GEOM", "RFQ_GAP_RMS_FFS"):
-                    # TraceWin fit hints / RFQ vane setup: no transport
-                    # effect in HELIX.  Reported once per deck (below).
-                    # RFQ_GEOM's vane filename IS recorded — multiparticle
-                    # runs use it for the TW/Toutatis-faithful geometry
-                    # profile when the file exists (core/simulation.py).
+                    # TraceWin fit hints: no transport effect in HELIX,
+                    # reported once per deck (below).  The RFQ setup cards
+                    # are read: RFQ_GEOM's vane file feeds the vane-geometry
+                    # profile of multiparticle runs (core/simulation.py) and
+                    # the time-domain RFQ solver, RFQ_GAP_RMS_FFS's gaps the
+                    # latter (linac_gen/rfq_td).
                     if keyword == "RFQ_GEOM" and len(params) >= 2:
                         raw_vane = params[-1].strip("\'\"")
                         lattice.rfq_geom_file = os.path.abspath(
                             raw_vane if os.path.isabs(raw_vane)
                             else os.path.join(base_dir, raw_vane))
-                    noop_hint_counts[keyword] = (
-                        noop_hint_counts.get(keyword, 0) + 1)
+                    if keyword == "RFQ_GAP_RMS_FFS" and len(params) >= 2:
+                        # kept for the time-domain RFQ solver (the
+                        # per-cell model has no use for them)
+                        try:
+                            lattice.rfq_gaps_mm = (float(params[0]),
+                                                   float(params[1]))
+                        except ValueError:
+                            pass
+                    if keyword not in ("RFQ_GEOM", "RFQ_GAP_RMS_FFS"):
+                        noop_hint_counts[keyword] = (
+                            noop_hint_counts.get(keyword, 0) + 1)
                     lattice.add(Marker(next_name(keyword), snapshot=False))
 
                 elif keyword in (
@@ -1549,8 +1559,8 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
         cards = ", ".join(f"{k}×{v}"
                           for k, v in sorted(noop_hint_counts.items()))
         metadata["warnings"].append(
-            "Recognised no-op cards ignored (TraceWin fit hints / RFQ "
-            f"setup; no transport effect in HELIX): {cards}")
+            "Recognised no-op cards ignored (TraceWin fit hints; no "
+            f"transport effect in HELIX): {cards}")
 
     # Attach lg_options to the lattice itself so downstream consumers (GUI,
     # Simulation, run scripts) can find them without holding the metadata

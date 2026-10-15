@@ -68,7 +68,7 @@ MAX_THREADS = 1024
 
 #: The compiled modules whose OpenMP loops take the setting.
 KERNEL_MODULES = ("linac_gen._pic_kernels", "linac_gen._tsc_kernels",
-                  "linac_gen._fieldmap_kernels")
+                  "linac_gen._fieldmap_kernels", "linac_gen._rfq_td_kernels")
 
 #: Limit BLAS to one thread for the duration of a run (:func:`run_scope`).
 LIMIT_BLAS_IN_RUNS = True

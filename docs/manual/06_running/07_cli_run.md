@@ -52,6 +52,8 @@ or a `.lgproj` project.
 | `--step1` | float | integration steps per metre |
 | `--step2` | float | space-charge kicks per metre |
 | `--drift-single-push` | `on` \| `off` | push a field-free drift once when no space charge, sub-step diagnostics or phase fold sits between its sub-steps, losses located analytically (default: project value, else `on`; `off` = the sub-stepped walk of HELIX ≤ 1.9.1) |
+| `--rfq-solver` | `auto` \| `cells` \| `time_domain` | RFQ model for `mp` runs: `auto` (`time_domain` whenever that solver can run the lattice and beam, else `cells`, with a notice saying why), `cells` (one `RFQ_CELL` at a time along z) or `time_domain` (the whole RFQ tracked in time through the 3-D field of its vanes: the `RFQ_GEOM` vane file, else vanes built from the `RFQ_CELL` cards; a case it cannot run is an error — see [Time-domain RFQ solver](../03_elements/20_rfq_time_domain.md)); default: project value (`rfq_solver`), else `auto` |
+| `--rfq-td-steps` | int ≥ 8 | time-domain RFQ: leapfrog steps per RF period (default: project value `rfq_td_steps_per_period`, else 48) |
 | `--kernel` | `cic` \| `tsc` | PIC deposit kernel |
 | `--sc-method` | name \| `list` | a named [space-charge method](../05_space_charge/08_methods.md) (`list` prints them and exits); naming the project's own method keeps the project's settings, another method starts from its own defaults |
 | `--backend` | `auto` \| `cpu` \| `gpu` | compute backend |

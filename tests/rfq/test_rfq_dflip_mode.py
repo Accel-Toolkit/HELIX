@@ -87,14 +87,16 @@ class TestModeRegistration:
 
 
 class TestDflipAlgebra:
-    def test_dscale_one_is_the_negated_swap(self, tmp_path):
-        """gx' = -gy, gy' = -gx exactly (the e41 identity)."""
+    def test_dscale_one_is_per_plane(self, tmp_path):
+        """Since the 2026-10-13 pole-numbering fix the profile carries the
+        right D sign, so dflip at d_scale = 1 IS per_plane (before the
+        fix it was the negated x<->y swap of the rotated profile)."""
         pp = _armed_cells(tmp_path, "per_plane")
         df = _armed_cells(tmp_path, "per_plane_dflip", d_scale=1.0)
         for a, b in zip(pp, df):
-            np.testing.assert_allclose(b._geom_gx, -a._geom_gy,
+            np.testing.assert_allclose(b._geom_gx, a._geom_gx,
                                        rtol=1e-12, atol=1e-14)
-            np.testing.assert_allclose(b._geom_gy, -a._geom_gx,
+            np.testing.assert_allclose(b._geom_gy, a._geom_gy,
                                        rtol=1e-12, atol=1e-14)
 
     def test_general_dscale_matches_gd_split(self, tmp_path):
@@ -103,9 +105,9 @@ class TestDflipAlgebra:
         for a, b in zip(pp, df):
             g = 0.5 * (a._geom_gx - a._geom_gy)
             d = 0.5 * (a._geom_gx + a._geom_gy)
-            np.testing.assert_allclose(b._geom_gx, g - 1.23 * d,
+            np.testing.assert_allclose(b._geom_gx, g + 1.23 * d,
                                        rtol=1e-12, atol=1e-14)
-            np.testing.assert_allclose(b._geom_gy, -g - 1.23 * d,
+            np.testing.assert_allclose(b._geom_gy, -g + 1.23 * d,
                                        rtol=1e-12, atol=1e-14)
 
     def test_existing_modes_unchanged(self, tmp_path):
@@ -127,16 +129,18 @@ class TestAudit:
                              logger="linac_gen.io.rfq_geometry_helper"):
             _armed_cells(tmp_path, "per_plane")
         msgs = [r.message for r in caplog.records]
-        assert not any("KNOWN ISSUE" in m for m in msgs)
+        assert not any("OPPOSITE sign" in m for m in msgs)
         assert any("no net axisymmetric" in m for m in msgs)
 
     @pytest.mark.skipif(not os.path.isfile(PXIE_VANE),
                         reason="PXIE vane file not present (public "
                                "checkout / other machine)")
     def test_pxie_audit_pins_the_finding(self, caplog):
-        """The 2026-08-03 measurement, pinned: shipped per_plane is
-        sign-inverted in ~all scored cells at ~0.81x; dflip at the
-        audit-suggested 1.23 verifies at ratio ~1.00."""
+        """With the file's own pole numbering (pole 1 = +y, fixed
+        2026-10-13) per_plane's axisymmetric channel agrees in sign with
+        the cards' RF defocus in ~all scored cells, at the ~0.81x
+        magnitude measured on 2026-08-03 (when the rotated reading had
+        it inverted everywhere)."""
         deck = os.path.join(PXIE_DECK, "lebt_plus_rfq.dat")
         if not os.path.isfile(deck):
             pytest.skip("PXIE deck not present")
@@ -157,9 +161,10 @@ class TestAudit:
         finally:
             os.chdir(cwd)
         assert n > 150
-        assert frac < 0.05                      # inverted ~everywhere
+        assert frac > 0.95                      # right sign ~everywhere
         assert 0.70 < med < 0.90                # the 0.81x magnitude
-        assert any("KNOWN ISSUE" in r.message for r in caplog.records)
+        assert not any("OPPOSITE sign" in r.message
+                       for r in caplog.records)
 
     @pytest.mark.skipif(not os.path.isfile(PXIE_VANE),
                         reason="PXIE vane file not present (public "
@@ -192,4 +197,4 @@ class TestAudit:
         assert n > 150
         assert frac > 0.95
         assert 0.95 < med < 1.05
-        assert any("sign verified" in r.message for r in caplog.records)
+        assert any("audit clean" in r.message for r in caplog.records)

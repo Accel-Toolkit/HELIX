@@ -112,6 +112,7 @@ nav:
       - FieldMap3D: 03_elements/08_fieldmap3d.md
       - RfqCell: 03_elements/09_rfqcell.md
       - VaneRFQ: 03_elements/10_vanerfq.md
+      - Time-domain RFQ solver: 03_elements/20_rfq_time_domain.md
       - NCells: 03_elements/18_ncells.md
       - SuperposedFieldMap: 03_elements/19_superposedfieldmap.md
       - Multipole: 03_elements/11_multipole.md

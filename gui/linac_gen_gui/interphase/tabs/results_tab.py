@@ -36,7 +36,7 @@ from linac_gen_gui.interphase.plots.envelope_plot import EnvelopeTriple
 from linac_gen_gui.interphase.plots.plot_style import (
     style_plot, add_legend, curve_pen, filled_curve,
     density_heatmap, update_density, DensityPanel,
-    HelixItemSample, fix_plot_range,
+    HelixItemSample, fix_plot_range, rearm_autorange,
 )
 
 
@@ -45,6 +45,18 @@ def _mk_plot(ylabel: str, ylabel_units: str = "") -> pg.PlotWidget:
     style_plot(p, ylabel, ylabel_units)
     add_legend(p)
     return p
+
+
+def _frame_empty_strip(dlg) -> None:
+    """After a popup's refresh: a plot left with no data (no results yet,
+    or results cleared by a new lattice) is framed on the whole lattice by
+    its strip, instead of keeping the frame of the previous lattice."""
+    strip = getattr(dlg, "_lattice_strip", None)
+    if strip is not None:
+        try:
+            strip.frame_host_if_empty()
+        except RuntimeError:
+            pass
 
 
 class _LoadedResults:
@@ -318,8 +330,9 @@ class _PopupPlot(QDialog):
     # ------------------------------------------------------------------
     # Lattice-impression strip
     # ------------------------------------------------------------------
-    def attach_lattice_strip(self, main_plot) -> None:
-        """Insert a thin lattice-strip widget above ``main_plot``.
+    def attach_lattice_strip(self, main_plot, scale: float = 1.0) -> None:
+        """Insert a thin lattice-strip widget above ``main_plot``
+        (``scale``: plot x per lattice mm -- 1e-3 for a plot of s in m).
 
         Idempotent — calling twice is a no-op.  Reads the lattice from
         ``self.parent().state.lattice`` and subscribes to
@@ -345,7 +358,7 @@ class _PopupPlot(QDialog):
         from linac_gen_gui.interphase.plots.lattice_strip import (
             make_lattice_strip,
         )
-        strip = make_lattice_strip(self, main_plot, lattice)
+        strip = make_lattice_strip(self, main_plot, lattice, scale=scale)
         layout.insertWidget(idx, strip)
         self._lattice_strip = strip
 
@@ -355,6 +368,20 @@ class _PopupPlot(QDialog):
                 state.lattice_changed.connect(self._on_lattice_changed)
             except Exception:
                 pass
+
+    def _redraw_new(self, *_args) -> None:
+        """A selector picked another quantity, element, plane or range: a
+        new plot, fitted to its data (``_redraw`` alone keeps any zoom).
+        Combos refilled programmatically (``_suspend_signals``) only
+        redraw, as before."""
+        if not getattr(self, "_suspend_signals", False):
+            rearm_autorange(self)
+        self._redraw()
+
+    def _on_period_choice(self, *_args) -> None:
+        """Another period or cell definition: a new plot."""
+        rearm_autorange(self)
+        self.refresh_with_state()
 
     def _on_lattice_changed(self, new_lattice) -> None:
         """Slot for the parent state's ``lattice_changed`` signal."""
@@ -2662,7 +2689,6 @@ class _LatticeParamPopup(_PopupPlot):
             size=8, symbol="o",
         )
         self._plot.addItem(sc)
-        self._plot.autoRange()
 
     def _show_empty(self, msg: str) -> None:
         self._empty_lbl.setText(msg)
@@ -3175,7 +3201,7 @@ class _PhaseAdvancePopup(_CoupledWalkMixin, _PopupPlot):
         pr.addWidget(QLabel("Period:"))
         self._combo = QComboBox()
         self._combo.setMinimumWidth(280)
-        self._combo.currentIndexChanged.connect(self.refresh_with_state)
+        self._combo.currentIndexChanged.connect(self._on_period_choice)
         pr.addWidget(self._combo, stretch=1)
         recompute = QPushButton("Recompute")
         recompute.clicked.connect(self._recompute)
@@ -3295,6 +3321,7 @@ class _PhaseAdvancePopup(_CoupledWalkMixin, _PopupPlot):
         _coupled_drop_results(results)     # before the guard: hidden popups too
         if not self.isVisible():
             return
+        rearm_autorange(self)              # a new run: a new plot
         self.refresh(results)
 
     def _on_beam_changed(self, *_args) -> None:
@@ -4045,7 +4072,7 @@ class _TuneDepressionPopup(_CoupledWalkMixin, _PopupPlot):
         pr.addWidget(QLabel("Period:"))
         self._combo = QComboBox()
         self._combo.setMinimumWidth(280)
-        self._combo.currentIndexChanged.connect(self.refresh_with_state)
+        self._combo.currentIndexChanged.connect(self._on_period_choice)
         pr.addWidget(self._combo, stretch=1)
         recompute = QPushButton("Recompute")
         recompute.clicked.connect(self._recompute)
@@ -4748,8 +4775,8 @@ class _HofmannPopup(_PopupPlot):
             "k_z/k_x  vs  k_x/k_0x   (trajectory: one point per cell)", "")
         self._plot.setLabel("bottom", "tune ratio k_z / k_x")
         self._plot.setLabel("left", "tune depression k_x / k_0x")
-        self._plot.setXRange(0.0, 2.2)
-        self._plot.setYRange(0.0, 1.05)
+        # the chart's frame: kept, and restored for every new plot
+        fix_plot_range(self._plot, xrange=(0.0, 2.2), yrange=(0.0, 1.05))
         self._image = pg.ImageItem(axisOrder="row-major")
         self._image.setZValue(-10)
         self._plot.addItem(self._image)
@@ -5185,6 +5212,7 @@ class _FootprintPopup(_PopupPlot):
                   "brush": pg.mkBrush(56 + int(180 * a_norm[i]),
                                       189 - int(120 * a_norm[i]), 248, 200)}
                  for i in range(int(fin.sum()))]
+        rearm_autorange(self)              # a new result: a new plot
         self._scatter.setData(spots)
         self._info.setText(
             f"core μ_x={out['mu_x_core_deg']:.2f}° μ_y="
@@ -5420,8 +5448,8 @@ class _SccPopup(_PopupPlot):
         grid = QGridLayout(); grid.setSpacing(6)
         self._plot_fc = _mk_plot("neutralisation f_c(z)", "")
         self._plot_fc.setLabel("bottom", "z", units="m")
-        self._plot_fc.setYRange(0.0, 1.05)
-        fix_plot_range(self._plot_fc)           # f_c is a fraction: keep 0 … 1
+        # f_c is a fraction: keep 0 … 1
+        fix_plot_range(self._plot_fc, yrange=(0.0, 1.05))
         self._c_fc = self._plot_fc.plot(pen=curve_pen("#34d399", width=2.0),
                                         name="f_c")
         self._c_eta = self._plot_fc.plot(
@@ -5663,6 +5691,7 @@ class _SccPopup(_PopupPlot):
         if a["reason"] is not None:
             self._info.setText(a["reason"])
             return
+        rearm_autorange(self)              # a new result: a new plot
         # restore the z axes (a pressure scan relabels them)
         for pl in (self._plot_fc, self._plot_phi, self._plot_tau,
                    self._plot_loss):
@@ -5700,6 +5729,7 @@ class _SccPopup(_PopupPlot):
             f"ion mass {a['mean_ion_mass_amu']:.1f} u{cleared}{notes}")
 
     def _render_scan(self, rows):
+        rearm_autorange(self)              # a new result: a new plot
         p = np.array([r["pressure_mbar"] for r in rows])
         self._c_fc.setData(np.log10(p), np.array([r["mean_fc"]
                                                   for r in rows]))
@@ -5767,7 +5797,7 @@ class _EnergyPopup(_PopupPlot):
         self._pw = _mk_plot("W_kin", "MeV")
         self._pg = _mk_plot("γ")
         self._pt = _mk_plot("Transmission", "%")
-        self._pt.setYRange(0, 102)
+        fix_plot_range(self._pt, yrange=(0.0, 102.0))   # percent: keep 0 … 100
         for p in (self._pg, self._pt):
             p.setXLink(self._pw)
         self._cw = filled_curve(self._pw, theme.ACCENT)
@@ -5849,7 +5879,7 @@ class _PartranComparePopup(_PopupPlot):
         self._axis = QComboBox()
         for _, label, units, _src in self._AXES:
             self._axis.addItem(f"{label}  ({units})", userData=label)
-        self._axis.currentIndexChanged.connect(self._redraw)
+        self._axis.currentIndexChanged.connect(self._on_axis_changed)
         ctrl.addWidget(self._axis)
         ctrl.addStretch(1)
         self._status = QLabel("no overlay loaded")
@@ -5887,11 +5917,17 @@ class _PartranComparePopup(_PopupPlot):
         self._state.partran_overlay = data
         n = int(np.asarray(data.get("s_m", [])).size)
         self._status.setText(f"loaded {n} rows from {fname}")
+        rearm_autorange(self)              # a new file: a new plot
         self._redraw()
 
     def _on_clear(self):
         self._state.partran_overlay = None
         self._status.setText("no overlay loaded")
+        rearm_autorange(self)
+        self._redraw()
+
+    def _on_axis_changed(self, *_args):
+        rearm_autorange(self)              # another quantity: a new plot
         self._redraw()
 
     def refresh(self, results):
@@ -6375,11 +6411,12 @@ class _IbsPopup(_PopupPlot):
         self._chk_nonconst.toggled.connect(self._on_controls_changed)
 
     # ------------------------------------------------------------------
-        self.attach_lattice_strip(self._p_rate)
+        self.attach_lattice_strip(self._p_rate, scale=1e-3)   # s in m
     def _on_controls_changed(self, *args) -> None:
         # Persist the duty factor independently of any BeamConfig.
         self._settings.setValue(f"{self._QSETTINGS_GROUP}/duty_factor",
                                  float(self._duty_spin.value()))
+        rearm_autorange(self)              # other inputs: a new plot
         self.refresh(self._state.results)
 
     def _show_overlay(self, html: str) -> None:
@@ -6723,10 +6760,11 @@ class _MagStripPopup(_PopupPlot):
         self._fmap_combo.currentIndexChanged.connect(self._on_controls_changed)
 
     # ------------------------------------------------------------------
-        self.attach_lattice_strip(self._p_rate)
+        self.attach_lattice_strip(self._p_rate, scale=1e-3)   # s in m
     def _on_controls_changed(self, *args) -> None:
         self._settings.setValue(f"{self._QSETTINGS_GROUP}/duty_factor",
                                  float(self._duty_spin.value()))
+        rearm_autorange(self)              # other inputs: a new plot
         self.refresh(self._state.results)
 
     def _show_overlay(self, html: str) -> None:
@@ -6960,7 +6998,7 @@ class _PhaseSpacePopup(_DesignProbeMixin, _PopupPlot):
         self._basis = QComboBox()
         self._basis.addItem("(Δφ, ΔW) — our code",  userData="ours")
         self._basis.addItem("(z, δ) — TraceWin",    userData="tracewin")
-        self._basis.currentIndexChanged.connect(self._redraw)
+        self._basis.currentIndexChanged.connect(self._redraw_new)
         top.addWidget(self._basis)
         top.addSpacing(12)
         top.addWidget(QLabel("colour by:"))
@@ -6990,7 +7028,7 @@ class _PhaseSpacePopup(_DesignProbeMixin, _PopupPlot):
             "Phase space at the exit (default) or at any location "
             "snapshotted during the run.  Enable snapshots in the Numerics "
             "tab ('Snapshot every N' or 'Snapshot at').")
-        self._location.currentIndexChanged.connect(self._redraw)
+        self._location.currentIndexChanged.connect(self._redraw_new)
         top.addWidget(self._location)
         top.addSpacing(12)
         # Toggle: swap the four density panels for a full beam-parameter
@@ -7017,7 +7055,7 @@ class _PhaseSpacePopup(_DesignProbeMixin, _PopupPlot):
         self._wrap_phi = QCheckBox("fold φ")
         self._wrap_phi.setChecked(True)
         self._wrap_phi.setToolTip(self._FOLD_TIP)
-        self._wrap_phi.toggled.connect(self._redraw)
+        self._wrap_phi.toggled.connect(self._redraw_new)
         top.addWidget(self._wrap_phi)
         # Ellipse overlay (rms + design, BMAG in the panel titles).  The
         # remembered state is read BEFORE connecting toggled, so a stored
@@ -7796,19 +7834,19 @@ class _FieldMapPopup(_PopupPlot):
         tb = QHBoxLayout(); tb.setSpacing(8)
         tb.addWidget(QLabel("Element:"))
         self._el_combo = QComboBox(); self._el_combo.setMinimumWidth(220)
-        self._el_combo.currentIndexChanged.connect(self._on_element_changed)
+        self._el_combo.currentIndexChanged.connect(self._on_element_choice)
         tb.addWidget(self._el_combo)
         tb.addWidget(QLabel("Channel:"))
         self._ch_combo = QComboBox(); self._ch_combo.setMinimumWidth(120)
-        self._ch_combo.currentIndexChanged.connect(self._on_channel_changed)
+        self._ch_combo.currentIndexChanged.connect(self._on_channel_choice)
         tb.addWidget(self._ch_combo)
         tb.addWidget(QLabel("Component:"))
         self._cp_combo = QComboBox(); self._cp_combo.setMinimumWidth(80)
-        self._cp_combo.currentIndexChanged.connect(self._redraw)
+        self._cp_combo.currentIndexChanged.connect(self._redraw_new)
         tb.addWidget(self._cp_combo)
         tb.addWidget(QLabel("2D plane:"))
         self._plane_combo = QComboBox(); self._plane_combo.setMinimumWidth(80)
-        self._plane_combo.currentIndexChanged.connect(self._redraw)
+        self._plane_combo.currentIndexChanged.connect(self._redraw_new)
         tb.addWidget(self._plane_combo)
         recompute = QPushButton("Reload")
         recompute.clicked.connect(self._populate_elements)
@@ -7960,6 +7998,16 @@ class _FieldMapPopup(_PopupPlot):
         finally:
             self._suspend_signals = False
         self._on_element_changed()
+
+    def _on_element_choice(self, *_args) -> None:
+        if not self._suspend_signals:
+            rearm_autorange(self)          # another element: a new plot
+        self._on_element_changed()
+
+    def _on_channel_choice(self, *_args) -> None:
+        if not self._suspend_signals:
+            rearm_autorange(self)          # another channel: a new plot
+        self._on_channel_changed()
 
     def _on_element_changed(self, *_args) -> None:
         if self._suspend_signals or not getattr(self, "_fm_elements", None):
@@ -8285,19 +8333,19 @@ class _TtfPopup(_PopupPlot):
         tb = QHBoxLayout(); tb.setSpacing(8)
         tb.addWidget(QLabel("Cavity:"))
         self._el_combo = QComboBox(); self._el_combo.setMinimumWidth(280)
-        self._el_combo.currentIndexChanged.connect(self._redraw)
+        self._el_combo.currentIndexChanged.connect(self._redraw_new)
         tb.addWidget(self._el_combo)
         tb.addWidget(QLabel("β range:"))
         self._beta_min = QDoubleSpinBox()
         self._beta_min.setRange(0.005, 0.99); self._beta_min.setDecimals(3)
         self._beta_min.setSingleStep(0.01); self._beta_min.setValue(0.05)
-        self._beta_min.valueChanged.connect(self._redraw)
+        self._beta_min.valueChanged.connect(self._redraw_new)
         tb.addWidget(self._beta_min)
         tb.addWidget(QLabel("→"))
         self._beta_max = QDoubleSpinBox()
         self._beta_max.setRange(0.01, 1.0); self._beta_max.setDecimals(3)
         self._beta_max.setSingleStep(0.01); self._beta_max.setValue(1.0)
-        self._beta_max.valueChanged.connect(self._redraw)
+        self._beta_max.valueChanged.connect(self._redraw_new)
         tb.addWidget(self._beta_max)
         reload_btn = QPushButton("Reload")
         reload_btn.clicked.connect(self._populate)
@@ -9896,8 +9944,13 @@ class ResultsTab(QWidget):
                 return
             self._install_live_preview_toggle(dlg)
             self._popups[key] = dlg
+        if not dlg.isVisible():
+            # Opening a popup draws a new plot: fit all its data.  An
+            # already-open one (its card clicked again) keeps the zoom.
+            rearm_autorange(dlg)
         try:
             dlg.refresh(self.state.results)
+            _frame_empty_strip(dlg)
         except Exception as exc:
             # Refresh failures should NOT prevent the popup from showing —
             # the user can still close it cleanly and an error message is
@@ -9962,7 +10015,9 @@ class ResultsTab(QWidget):
             if not d.isVisible():
                 continue
             try:
+                rearm_autorange(d)      # a new run: a new plot
                 d.refresh(results)
+                _frame_empty_strip(d)
             except Exception:   # noqa: BLE001 — best-effort live refresh
                 # Keep the loop isolation but preserve observability: before
                 # this guard these exceptions reached the excepthook (stderr
@@ -10039,7 +10094,11 @@ class ResultsTab(QWidget):
                 if raw:
                     d.setWindowTitle(f"{raw}  —  Ctrl+S to save")
                 if d.isVisible():
+                    # back on the committed results: a new plot (the live
+                    # iterates before it kept any zoom)
+                    rearm_autorange(d)
                     d.refresh(self.state.results)
+                    _frame_empty_strip(d)
             except RuntimeError:
                 continue
             except Exception:   # noqa: BLE001

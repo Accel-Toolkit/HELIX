@@ -71,6 +71,9 @@ class ScanPoint:
     out_path: str | None = None     # when set: write full results here
     out_format: str = "hdf5"        # hdf5 | openpmd | partran
     drift_single_push: bool = True  # StepConfig.drift_single_push for the worker
+    rfq_solver: str = "auto"        # StepConfig RFQ solver fields for the worker
+    rfq_td_steps_per_period: int = 48
+    rfq_td_sc_every: int = 4
     capture_errors: bool = False    # True: a raised point returns an
     #                                 {"error", "traceback"} row instead
     #                                 of killing the whole pool
@@ -230,6 +233,9 @@ def _run_one_point_worker(point: ScanPoint) -> dict:
             integration_steps_per_metre=float(point.step1),
             sc_steps_per_metre=float(point.step2),
             drift_single_push=bool(point.drift_single_push),
+            rfq_solver=str(point.rfq_solver),
+            rfq_td_steps_per_period=int(point.rfq_td_steps_per_period),
+            rfq_td_sc_every=int(point.rfq_td_sc_every),
         )
         # Element-parameter overrides (a batch-mode scan over e.g. a quad
         # gradient).  Empty for the GUI convergence-tab caller — no import

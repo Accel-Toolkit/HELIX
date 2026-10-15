@@ -55,6 +55,7 @@ Twiss before using either.
 """
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -67,6 +68,22 @@ TRACEWIN_CODE = REPO_ROOT / "Tracewin_code"
 PXIE_PROJECT = (Path.home() / "Desktop" / "Projects" / "PIP_II"
                 / "Paper" / "LEBT+RFQ")
 PXIE_DECK = REPO_ROOT / "examples" / "lebt_plus_rfq" / "lebt_plus_rfq.dat"
+#: Toutatis runs of the PXIE RFQ from its own input particles, one folder
+#: per current ("0mA", "5mA"): toutatis.dst (the input at the RFQ
+#: entrance), distrib.dst (the exit), toutatis.out (per-cell table).
+#: ``$HELIX_TOUTATIS_REF``, else the RFQ campaign folder.
+TOUTATIS_REF = Path(os.environ.get(
+    "HELIX_TOUTATIS_REF",
+    Path.home() / "Desktop" / "Projects" / "RFQ_campaign_harness" / "td"
+    / "ref"))
+
+
+def toutatis_ref_dir(case: str) -> Path | None:
+    """The Toutatis PXIE run folder for ``case`` (``"0mA"``/``"5mA"``);
+    ``None`` when not present on this machine (callers skip)."""
+    d = TOUTATIS_REF / case
+    need = ("toutatis.dst", "distrib.dst", "toutatis.out")
+    return d if all((d / n).is_file() for n in need) else None
 
 
 def reference_path(name: str) -> Path | None:

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "linac_gen"
-version = "1.18.0"
+version = "1.19.0"
 description = "Particle tracking code with PIC space charge for proton/ion linacs"
 readme = "README.md"
 # Dict form (not bare SPDX string) so older setuptools still parses it.
@@ -21,6 +21,9 @@ dependencies = [
     "torch>=2.0",
     # keeps BLAS on one thread during a run (linac_gen.parallel.threads)
     "threadpoolctl>=3.0",
+    # algebraic multigrid for the RFQ vane field: the time-domain RFQ
+    # solver (the default for RFQ lattices) builds its field map with it
+    "pyamg>=5.0",
 ]
 
 [project.optional-dependencies]
@@ -74,6 +77,9 @@ dev = [
     "mypy>=1.5",
     "black>=23.0",
 ]
+# pyamg is a core dependency since 1.19.0 (the time-domain RFQ solver is
+# the default); the extra is kept so older install commands still work.
+rfq = ["pyamg>=5.0"]
 docs = [
     "mkdocs>=1.5",
     "mkdocs-material>=9.5",

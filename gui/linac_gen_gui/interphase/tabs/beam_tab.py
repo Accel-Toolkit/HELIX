@@ -717,6 +717,12 @@ class BeamTab(QWidget):
             from linac_gen.distributions.factory import create_beam
             beam = create_beam(cfg, seed=42)
             p = beam.alive_particles
+            # a new beam: new plots, fitted to its particles
+            from linac_gen_gui.interphase.plots.plot_style import (
+                rearm_autorange)
+            for panel in (self._panel_xx, self._panel_yy, self._panel_zp,
+                          self._panel_xy):
+                rearm_autorange(panel)
             # Density histograms are cheap — use every surviving particle
             # (no downsample) so the log-intensity contrast is genuine.
             self._panel_xx.set_data(p[:, 0], p[:, 1])
