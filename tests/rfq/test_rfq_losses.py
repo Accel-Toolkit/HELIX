@@ -95,8 +95,10 @@ def test_full_line_dst_benchmark():
         for e in lat.elements:
             if isinstance(e, RfqCell):
                 e.field_model = "tw2term"
+        # the card model (the deck names the vane file, which would
+        # hand the RFQ to the time-domain solver)
         res = Simulation(lat, beam, space_charge="off",
-                         record_substeps=False).run()
+                         record_substeps=False, rfq_geometry="off").run()
     finally:
         os.chdir(cwd)
     names = list(res.element_names)
@@ -156,7 +158,7 @@ def test_low_voltage_collapses_capture():
                 e.field_model = "tw2term"
                 e.voltage_V *= 0.75
         Simulation(lat, beam, space_charge="off",
-                   record_substeps=False).run()
+                   record_substeps=False, rfq_geometry="off").run()
     finally:
         os.chdir(cwd)
     alive = ~beam.lost

@@ -32,6 +32,10 @@ state is persisted per user across sessions:
   through the field of its vanes and stops a run it cannot do.  **RFQ
   time steps** per RF period (default 48) apply whenever the
   time-domain solver runs — see [Time-domain RFQ solver](../03_elements/20_rfq_time_domain.md).
+  **RFQ statistics: accelerated particles only** (on by default) leaves
+  the particles that leave the RFQ unaccelerated out of the plotted
+  sizes, emittances and energy spread, from where they fall behind the
+  bunch.  They still count in the transmission.
   Only the RFQ cells change solver; the rest of the lattice is tracked
   as before.
   The choice applies to multiparticle runs from every tab (toolbar run,

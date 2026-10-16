@@ -37,6 +37,27 @@ class _FakeMicStream:
         pass
 
 
+class _NoModelStt:
+    """WhisperSTT-shaped, without the model (the tests that let the panel
+    start hands-free listening are about the toggle and the orb)."""
+
+    ready = True
+
+    def __init__(self, *a, **k):
+        pass
+
+    def transcribe(self, audio, samplerate=16000):
+        return ""
+
+
+def _no_voice_models(monkeypatch):
+    """Hands-free listening without loading the Whisper and Kokoro models
+    (a 325 MB text-to-speech model, loaded on a background thread)."""
+    import linac_gen.assist.voice as V
+    monkeypatch.setattr(V, "WhisperSTT", _NoModelStt)
+    monkeypatch.setattr(V, "tts_available", lambda: False)
+
+
 def test_voice_confirm_denies_pending_request(qapp, tmp_path):
     from linac_gen.assist.agent import Decision
     from linac_gen.assist.testing import turn_text
@@ -225,6 +246,7 @@ def test_stt_prewarms_at_panel_open(qapp, tmp_path, monkeypatch):
 
     monkeypatch.setattr(V, "WhisperSTT", _FakeStt)
     monkeypatch.setattr(V, "stt_available", lambda: True)
+    monkeypatch.setattr(V, "tts_available", lambda: False)   # no TTS model
     monkeypatch.setenv("HELIX_ASSIST_NO_PREWARM", "0")
     panel, _ = _mock_panel(qapp, tmp_path, [turn_text("x")])
     panel._init_voice()
@@ -318,6 +340,7 @@ def test_wake_autostarts_when_opened_and_persists_choice(qapp, tmp_path,
     (2026-10-11), so this is "listening starts on open"."""
     from linac_gen.assist.testing import turn_text
 
+    _no_voice_models(monkeypatch)
     monkeypatch.setenv("HELIX_ASSIST_NO_PREWARM", "0")   # opt IN
     panel, _ = _mock_panel(qapp, tmp_path, [turn_text("x")])
     try:
@@ -344,13 +367,14 @@ def test_orb_alive_when_handsfree_starts_gray_when_off(qapp, tmp_path, monkeypat
     gray ('off') only when the user disables listening."""
     from linac_gen.assist.testing import turn_text
 
+    _no_voice_models(monkeypatch)
     monkeypatch.setenv("HELIX_ASSIST_NO_PREWARM", "0")   # opt IN to
     panel, _ = _mock_panel(qapp, tmp_path, [turn_text("x")])   # auto-listen
     try:
         states = []
         panel.state_changed.connect(states.append)
         # the listening stack now builds OFF the GUI thread — pump
-        # until its completion lands (real CoreAudio open)
+        # until its completion lands
         t0 = time.time()
         while "idle" not in states and time.time() - t0 < 10:
             qapp.processEvents()
@@ -386,3 +410,25 @@ def test_orb_idle_breathes_with_room_level(qapp):
     for _ in range(60):
         orb._tick()
     assert orb._pulse < 0.2                     # gray-state: near-static
+
+
+def test_gui_tests_open_no_audio_device():
+    """tests/gui/conftest.py stands in for sounddevice for the whole
+    session: a microphone stream opened by any GUI test reads silence at
+    the device's pace, and no PortAudio stream is left behind for
+    sounddevice's exit handler to tear down under a reader (the suite's
+    exit crash, 138/139)."""
+    import sounddevice as sd
+    from linac_gen.assist.listen import MicStream
+    assert "stand-in" in (sd.__doc__ or "")
+    mic = MicStream(blocksize=160)
+    blocks = []
+    mic.subscribe(blocks.append)
+    mic.open()
+    t0 = time.time()
+    while len(blocks) < 3 and time.time() - t0 < 2.0:
+        time.sleep(0.01)
+    mic.close()
+    assert len(blocks) >= 3
+    assert not np.any(blocks[0]) and blocks[0].shape == (160,)
+    assert not mic.running

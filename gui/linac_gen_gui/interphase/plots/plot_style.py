@@ -35,6 +35,18 @@ _AXIS_LABEL_PT = 11
 _AXIS_TICK_PT  = 10
 _TITLE_PT      = 12
 
+# DensityPanel profile strips (px): the strip's plot area, the axes with the
+# tick values and title (left strip: width, lower strip: height), and the
+# map's tick-only axes while the strips show
+_PROFILE_STRIP_PX = 62
+_PROFILE_AXIS_W   = 56
+_PROFILE_AXIS_H   = 44
+_PROFILE_TICK_PX  = 6
+_PROFILE_GAP_PX   = 4        # between a strip and the map
+
+# What a DensityPanel's colour bar measures: the image is log10(1 + counts)
+_DENSITY_LABEL = "log₁₀(1+N)"
+
 # Default curve pen width — chunkier lines read better on dark backgrounds
 CURVE_WIDTH       = 2.4
 CURVE_WIDTH_BOLD  = 2.8
@@ -196,9 +208,35 @@ def fix_plot_range(p, xrange=None, yrange=None, padding=None) -> None:
 #     the others; View All, the "A" button and the x "Auto" option fit a
 #     framed axis once and keep fitting an unframed one.  A fixed follower
 #     never touches its leader's x.
+#   * a view that copies an axis from another view one way (``vb.
+#     _helix_follows = {axis: leader}``: the profile strips of a
+#     DensityPanel) takes the leader's range on that axis instead of
+#     auto-ranging it; the copy is kept up to date by the owner's
+#     range-changed slot, never by a pyqtgraph link.
 
 def _is_fixed(vb) -> bool:
     return bool(getattr(vb, "_helix_fixed_range", False))
+
+
+def _follows(vb) -> dict:
+    """``{axis: view}``: the axes ``vb`` copies one way from another view
+    (0 = x, 1 = y), or an empty dict."""
+    return getattr(vb, "_helix_follows", None) or {}
+
+
+def _copy_followed(vb) -> None:
+    """Give each followed axis of ``vb`` its leader's current range, with
+    auto-range off on it."""
+    for axis, leader in _follows(vb).items():
+        try:
+            lo, hi = leader.viewRange()[axis]
+            vb.enableAutoRange(axis, False)
+            if axis == 0:
+                vb.setXRange(lo, hi, padding=0)
+            else:
+                vb.setYRange(lo, hi, padding=0)
+        except RuntimeError:                   # C++ side already deleted
+            pass
 
 
 def _x_leader(vb):
@@ -230,16 +268,23 @@ def _rearm_view(vb) -> None:
         return
     try:
         xr, yr, padding = _frame(vb)
-        if _x_leader(vb) is not None:
+        follows = _follows(vb)
+        if 0 in follows:
+            pass                               # copied below
+        elif _x_leader(vb) is not None:
             vb.enableAutoRange(pg.ViewBox.XAxis, False)
         elif xr is not None:
             vb.setXRange(xr[0], xr[1], padding=padding)
         else:
             vb.enableAutoRange(pg.ViewBox.XAxis, True)
-        if yr is not None:
+        if 1 in follows:
+            pass
+        elif yr is not None:
             vb.setYRange(yr[0], yr[1], padding=padding)
         else:
             vb.enableAutoRange(pg.ViewBox.YAxis, True)
+        if follows:
+            _copy_followed(vb)
     except RuntimeError:                       # C++ side already deleted
         pass
 
@@ -308,6 +353,9 @@ def _fit_and_keep(vb) -> None:
     if vb is None:
         return
     try:
+        if _follows(vb):
+            _rearm_view(vb)                    # followed axes copied
+            return
         if _is_fixed(vb):
             _fit_fixed(vb, x=True, y=True)
             return
@@ -666,7 +714,7 @@ def density_heatmap(p: pg.PlotWidget,
             pass
 
     if log_scale:
-        H = np.log1p(H)
+        H = np.log10(1.0 + H)
 
     # ImageItem takes (rows, cols) — numpy histogram2d returns (nx, ny)
     # already in row-major (x along rows), which matches what ImageItem
@@ -690,20 +738,43 @@ def density_heatmap(p: pg.PlotWidget,
     return img
 
 
+def fit_colorbar_width(cbar) -> int:
+    """Fix a vertical ``pg.ColorBarItem`` to the width of its parts: the
+    titled left axis, the gradient and the right axis with the tick values
+    (pyqtgraph sets that one to 45 px).  A narrower fixed width cuts the
+    tick values off ("2.0" drawn as "2.C").  Returns the width (px)."""
+    import math
+    lay = cbar.layout
+    left, _top, right, _bottom = lay.getContentsMargins()
+    width = math.ceil(left + right + lay.columnMinimumWidth(1)
+                      + cbar.getAxis("left").minimumWidth()
+                      + cbar.getAxis("right").minimumWidth())
+    cbar.setFixedWidth(width)
+    return width
+
+
 class DensityPanel(pg.GraphicsLayoutWidget):
     """Self-contained phase-space density panel: title, axes, heatmap, colorbar.
 
-    Internally a pyqtgraph GraphicsLayoutWidget with two columns: the
-    PlotItem (col 0) holds axes + the ImageItem, the ColorBarItem (col 1)
-    is a narrow vertical gradient labelled "log(1+N)" that reflects the
-    current image levels.  The panel exposes ``set_data(x, y)`` which
-    re-bins the density and updates the colorbar range.
+    Internally a pyqtgraph GraphicsLayoutWidget.  The PlotItem holds axes +
+    the ImageItem, with a narrow vertical gradient labelled "log₁₀(1+N)"
+    that reflects the current image levels.  The panel exposes
+    ``set_data(x, y)`` which re-bins the density and updates the colorbar
+    range.
+
+    With ``profiles=True`` the map gets the two projected distributions:
+    the horizontal quantity's histogram in a strip below it and the
+    vertical quantity's in a strip to its left (counts grow away from the
+    map), each scaled to its own peak, with the rms-equivalent Gaussian
+    dashed over it.  The strips carry the tick values and axis titles; they
+    copy the map's range one way, so zooming the map moves them.
     """
 
     def __init__(self, title: str = "",
                  xlabel: str = "", xunits: str = "",
                  ylabel: str = "", yunits: str = "",
-                 bins: int = 140, sigma: float = 0.9):
+                 bins: int = 140, sigma: float = 0.9,
+                 profiles: bool = False):
         import numpy as np
         from PyQt6.QtGui import QFont
         configure_pyqtgraph_defaults()
@@ -711,9 +782,13 @@ class DensityPanel(pg.GraphicsLayoutWidget):
         self.setBackground(theme.BG_INSET)
         self._bins = bins
         self._sigma = sigma
+        self._labels = (xlabel, xunits, ylabel, yunits)
+        self._prof_x = self._prof_y = None
+        self._profiles_on = False
+        self._gauss_on = True
 
         # Plot + axes — pens FIRST so they don't clobber label style.
-        self._plot = self.addPlot(row=0, col=0)
+        self._plot = self.addPlot(row=0, col=1 if profiles else 0)
         self._plot.setMenuEnabled(False)
         self._plot.showGrid(x=True, y=True, alpha=0.35)
         tick_font = QFont()
@@ -749,23 +824,263 @@ class DensityPanel(pg.GraphicsLayoutWidget):
         self._cbar = pg.ColorBarItem(
             colorMap=self._cmap,
             values=(0.0, 1.0),
-            label=f"<span style='color:{theme.TEXT_2}; font-size:{_AXIS_TICK_PT}pt;'>"
-                  f"log₁₀(1+N)</span>",
+            label=self._cbar_label_html(_DENSITY_LABEL),
             interactive=False,
             orientation="v",
             width=14,
         )
-        self._cbar.setFixedWidth(48)
+        self._cbar_label = _DENSITY_LABEL
         self._cbar.getAxis("right").setTextPen(theme.TEXT_0)
         self._cbar.getAxis("right").setPen(theme.BORDER_2)
         self._cbar.getAxis("right").setTickFont(tick_font)
+        fit_colorbar_width(self._cbar)
         # Attach the bar to the image so levels/cmap stay in sync.
         self._cbar.setImageItem(self._image, insert_in=self._plot)
+        if profiles:
+            self._build_profiles(tick_font)
+            self.set_profiles_visible(True)
+
+    # ------------------------------------------------------------- profiles
+    def _build_profiles(self, tick_font) -> None:
+        """The two profile strips (not yet in the layout) and their curves."""
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtGui import QColor, QTransform
+        main_vb = self._plot.getViewBox()
+        line = pg.mkPen(theme.ACCENT, width=1.6)
+        fill = QColor(theme.ACCENT)
+        fill.setAlpha(70)
+        dash = pg.mkPen(theme.TEXT_1, width=1.2, style=Qt.PenStyle.DashLine)
+        swap = QTransform(0, 1, 1, 0, 0, 0)          # (q, n) -> (n, q)
+        strips = []
+        for axis in (0, 1):                          # 0: below (x), 1: left (y)
+            p = pg.PlotItem()
+            p.setMenuEnabled(False)
+            p.hideButtons()
+            p.setMouseEnabled(x=False, y=False)
+            p.showGrid(x=True, y=True, alpha=0.2)
+            for axname in ("left", "bottom", "right"):
+                ax = p.getAxis(axname)
+                ax.setTextPen(theme.TEXT_0)
+                ax.setPen(theme.BORDER_2)
+                ax.setTickFont(tick_font)
+                ax.enableAutoSIPrefix(False)
+            vb = p.getViewBox()
+            vb._helix_follows = {axis: main_vb}
+            # Curves are drawn as (quantity, counts); the left strip shows
+            # them through an axis swap, so a curve's data stays
+            # (quantity, counts) in exports either way.
+            curve = pg.PlotDataItem(pen=line, fillLevel=0.0, brush=fill)
+            gauss = pg.PlotDataItem(pen=dash, name="rms Gaussian")
+            for item in (curve, gauss):
+                if axis == 1:
+                    item.setTransform(swap)
+                p.addItem(item)
+            strips.append((p, curve, gauss))
+        (self._prof_x, self._px_curve, self._px_gauss), \
+            (self._prof_y, self._py_curve, self._py_gauss) = strips
+        self._prof_y.getViewBox().invertX(True)      # counts grow leftwards
+        # Alignment: the strips' blank axes match the map's tick-only axes
+        # and its colour bar, so each strip spans exactly the map's view.
+        for p, axname, size in ((self._prof_x, "left", _PROFILE_TICK_PX),
+                                (self._prof_x, "right", self._cbar_width()),
+                                (self._prof_y, "bottom", _PROFILE_TICK_PX)):
+            ax = p.getAxis(axname)
+            p.showAxis(axname)
+            ax.setStyle(showValues=False, tickLength=0)
+            ax.setPen(pg.mkPen(None))
+            (ax.setWidth if axname in ("left", "right") else ax.setHeight)(size)
+        self._prof_x.getAxis("bottom").setHeight(_PROFILE_AXIS_H)
+        self._prof_y.getAxis("left").setWidth(_PROFILE_AXIS_W)
+        self._set_count_range(0, 1.0)
+        self._set_count_range(1, 1.0)
+        main_vb.sigXRangeChanged.connect(self._sync_profile_x)
+        main_vb.sigYRangeChanged.connect(self._sync_profile_y)
+        self._apply_profile_labels()
+
+    def _cbar_width(self) -> int:
+        """Width (px) the colour bar takes right of the map's view: the bar
+        and the gap pyqtgraph keeps before it (column 4 of the plot's
+        grid, the bar being in column 5)."""
+        try:
+            bar = float(self._cbar.maximumWidth())
+        except Exception:                                    # noqa: BLE001
+            bar = 48.0
+        try:
+            gap = float(self._plot.layout.columnMinimumWidth(4))
+        except Exception:                                    # noqa: BLE001
+            gap = 5.0
+        return int(round(bar + gap))
+
+    @staticmethod
+    def _cbar_label_html(text: str) -> str:
+        return (f"<span style='color:{theme.TEXT_2}; "
+                f"font-size:{_AXIS_TICK_PT}pt;'>{text}</span>")
+
+    def _set_cbar_label(self, text: str) -> None:
+        """The colour bar's title.  pyqtgraph puts a vertical bar's title on
+        its LEFT axis (the right one carries the tick values); an empty
+        title keeps its space, so the bar does not move."""
+        text = text or " "
+        if text == getattr(self, "_cbar_label", None):
+            return
+        self._cbar.getAxis("left").setLabel(self._cbar_label_html(text))
+        self._cbar_label = text
+
+    def _set_count_range(self, axis: int, top: float) -> None:
+        """The count axis of the strip for ``axis``: 0 .. a little above
+        ``top``, recorded as its frame so re-arming keeps it."""
+        p = self._prof_x if axis == 0 else self._prof_y
+        if p is None:
+            return
+        rng = (0.0, 1.05 * max(1.0, float(top)))
+        vb = p.getViewBox()
+        if axis == 0:
+            vb._helix_frame = (None, rng, 0.0)
+            vb.enableAutoRange(pg.ViewBox.YAxis, False)
+            vb.setYRange(*rng, padding=0.0)
+        else:
+            vb._helix_frame = (rng, None, 0.0)
+            vb.enableAutoRange(pg.ViewBox.XAxis, False)
+            vb.setXRange(*rng, padding=0.0)
+
+    def _sync_profile_x(self, *_args) -> None:
+        if self._prof_x is None:
+            return
+        try:
+            lo, hi = self._plot.getViewBox().viewRange()[0]
+            vb = self._prof_x.getViewBox()
+            vb.enableAutoRange(pg.ViewBox.XAxis, False)
+            vb.setXRange(lo, hi, padding=0.0)
+        except RuntimeError:                   # C++ side already deleted
+            pass
+
+    def _sync_profile_y(self, *_args) -> None:
+        if self._prof_y is None:
+            return
+        try:
+            lo, hi = self._plot.getViewBox().viewRange()[1]
+            vb = self._prof_y.getViewBox()
+            vb.enableAutoRange(pg.ViewBox.YAxis, False)
+            vb.setYRange(lo, hi, padding=0.0)
+        except RuntimeError:
+            pass
+
+    def set_profiles_visible(self, on: bool) -> None:
+        """Show or hide the two profile strips.  Hidden, the panel is laid
+        out exactly as one built without them."""
+        if self._prof_x is None:
+            return
+        on = bool(on)
+        layout = self.ci.layout
+        if on and not self._profiles_on:
+            self.ci.addItem(self._prof_y, row=0, col=0)
+            self.ci.addItem(self._prof_x, row=1, col=1)
+        elif not on and self._profiles_on:
+            self.ci.removeItem(self._prof_y)
+            self.ci.removeItem(self._prof_x)
+        self._profiles_on = on
+        w = _PROFILE_AXIS_W + _PROFILE_STRIP_PX if on else 0
+        h = _PROFILE_AXIS_H + _PROFILE_STRIP_PX if on else 0
+        layout.setColumnMinimumWidth(0, w)
+        layout.setColumnMaximumWidth(0, w)
+        layout.setRowMinimumHeight(1, h)
+        layout.setRowMaximumHeight(1, h)
+        # The empty column / row would still get the spacing.
+        layout.setHorizontalSpacing(_PROFILE_GAP_PX if on else 0)
+        layout.setVerticalSpacing(_PROFILE_GAP_PX if on else 0)
+        for axname in ("left", "bottom"):
+            ax = self._plot.getAxis(axname)
+            ax.setStyle(showValues=not on)
+            ax.showLabel(not on)
+            if axname == "left":
+                ax.setWidth(_PROFILE_TICK_PX if on else None)
+            else:
+                ax.setHeight(_PROFILE_TICK_PX if on else None)
+        self._apply_profile_labels()
+        if on:
+            self._sync_profile_x()
+            self._sync_profile_y()
+
+    def profiles_visible(self) -> bool:
+        return self._profiles_on
+
+    def set_gaussian_visible(self, on: bool) -> None:
+        """Show or hide the dashed rms-equivalent Gaussians."""
+        self._gauss_on = bool(on)
+        if self._prof_x is not None:
+            self._px_gauss.setVisible(self._gauss_on)
+            self._py_gauss.setVisible(self._gauss_on)
+
+    def set_axis_labels(self, xlabel: str, xunits: str = "",
+                        ylabel: str = "", yunits: str = "") -> None:
+        """Axis titles: on the map's own axes (exports read them there) and,
+        with the profile strips showing, on the strips' outer axes."""
+        self._labels = (xlabel, xunits, ylabel, yunits)
+        style = dict(color=theme.TEXT_0, **{"font-size": f"{_AXIS_LABEL_PT}pt"})
+        self._plot.setLabel("left", _html_label(ylabel), units=yunits or None, **style)
+        self._plot.setLabel("bottom", _html_label(xlabel), units=xunits or None, **style)
+        if self._profiles_on:
+            for axname in ("left", "bottom"):
+                self._plot.getAxis(axname).showLabel(False)
+        self._apply_profile_labels()
+
+    def _apply_profile_labels(self) -> None:
+        if self._prof_x is None:
+            return
+        xlabel, xunits, ylabel, yunits = self._labels
+        style = dict(color=theme.TEXT_0, **{"font-size": f"{_AXIS_LABEL_PT}pt"})
+        self._prof_x.setLabel("bottom", _html_label(xlabel), units=xunits or None, **style)
+        self._prof_y.setLabel("left", _html_label(ylabel), units=yunits or None, **style)
+        self._px_curve.opts["name"] = f"{xlabel} profile".strip()
+        self._py_curve.opts["name"] = f"{ylabel} profile".strip()
+        # The left strip carries a blank title as tall as the map's, so the
+        # two views start at the same height.
+        self._prof_y.setTitle(self._title_html(" ") if self._title else None)
+
+    def _update_profiles(self, x, y, x_range, y_range) -> None:
+        """Histogram each coordinate over the map's range (same bins), scale
+        to its peak, and lay the rms-equivalent Gaussian over it."""
+        if self._prof_x is None:
+            return
+        import numpy as np
+        for axis, q, rng, curve, gauss in (
+                (0, x, x_range, self._px_curve, self._px_gauss),
+                (1, y, y_range, self._py_curve, self._py_gauss)):
+            q = np.asarray(q, dtype=float)
+            q = q[np.isfinite(q)]
+            if q.size == 0 or rng is None or not rng[1] > rng[0]:
+                curve.setData([], [])
+                gauss.setData([], [])
+                self._set_count_range(axis, 1.0)
+                continue
+            h, edges = np.histogram(q, bins=self._bins, range=rng)
+            peak = float(h.max())
+            if peak <= 0:
+                curve.setData([], [])
+                gauss.setData([], [])
+                self._set_count_range(axis, 1.0)
+                continue
+            curve.setData(edges, h / peak, stepMode="center",
+                          fillLevel=0.0)
+            top = 1.0
+            sd = float(q.std())
+            if sd > 0:
+                g_x = np.linspace(rng[0], rng[1], 400)
+                width = (rng[1] - rng[0]) / self._bins
+                g = (q.size * width / (sd * np.sqrt(2.0 * np.pi))
+                     * np.exp(-0.5 * ((g_x - q.mean()) / sd) ** 2)) / peak
+                gauss.setData(g_x, g)
+                top = max(top, float(g.max()))
+            else:
+                gauss.setData([], [])
+            gauss.setVisible(self._gauss_on)
+            self._set_count_range(axis, top)
 
     # ------------------------------------------------------------------
     @property
     def plot(self):
-        """Exposed so callers can tweak labels (e.g. basis switch)."""
+        """The map's PlotItem: overlays (ellipses) go here.  Set axis titles
+        with :meth:`set_axis_labels`, which also labels the profile strips."""
         return self._plot
 
     @staticmethod
@@ -779,6 +1094,8 @@ class DensityPanel(pg.GraphicsLayoutWidget):
         plain text is kept in ``_title`` for callers and tests."""
         self._title = title
         self._plot.setTitle(self._title_html(title) if title else None)
+        if self._prof_y is not None:
+            self._prof_y.setTitle(self._title_html(" ") if title else None)
 
     def set_scatter(self, x, y, c=None, *,
                     cmap_name: str = "viridis", point_size: int = 3,
@@ -793,6 +1110,8 @@ class DensityPanel(pg.GraphicsLayoutWidget):
         """
         import numpy as np
         x = np.asarray(x, dtype=float); y = np.asarray(y, dtype=float)
+        # Profiles over the points' own extent, which the view fits.
+        self._update_profiles(x, y, _finite_extent(x), _finite_extent(y))
         if x.size == 0:
             # Empty data — clear and bail.
             self._image.setImage(np.zeros((2, 2)))
@@ -813,6 +1132,7 @@ class DensityPanel(pg.GraphicsLayoutWidget):
             brush = QBrush(QColor(theme.ACCENT))
             self._scatter.setData(x=x, y=y, brush=brush, size=point_size)
             self._cbar.setLevels((0.0, 1.0))
+            self._set_cbar_label(label)
             return
         c = np.asarray(c, dtype=float)
         cmin = float(np.nanmin(c)); cmax = float(np.nanmax(c))
@@ -831,17 +1151,11 @@ class DensityPanel(pg.GraphicsLayoutWidget):
         # Sync the colorbar to the data range so the legend is meaningful.
         try:
             self._cbar.setColorMap(cmap)
+            self._cmap_swapped = True          # set_data puts the density map back
         except Exception:
             pass
         self._cbar.setLevels((cmin, cmax))
-        if label:
-            try:
-                self._cbar.getAxis("right").setLabel(
-                    f"<span style='color:{theme.TEXT_2}; "
-                    f"font-size:{_AXIS_TICK_PT}pt;'>{label}</span>"
-                )
-            except Exception:
-                pass
+        self._set_cbar_label(label)
 
     def set_data(self, x, y,
                  x_range: tuple | None = None,
@@ -849,14 +1163,20 @@ class DensityPanel(pg.GraphicsLayoutWidget):
                  log_scale: bool = True) -> None:
         import numpy as np
         # If a previous call to ``set_scatter`` swapped to scatter mode,
-        # restore the histogram view here.
+        # restore the histogram view here -- with the density colour map,
+        # which the colour bar (attached to the image) had swapped too.
         if hasattr(self, "_scatter") and self._scatter is not None:
             self._scatter.setVisible(False)
+        if getattr(self, "_cmap_swapped", False):
+            self._cbar.setColorMap(self._cmap)
+            self._cmap_swapped = False
+        self._set_cbar_label(_DENSITY_LABEL if log_scale else "N")
         self._image.setVisible(True)
         x = np.asarray(x, dtype=float); y = np.asarray(y, dtype=float)
         if x.size == 0 or y.size == 0:
             self._image.setImage(np.zeros((2, 2)))
             self._cbar.setLevels((0.0, 1.0))
+            self._update_profiles([], [], None, None)
             return
         if x_range is None:
             xm = float(np.mean(x)); xs = float(np.std(x)) or 1.0
@@ -873,7 +1193,7 @@ class DensityPanel(pg.GraphicsLayoutWidget):
             except ImportError:
                 pass
         if log_scale:
-            H = np.log1p(H)
+            H = np.log10(1.0 + H)          # what the colour bar's title says
         H_t = H.T
         self._image.setImage(H_t, autoLevels=False)
         lo = float(H_t.min()); hi = float(H_t.max())
@@ -885,6 +1205,17 @@ class DensityPanel(pg.GraphicsLayoutWidget):
             x_range[0], y_range[0],
             x_range[1] - x_range[0], y_range[1] - y_range[0],
         ))
+        self._update_profiles(x, y, x_range, y_range)
+
+
+def _finite_extent(a):
+    """``(min, max)`` of the finite values of ``a``, or None."""
+    import numpy as np
+    a = np.asarray(a, dtype=float)
+    a = a[np.isfinite(a)]
+    if a.size == 0:
+        return None
+    return float(a.min()), float(a.max())
 
 
 def update_density(img: pg.ImageItem, x, y,
@@ -912,7 +1243,7 @@ def update_density(img: pg.ImageItem, x, y,
         except ImportError:
             pass
     if log_scale:
-        H = np.log1p(H)
+        H = np.log10(1.0 + H)
     img.setImage(H.T)
     img.setRect(pg.QtCore.QRectF(
         x_range[0], y_range[0],

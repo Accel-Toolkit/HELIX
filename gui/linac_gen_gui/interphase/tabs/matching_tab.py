@@ -1360,10 +1360,14 @@ class MatchingTab(QWidget):
             cfg_after = self._beam_tab.get_beam_config()
             self.state.set_beam_config(cfg_after)
             twiss_keys = ("alpha_x", "beta_x", "alpha_y", "beta_y",
-                          "alpha_z", "beta_z")
+                          "alpha_z", "beta_z",
+                          # Apply also writes the matched dispersion and,
+                          # for a beam read from a file, the re-shape flag
+                          "disp_x", "disp_xp", "disp_y", "disp_yp",
+                          "reshape_to_twiss")
             twiss_changed = any(
-                abs(getattr(cfg_after, k, 0.0) - getattr(cfg_before, k, 0.0))
-                > 1e-12
+                abs(float(getattr(cfg_after, k, 0.0))
+                    - float(getattr(cfg_before, k, 0.0))) > 1e-12
                 for k in twiss_keys
             )
             if twiss_changed:

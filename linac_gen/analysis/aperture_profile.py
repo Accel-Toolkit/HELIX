@@ -40,6 +40,11 @@ def _safe_aperture(elem) -> Tuple[float, float] | None:
     return float(rx), float(ry)
 
 
+def _is_rfq_cell(elem) -> bool:
+    from linac_gen.elements.rfq_cell import RfqCell
+    return isinstance(elem, RfqCell)
+
+
 def aperture_profile(
     lattice,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -95,6 +100,20 @@ def aperture_profile(
                 ry_mm.extend(ry_arr.tolist())
                 cursor_mm += length_mm
                 continue
+
+        # RFQ cell without an aperture of its own: its vane tips from the
+        # card (x and y openings along the cell) -- display only, the cell's
+        # losses come from its own model.
+        if length_mm > 0.0 and _is_rfq_cell(elem) \
+                and _safe_aperture(elem) is None:
+            from linac_gen.analysis.rfq_design import cell_tips
+            zl = np.linspace(0.0, length_mm, 9)
+            rx_arr, ry_arr = cell_tips(elem, zl)
+            s_mm.extend((cursor_mm + zl).tolist())
+            rx_mm.extend(np.asarray(rx_arr, float).tolist())
+            ry_mm.extend(np.asarray(ry_arr, float).tolist())
+            cursor_mm += length_mm
+            continue
 
         # Constant-aperture element: emit two endpoints (entry + exit).
         ap = _safe_aperture(elem)

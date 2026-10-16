@@ -29,7 +29,8 @@ def _f(v: float) -> str:
 def summarize_particles(particles, ref=None, *, species_name: str = "",
                         current_ma: float | None = None,
                         n_total: int | None = None,
-                        location: str = "") -> list[tuple]:
+                        location: str = "",
+                        n_left_out: int = 0) -> list[tuple]:
     """Return ordered rows ``(group, name, value_str, unit)``.
 
     A row with an empty ``name`` marks the start of a group (the GUI
@@ -37,6 +38,10 @@ def summarize_particles(particles, ref=None, *, species_name: str = "",
     :class:`~linac_gen.core.reference.ReferenceParticle` (or None —
     reference-dependent rows are then omitted).  ``n_total`` is the
     launched macroparticle count, enabling the transmission row.
+    ``n_left_out`` counts alive particles the run's statistics leave out
+    (``beam.stats_excluded``) and that are not in ``particles``: they
+    still count as alive in the macroparticle and transmission rows, and
+    a row says how many there are.
     """
     rows: list[tuple] = []
 
@@ -61,12 +66,17 @@ def summarize_particles(particles, ref=None, *, species_name: str = "",
     hdr("Distribution")
     if location:
         add("Distribution", "location", location, "")
+    left_out = int(n_left_out or 0)
     if n_total:
         add("Distribution", "macroparticles",
-            f"{n} / {int(n_total)}", "alive / launched")
-        add("Distribution", "transmission", 100.0 * n / n_total, "%")
+            f"{n + left_out} / {int(n_total)}", "alive / launched")
+        add("Distribution", "transmission",
+            100.0 * (n + left_out) / n_total, "%")
     else:
-        add("Distribution", "macroparticles", str(n), "")
+        add("Distribution", "macroparticles", str(n + left_out), "")
+    if left_out:
+        add("Distribution", "left out of the statistics", str(left_out),
+            "unaccelerated (RFQ); the rows below describe the others")
     species = getattr(ref, "species", None)
     if species is not None:
         add("Distribution", "species",

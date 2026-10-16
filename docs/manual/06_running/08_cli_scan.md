@@ -64,6 +64,7 @@ takes precedence over its fixed value at that point.
 | `--drift-single-push` | `on` \| `off` | single push of field-free drifts, as in [`run`](07_cli_run.md) (applies to every point) |
 | `--rfq-solver` | `auto` \| `cells` \| `time_domain` | RFQ model for every `mp` point, as in [`run`](07_cli_run.md) |
 | `--rfq-td-steps` | int ≥ 8 | time-domain RFQ: leapfrog steps per RF period (every point) |
+| `--rfq-stats` | `accelerated` \| `all` | time-domain RFQ: whom the statistics describe (every point), as in [`run`](07_cli_run.md) |
 | `--backend` | `auto` \| `cpu` \| `gpu` | compute backend (forced to `cpu` when `--parallel > 1`) |
 | `--kernel` | `cic` \| `tsc` | PIC deposit kernel (every point) |
 | `--sc-method` | name \| `list` | a named [space-charge method](../05_space_charge/08_methods.md) for every point, as in [`run`](07_cli_run.md) |

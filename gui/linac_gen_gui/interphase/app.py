@@ -664,6 +664,10 @@ class InterphaseWindow(QMainWindow):
         # Launch update check AFTER the 5-s splash hand-off; silent on
         # every failure and inert in the dev clone / when opted out.
         QTimer.singleShot(7000, self._launch_update_check)
+        # macOS: no App Nap while HELIX computes (window not in front:
+        # priority 4, ~1.5 cores); a no-op elsewhere
+        from linac_gen_gui.interphase.services.app_nap import ComputeActivity
+        self._compute_activity = ComputeActivity(self.state, parent=self)
 
     # ------------------------------------------------------------------
     # Itemized unsaved-changes details for the discard prompt ("Show
@@ -850,6 +854,12 @@ class InterphaseWindow(QMainWindow):
         """
         from PyQt6.QtCore import QElapsedTimer, QEventLoop
 
+        activity = getattr(self, "_compute_activity", None)
+        if activity is not None:
+            try:
+                activity.stop()
+            except RuntimeError:
+                pass
         workers: list = []
         for w in (self._envelope_worker, self._mp_worker,
                   self._backtrack_worker, self._train_worker):
@@ -1662,6 +1672,7 @@ class InterphaseWindow(QMainWindow):
             # RFQ solver: like space charge, a key the project does not
             # store gets its default, never the previous project's
             from linac_gen.core.step_config import StepConfig as _Step
+            from linac_gen.cli.common import _as_bool as _as_bool_rfq
             _d = _Step()
             try:
                 _st = _Step(
@@ -1670,14 +1681,18 @@ class InterphaseWindow(QMainWindow):
                         "rfq_td_steps_per_period",
                         _d.rfq_td_steps_per_period)),
                     rfq_td_sc_every=int(conv.get("rfq_td_sc_every",
-                                                 _d.rfq_td_sc_every)))
+                                                 _d.rfq_td_sc_every)),
+                    rfq_stats_accelerated=(
+                        _d.rfq_stats_accelerated
+                        if conv.get("rfq_stats_accelerated") is None
+                        else _as_bool_rfq(conv["rfq_stats_accelerated"])))
             except (TypeError, ValueError) as exc:
                 _st = _d
                 _warn("Numerics", f"RFQ solver setting in project is "
                       f"invalid:\n{exc}\nShown instead: the default "
                       f"({_d.rfq_solver}).")
             ct.set_rfq_solver(_st.rfq_solver, _st.rfq_td_steps_per_period,
-                              _st.rfq_td_sc_every)
+                              _st.rfq_td_sc_every, _st.rfq_stats_accelerated)
             if ct._rfq_td_steps.value() != _st.rfq_td_steps_per_period:
                 _warn("Numerics",
                       f"RFQ time steps {_st.rfq_td_steps_per_period} per RF "
@@ -2497,6 +2512,9 @@ class InterphaseWindow(QMainWindow):
                 file_cfg = copy.copy(beam_cfg)
                 file_cfg.source = "file"
                 file_cfg.distribution_file = cfg_ui["dst_path"]
+                # the exit beam as it is: re-shaping applies to the
+                # user's input file only
+                file_cfg.reshape_to_twiss = False
                 beam = create_beam(file_cfg, seed=42)
 
             self.state.lattice.step_config = self.convergence_tab.current_step_config()

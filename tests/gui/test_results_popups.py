@@ -52,6 +52,33 @@ def test_refresh_accepts_ndarray_results_kpis(qapp):
     assert "98.00" in _kpi_val(tab._k_trans)
 
 
+def test_emittance_growth_kpi_is_the_normalised_growth(qapp):
+    """Through an accelerating line (an RFQ: 30 keV -> 2.1 MeV) the
+    geometric emittance shrinks (x0.14 here) while the normalised one
+    grows (x1.17): the tile shows the normalised growth.  Results without
+    a normalised emittance keep the geometric ratio."""
+    import numpy as np
+    from linac_gen_gui.interphase.state import AppState
+    from linac_gen_gui.interphase.tabs.results_tab import ResultsTab
+
+    class _R:
+        sigma_x = np.array([1.0, 0.8])
+        sigma_y = np.array([1.0, 0.6])
+        emit_x = np.array([17.14, 2.405])
+        emit_nx = np.array([0.137, 0.161])
+        transmission = np.array([100.0, 77.35])
+
+    class _NoNormalised(_R):
+        emit_nx = np.zeros(2)
+
+    _noop = lambda *a, **k: None
+    tab = ResultsTab(AppState(), _noop, _noop, _noop)
+    tab._refresh(_R())
+    assert _kpi_val(tab._k_ex).startswith("1.18")       # 0.161 / 0.137
+    tab._refresh(_NoNormalised())
+    assert _kpi_val(tab._k_ex).startswith("0.14")       # 2.405 / 17.14
+
+
 def test_refresh_via_set_results_signal_ndarray(qapp):
     """The real dispatch path the assistant uses: AppState.set_results ->
     results_changed -> ResultsTab._refresh, with ndarray-valued results."""
@@ -80,3 +107,93 @@ def _kpi_val(card):
         if c.objectName() == "value":
             return c.text()
     return None
+
+
+def _energy_results(dw_end_mev):
+    """Three rows: the reference particle accelerated to 2.0985 MeV, the
+    beam's centroid ΔW ending at ``dw_end_mev``."""
+    import numpy as np
+
+    class _R:
+        s = [0.0, 100.0, 200.0]
+        ref_w_kin = [0.03, 1.0, 2.0985]
+        ref_gamma = [1.000032, 1.001065, 1.002234]
+        transmission = [100.0, 99.0, 98.0]
+    r = _R()
+    r.centroid = np.zeros((3, 6))
+    r.centroid[:, 5] = [0.0, 0.5 * dw_end_mev, dw_end_mev]
+    return r
+
+
+def _legend_names(plot):
+    return [label.text for _sample, label in plot.getPlotItem().legend.items]
+
+
+def test_energy_popup_draws_the_beam_mean_beside_the_reference(qapp):
+    """The Energy tile's 2.0985 MeV is the reference particle's energy; the
+    popup draws the beam's mean energy (reference + centroid ΔW) beside it,
+    and lists it in the legend only while it has data."""
+    import numpy as np
+    from linac_gen_gui.interphase.tabs.results_tab import _EnergyPopup
+    dlg = _EnergyPopup(None)
+    try:
+        r = _energy_results(0.0253)
+        dlg.refresh(r)
+        assert np.allclose(dlg._cw.getData()[1], r.ref_w_kin)
+        x, y = dlg._cm.getData()
+        assert np.allclose(x, r.s)
+        assert np.allclose(y, np.asarray(r.ref_w_kin) + r.centroid[:, 5])
+        assert _legend_names(dlg._pw) == ["reference particle", "beam mean"]
+        # ΔW = 0 at every row (no RF, or no centroid recorded): the mean is
+        # the reference itself, so it is not drawn a second time
+        dlg.refresh(_energy_results(0.0))
+        x, _y = dlg._cm.getData()
+        assert x is None or len(x) == 0
+        assert _legend_names(dlg._pw) == ["reference particle"]
+        dlg.refresh(r)
+        assert _legend_names(dlg._pw) == ["reference particle", "beam mean"]
+        dlg.refresh(None)
+        assert _legend_names(dlg._pw) == ["reference particle"]
+    finally:
+        dlg.deleteLater()
+
+
+def test_energy_tile_tooltip_gives_the_reference_and_the_beam_mean(qapp):
+    from linac_gen_gui.interphase.state import AppState
+    from linac_gen_gui.interphase.tabs.results_tab import (
+        ResultsTab, _energy_tooltip)
+    tip = _energy_tooltip(_energy_results(0.0253))
+    assert tip.startswith("reference particle  2.0985 MeV\n"
+                          "beam mean  2.1238 MeV  (+25.3 keV)\n\n")
+    for r in (None, _energy_results(0.0)):       # nothing to add
+        assert "beam mean" not in _energy_tooltip(r)
+    _noop = lambda *a, **k: None
+    tab = ResultsTab(AppState(), _noop, _noop, _noop)
+    try:
+        card = next(c for c in tab._cards if c._key == "energy")
+        tab._refresh(_energy_results(0.0253))
+        assert card.toolTip() == tip
+    finally:
+        tab.deleteLater()
+
+
+def test_result_card_tooltip_fn(qapp):
+    """``tooltip_fn`` sets the tile's tooltip on every set_results, also
+    with no results; one that raises leaves no tooltip."""
+    from linac_gen_gui.interphase.panels.result_card import ResultCard
+    card = ResultCard("energy", "Energy", "gauge", series_attr="ref_w_kin",
+                      tooltip_fn=lambda r: "none" if r is None
+                      else f"{len(r.s)} rows")
+    card.set_results(None)
+    assert card.toolTip() == "none"
+    card.set_results(_energy_results(0.0253))
+    assert card.toolTip() == "3 rows"
+
+    def _raises(_r):
+        raise RuntimeError("boom")
+    bad = ResultCard("x", "X", "gauge", tooltip_fn=_raises)
+    bad.setToolTip("stale")
+    bad.set_results(None)
+    assert bad.toolTip() == ""
+    for c in (card, bad):
+        c.deleteLater()

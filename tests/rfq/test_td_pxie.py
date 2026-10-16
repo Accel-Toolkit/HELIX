@@ -256,3 +256,26 @@ def test_one_bunch_at_the_exit_without_periodic_phase(tmp_path):
     assert ph.size > 7000
     assert (np.abs(ph) > 180.0).mean() < 0.01
     assert np.std(ph[np.abs(ph) < 180.0]) < 15.0
+
+
+def test_unaccelerated_particles_stay_in_the_beam_not_the_statistics(runs):
+    """StepConfig.rfq_stats_accelerated (default): the particles that leave
+    the RFQ unaccelerated -- below the entrance energy plus half the
+    reference gain -- count in the transmission but not in the exit row's
+    statistics; nothing flies on outside the stored field region."""
+    from linac_gen.diagnostics.moments import compute_moments
+    run = runs["5mA"]
+    res, b = run["res"], run["beam"]
+    info = res.rfq_td
+    al = b.alive_mask
+    w = b.ref.w_kin + b.particles[:, 5]
+    unacc = al & (w - 0.030 < 0.5 * (b.ref.w_kin - 0.030))
+    assert info["stats_accelerated"] is True
+    assert info["n_unaccelerated"] == int(unacc.sum())
+    assert res.transmission[-1] == pytest.approx(100.0 * al.mean())
+    m = compute_moments(b.particles[al & ~unacc])
+    assert res.sigma_w[-1] == pytest.approx(m["sigma_w"], rel=1e-12)
+    assert res.sigma_x[-1] == pytest.approx(m["sigma_x"], rel=1e-12)
+    # every particle that left the stored field was counted as lost there
+    assert info["outside_map_steps"] == info["n_left_map"]
+    assert np.hypot(b.particles[al, 0], b.particles[al, 2]).max() < 10.0

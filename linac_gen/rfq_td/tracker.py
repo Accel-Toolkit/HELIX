@@ -31,6 +31,10 @@ C_MM_NS = 299.792458            # speed of light, mm/ns
 REASON_METAL = 1
 REASON_BACKWARD = 2
 REASON_STALLED = 3
+#: left the stored field region (beyond the vane tips, between the vanes):
+#: no field is stored there, so the particle would fly on unaffected
+#: instead of being swept onto a vane
+REASON_OUTSIDE = 4
 
 
 class Aborted(RuntimeError):
@@ -71,6 +75,8 @@ class TimeDomainTracker:
                  phi0_deg: float = 0.0, space_charge=None,
                  sc_every: int = 4, t_max_ns: float | None = None):
         self.map = fieldmap
+        # where the map stores no field (None for a map without the test)
+        self._outside = getattr(fieldmap, "outside", None)
         self.el = electrodes
         self.f_ghz = freq_mhz * 1e-3
         self.omega = 2.0 * math.pi * self.f_ghz           # rad/ns
@@ -191,12 +197,20 @@ class TimeDomainTracker:
             a_idx = np.flatnonzero(act)
             if a_idx.size:
                 hit = electrode_hit(self.el, X[a_idx], Y[a_idx], Z[a_idx])
+                # n_out: this step's points without stored field (none: no
+                # one can have left the region)
+                off = (self._outside(X[a_idx], Y[a_idx], Z[a_idx])
+                       if self._outside is not None and n_out
+                       else np.zeros(a_idx.size, bool))
                 back = uz[a_idx] <= 0.0
                 late = np.zeros(a_idx.size, bool) if t < t_cap \
                     else np.ones(a_idx.size, bool)
                 why = np.where(hit, REASON_METAL,
-                               np.where(back, REASON_BACKWARD,
-                                        np.where(late, REASON_STALLED, 0)))
+                               np.where(off, REASON_OUTSIDE,
+                                        np.where(back, REASON_BACKWARD,
+                                                 np.where(late,
+                                                          REASON_STALLED,
+                                                          0))))
                 dead = why > 0
                 if dead.any():
                     j = a_idx[dead]

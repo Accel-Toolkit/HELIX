@@ -87,6 +87,10 @@ class ResultCard(QFrame):
         Short unit string shown next to the end value.
     value_fmt
         ``str.format`` pattern for the end value (default ``"{:.3g}"``).
+    tooltip_fn
+        Optional callable ``fn(results) -> str``: the tile's tooltip, set
+        on every :meth:`set_results` (also with ``results=None``).  An
+        exception leaves the tile without a tooltip.
     """
 
     clicked = pyqtSignal(str)
@@ -96,12 +100,14 @@ class ResultCard(QFrame):
                  series_attr: str | None = None,
                  unit: str = "",
                  value_fmt: str = "{:.3g}",
-                 series_fn=None):
+                 series_fn=None,
+                 tooltip_fn=None):
         super().__init__()
         self._key = key
         self._accent = accent
         self._series_attr = series_attr
         self._series_fn = series_fn
+        self._tooltip_fn = tooltip_fn
         self._unit = unit
         self._value_fmt = value_fmt
 
@@ -226,7 +232,12 @@ class ResultCard(QFrame):
             self._trend_lbl.setText("")
 
     def set_results(self, results) -> None:
-        """Update sparkline + footer.  Gracefully handles None."""
+        """Update sparkline + footer (and tooltip).  Gracefully handles None."""
+        if self._tooltip_fn is not None:
+            try:
+                self.setToolTip(self._tooltip_fn(results) or "")
+            except Exception:                                # noqa: BLE001
+                self.setToolTip("")
         if self._series_fn is not None:
             # Derived series — fn may consume results, the lattice (via a
             # closure), or both; called even with results=None so lattice

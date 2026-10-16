@@ -651,8 +651,13 @@ def _list_runs(ctx, limit: int = 20):
 
 
 @_tool("matched_input_twiss",
-       "Matched INPUT Twiss for a transfer line: periodic solution of "
-       "the FODO cell back-propagated to the entrance (transverse).",
+       "Matched INPUT Twiss for a transfer line (zero current): the "
+       "periodic solution of a cell back-propagated to the entrance "
+       "(transverse).  Default cell: a lattice with an RFQ is matched to "
+       "the RFQ's first regular period, at the RFQ entrance (kind 'rfq'); "
+       "otherwise the first FODO cell, at the lattice entrance.  Explicit "
+       "cell_start/cell_end: that range, back-propagated to the lattice "
+       "entrance.",
        {"type": "object",
         "properties": {"cell_start": {"type": "integer"},
                        "cell_end": {"type": "integer"}},
@@ -663,23 +668,44 @@ def _matched_twiss(ctx, cell_start: int | None = None,
     gate = _need(ctx, "lattice", "beam_config")
     if gate:
         return gate
+    import math as _math
     from linac_gen.cli.common import build_ref
     from linac_gen.matching.periodic import (
         find_fodo_cells, find_matched_input_twiss,
+        find_rfq_matched_input_twiss, find_rfq_periods,
     )
     ref = build_ref(ctx.beam_config)
     if cell_start is None or cell_end is None:
-        cells = find_fodo_cells(ctx.lattice)
-        if not cells:
-            return _err("no FODO cell detected — pass cell_start/"
-                        "cell_end explicitly")
-        cell_start, cell_end = cells[0]
-    out, refusal, warns = _capture(find_matched_input_twiss, ctx.lattice,
-                                   ref, int(cell_start), int(cell_end))
+        periods = find_rfq_periods(ctx.lattice)
+        if periods:
+            out, refusal, warns = _capture(find_rfq_matched_input_twiss,
+                                           ctx.lattice, ref, periods[0])
+            kind = "rfq"
+        else:
+            cells = find_fodo_cells(ctx.lattice)
+            if not cells:
+                return _err("no cell detected (no RFQ and no FODO cell) — "
+                            "pass cell_start/cell_end explicitly")
+            cell_start, cell_end = cells[0]
+            out, refusal, warns = _capture(find_matched_input_twiss,
+                                           ctx.lattice, ref, int(cell_start),
+                                           int(cell_end))
+            kind = "fodo"
+    else:
+        out, refusal, warns = _capture(find_matched_input_twiss, ctx.lattice,
+                                       ref, int(cell_start), int(cell_end))
+        kind = "manual"
     if refusal:
         return refusal
-    data = {k: (float(v) if isinstance(v, (int, float)) else v)
+    data = {k: (float(v) if isinstance(v, (int, float))
+                and not isinstance(v, bool) else v)
             for k, v in out.items()}
+    data["kind"] = kind
+    ps = data.get("phase_sensitivity")
+    if isinstance(ps, float) and not _math.isfinite(ps):
+        data["phase_sensitivity"] = None      # unstable at some RF phase
+    if data.get("caution"):
+        warns = [*warns, data["caution"]]
     return _ok(data, _ctx_provenance(ctx), warns)
 
 
@@ -1470,7 +1496,9 @@ def _parameter_scan(ctx, element: str, attribute: str, start: float,
         rfq_solver=str(getattr(step, "rfq_solver", "auto")),
         rfq_td_steps_per_period=int(getattr(step, "rfq_td_steps_per_period",
                                             48)),
-        rfq_td_sc_every=int(getattr(step, "rfq_td_sc_every", 4)))
+        rfq_td_sc_every=int(getattr(step, "rfq_td_sc_every", 4)),
+        rfq_stats_accelerated=bool(getattr(step, "rfq_stats_accelerated",
+                                           True)))
     # Prefer the NAME selector when it is unique in the session lattice —
     # robust against structural in-memory edits shifting indices between
     # this lattice and the re-parsed file.  Fall back to @index (1-based).

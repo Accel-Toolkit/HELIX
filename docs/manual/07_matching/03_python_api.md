@@ -253,9 +253,11 @@ Separate from `match()`, `linac_gen.matching.periodic` provides
 |---|---|
 | `find_periodic_twiss(lattice, ref)` | Full-ring / whole-lattice periodic Twiss.  Auto-detects coupling.  Also returns the periodic dispersion `disp_x`/`disp_xp`/`disp_y`/`disp_yp` (mm/MeV, mrad/MeV; exact `0.0` for straight lattices, `NaN` near an integer tune). |
 | `find_matched_input_twiss(lattice, ref, cell_start, cell_end)` | Transfer-line: periodic Twiss of a sub-cell, back-propagated to the lattice entrance.  Returns the entrance dispersion too — a bending cell's matched beam needs it (set the beam's `disp_*` fields, or let the matching dialog's Apply do it). |
-| `find_sc_matched_input_twiss(lattice, ref, cell_start, cell_end, current, base_initial, *, max_iter=50, tol=1e-4)` | Same as above but with space charge: two-stage iteration (cell-periodic with SC + envelope back-propagation).  Also matches dispersion (8-state).  `max_iter` / `tol` bound the fixed-point iteration (stop when the input-Twiss update falls below `tol`). |
+| `find_sc_matched_input_twiss(lattice, ref, cell_start, cell_end, current, base_initial, *, max_iter=50, tol=1e-4, sc_factor=1.0)` | Same as above but with space charge: two-stage iteration (cell-periodic with SC + envelope back-propagation).  Also matches dispersion (8-state).  `max_iter` / `tol` bound the fixed-point iteration (stop when the input-Twiss update falls below `tol`); `sc_factor` is the space-charge compensation in force at the lattice entrance (1 = full space charge).  `base_initial` with `continuous=True` starts from a DC beam. |
+| `find_rfq_periods(lattice)` | One `RfqPeriod(rfq_start, start, end, label)` per RFQ: its first two regular cells of opposite sign (one focusing period), after the radial matching (±3) and transition (±4) cells.  `[]` without RFQ cells. |
+| `find_rfq_matched_input_twiss(lattice, ref, period=None, *, current=0.0, emit_x=None, emit_y=None, dc_energy_spread_keV=0.0, max_iter=200, tol=1e-4)` | Matched input Twiss of an RFQ **at the RFQ entrance**; with `current > 0` (mA) for a DC input beam (`emit_x`/`emit_y`: geometric rms at the lattice entrance).  Also reports whether that is the lattice entrance and how much the match depends on the RF phase ([below](#rfqs)). |
 | `find_coupled_matched_twiss(lattice, ref)` | **Coupled** lattices (solenoid HWR, skew quads): eigenvector / Wolski method on the 4×4 transverse map.  Usually accessed indirectly via the auto-routing in `find_periodic_twiss`. |
-| `find_fodo_cells(lattice)` | Auto-detect candidate periodic cells.  Recognises Quadrupole, Solenoid, and FieldMap/FieldMap3D classified as solenoid (kb≠0, ke=0). |
+| `find_fodo_cells(lattice)` | Auto-detect candidate periodic cells.  Recognises Quadrupole, Solenoid, and FieldMap/FieldMap3D classified as solenoid (kb≠0, ke=0).  RFQ cells are not focusers here: use `find_rfq_periods`. |
 
 ### Whole-lattice vs sub-cell mode — which to use
 
@@ -302,6 +304,52 @@ through the inverse of the front section.
 | MEBT | cell mode |
 | BTL (arc) | cell mode + SC (for dispersion) |
 | Storage ring (hypothetical) | whole-lattice mode |
+
+### RFQs
+
+An RFQ is matched to its first regular focusing period, carried back
+through its radial matching section to the **RFQ entrance**: the beam
+the line upstream must deliver.  Elements upstream of the RFQ (a LEBT)
+are not back-propagated through; the reference particle is carried
+through them (with the frequency of a `FREQ` card among them), and the
+space-charge compensation they leave in force is kept.  With space
+charge the input beam is DC, as the beam entering an RFQ is.
+
+```{.python data-needs="examples/rfq_demo/rfq_demo.lgproj"}
+from linac_gen.cli.common import build_ref, load_input
+from linac_gen.distributions.factory import geometric_emittances
+from linac_gen.matching.periodic import (find_rfq_matched_input_twiss,
+                                         find_rfq_periods)
+
+lattice, beam, _ = load_input("examples/rfq_demo/rfq_demo.lgproj")
+ref = build_ref(beam)
+period, = find_rfq_periods(lattice)          # RFQ_002 + RFQ_003, elements 2-3
+tw = find_rfq_matched_input_twiss(lattice, ref)            # zero current
+ex, ey, _ = geometric_emittances(beam, ref.bg)
+sc = find_rfq_matched_input_twiss(lattice, ref, current=beam.current,
+                                  emit_x=ex, emit_y=ey)    # 15 mA, DC beam
+print(f"x: alpha {tw['alpha_x']:+.3f} -> {sc['alpha_x']:+.3f}, "
+      f"beta {tw['beta_x']:.4f} -> {sc['beta_x']:.4f} mm/mrad")
+print(tw["at_lattice_entrance"], round(tw["phase_sensitivity"], 2))
+```
+
+```text
+x: alpha -0.179 -> -0.216, beta 0.0081 -> 0.0084 mm/mrad
+True 2.65
+```
+
+The result is the match **of the synchronous particle**, while a DC
+beam enters at every RF phase; one input ellipse suits the whole beam
+only when the radial matching section makes the match phase-independent.
+`phase_sensitivity` is the largest mismatch factor between the match and
+the one re-computed 30° and 60° either side of the synchronous phase;
+above 0.1, `caution` explains, and the CLI, the matching dialog and the
+assistant show it.  The demo's radial matching section is a single cell,
+half a focusing period long — 2.65, and in a zero-current time-domain run
+its round input waist transmits 90.4 % against 80.5 % for this match.
+Lengthened to two focusing periods the same RFQ gives 0.04, and the match
+becomes nearly the same in x and y: check a flagged input with a
+multiparticle run.
 
 ### Coupled-lattice support (HWR cryomodules)
 

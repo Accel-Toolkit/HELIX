@@ -20,16 +20,19 @@ of a lattice (or section) and the space-charge-matched Twiss, and can
 write the result back into the Beam tab.  Use it to find a matched
 input beam for a periodic structure.
 
-### Mode: Whole lattice vs FODO cell
+### Mode: Whole lattice vs periodic cell
 
 The dialog's **Mode** dropdown offers two entries — **"Whole lattice
-(periodic ring)"** and **"FODO cell → entrance (transfer line)"** —
+(periodic ring)"** and **"Periodic cell → entrance (transfer line)"** —
 switching between two distinct physical questions:
 
 | Mode | Physical question | Math |
 |---|---|---|
 | **Whole lattice** (`find_periodic_twiss`) | "What input Twiss, tracked once through the *entire* lattice, comes back to itself at the end?" | One-turn 6×6 transfer matrix M of the whole lattice → extract matched Twiss. |
-| **FODO cell** (`find_matched_input_twiss`) | "There's a repeating sub-section.  What Twiss do I inject at s=0 so the beam is matched to that sub-section's period by the time it arrives?" | Periodic Twiss of just the picked sub-cell, then back-propagated through the inverse of the front section to s=0. |
+| **Periodic cell** (`find_matched_input_twiss`; an RFQ period: `find_rfq_matched_input_twiss`) | "There's a repeating sub-section.  What Twiss do I inject at s=0 so the beam is matched to that sub-section's period by the time it arrives?" | Periodic Twiss of just the picked sub-cell, then back-propagated through the inverse of the front section to s=0 (an RFQ: to the RFQ entrance — see [RFQs](#rfqs)). |
+
+The **Cell** list holds the lattice's RFQ periods first, then its FODO
+cells (`FODO cell k: elements a–b`).
 
 #### When to use which
 
@@ -42,9 +45,9 @@ switching between two distinct physical questions:
 | A single FODO cell modeled in isolation, asking "what's the matched solution if this repeats forever?" | Yes | Mathematically identical to a ring of one cell. |
 | HWR / SSR / cryomodule cavities | No | Accelerating: eigenvalues drift off the unit circle as βγ grows.  Mathematically diverges. |
 | MEBT, BTL, HEBT, dump lines | No | Transfer lines — one-pass, not periodic.  Use cell mode. |
-| LEBT, RFQ | No | Acceleration + non-periodic geometry breaks the assumption. |
+| LEBT, RFQ | No | Acceleration + non-periodic geometry breaks the assumption.  An RFQ is matched in cell mode, to its first regular period ([RFQs](#rfqs)). |
 
-**FODO cell mode** is for everything else PIP-II-class: a transfer
+**Periodic cell mode** is for everything else PIP-II-class: a transfer
 line or linac with a repeating sub-section inside it.  Cell mode
 finds the matched *injection* Twiss — the entrance Twiss that lands
 the beam in periodic equilibrium by the time it reaches your chosen
@@ -59,6 +62,47 @@ there for ring lattices HELIX doesn't currently target.
 If the cell mode auto-detection picks the wrong sub-cell or finds
 none (rare), use the **--cell-start N --cell-end M** flags on the CLI
 (or pick a different cell index in the GUI cell combo).
+
+#### RFQs
+
+A lattice with RFQ cells opens the dialog in cell mode on the RFQ's
+period, listed as e.g. **"RFQ: RFQ_002 + RFQ_003 (elements 2–3), matched
+at the RFQ entrance"**: the RFQ's first two regular cells of opposite
+sign, after its radial matching section (±3) and transition (±4) cells.
+The result is the matched input Twiss **at the RFQ entrance** — the beam
+the line upstream (a LEBT) must deliver:
+
+* **Compute Periodic Twiss (no SC)** — the cells' transfer matrices for
+  the synchronous particle, carried back through the radial matching
+  section.
+* **Compute SC-Matched Twiss** — with the Beam tab's current and
+  emittances, for a **DC** input beam (the beam entering an RFQ is
+  unbunched).  It runs in the background (a few seconds; the busy bar
+  shows, and the dialog closes only once it has finished).  Max
+  iterations starts at 200: the period's Twiss sit at α ≈ 0, where the
+  convergence test is strict.
+* **Apply to Beam Setup** is enabled only when the RFQ starts the
+  lattice.  With a LEBT in front, the Beam tab describes the beam at the
+  LEBT entrance, so the RFQ-entrance values are not applied; the log and
+  the button's tooltip say they are the target at the RFQ entrance.
+* If the beam is read from a particle file (**Import .dst…**), Apply also
+  ticks **re-shape to α, β** in the [Beam tab](03_beam_tab.md): the file's
+  particles are then re-shaped onto the matched values, keeping their
+  emittance.
+
+The match is that of the synchronous particle, while a DC beam enters at
+every RF phase.  The dialog re-computes it 30° and 60° either side of the
+synchronous phase; when that changes it by a mismatch factor above 0.1 it
+logs a **CAUTION**: the radial matching section is too short for one
+input ellipse to suit the whole beam, so check the input with a
+multiparticle run.  The demo RFQ (`examples/rfq_demo`), whose radial
+matching section is a single 5.4 mm cell (0.5 focusing periods), gets
+it: in a zero-current time-domain run its round input waist (α = 0,
+β = 0.01 mm/mrad) transmits 90.4 % of the particles, the
+synchronous-particle match 80.5 %.  A section two focusing periods or
+longer makes the match phase-independent and nearly the same in x and y
+— the condition RFQ designs meet — and then this input is the right one.
+See [RFQ_CELL → Matched input Twiss](../03_elements/09_rfqcell.md#matched-input-twiss).
 
 #### Cells with bends (BTL, dispersive arcs)
 

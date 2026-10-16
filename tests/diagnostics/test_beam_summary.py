@@ -134,3 +134,20 @@ def test_single_particle_no_crash():
                 assert np.isfinite(float(v)), (n, v)
             except ValueError:
                 pass                     # non-numeric label rows
+
+
+def test_particles_left_out_of_the_statistics_still_count_as_alive():
+    """n_left_out: alive particles the run's statistics leave out (and the
+    caller did not pass) still count in the macroparticle and transmission
+    rows, a row says how many, and the statistics rows describe only the
+    particles passed.  None left out: no such row, rows unchanged."""
+    q = _beam(n=1000)
+    rows = summarize_particles(q, _ref(), n_total=1010, n_left_out=6)
+    assert _value(rows, "macroparticles") == "1006 / 1010"
+    assert float(_value(rows, "transmission")) == pytest.approx(100.0 * 1006 / 1010)
+    assert _value(rows, "left out of the statistics") == "6"
+    base = summarize_particles(q, _ref(), n_total=1010)
+    assert _value(base, "macroparticles") == "1000 / 1010"
+    assert not [r for r in base if r[1] == "left out of the statistics"]
+    stats = lambda rr: [r for r in rr if r[0] not in ("Distribution",)]
+    assert stats(rows) == stats(base)

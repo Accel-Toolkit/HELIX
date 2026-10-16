@@ -12,7 +12,7 @@ import os as _os
 # linac_gen.
 _os.environ.setdefault("OMP_DYNAMIC", "FALSE")
 
-__version__ = "1.19.0"
+__version__ = "1.20.0"
 
 
 def __getattr__(name):

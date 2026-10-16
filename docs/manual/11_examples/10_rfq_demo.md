@@ -52,7 +52,10 @@ Exit energy: mean ± rms of the accelerated particles (above 0.9 of the
 reference energy).  With the per-cell model every surviving particle
 is accelerated; the time-domain solver also brings a few unaccelerated
 particles to the exit (0.3 % of the beam without space charge, 1.1 % at
-15 mA).  The deck has no `RFQ_GEOM` vane file, so the
+15 mA).  They count in the transmission, but by default not in the
+recorded rms sizes, emittances and energy spread (see
+[statistics of the accelerated beam](../03_elements/20_rfq_time_domain.md#physics)).
+The deck has no `RFQ_GEOM` vane file, so the
 [time-domain solver](../03_elements/20_rfq_time_domain.md) builds the
 vanes from the `RFQ_CELL` cards; its first run builds their field map
 (about 2.5 minutes) and caches it.

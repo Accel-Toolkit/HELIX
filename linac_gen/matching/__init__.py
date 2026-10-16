@@ -14,8 +14,9 @@ from linac_gen.matching.engine import MATCH_ALGORITHMS, MatchResult, match
 from linac_gen.matching.matcher import Matcher
 from linac_gen.matching.objectives import evaluate_objectives
 from linac_gen.matching.periodic import (
-    find_fodo_cells, find_matched_input_twiss,
-    find_periodic_twiss, find_sc_matched_input_twiss,
+    RfqPeriod, find_fodo_cells, find_matched_input_twiss,
+    find_periodic_twiss, find_rfq_matched_input_twiss, find_rfq_periods,
+    find_sc_matched_input_twiss,
 )
 from linac_gen.matching.variables import (
     MatchingConfigError, Variable, collect_variables,
@@ -27,6 +28,7 @@ __all__ = [
     # Transfer-line input matching
     "find_matched_input_twiss", "find_fodo_cells",
     "find_sc_matched_input_twiss",
+    "RfqPeriod", "find_rfq_periods", "find_rfq_matched_input_twiss",
     # New
     "Variable", "Constraint", "MatchResult",
     "collect_variables", "collect_constraints", "match",

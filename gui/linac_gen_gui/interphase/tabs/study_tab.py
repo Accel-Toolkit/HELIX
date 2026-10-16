@@ -362,10 +362,15 @@ class StudyTab(QWidget):
                 or int(getattr(st, "rfq_td_steps_per_period", 48))
                 != StepConfig().rfq_td_steps_per_period
                 or int(getattr(st, "rfq_td_sc_every", 4))
-                != StepConfig().rfq_td_sc_every):
+                != StepConfig().rfq_td_sc_every
+                or bool(getattr(st, "rfq_stats_accelerated", True))
+                != StepConfig().rfq_stats_accelerated):
             numerics.update(rfq_solver=st.rfq_solver,
                             rfq_td_steps=int(st.rfq_td_steps_per_period),
-                            rfq_td_sc_every=int(st.rfq_td_sc_every))
+                            rfq_td_sc_every=int(st.rfq_td_sc_every),
+                            rfq_stats=("accelerated"
+                                       if st.rfq_stats_accelerated
+                                       else "all"))
         return StudySpec(
             name=self._name.text().strip() or "study",
             input=str(self.state.lattice_path or ""),

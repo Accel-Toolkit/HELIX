@@ -37,7 +37,8 @@ def test_min_steps_are_class_constants_not_fields():
     field_names = {f.name for f in fields(StepConfig)}
     assert field_names == {"integration_steps_per_metre", "sc_steps_per_metre",
                            "drift_single_push", "rfq_solver",
-                           "rfq_td_steps_per_period", "rfq_td_sc_every"}
+                           "rfq_td_steps_per_period", "rfq_td_sc_every",
+                           "rfq_stats_accelerated"}
     cfg = StepConfig()
     with pytest.raises(FrozenInstanceError):
         cfg.integration_steps_per_metre = 200.0

@@ -2349,6 +2349,12 @@ def _SuperposedFieldMap():
     return SuperposedFieldMap
 
 
+def _RfqCell():
+    """Lazy import (keeps the module import light)."""
+    from linac_gen.elements.rfq_cell import RfqCell
+    return RfqCell
+
+
 def _is_cluster(el) -> bool:
     return isinstance(el, _SuperposedFieldMap())
 
@@ -2588,10 +2594,36 @@ def _rf_phase_value(el) -> float | None:
     """Dispatch for the synchronous-phase chart: NCELLS via
     :func:`_ncells_phase_deg`, everything else via its flat ``phase``."""
     from linac_gen.elements.ncells import NCells
+    from linac_gen.elements.rfq_cell import RfqCell
     if isinstance(el, NCells):
         return _ncells_phase_deg(el)
+    if isinstance(el, RfqCell):
+        return float(el.phi_s_deg)
     v = getattr(el, "phase", None)
     return float(v) if v is not None else None
+
+
+def _rfq_min_aperture(el) -> float | None:
+    """Smallest vane-tip distance of an RFQ cell from its card (mm)."""
+    from linac_gen.analysis.rfq_design import min_aperture
+    return min_aperture(el)
+
+
+def _rfq_loss_series(state):
+    """Thumbnail of the RFQ tile "losses": macroparticles lost per RFQ cell
+    (cell s in m), or None without a run on this lattice."""
+    def fn(results):
+        if results is None or state is None or state.lattice is None:
+            return None
+        from linac_gen.analysis import rfq_design as rd
+        chain = rd.find_rfq(state.lattice)
+        if chain is None:
+            return None
+        lo = rd.cell_losses(results, chain)
+        if lo is None or not lo["count"].any():
+            return None
+        return 0.5e-3 * (chain.s0 + chain.s1), lo["count"].astype(float)
+    return fn
 
 
 class _LatticeParamPopup(_PopupPlot):
@@ -5790,6 +5822,46 @@ class _SccPopup(_PopupPlot):
             "clipboard")
 
 
+def _beam_mean_energy(results):
+    """The beam's mean kinetic energy along s (MeV): the reference particle's
+    energy plus the centroid's ΔW, both recorded per row.  None when the
+    results carry no centroid, or one with ΔW = 0 at every row (the mean
+    is then the reference energy itself)."""
+    if results is None:
+        return None
+    w = np.asarray(getattr(results, "ref_w_kin", []), dtype=float)
+    cen = getattr(results, "centroid", None)
+    try:
+        c = np.asarray(cen if cen is not None else [], dtype=float)
+    except (TypeError, ValueError):
+        return None
+    if (w.size == 0 or c.ndim != 2 or c.shape[0] != w.size
+            or c.shape[1] < 6 or not np.any(c[:, 5])):
+        return None
+    return w + c[:, 5]
+
+
+def _energy_tooltip(results) -> str:
+    """The Energy tile's tooltip: its number is the reference particle's
+    energy; the beam's mean energy differs from it by the centroid's ΔW."""
+    note = ("The number is the reference particle's kinetic energy at the "
+            "end of the lattice: the energy the RF phases are referred to.")
+    w = (np.asarray(getattr(results, "ref_w_kin", []), dtype=float)
+         if results is not None else np.empty(0))
+    if w.size == 0:
+        return note
+    lines = [f"reference particle  {w[-1]:.4f} MeV"]
+    mean = _beam_mean_energy(results)
+    if mean is not None:
+        lines.append(f"beam mean  {mean[-1]:.4f} MeV  "
+                     f"({(mean[-1] - w[-1]) * 1e3:+.1f} keV)")
+    return "\n".join(lines) + "\n\n" + note
+
+
+#: Tile tooltips that depend on the results: key -> fn(results) -> str.
+_TILE_TOOLTIPS = {"energy": _energy_tooltip}
+
+
 class _EnergyPopup(_PopupPlot):
     def __init__(self, parent):
         super().__init__(parent, "Energy · γ · Transmission", size=(1000, 620))
@@ -5800,14 +5872,33 @@ class _EnergyPopup(_PopupPlot):
         fix_plot_range(self._pt, yrange=(0.0, 102.0))   # percent: keep 0 … 100
         for p in (self._pg, self._pt):
             p.setXLink(self._pw)
-        self._cw = filled_curve(self._pw, theme.ACCENT)
+        self._cw = filled_curve(self._pw, theme.ACCENT, name="reference particle")
+        # the beam's mean energy (reference + centroid ΔW), drawn only when
+        # it differs from the reference somewhere
+        self._cm = self._pw.plot(
+            [], [], name="beam mean",
+            pen=pg.mkPen(theme.WARN, width=1.6, style=Qt.PenStyle.DashLine))
+        self._list_mean(False)
         self._cg = filled_curve(self._pg, "#a78bfa")
         self._ct = filled_curve(self._pt, "#4ade80", fill_alpha=48)
         for p in (self._pw, self._pg, self._pt):
             v.addWidget(p, stretch=1)
         self.attach_lattice_strip(self._pw)
 
+    def _list_mean(self, on: bool) -> None:
+        """Keep the "beam mean" legend entry only while that curve has data."""
+        leg = self._pw.getPlotItem().legend
+        if leg is None:
+            return
+        listed = any(sample.item is self._cm for sample, _label in leg.items)
+        if on and not listed:
+            leg.addItem(self._cm, "beam mean")
+        elif listed and not on:
+            leg.removeItem(self._cm)
+
     def refresh(self, results):
+        self._cm.setData([], [])
+        self._list_mean(False)
         if results is None:
             for c in (self._cw, self._cg, self._ct): c.setData([], [])
             return
@@ -5816,6 +5907,10 @@ class _EnergyPopup(_PopupPlot):
         def pair(c, v):
             if s.size and v.size == s.size: c.setData(s, v)
         pair(self._cw, arr("ref_w_kin"))
+        mean = _beam_mean_energy(results)
+        if mean is not None and s.size == mean.size:
+            self._cm.setData(s, mean)
+            self._list_mean(True)
         pair(self._cg, arr("ref_gamma"))
         pair(self._ct, arr("transmission"))
 
@@ -6962,6 +7057,32 @@ class _CentroidPopup(_PopupPlot):
         self._goal_lbl.setVisible(True)
 
 
+def _zdelta_scale(ref, cfg):
+    """``(z per deg of Δφ, δ per MeV of ΔW)`` of TraceWin's (z, δ) basis:
+    z = −Δφ·βλ/360 (m) and δ = Δp/p = ΔW/(β²γm).  β, γ and λ are those of
+    ``ref``, the reference particle of the plotted beam (its own energy and
+    RF frequency at that location); without one, the Beam tab's input
+    energy.  None when neither is available."""
+    import math
+    from linac_gen.core.constants import C_LIGHT
+    try:
+        mass = float(ref.species.mass)
+        gamma, beta = float(ref.gamma), float(ref.beta)
+        wl_m = float(ref.wavelength) * 1e-3                    # mm -> m
+    except (AttributeError, TypeError, ValueError):
+        if cfg is None:
+            return None
+        from linac_gen.core.particle import DEUTERON, H_MINUS, PROTON
+        mass = {"proton": PROTON, "deuteron": DEUTERON,
+                "H-": H_MINUS}.get(cfg.species, PROTON).mass
+        gamma = 1 + cfg.energy / mass
+        beta = math.sqrt(max(1 - 1 / (gamma * gamma), 0.0))
+        wl_m = C_LIGHT / (cfg.frequency * 1e6)
+    if not (beta > 0.0 and gamma > 0.0 and mass > 0.0 and wl_m > 0.0):
+        return None
+    return (-beta * wl_m / 360.0, 1.0 / (beta * beta * gamma * mass))
+
+
 class _PhaseSpacePopup(_DesignProbeMixin, _PopupPlot):
     _FOLD_TIP = (
         "Fold Δφ into ONE RF period about the bunch centroid.\n"
@@ -6987,9 +7108,17 @@ class _PhaseSpacePopup(_DesignProbeMixin, _PopupPlot):
         "computed once in the background (shared with the tune-depression\n"
         "and Hofmann popups).  No longitudinal ellipse for DC records.")
     _ELLIPSES_KEY = "linac_gen/phase_space/ellipses"
+    _PROFILES_TIP = (
+        "Show each map's two projected distributions: the horizontal "
+        "quantity's histogram below the map and the vertical quantity's "
+        "to its left (summed over the other coordinate; same range and "
+        "bins as the map; linear scale, each scaled to its own peak).  "
+        "They follow zoom, location, basis and fold.")
+    _PROFILES_KEY = "linac_gen/phase_space/profiles"
+    _GAUSS_KEY = "linac_gen/phase_space/profile_gaussian"
 
     def __init__(self, parent, state: AppState):
-        super().__init__(parent, "Phase Space  —  x-x' · y-y' · x-y · φ-W", size=(1000, 760))
+        super().__init__(parent, "Phase Space  —  x-x' · y-y' · x-y · φ-W", size=(1180, 900))
         self._state = state
         v = QVBoxLayout(self); v.setContentsMargins(10, 10, 10, 10); v.setSpacing(6)
         top = QHBoxLayout()
@@ -7072,7 +7201,30 @@ class _PhaseSpacePopup(_DesignProbeMixin, _PopupPlot):
             self._ELLIPSES_KEY, False, type=bool)))
         self._ellipses.toggled.connect(self._on_ellipses_toggled)
         top.addWidget(self._ellipses)
+        # Projected profiles under / beside each map, and their dashed
+        # rms-equivalent Gaussians.  Remembered like the ellipses; the
+        # toggles are connected once the panels exist.
+        self._profiles_cb = QCheckBox("profiles")
+        self._profiles_cb.setToolTip(self._PROFILES_TIP)
+        self._profiles_cb.setChecked(bool(self._settings.value(
+            self._PROFILES_KEY, True, type=bool)))
+        top.addWidget(self._profiles_cb)
+        self._gauss_cb = QCheckBox("rms Gaussian")
+        self._gauss_cb.setToolTip(
+            "Dashed over each profile: the Gaussian with the plotted "
+            "particles' mean and rms, normalised like the profile, so a "
+            "non-Gaussian core or tail stands out.")
+        self._gauss_cb.setChecked(bool(self._settings.value(
+            self._GAUSS_KEY, True, type=bool)))
+        top.addWidget(self._gauss_cb)
         top.addStretch(1)
+        # How many alive particles the statistics leave out (and so the
+        # plot): shown only when there are some.
+        self._left_out_note = QLabel("")
+        self._left_out_note.setStyleSheet(f"color: {theme.TEXT_2};")
+        self._left_out_note.setVisible(False)
+        top.addWidget(self._left_out_note)
+        self._n_left_out = 0
         v.addLayout(top)
         # The 2x2 density grid lives in a container widget so the
         # parameters-table toggle can swap the whole block at once.
@@ -7080,17 +7232,21 @@ class _PhaseSpacePopup(_DesignProbeMixin, _PopupPlot):
         grid = QGridLayout(self._plots_box)
         grid.setSpacing(8); grid.setContentsMargins(0, 0, 0, 0)
         # Four 2-D density panels (log-intensity, magma colormap with
-        # transparent ramp, vertical colorbar on the right).
+        # transparent ramp, vertical colorbar on the right), each with its
+        # two projected profiles (below and to the left).
         self._panel_xx  = DensityPanel(title="x – x'", xlabel="x",   xunits="mm",
-                                       ylabel="x'",  yunits="mrad")
+                                       ylabel="x'",  yunits="mrad", profiles=True)
         self._panel_yy  = DensityPanel(title="y – y'", xlabel="y",   xunits="mm",
-                                       ylabel="y'",  yunits="mrad")
+                                       ylabel="y'",  yunits="mrad", profiles=True)
         self._panel_xy  = DensityPanel(title="x – y",  xlabel="x",   xunits="mm",
-                                       ylabel="y",   yunits="mm")
-        self._panel_phi = DensityPanel(title="φ – W",  xlabel="φ",   xunits="deg",
-                                       ylabel="W",   yunits="MeV")
+                                       ylabel="y",   yunits="mm", profiles=True)
+        self._panel_phi = DensityPanel(title="φ – W",  xlabel="Δφ",  xunits="deg",
+                                       ylabel="ΔW",  yunits="MeV", profiles=True)
         grid.addWidget(self._panel_xx,  0, 0); grid.addWidget(self._panel_yy,  0, 1)
         grid.addWidget(self._panel_xy,  1, 0); grid.addWidget(self._panel_phi, 1, 1)
+        self._apply_profile_settings()
+        self._profiles_cb.toggled.connect(self._on_profiles_toggled)
+        self._gauss_cb.toggled.connect(self._on_gauss_toggled)
         self._ell_planes = (("x", self._panel_xx, "x – x'"),
                             ("y", self._panel_yy, "y – y'"),
                             ("z", self._panel_phi, "φ – W"))
@@ -7180,14 +7336,25 @@ class _PhaseSpacePopup(_DesignProbeMixin, _PopupPlot):
     def _current_particles_with_ref(self):
         """(particles, ref_or_None, source_label, n_total_or_None) for the
         selected location.  ``ref`` is the per-snapshot ReferenceParticle
-        (captured with the snapshot), the exit beam's ref, or None for
-        the regenerated-input fallback; ``n_total`` is the launched
-        macroparticle count (for the transmission row)."""
+        (captured with the snapshot), the exit beam's ref, or the
+        regenerated input beam's ref (the Beam tab's energy); None only
+        when there is no particle data at all.  ``n_total`` is the
+        launched macroparticle count (for the transmission row)."""
         results = getattr(self._state, "results", None)
         loc = self._location.currentData() if hasattr(self, "_location") else None
+        # Alive particles the statistics leave out (beam.stats_excluded:
+        # the time-domain RFQ solver's unaccelerated ones) are left out
+        # here too, so plot, profiles, ellipses and table match the rms
+        # numbers of the run.
+        self._n_left_out = 0
         if loc is not None and results is not None:
             try:
                 alive = results.alive_at(loc)            # snapshot at s
+                stat_at = getattr(results, "stat_at", None)
+                if callable(stat_at):
+                    shown = stat_at(loc)
+                    self._n_left_out = len(alive) - len(shown)
+                    alive = shown
                 ref = None
                 n_total = None
                 try:
@@ -7202,8 +7369,13 @@ class _PhaseSpacePopup(_DesignProbeMixin, _PopupPlot):
         if beam is not None and hasattr(beam, "alive_particles"):
             n_total = getattr(getattr(beam, "particles", None),
                               "shape", (None,))[0]
-            return (beam.alive_particles, getattr(beam, "ref", None),
-                    "exit beam", n_total)
+            shown = beam.alive_particles
+            if getattr(beam, "stats_excluded", None) is not None:
+                from linac_gen.diagnostics.recorder import stat_particles
+                alive_n = len(shown)
+                shown = stat_particles(beam)
+                self._n_left_out = alive_n - len(shown)
+            return (shown, getattr(beam, "ref", None), "exit beam", n_total)
         if self._state.beam_config is not None:
             try:
                 from linac_gen.distributions.factory import create_beam
@@ -7253,7 +7425,8 @@ class _PhaseSpacePopup(_DesignProbeMixin, _PopupPlot):
             q, ref,
             species_name=getattr(cfg, "species", "") if cfg else "",
             current_ma=getattr(cfg, "current", None) if cfg else None,
-            n_total=n_total, location=loc_label)
+            n_total=n_total, location=loc_label,
+            n_left_out=getattr(self, "_n_left_out", 0))
 
         tbl = self._table
         tbl.setRowCount(0)
@@ -7288,6 +7461,7 @@ class _PhaseSpacePopup(_DesignProbeMixin, _PopupPlot):
                           self._panel_xy, self._panel_phi):
                 panel.set_data([], [])
             self._clear_ellipses()
+            self._show_left_out()
             return
         q = particles
         # Fold BEFORE the (z, δ) basis conversion below, otherwise z
@@ -7328,31 +7502,58 @@ class _PhaseSpacePopup(_DesignProbeMixin, _PopupPlot):
             self._panel_xx.set_data(q[:, 0], q[:, 1])
             self._panel_yy.set_data(q[:, 2], q[:, 3])
             self._panel_xy.set_data(q[:, 0], q[:, 2])
-        if basis == "tracewin" and cfg is not None:
-            import math
-            from linac_gen.core.particle import PROTON, DEUTERON, H_MINUS
-            from linac_gen.core.constants import C_LIGHT
-            sp = {"proton": PROTON, "deuteron": DEUTERON, "H-": H_MINUS}.get(cfg.species, PROTON)
-            gamma = 1 + cfg.energy / sp.mass
-            beta = math.sqrt(max(1 - 1 / (gamma * gamma), 0.0))
-            wl_m = C_LIGHT / (cfg.frequency * 1e6)
-            z = -phi * beta * wl_m / 360.0
-            delta = dw / (beta * beta * gamma * sp.mass)
-            z_scale = (-beta * wl_m / 360.0, 1.0 / (beta * beta * gamma * sp.mass))
+        if basis == "tracewin":
+            z_scale = _zdelta_scale(ref, cfg)
+        if z_scale is not None:
+            z = phi * z_scale[0]
+            delta = dw * z_scale[1]
+            # Labels before the data, so the profile curves are named
+            # after the coordinates they show.
+            self._panel_phi.set_axis_labels("z", "m", "δ = Δp/p", "")
             if mode != "density":
                 self._panel_phi.set_scatter(z, delta, cvec, label=clabel)
             else:
                 self._panel_phi.set_data(z, delta)
-            self._panel_phi.plot.setLabel("bottom", "z", units="m")
-            self._panel_phi.plot.setLabel("left", "δ = Δp/p", units="")
         else:
+            self._panel_phi.set_axis_labels("Δφ", "deg", "ΔW", "MeV")
             if mode != "density":
                 self._panel_phi.set_scatter(phi, dw, cvec, label=clabel)
             else:
                 self._panel_phi.set_data(phi, dw)
-            self._panel_phi.plot.setLabel("bottom", "φ", units="deg")
-            self._panel_phi.plot.setLabel("left", "W", units="MeV")
+        self._show_left_out()
         self._update_ellipses(q, ref, src, z_scale)
+
+    # ----------------------------------------------------------- profiles
+    def _density_panels(self):
+        return (self._panel_xx, self._panel_yy, self._panel_xy, self._panel_phi)
+
+    def _apply_profile_settings(self) -> None:
+        on = self._profiles_cb.isChecked()
+        self._gauss_cb.setEnabled(on)
+        for panel in self._density_panels():
+            panel.set_profiles_visible(on)
+            panel.set_gaussian_visible(self._gauss_cb.isChecked())
+
+    def _on_profiles_toggled(self, checked: bool) -> None:
+        try:
+            self._settings.setValue(self._PROFILES_KEY, bool(checked))
+        except Exception:                                    # noqa: BLE001
+            pass
+        self._apply_profile_settings()
+
+    def _on_gauss_toggled(self, checked: bool) -> None:
+        try:
+            self._settings.setValue(self._GAUSS_KEY, bool(checked))
+        except Exception:                                    # noqa: BLE001
+            pass
+        self._apply_profile_settings()
+
+    def _show_left_out(self) -> None:
+        n = int(getattr(self, "_n_left_out", 0) or 0)
+        self._left_out_note.setText(
+            f"{n} unaccelerated particle{'s' if n != 1 else ''} not shown "
+            "(left out of the statistics too)" if n > 0 else "")
+        self._left_out_note.setVisible(n > 0)
 
     # ----------------------------------------------------------- ellipses
     def _on_ellipses_toggled(self, checked: bool) -> None:
@@ -8840,6 +9041,7 @@ def _build_series_fns(state) -> dict:
     from linac_gen.elements.solenoid import Solenoid
     from linac_gen.elements.dipole import Dipole
     from linac_gen.elements.ncells import NCells
+    from linac_gen.elements.rfq_cell import RfqCell
 
     def _arr(results, name):
         # NEVER `x or []`: a numpy array's truth value raises, so every
@@ -9101,10 +9303,13 @@ def _build_series_fns(state) -> dict:
             state, (Quadrupole,), attr="gradient",
             transform=lambda el, v: v * (float(el.length) * 1e-3)),
         "rf_volt": _lattice_param_series(
-            state, (RFGap, FieldMap, FieldMap3D, NCells, SuperposedFieldMap),
+            state, (RFGap, FieldMap, FieldMap3D, NCells, SuperposedFieldMap,
+                    RfqCell),
             attr=None,
             value_fn=lambda el: (
                 _ncells_v0_MV(el) if isinstance(el, NCells)
+                else abs(float(el.voltage_V)) * 1e-6
+                if isinstance(el, RfqCell)
                 else abs(float(el.voltage))
                 if getattr(el, "voltage", None) is not None
                 else _fieldmap_vgap_MV(el))),
@@ -9123,8 +9328,18 @@ def _build_series_fns(state) -> dict:
             attr=None,
             value_fn=_solenoid_int_b2),
         "sync_phase": _lattice_param_series(
-            state, (RFGap, FieldMap, FieldMap3D, NCells), attr=None,
+            state, (RFGap, FieldMap, FieldMap3D, NCells, RfqCell), attr=None,
             value_fn=_rf_phase_value),
+        # RFQ section: per-cell card values (render before any run)
+        "rfq_modulation": _lattice_param_series(
+            state, (RfqCell,), attr="modulation"),
+        "rfq_geometry": _lattice_param_series(
+            state, (RfqCell,), attr=None, value_fn=_rfq_min_aperture),
+        "rfq_phase": _lattice_param_series(
+            state, (RfqCell,), attr="phi_s_deg"),
+        "rfq_focusing": _lattice_param_series(
+            state, (RfqCell,), attr="A10"),
+        "rfq_losses": _rfq_loss_series(state),
         "bend_b": _lattice_param_series(
             state, (Dipole,), attr=None, value_fn=_bend_field_T(state)),
         "bend_bl": _lattice_param_series(
@@ -9206,6 +9421,25 @@ _TILE_KEYWORDS: dict[str, str] = {
     "partran":     "tracewin partran compare comparison cross-check benchmark",
     "sigma":       "sigma matrix 6x6 second moments covariance",
     "tmatrix":     "transfer matrix 6x6 r matrix map",
+    "rfq_geometry": "rfq vane geometry vane tips electrodes aperture bore "
+                    "top side view beam envelope modulation",
+    "rfq_section": "rfq vane cross section cut electrode shape tip radius "
+                   "aperture circle slice",
+    "rfq_modulation": "rfq vane modulation m aperture r0 minimum aperture "
+                      "cell length beta lambda",
+    "rfq_phase":   "rfq synchronous phase phi_s energy acceleration "
+                   "reference particle cell lengths",
+    "rfq_focusing": "rfq focusing strength b rf defocusing delta phase "
+                    "advance sigma0 current limit a10 acceleration efficiency",
+    "rfq_surface": "rfq surface field kilpatrick bravery factor sparking "
+                   "peak field vane tip",
+    "rfq_fields":  "rfq field ez on axis accelerating field quadrupole "
+                   "gradient field map two-term profile",
+    "rfq_losses":  "rfq losses lost particles power energy at loss vane hit",
+    "rfq_bunching": "rfq bunching capture transmission phase spread energy "
+                    "spread longitudinal phase space",
+    "rfq_table":   "rfq cell table parameters export per cell numbers "
+                   "solver summary",
     "convergence": "space charge convergence sc steps grid numerics",
 }
 
@@ -9355,6 +9589,28 @@ _SECTIONS: list[tuple[str, list[tuple]]] = [
             "",         "",       "#f97316"),
         ("sync_phase",  "Synchronous phase",         "target",  None,
             "deg",      "{:.1f}", "#f472b6"),
+    ]),
+    ("RFQ", [
+        ("rfq_geometry",   "RFQ vane geometry",           "box_3d",   None,
+            "mm",       "{:.3f}", "#22d3ee"),
+        ("rfq_section",    "RFQ vane cross-section",      "target",   None,
+            "",         "",       "#22d3ee"),
+        ("rfq_modulation", "RFQ modulation & aperture",   "wave",     None,
+            "",         "{:.3f}", "#a3e635"),
+        ("rfq_phase",      "RFQ synchronous phase & energy", "ring",  None,
+            "deg",      "{:.1f}", "#f472b6"),
+        ("rfq_focusing",   "RFQ focusing & acceleration", "magnet",   None,
+            "",         "{:.3f}", "#a3e635"),
+        ("rfq_surface",    "RFQ surface field (Kilpatrick)", "zap",   None,
+            "",         "",       "#fbbf24"),
+        ("rfq_fields",     "RFQ fields along the axis",   "atom",     None,
+            "",         "",       "#fbbf24"),
+        ("rfq_losses",     "RFQ losses",                  "collision", None,
+            "",         "{:.0f}", "#f472b6"),
+        ("rfq_bunching",   "RFQ bunching & transmission", "beam",     None,
+            "",         "",       "#22d3ee"),
+        ("rfq_table",      "RFQ cell table",              "grid",     None,
+            "",         "",       "#a78bfa"),
     ]),
     ("CROSS-CHECKS · COMPARE", [
         ("partran",     "Compare with TraceWin partran", "scatter", None,
@@ -9507,6 +9763,7 @@ class ResultsTab(QWidget):
                     series_attr=attr, unit=unit,
                     value_fmt=fmt if fmt else "{:.3g}",
                     series_fn=self._series_fns.get(key),
+                    tooltip_fn=_TILE_TOOLTIPS.get(key),
                 )
                 if key in classic_routes:
                     card.clicked.connect(
@@ -9536,6 +9793,8 @@ class ResultsTab(QWidget):
         self._scroll = scroll
 
         state.results_changed.connect(self._refresh)
+        state.lattice_changed.connect(self._on_lattice_for_tiles)
+        self._apply_tile_filter("")
         # Tile is H⁻-only — re-evaluate whenever the beam config changes
         # (Apply on the Beam tab) and once at construction time.
         state.beam_config_changed.connect(self._update_ibs_tile_state)
@@ -9550,6 +9809,22 @@ class ResultsTab(QWidget):
         self._refresh_cards_from_state()
 
     # ------------------------------------------------------------ tile search
+    def _lattice_has_rfq(self) -> bool:
+        lat = getattr(self.state, "lattice", None)
+        if lat is None:
+            return False
+        from linac_gen.elements.rfq_cell import RfqCell
+        return any(isinstance(e, RfqCell)
+                   for e in (getattr(lat, "elements", None) or []))
+
+    def _on_lattice_for_tiles(self, _lattice) -> None:
+        """A new or edited lattice: re-apply the tile filter (the RFQ
+        section follows whether the lattice has an RFQ)."""
+        try:
+            self._apply_tile_filter(self._search.text())
+        except RuntimeError:
+            pass                                    # widget destroyed
+
     def _apply_tile_filter(self, text: str) -> None:
         """Show only the tiles matching ``text`` and re-pack every section
         grid from the left (a QGridLayout does not reflow hidden cells);
@@ -9557,8 +9832,11 @@ class ResultsTab(QWidget):
         never touched (IBS gating, assistant ``open_plot``)."""
         query = str(text or "")
         any_match = False
+        # the RFQ section shows only for a lattice with RFQ cells
+        rfq_ok = self._lattice_has_rfq()
         for hdr, grid, cards in self._tile_sections:
             matches = [_tile_matches(query, self._card_haystack.get(getattr(c, "_key", ""), ""))
+                       and (rfq_ok or not str(getattr(c, "_key", "")).startswith("rfq_"))
                        for c in cards]
             for c in cards:
                 grid.removeWidget(c)
@@ -9819,7 +10097,10 @@ class ResultsTab(QWidget):
                 from linac_gen.elements.field_map import FieldMap
                 from linac_gen.elements.field_map_3d import FieldMap3D
                 from linac_gen.elements.ncells import NCells
+                from linac_gen.elements.rfq_cell import RfqCell
                 def _rf_volt(el):
+                    if isinstance(el, RfqCell):
+                        return abs(float(el.voltage_V)) * 1e-6
                     if isinstance(el, NCells):
                         # multi-gap cavity: V₀ = Σ|per-gap EoT·Lc|
                         return _ncells_v0_MV(el)
@@ -9837,7 +10118,7 @@ class ResultsTab(QWidget):
                     self, self.state,
                     title="RF voltage  —  V₀ [MV] per RF cavity / gap",
                     element_types=(RFGap, FieldMap, FieldMap3D, NCells,
-                                   _SuperposedFieldMap()),
+                                   _SuperposedFieldMap(), RfqCell),
                     attr=None,
                     value_fn=_rf_volt,
                     ylabel="V₀", yunits="MV",
@@ -9934,11 +10215,16 @@ class ResultsTab(QWidget):
                     self, self.state,
                     title=("Synchronous phase  —  φ_s [deg] per RF element "
                            "(NCELLS P=1: run-resolved phase at gap 1)"),
-                    element_types=(RFGap, FieldMap, FieldMap3D, NCells),
+                    element_types=(RFGap, FieldMap, FieldMap3D, NCells,
+                                   _RfqCell()),
                     attr=None, value_fn=_rf_phase_value,
                     ylabel="φ_s", yunits="deg",
                     color="#f472b6", type_name="RF or field-map",
                 )
+            elif key.startswith("rfq_"):
+                # Own module, imported on first open.
+                from linac_gen_gui.interphase.tabs.rfq_popups import POPUPS
+                dlg = POPUPS[key](self, self.state)
             else:
                 QMessageBox.warning(self, "Unknown", f"No popup for {key}")
                 return
@@ -9984,7 +10270,11 @@ class ResultsTab(QWidget):
             sx = getattr(results, "sigma_x", [])
             sy = getattr(results, "sigma_y", [])
             sphi = getattr(results, "sigma_phi", [])
-            ex = getattr(results, "emit_x", [])
+            # growth of the NORMALISED emittance: the geometric one shrinks
+            # with acceleration (an RFQ: x0.14), which is not growth
+            ex = getattr(results, "emit_nx", None)
+            if not _has(ex, 2) or not float(ex[0]) > 0.0:
+                ex = getattr(results, "emit_x", [])
             trans = getattr(results, "transmission", [])
             kpi_set(self._k_sx, _fmt(sx))
             kpi_set(self._k_sy, _fmt(sy))

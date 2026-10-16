@@ -282,10 +282,31 @@ def rfq_settings(conv: dict, cli: dict) -> dict:
             d.rfq_td_steps_per_period)),
         rfq_td_sc_every=int(_first(cli.get("rfq_td_sc_every"),
                                    conv.get("rfq_td_sc_every"),
-                                   d.rfq_td_sc_every)))
+                                   d.rfq_td_sc_every)),
+        rfq_stats_accelerated=_first(
+            _rfq_stats(cli.get("rfq_stats")),
+            None if conv.get("rfq_stats_accelerated") is None
+            else _as_bool(conv["rfq_stats_accelerated"]),
+            d.rfq_stats_accelerated))
     return dict(rfq_solver=s.rfq_solver,
                 rfq_td_steps_per_period=s.rfq_td_steps_per_period,
-                rfq_td_sc_every=s.rfq_td_sc_every)
+                rfq_td_sc_every=s.rfq_td_sc_every,
+                rfq_stats_accelerated=s.rfq_stats_accelerated)
+
+
+def _rfq_stats(value):
+    """``--rfq-stats``: "accelerated" -> True, "all" -> False (a bool or an
+    on/off word is taken as it is); None stays None."""
+    if value is None or isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("accelerated", "all"):
+        return text == "accelerated"
+    try:
+        return _as_bool(value)
+    except ValueError:
+        raise ValueError("rfq_stats must be 'accelerated' or 'all', got "
+                         f"{value!r}") from None
 
 
 def make_step_config(conv: dict, cli: dict):
@@ -504,6 +525,8 @@ def run_backtrack_sim(lattice, cfg, sc_config, step_config, *,
         cfg_file = copy.copy(cfg)
         cfg_file.source = "file"
         cfg_file.distribution_file = str(dst_path)
+        # the exit beam as it is: re-shaping applies to the user's input
+        cfg_file.reshape_to_twiss = False
         beam = create_beam(cfg_file, seed=seed)
     else:
         table = build_replay_table(lattice, entrance_ref, end=end)

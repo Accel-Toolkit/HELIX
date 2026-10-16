@@ -1,11 +1,43 @@
-"""Matching dialog: find matched Twiss parameters and apply to beam config."""
+"""Matching dialog: find matched Twiss parameters and apply to beam config.
+
+Cell mode offers the lattice's RFQ periods (an RFQ's first regular
+focusing period, matched at the RFQ entrance — the space-charge version for
+a DC input beam, computed in a worker thread) ahead of its FODO cells.
+"""
 import math
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QLabel, QPushButton, QDialogButtonBox, QMessageBox, QTextEdit,
-    QSpinBox, QComboBox,
+    QSpinBox, QComboBox, QProgressBar,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+
+
+class _RfqMatchWorker(QThread):
+    """``find_rfq_matched_input_twiss`` off the GUI thread: the
+    space-charge match of an RFQ takes ~10 s."""
+
+    done = pyqtSignal(object)        # the result dict
+    failed = pyqtSignal(str)
+
+    def __init__(self, lattice, ref, period, kwargs, parent=None):
+        super().__init__(parent)
+        # LAPACK needs more than QThread's 512 KiB default stack on macOS
+        # (a bus error otherwise) — as every HELIX worker does
+        self.setStackSize(16 * 1024 * 1024)
+        self._lattice, self._ref, self._period = lattice, ref, period
+        self._kwargs = dict(kwargs)
+
+    def run(self):
+        try:
+            from linac_gen.matching.periodic import (
+                find_rfq_matched_input_twiss)
+            self.done.emit(find_rfq_matched_input_twiss(
+                self._lattice, self._ref, self._period, **self._kwargs))
+        except ValueError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:                               # noqa: BLE001
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
 
 
 class MatchingDialog(QDialog):
@@ -18,6 +50,9 @@ class MatchingDialog(QDialog):
         self._lattice = lattice
         self._beam_config_widget = beam_config_widget
         self._matched_twiss = None
+        self._worker = None              # RFQ space-charge match in flight
+        self._pending_apply = None       # its result, until it has finished
+        self._apply_state = (False, False)
 
         layout = QVBoxLayout(self)
 
@@ -27,13 +62,19 @@ class MatchingDialog(QDialog):
         self._mode_combo = QComboBox()
         self._mode_combo.addItems([
             "Whole lattice (periodic ring)",
-            "FODO cell → entrance (transfer line)",
+            "Periodic cell → entrance (transfer line)",
         ])
         self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         mode_form.addRow("Mode:", self._mode_combo)
         self._cell_combo = QComboBox()
         self._cell_combo.setEnabled(False)
-        mode_form.addRow("FODO cell:", self._cell_combo)
+        self._cell_combo.currentIndexChanged.connect(self._on_cell_changed)
+        mode_form.addRow("Cell:", self._cell_combo)
+        self._cell_note = QLabel("")
+        self._cell_note.setWordWrap(True)
+        self._cell_note.setStyleSheet("font-size: 11px;")
+        self._cell_note.hide()
+        mode_form.addRow("", self._cell_note)
         layout.addWidget(mode_group)
         self._populate_cells()
 
@@ -91,6 +132,12 @@ class MatchingDialog(QDialog):
         self._sc_match_btn = QPushButton("Compute SC-Matched Twiss")
         self._sc_match_btn.clicked.connect(self._compute_sc_matched)
         sc_layout.addWidget(self._sc_match_btn)
+        self._busy = QProgressBar()
+        self._busy.setRange(0, 0)             # indeterminate
+        self._busy.setTextVisible(False)
+        self._busy.setMaximumHeight(8)
+        self._busy.hide()
+        sc_layout.addWidget(self._busy)
 
         self._sc_result = QFormLayout()
         self._sc_alpha_x_label = QLabel("--")
@@ -121,6 +168,19 @@ class MatchingDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        self._buttons = buttons
+
+        # A lattice with an RFQ opens on its RFQ period: the matched input
+        # of an RFQ is the one a transfer-line user wants, and the
+        # whole-lattice (ring) solution does not exist for it.
+        first = self._cell_combo.itemData(0) if self._cell_combo.count() else None
+        if first is not None and first[0] == "rfq":
+            self._mode_combo.setCurrentIndex(1)
+            self._cell_combo.setCurrentIndex(0)
+            # the period's Twiss sit at α ≈ 0, where the relative
+            # convergence test is strict: give the SC iteration room
+            self._max_iter_spin.setValue(max(self._max_iter_spin.value(), 200))
+            self._on_cell_changed(0)
 
     def _get_ref(self):
         from linac_gen.core.reference import ReferenceParticle
@@ -132,22 +192,94 @@ class MatchingDialog(QDialog):
                                  frequency=config.frequency), config
 
     def _populate_cells(self):
-        """Fill the FODO-cell combo from the lattice (QF->QF detection)."""
+        """Fill the cell combo: the lattice's RFQ periods first, then its
+        FODO cells (QF->QF detection).  Item data: ("rfq", RfqPeriod) or
+        ("fodo", (start, end))."""
         self._cell_combo.clear()
         if self._lattice is None or len(self._lattice) == 0:
             return
+        try:
+            from linac_gen.matching.periodic import find_rfq_periods
+            periods = find_rfq_periods(self._lattice)
+        except Exception:                                   # noqa: BLE001
+            periods = []
         try:
             from linac_gen.matching.periodic import find_fodo_cells
             cells = find_fodo_cells(self._lattice)
         except Exception:                                   # noqa: BLE001
             cells = []
+        for per in periods:
+            self._cell_combo.addItem(
+                f"{per.label}, matched at the RFQ entrance", ("rfq", per))
         for k, (cs, ce) in enumerate(cells):
             self._cell_combo.addItem(
-                f"cell {k}: elements {cs}–{ce}", (cs, ce))
+                f"FODO cell {k}: elements {cs}–{ce}", ("fodo", (cs, ce)))
 
     def _on_mode_changed(self, idx):
-        """Enable the FODO-cell selector only in cell mode."""
+        """Enable the cell selector only in cell mode."""
         self._cell_combo.setEnabled(idx == 1)
+        self._on_cell_changed(self._cell_combo.currentIndex())
+
+    def _on_cell_changed(self, _idx):
+        """Explain where an RFQ period's result applies."""
+        data = self._cell_combo.currentData()
+        if self._mode_combo.currentIndex() == 1 and data and data[0] == "rfq":
+            el = self._lattice.elements[data[1].rfq_start]
+            self._cell_note.setText(
+                f"Matched input of the RFQ, at its entrance ({el.name}); "
+                "with space charge for a DC input beam.")
+            self._cell_note.show()
+        else:
+            self._cell_note.hide()
+
+    def _set_apply(self, button, twiss):
+        """Enable an Apply button unless the result is not the beam at the
+        lattice entrance (an RFQ behind a LEBT)."""
+        ok = bool(twiss.get("at_lattice_entrance", True))
+        button.setEnabled(ok)
+        if ok:
+            button.setToolTip("")
+            return
+        note = (f"The RFQ starts {twiss['upstream_mm'] / 1e3:.3f} m into the "
+                "lattice: these α, β are the target the line upstream must "
+                f"deliver at the RFQ entrance ({twiss['rfq_name']}).  Beam "
+                "Setup holds the beam at the lattice entrance, so they are "
+                "not applied.")
+        button.setToolTip(note)
+        self._log.append(note)
+
+    def _set_busy(self, on: bool):
+        for w in (self._periodic_btn, self._sc_match_btn, self._mode_combo,
+                  self._cell_combo, self._max_iter_spin, self._buttons):
+            w.setEnabled(not on)
+        if on:
+            self._apply_state = (self._apply_periodic_btn.isEnabled(),
+                                 self._apply_sc_btn.isEnabled())
+            self._apply_periodic_btn.setEnabled(False)
+            self._apply_sc_btn.setEnabled(False)
+        else:
+            self._cell_combo.setEnabled(self._mode_combo.currentIndex() == 1)
+            self._apply_periodic_btn.setEnabled(self._apply_state[0])
+            self._apply_sc_btn.setEnabled(self._apply_state[1])
+        self._busy.setVisible(on)
+
+    def reject(self):
+        if self._worker is not None:
+            self._log.append("Still computing — the dialog closes once the "
+                             "space-charge match has finished.")
+            return
+        super().reject()
+
+    def closeEvent(self, event):
+        if self._worker is not None:
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+    @staticmethod
+    def _rfq_desc(twiss):
+        return (f"RFQ matched input at the RFQ entrance ({twiss['rfq_name']}, "
+                f"element {twiss['rfq_start']}) — period {twiss['label']}")
 
     def _compute_periodic(self):
         if self._lattice is None or len(self._lattice) == 0:
@@ -161,19 +293,25 @@ class MatchingDialog(QDialog):
                 desc = "Periodic (whole lattice)"
             else:
                 from linac_gen.matching.periodic import (
-                    find_matched_input_twiss)
-                cell = self._cell_combo.currentData()
-                if cell is None:
+                    find_matched_input_twiss, find_rfq_matched_input_twiss)
+                data = self._cell_combo.currentData()
+                if data is None:
                     QMessageBox.warning(
-                        self, "No FODO Cell",
-                        "No FODO cell detected in this lattice.\n"
-                        "Use 'Whole lattice' mode, or load a lattice with a "
-                        "focusing-quadrupole periodicity.")
+                        self, "No Cell",
+                        "No periodic cell detected in this lattice.\n"
+                        "Use 'Whole lattice' mode, or load a lattice with an "
+                        "RFQ or a focusing-quadrupole periodicity.")
                     return
-                twiss = find_matched_input_twiss(
-                    self._lattice, ref, cell[0], cell[1])
-                desc = (f"Matched input (cell {cell[0]}–{cell[1]} "
-                        f"→ entrance)")
+                kind, cell = data
+                if kind == "rfq":
+                    twiss = find_rfq_matched_input_twiss(
+                        self._lattice, ref, cell)
+                    desc = self._rfq_desc(twiss)
+                else:
+                    twiss = find_matched_input_twiss(
+                        self._lattice, ref, cell[0], cell[1])
+                    desc = (f"Matched input (cell {cell[0]}–{cell[1]} "
+                            f"→ entrance)")
             self._matched_twiss = twiss
 
             self._alpha_x_label.setText(f"{twiss['alpha_x']:.4f}")
@@ -191,7 +329,6 @@ class MatchingDialog(QDialog):
                 v = float(twiss.get(key, 0.0))
                 label.setText("undefined (integer tune)"
                               if math.isnan(v) else f"{v:.4f}")
-            self._apply_periodic_btn.setEnabled(True)
             # Annotate coupled lattices clearly -- the per-plane Twiss
             # is a *projection* from the full 4×4 matched Σ, not the
             # decoupled Courant-Snyder.  The user needs to know the
@@ -214,6 +351,9 @@ class MatchingDialog(QDialog):
                 f"{desc}: beta_x={twiss['beta_x']:.3f}, "
                 f"beta_y={twiss['beta_y']:.3f}, "
                 f"mu_x={twiss['mu_x']:.1f} deg{coupled_tag}{disp_tag}")
+            if twiss.get("caution"):
+                self._log.append(f"CAUTION: {twiss['caution']}")
+            self._set_apply(self._apply_periodic_btn, twiss)
         except ValueError as e:
             self._log.append(f"ERROR: {e}")
             QMessageBox.critical(self, "Failed", f"Unstable lattice:\n{e}")
@@ -374,11 +514,15 @@ class MatchingDialog(QDialog):
         FODO-cell periodic state (betatron Twiss + dispersion) under space
         charge, back-propagated to the lattice entrance.
         """
-        cell = self._cell_combo.currentData()
-        if cell is None:
+        data = self._cell_combo.currentData()
+        if data is None:
             QMessageBox.warning(
-                self, "No FODO Cell",
-                "No FODO cell detected — use 'Whole lattice' mode.")
+                self, "No Cell",
+                "No periodic cell detected — use 'Whole lattice' mode.")
+            return
+        kind, cell = data
+        if kind == "rfq":
+            self._start_rfq_sc(cell)
             return
         try:
             ref, config = self._get_ref()
@@ -432,11 +576,78 @@ class MatchingDialog(QDialog):
             self._log.append(f"ERROR: {e}")
             QMessageBox.critical(self, "Error", str(e))
 
+    def _start_rfq_sc(self, period):
+        """Space-charge matched input of an RFQ (DC input beam), in a
+        worker thread."""
+        try:
+            ref, config = self._get_ref()
+            current = config.current
+            if current <= 0:
+                self._log.append(
+                    "Current is 0 — use the zero-current matching above.")
+                self._compute_periodic()
+                return
+            from linac_gen.distributions.factory import geometric_emittances
+            emit_x, emit_y, _ = geometric_emittances(config, ref.bg)
+            kwargs = dict(current=current, emit_x=emit_x, emit_y=emit_y,
+                          dc_energy_spread_keV=float(getattr(
+                              config, "dc_energy_spread_keV", 0.0) or 0.0),
+                          max_iter=self._max_iter_spin.value())
+        except Exception as e:                                  # noqa: BLE001
+            self._log.append(f"ERROR: {e}")
+            QMessageBox.critical(self, "Error", str(e))
+            return
+        self._log.append(
+            f"SC matching of the RFQ: I={current} mA, DC input beam, "
+            f"period {period.label} → RFQ entrance (takes a few seconds)...")
+        self._set_busy(True)
+        self._worker = _RfqMatchWorker(self._lattice, ref, period, kwargs,
+                                       parent=self)
+        self._worker.done.connect(self._on_rfq_sc_done)
+        self._worker.failed.connect(self._on_rfq_sc_failed)
+        self._worker.finished.connect(self._on_rfq_sc_finished)
+        self._worker.start()
+
+    def _on_rfq_sc_done(self, tw):
+        self._matched_twiss = tw
+        self._sc_alpha_x_label.setText(f"{tw['alpha_x']:.4f}")
+        self._sc_beta_x_label.setText(f"{tw['beta_x']:.4f}")
+        self._sc_alpha_y_label.setText(f"{tw['alpha_y']:.4f}")
+        self._sc_beta_y_label.setText(f"{tw['beta_y']:.4f}")
+        self._sc_converged_label.setText(
+            "Converged (RFQ period)" if tw["converged"]
+            else "Not fully converged")
+        self._log.append(
+            f"SC-matched {self._rfq_desc(tw)}: alpha_x={tw['alpha_x']:.4f}, "
+            f"beta_x={tw['beta_x']:.4f}, alpha_y={tw['alpha_y']:.4f}, "
+            f"beta_y={tw['beta_y']:.4f}")
+        if tw.get("caution"):
+            self._log.append(f"CAUTION: {tw['caution']}")
+        self._pending_apply = tw
+
+    def _on_rfq_sc_failed(self, msg):
+        self._log.append(f"ERROR: {msg}")
+        QMessageBox.critical(self, "Failed", msg)
+
+    def _on_rfq_sc_finished(self):
+        worker, self._worker = self._worker, None
+        self._set_busy(False)
+        tw, self._pending_apply = self._pending_apply, None
+        if tw is not None:
+            self._set_apply(self._apply_sc_btn, tw)
+        if worker is not None:
+            worker.deleteLater()
+
     def _apply_matched(self):
         """Apply the most recent matched Twiss to beam config panel."""
         if self._matched_twiss is None:
             return
         tw = self._matched_twiss
+        if not tw.get("at_lattice_entrance", True):
+            self._log.append(
+                "Not applied: these α, β are the target at the RFQ entrance, "
+                "not the beam at the lattice entrance.")
+            return
         self._beam_config_widget._alpha_x.setValue(tw["alpha_x"])
         self._beam_config_widget._beta_x.setValue(tw["beta_x"])
         self._beam_config_widget._alpha_y.setValue(tw["alpha_y"])
@@ -460,3 +671,13 @@ class MatchingDialog(QDialog):
             "Applied matched Twiss"
             + (" + dispersion" if applied_disp else "")
             + " to Beam Setup panel.")
+        # A beam read from a particle file ignores the α/β fields unless it
+        # is re-shaped onto them (the file's emittance kept).
+        setter = getattr(self._beam_config_widget, "set_reshape_to_twiss",
+                         None)
+        if setter is not None and setter(True):
+            self._log.append(
+                "The beam is read from a particle file: 're-shape to α, β' "
+                "is now ticked in the Beam tab, so its particles are "
+                "re-shaped onto these values (the file's emittance kept).  "
+                "Untick it there to use the file as it is.")

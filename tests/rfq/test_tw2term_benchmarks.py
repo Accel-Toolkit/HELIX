@@ -174,8 +174,10 @@ def test_mp_capture_through_pxie_rfq():
         for e in lat.elements:
             if isinstance(e, RfqCell):
                 e.field_model = "tw2term"
+        # the card model: the deck's vane file would select the
+        # time-domain solver
         Simulation(lat, beam, space_charge="off",
-                   record_substeps=False).run()
+                   record_substeps=False, rfq_geometry="off").run()
     finally:
         os.chdir(cwd)
     alive = ~beam.lost

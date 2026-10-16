@@ -154,7 +154,8 @@ def test_run_paths_read_the_choice(win):
     fields = _ScanWorker._scan_rfq_fields(
         type("W", (), {"lattice": win.state.lattice})())
     assert fields == dict(rfq_solver="time_domain",
-                          rfq_td_steps_per_period=64, rfq_td_sc_every=4)
+                          rfq_td_steps_per_period=64, rfq_td_sc_every=4,
+                          rfq_stats_accelerated=True)
     num = win.study_tab._draft_spec().numerics
     assert (num["rfq_solver"], num["rfq_td_steps"]) == ("time_domain", 64)
     # the default needs no key; an explicit per-cell choice is carried
@@ -212,3 +213,46 @@ def test_a_step_count_beyond_the_control_is_reported(win):
     assert ct._rfq_td_steps.value() == ct._rfq_td_steps.maximum()
     assert win.state.lattice.step_config.rfq_td_steps_per_period \
         == ct._rfq_td_steps.maximum()
+
+
+# ---- the RFQ statistics checkbox (StepConfig.rfq_stats_accelerated) -------
+
+def test_rfq_statistics_default_and_project_round_trip(win):
+    ct = win.convergence_tab
+    assert ct._rfq_stats_acc.isChecked() and ct._rfq_stats_acc.isEnabled()
+    assert ct.current_step_config().rfq_stats_accelerated is True
+    win._apply_project_dict({"__kind__": _PROJ,
+                             "convergence": {"rfq_stats_accelerated": False}},
+                            silent=True)
+    assert not ct._rfq_stats_acc.isChecked()
+    assert ct.current_step_config().rfq_stats_accelerated is False
+    assert win.state.lattice.step_config.rfq_stats_accelerated is False
+    conv = win._collect_project_dict([], None)["convergence"]
+    assert conv["rfq_stats_accelerated"] is False
+    # a project without the key gets the default, not the previous project's
+    win._apply_project_dict({"__kind__": _PROJ,
+                             "convergence": {"step1_per_m": 100.0}},
+                            silent=True)
+    assert ct._rfq_stats_acc.isChecked()
+    assert win.state.lattice.step_config.rfq_stats_accelerated is True
+
+
+def test_rfq_statistics_follow_the_solver_and_reach_the_run_paths(win):
+    from linac_gen_gui.interphase.tabs.convergence_tab import _ScanWorker
+    ct = win.convergence_tab
+    ct._rfq_solver.setCurrentIndex(_IDX["cells"])
+    assert not ct._rfq_stats_acc.isEnabled()        # per cell: no effect
+    ct._rfq_solver.setCurrentIndex(_IDX["time_domain"])
+    assert ct._rfq_stats_acc.isEnabled()
+    ct._rfq_stats_acc.setChecked(False)
+    assert win.state.lattice.step_config.rfq_stats_accelerated is False
+    _sc, step = win.matching_tab._build_mp_configs()
+    assert step.rfq_stats_accelerated is False
+    fields = _ScanWorker._scan_rfq_fields(
+        type("W", (), {"lattice": win.state.lattice})())
+    assert fields["rfq_stats_accelerated"] is False
+    assert win.study_tab._draft_spec().numerics["rfq_stats"] == "all"
+    ct._rfq_stats_acc.setChecked(True)
+    assert "rfq_stats" not in win.study_tab._draft_spec().numerics \
+        or win.study_tab._draft_spec().numerics["rfq_stats"] == "accelerated"
+

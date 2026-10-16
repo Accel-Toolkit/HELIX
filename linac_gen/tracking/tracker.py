@@ -1088,6 +1088,13 @@ class Tracker:
         scc_mode = getattr(fd, "scc_mode", 0) if fd is not None else 0
         scc_active = (scc_prof is not None and scc_scale != 0.0
                       and scc_mode == 0)
+        # An aperture map (.ouv, Ka=1) is checked after EVERY integration
+        # call: the PXIE solenoids' narrowest rings are a few mm long, and
+        # a check once per space-charge bundle (20 mm there) let particles
+        # through them that TraceWin stops.  Without a map, the scalar
+        # aperture keeps its once-per-bundle check.
+        fine_aperture = (fd is not None and getattr(
+            fd, "pipe_radius_profile", None) is not None)
 
         # SHIFT_IN_FIELD_MAP interior diagnostics (SUPERPOSE containers):
         # record one row per marker at the first sub-step boundary ≥ dz,
@@ -1117,6 +1124,8 @@ class Tracker:
             # loop does ds/2 per track_rk4 call; pair them up.
             for k in range(sc_every):
                 effective_element.track_rk4(self.beam, ds / 2)
+                if fine_aperture:
+                    self._check_aperture(element)
                 _record_marker_crossings()
                 # Second half of the pair happens in the "second half of
                 # bundle" loop below, after the SC kick.
@@ -1134,19 +1143,24 @@ class Tracker:
             # Second half of the bundle — record after each full ds slice.
             for k in range(sc_every):
                 effective_element.track_rk4(self.beam, ds / 2)
+                if fine_aperture:
+                    self._check_aperture(element)
                 _record_marker_crossings()
                 if self._record_substeps:
                     # k-th pair is now complete (one ds/2 before SC, one
                     # ds/2 after).  Record at the slice's exit position.
                     self._record_substep(element)
-            self._check_aperture(element)
+            if not fine_aperture:
+                self._check_aperture(element)
         # Any trailing sub-steps (n_int not a multiple of sc_every) get RK4 only
         for _ in range(n_int - n_bundles * sc_every):
             effective_element.track_rk4(self.beam, ds)
+            if fine_aperture:
+                self._check_aperture(element)
             _record_marker_crossings()
             if self._record_substeps:
                 self._record_substep(element)
-        if n_int > n_bundles * sc_every:
+        if n_int > n_bundles * sc_every and not fine_aperture:
             self._check_aperture(element)
 
     def _space_charge_active(self) -> bool:

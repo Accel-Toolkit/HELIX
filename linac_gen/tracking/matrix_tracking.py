@@ -155,24 +155,9 @@ def _with_tilt(element, M_elem: np.ndarray) -> np.ndarray:
     return R_out @ M_elem @ R_in
 
 
-def compute_transfer_matrix(lattice: Lattice, ref: ReferenceParticle,
-                            start: int = 0, end: int | None = None,
-                            *, cache: dict | None = None) -> np.ndarray:
-    """Product of per-element transfer matrices from ``start`` to ``end`` (inclusive).
-
-    Pure linear transport only -- no space-charge kicks.  Both indices are
-    into ``lattice.elements`` and default to the full lattice
-    (``start=0``, ``end=N-1``).  The reference particle is advanced through
-    each element so RF gaps / field maps use the correct energy for their
-    kick_matrix calculations.
-
-    ``cache`` (optional): dict for memoising per-element matrices across
-    repeated calls — see :func:`get_element_matrix`.
-    """
-    ref_copy = ref.copy()
-    # Replay elements before ``start`` so the reference particle's energy,
-    # frequency, phase are correct at the starting boundary.
-    for element in lattice.elements[:start]:
+def _replay_ref(elements, ref_copy: ReferenceParticle) -> None:
+    """Advance ``ref_copy`` in place through ``elements`` (reference only)."""
+    for element in elements:
         if isinstance(element, FieldMapElement):
             # Stateful elements (slice cursor, βg≤0 resolved geometry,
             # SET_SYNC_PHASE ψ cache) must start from a clean slate — a
@@ -190,6 +175,39 @@ def compute_transfer_matrix(lattice: Lattice, ref: ReferenceParticle,
                 )
             if isinstance(element, ThinKickElement):
                 element.advance_ref(ref_copy)
+
+
+def reference_at(lattice: Lattice, ref: ReferenceParticle,
+                 index: int) -> ReferenceParticle:
+    """The reference particle at the entrance of element ``index``.
+
+    ``ref`` (the lattice-entrance reference) is not modified; the
+    elements before ``index`` are replayed exactly as
+    :func:`compute_transfer_matrix` replays them before its ``start``.
+    """
+    ref_copy = ref.copy()
+    _replay_ref(lattice.elements[:index], ref_copy)
+    return ref_copy
+
+
+def compute_transfer_matrix(lattice: Lattice, ref: ReferenceParticle,
+                            start: int = 0, end: int | None = None,
+                            *, cache: dict | None = None) -> np.ndarray:
+    """Product of per-element transfer matrices from ``start`` to ``end`` (inclusive).
+
+    Pure linear transport only -- no space-charge kicks.  Both indices are
+    into ``lattice.elements`` and default to the full lattice
+    (``start=0``, ``end=N-1``).  The reference particle is advanced through
+    each element so RF gaps / field maps use the correct energy for their
+    kick_matrix calculations.
+
+    ``cache`` (optional): dict for memoising per-element matrices across
+    repeated calls — see :func:`get_element_matrix`.
+    """
+    ref_copy = ref.copy()
+    # Replay elements before ``start`` so the reference particle's energy,
+    # frequency, phase are correct at the starting boundary.
+    _replay_ref(lattice.elements[:start], ref_copy)
 
     last = len(lattice.elements) - 1 if end is None else end
     if last < start:

@@ -52,6 +52,13 @@ particle in the file is used, in file order.  There is no
 subsampling; if you want fewer particles, thin the file yourself
 before loading.
 
+To inject the file's particles with other transverse Twiss — an RFQ's
+matched input, say — set `reshape_to_twiss=True` with the target
+`alpha_x`/`beta_x`/`alpha_y`/`beta_y`: each plane is mapped linearly
+onto them, keeping the file's rms emittance, centroid and normalised
+phase-space shape, and those four config values are not overwritten
+from the header.
+
 ## Tutorial
 
 ### Reading

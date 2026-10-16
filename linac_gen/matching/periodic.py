@@ -17,7 +17,13 @@ back to per-plane α / β for display.
 auto-detect coupling and route to the coupled path transparently,
 returning the same dict shape plus a ``coupled=True`` flag and the
 full 4×4 Σ matrix.
+
+**RFQs**: :func:`find_rfq_periods` finds the focusing period an RFQ's
+input is matched to (its first two regular cells) and
+:func:`find_rfq_matched_input_twiss` gives the matched Twiss at the RFQ
+entrance, with or without space charge (a DC input beam).
 """
+from dataclasses import dataclass
 
 
 def _build_coupled_matched_sigma(M4: "np.ndarray",
@@ -392,6 +398,52 @@ def find_fodo_cells(lattice):
     return cells
 
 
+@dataclass(frozen=True)
+class RfqPeriod:
+    """The focusing period an RFQ's input is matched to.
+
+    ``rfq_start`` is the lattice index of the RFQ's first cell (its
+    entrance); ``start`` / ``end`` (inclusive) are its first two
+    consecutive regular cells of opposite sign (−2/+2: one alternating-
+    gradient period), after the radial matching section (±3) and any
+    transition (±4) cells — the period a TraceWin deck brackets with
+    ``LATTICE 2``.  ``label`` is a short display name.
+    """
+
+    rfq_start: int
+    start: int
+    end: int
+    label: str
+
+
+def find_rfq_periods(lattice) -> list:
+    """One :class:`RfqPeriod` per RFQ in ``lattice``, in lattice order.
+
+    An RFQ is a chain of ``RfqCell`` elements; markers and other
+    zero-length elements between its cells belong to it
+    (:func:`linac_gen.rfq_td.chain.find_chains`).  An RFQ without two
+    consecutive regular cells of opposite sign has no period and is
+    skipped; a lattice without RFQ cells gives ``[]``.
+    """
+    from linac_gen.elements.rfq_cell import RfqCell
+    from linac_gen.rfq_td.chain import find_chains
+
+    els = lattice.elements
+    out = []
+    for first, last in find_chains(els):
+        cells = [i for i in range(first, last + 1)
+                 if isinstance(els[i], RfqCell)]
+        for a, b in zip(cells, cells[1:]):
+            ta, tb = int(els[a].cell_type), int(els[b].cell_type)
+            if abs(ta) == 2 and tb == -ta:
+                out.append(RfqPeriod(
+                    rfq_start=first, start=a, end=b,
+                    label=(f"RFQ: {els[a].name} + {els[b].name} "
+                           f"(elements {a}–{b})")))
+                break
+    return out
+
+
 def find_matched_input_twiss(lattice, ref, cell_start, cell_end):
     """Matched *input* Twiss at the lattice entrance for a transfer line.
 
@@ -528,7 +580,8 @@ def find_matched_input_twiss(lattice, ref, cell_start, cell_end):
 
 def find_sc_matched_input_twiss(lattice, ref, cell_start, cell_end,
                                 current, base_initial, *,
-                                max_iter: int = 50, tol: float = 1e-4):
+                                max_iter: int = 50, tol: float = 1e-4,
+                                sc_factor: float = 1.0):
     """Space-charge matched *input* Twiss at the lattice entrance.
 
     The current-carrying analogue of :func:`find_matched_input_twiss` for a
@@ -546,7 +599,10 @@ def find_sc_matched_input_twiss(lattice, ref, cell_start, cell_end,
     input-dispersion support makes that possible.
 
     ``base_initial`` carries the fixed envelope inputs — ``emit_x``,
-    ``emit_y``, ``emit_z``, ``alpha_z``, ``beta_z``.
+    ``emit_y``, ``emit_z``, ``alpha_z``, ``beta_z``.  ``sc_factor`` is the
+    space-charge compensation state at ``lattice``'s entrance (the
+    multiplier a SPACE_CHARGE_COMP upstream left in force; 1.0 = full space
+    charge, the default).
 
     Returns a dict: ``alpha_x``/``beta_x``/``alpha_y``/``beta_y`` and
     ``disp_x``/``disp_xp``/``disp_y``/``disp_yp`` at the entrance,
@@ -610,7 +666,8 @@ def find_sc_matched_input_twiss(lattice, ref, cell_start, cell_end,
         init = dict(base_initial)
         init.update(alpha_x=st[0], beta_x=st[1], alpha_y=st[2], beta_y=st[3],
                     disp_x=st[4], disp_xp=st[5], disp_y=st[6], disp_yp=st[7])
-        env = EnvelopeSolver(sub, ref.copy(), init, current=current).run()
+        env = EnvelopeSolver(sub, ref.copy(), init, current=current,
+                             sc_factor=sc_factor).run()
         return _state(np.asarray(env.sigma_matrix[-1]))
 
     # seed: zero-current cell betatron Twiss + periodic dispersion
@@ -674,6 +731,209 @@ def find_sc_matched_input_twiss(lattice, ref, cell_start, cell_end,
         "cell_start": cell_start, "cell_end": cell_end,
         "converged": bool(converged),
     }
+
+
+#: an RFQ whose upstream elements add up to less than this (mm) starts the
+#: lattice (TraceWin decks often carry 1e-5 mm placeholder drifts before it)
+RFQ_AT_ENTRANCE_MM = 1e-3
+#: RF-phase offsets (deg from the synchronous phase) at which the zero-current
+#: match is re-computed, and the mismatch factor above which it is flagged:
+#: a DC beam enters at every phase, and only a radial matching section long
+#: enough makes one input ellipse suit them all (≈2 focusing periods and up
+#: give ≤ 0.04 on the demo RFQ; its own 0.5-period section gives 2.6)
+RFQ_PHASE_PROBE_DEG = (-60.0, -30.0, 30.0, 60.0)
+RFQ_PHASE_SENSITIVITY_LIMIT = 0.1
+
+
+def _mismatch(a1, b1, a2, b2):
+    """Mismatch factor of the ellipse (a1, b1) against (a2, b2) (0 = same):
+    the second must grow by (1 + M) in amplitude to contain the first."""
+    import math
+    g1, g2 = (1.0 + a1 * a1) / b1, (1.0 + a2 * a2) / b2
+    R = b1 * g2 + g1 * b2 - 2.0 * a1 * a2
+    return math.sqrt(0.5 * (R + math.sqrt(max(R * R - 4.0, 0.0)))) - 1.0
+
+
+def _rfq_phase_sensitivity(lattice, ref_k, period, tw0):
+    """(largest mismatch factor, input-section length in focusing periods):
+    the zero-current match re-computed with every cell of the RFQ's input
+    section and period at RF phases :data:`RFQ_PHASE_PROBE_DEG` from the
+    synchronous one, against ``tw0``.  Copies of the cells are shifted;
+    the lattice is not modified.  ``inf`` when the period is unstable at
+    one of those phases."""
+    import copy
+    from linac_gen.core.lattice import Lattice
+    from linac_gen.elements.rfq_cell import RfqCell
+
+    k, cs, ce = int(period.rfq_start), int(period.start), int(period.end)
+    els = lattice.elements
+
+    def _len(a, b):
+        return sum(float(e.length) for e in els[a:b]
+                   if isinstance(e, RfqCell))
+
+    periods = _len(k, cs) / max(_len(cs, ce + 1), 1e-12)
+    worst = 0.0
+    for d in RFQ_PHASE_PROBE_DEG:
+        sub = Lattice()
+        for e in els[k:ce + 1]:
+            if isinstance(e, RfqCell):
+                e = copy.deepcopy(e)
+                e.phi_s_deg += d
+            sub.add(e)
+        try:
+            tw = find_matched_input_twiss(sub, ref_k, cs - k, ce - k)
+        except ValueError:
+            return float("inf"), periods
+        for pl in "xy":
+            worst = max(worst, _mismatch(tw0[f"alpha_{pl}"], tw0[f"beta_{pl}"],
+                                         tw[f"alpha_{pl}"], tw[f"beta_{pl}"]))
+    return worst, periods
+
+
+def _rfq_entry_state(lattice, ref, k):
+    """(reference, SC multiplier, at-entrance flag, upstream length mm) at
+    the entrance of element ``k``: the reference replayed through the
+    elements before it, with the RF frequency of the last FREQ card among
+    them (matrix-mode replay ignores FREQ); the space-charge compensation
+    they leave in force (the envelope solver's rule: 1 − the last
+    SPACE_CHARGE_COMP factor); whether they transport the beam at all."""
+    import numpy as np
+    from linac_gen.elements.base import PassiveElement
+    from linac_gen.elements.lattice_commands import Freq
+    from linac_gen.tracking.matrix_tracking import (compute_transfer_matrix,
+                                                   reference_at)
+    before = lattice.elements[:k]
+    ref_k = reference_at(lattice, ref, k)
+    sc_factor = 1.0
+    for e in before:
+        if isinstance(e, Freq) and float(e.frequency_mhz) > 0.0:
+            ref_k.frequency = float(e.frequency_mhz)
+        elif isinstance(e, PassiveElement) and hasattr(e, "factor"):
+            sc_factor = 1.0 - float(e.factor)
+    upstream = sum(float(getattr(e, "length", 0.0) or 0.0) for e in before)
+    at_entrance = upstream < RFQ_AT_ENTRANCE_MM
+    if at_entrance and k > 0:
+        # zero-length thin lenses / edges / gaps transport the beam too
+        m4 = compute_transfer_matrix(lattice, ref, start=0, end=k - 1)[:4, :4]
+        at_entrance = bool(np.allclose(m4, np.eye(4), rtol=0.0, atol=1e-6))
+    return ref_k, sc_factor, at_entrance, upstream
+
+
+def find_rfq_matched_input_twiss(lattice, ref, period=None, *, current=0.0,
+                                 emit_x=None, emit_y=None,
+                                 dc_energy_spread_keV=0.0,
+                                 max_iter: int = 200, tol: float = 1e-4):
+    """Matched input Twiss of an RFQ, at the RFQ entrance.
+
+    The periodic Twiss of the RFQ's first regular focusing period
+    (``period``, default the first of :func:`find_rfq_periods`), carried
+    back through the radial matching section to the RFQ's first cell: the
+    beam the upstream line must deliver.  Elements upstream of the RFQ (a
+    LEBT) are not back-propagated through; only the reference particle is
+    carried through them (with the frequency of a FREQ card among them),
+    and the space-charge compensation they leave in force is kept.
+
+    * ``current == 0``: :func:`find_matched_input_twiss` (the cells'
+      transfer matrices for the synchronous particle).
+    * ``current > 0`` (mA): :func:`find_sc_matched_input_twiss` started
+      from a DC beam, because the beam entering an RFQ is unbunched (the
+      envelope becomes a phase-uniform bunch at the first RFQ cell).
+      Needs ``emit_x`` / ``emit_y``: geometric rms emittances (mm mrad)
+      at the LATTICE entrance, as everywhere else (``base_initial``);
+      they are rescaled to the RFQ entrance energy.  ``max_iter`` is
+      higher than that function's default: its relative convergence test
+      is strict for α ≈ 0, which the period's Twiss are.
+
+    Returns ``alpha_x`` / ``beta_x`` / ``alpha_y`` / ``beta_y`` (β in
+    mm/mrad = m) and the zero-current phase advance per period ``mu_x`` /
+    ``mu_y`` (deg), the dispersion (zero for an RFQ), ``kind`` ("rfq"),
+    ``rfq_start``, ``rfq_name``, ``cell_start`` / ``cell_end`` (lattice
+    indices), ``label``, ``current``, ``converged``, ``upstream_mm``
+    (length of the elements before the RFQ) and ``at_lattice_entrance``
+    (nothing upstream transports the beam: the result is also the beam at
+    the lattice entrance).
+
+    The match is that of the synchronous particle, while a DC beam enters
+    at every RF phase; it suits the whole beam only when the radial
+    matching section makes it phase-independent.  ``phase_sensitivity`` is
+    the largest mismatch factor between this match and the zero-current
+    match re-computed 30° and 60° either side of the synchronous phase
+    (``input_periods``: length of the cells before the period, in
+    focusing periods); above :data:`RFQ_PHASE_SENSITIVITY_LIMIT`,
+    ``caution`` says so (else ``None``) — check such an input with a
+    multiparticle run.
+
+    Raises
+    ------
+    ValueError
+        If the lattice has no RFQ period, the period is unstable, or
+        space-charge matching is asked for without the emittances.
+    """
+    from linac_gen.core.lattice import Lattice
+
+    if period is None:
+        periods = find_rfq_periods(lattice)
+        if not periods:
+            raise ValueError(
+                "no RFQ period found — the lattice needs an RFQ with two "
+                "consecutive regular cells of opposite sign (−2/+2)")
+        period = periods[0]
+    k = int(period.rfq_start)
+    if not (0 <= k <= int(period.start) <= int(period.end)
+            < len(lattice.elements)):
+        raise ValueError(f"invalid RFQ period {period}")
+    sub = Lattice()
+    for e in lattice.elements[k:]:
+        sub.add(e)
+    step_cfg = getattr(lattice, "step_config", None)
+    if step_cfg is not None:
+        sub.step_config = step_cfg
+    ref_k, sc_factor, at_entrance, upstream = _rfq_entry_state(lattice, ref, k)
+    cs, ce = int(period.start) - k, int(period.end) - k
+
+    tw = find_matched_input_twiss(sub, ref_k, cs, ce)
+    keys = ("alpha_x", "beta_x", "alpha_y", "beta_y",
+            "disp_x", "disp_xp", "disp_y", "disp_yp")
+    out = {key: float(tw[key]) for key in keys}
+    for key in ("mu_x", "mu_y", "mu_x_folded", "mu_y_folded"):
+        if key in tw:
+            out[key] = float(tw[key])
+    sens, input_periods = _rfq_phase_sensitivity(lattice, ref_k, period, tw)
+    caution = None
+    if not sens <= RFQ_PHASE_SENSITIVITY_LIMIT:
+        how = ("the period is unstable at some of those phases"
+               if sens == float("inf") else
+               f"it changes by a mismatch factor of up to {sens:.2f}")
+        caution = (
+            "the match depends on the RF phase: re-computed 30-60° from the "
+            f"synchronous phase, {how} (the radial matching section is "
+            f"{input_periods:.1f} focusing periods long), so no single input "
+            "ellipse suits the whole DC beam — check this input with a "
+            "multiparticle run")
+    converged = True
+    if current > 0:
+        if emit_x is None or emit_y is None:
+            raise ValueError(
+                "space-charge matching of an RFQ needs emit_x and emit_y "
+                "(geometric rms emittances, mm mrad)")
+        damp = ref.bg / ref_k.bg if ref_k.bg > 0 else 1.0
+        base = {"emit_x": float(emit_x) * damp, "emit_y": float(emit_y) * damp,
+                "emit_z": 0.0, "alpha_z": 0.0, "beta_z": 1.0,
+                "continuous": True,
+                "dc_energy_spread_keV": float(dc_energy_spread_keV)}
+        sc = find_sc_matched_input_twiss(sub, ref_k, cs, ce, float(current),
+                                         base, max_iter=max_iter, tol=tol,
+                                         sc_factor=sc_factor)
+        out.update({key: float(sc[key]) for key in keys})
+        converged = bool(sc["converged"])
+    out.update(kind="rfq", rfq_start=k, rfq_name=str(lattice.elements[k].name),
+               cell_start=int(period.start), cell_end=int(period.end),
+               label=period.label, current=float(current),
+               converged=converged, upstream_mm=upstream,
+               at_lattice_entrance=at_entrance, phase_sensitivity=float(sens),
+               input_periods=float(input_periods), caution=caution)
+    return out
 
 
 # ---------------------------------------------------------------------------

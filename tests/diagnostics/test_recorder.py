@@ -110,3 +110,24 @@ class TestSnapshot:
         rec = DiagnosticRecorder()
         with pytest.raises(KeyError):
             rec.beam_at(1234.5)
+
+    def test_stat_at_leaves_out_the_particles_marked_then(self):
+        """stat_at: the snapshot's alive particles less those marked in
+        beam.stats_excluded when it was taken; alive_at when none were;
+        later marks or unmarking do not rewrite the snapshot."""
+        rec = DiagnosticRecorder()
+        beam = _seeded_beam(n=20)
+        rec.save_snapshot(beam, s_position=1.0)
+        np.testing.assert_array_equal(rec.stat_at(1.0), rec.alive_at(1.0))
+        beam.lost[0] = True
+        beam.stats_excluded = np.zeros(20, bool)
+        beam.stats_excluded[[1, 2]] = True
+        rec.save_snapshot(beam, s_position=2.0)
+        np.testing.assert_array_equal(rec.stat_at(2.0), beam.particles[3:])
+        assert len(rec.alive_at(2.0)) == 19
+        beam.stats_excluded[:] = False
+        np.testing.assert_array_equal(rec.stat_at(2.0), beam.particles[3:])
+        rec.save_snapshot(beam, s_position=2.0)        # retaken, nothing marked
+        np.testing.assert_array_equal(rec.stat_at(2.0), rec.alive_at(2.0))
+        with pytest.raises(KeyError):
+            rec.stat_at(99.0)

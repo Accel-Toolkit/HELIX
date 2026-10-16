@@ -227,6 +227,8 @@ def _write_provenance(f, lattice_path=None, seed=None, sc_config=None,
                     getattr(cfg, "rfq_td_steps_per_period", 48))
                 prov.attrs["rfq_td_sc_every"] = int(
                     getattr(cfg, "rfq_td_sc_every", 4))
+                prov.attrs["rfq_stats_accelerated"] = bool(
+                    getattr(cfg, "rfq_stats_accelerated", True))
             except Exception:                               # noqa: BLE001
                 pass
         # Parser downgrade ledger (attached by cli.common.load_lattice).

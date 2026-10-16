@@ -59,6 +59,16 @@ simulation then reads the *actual particles* from the file
 appears next to the button naming the active `.dst`, with a
 **clear** link that reverts to generate-from-Twiss mode.
 
+Next to the chip, **re-shape to α, β** (unticked on import) re-shapes
+the file's particles onto the α / β fields: each transverse plane is
+mapped linearly, keeping the file's rms emittance, centroid and
+phase-space shape (`BeamConfig.reshape_to_twiss`).  Unticked, the file is
+used as it is and its own Twiss fill the fields.  Click **Apply** after
+changing it.  The [Matching dialog](05_matching_tab.md#rfqs) ticks it when
+you apply a matched Twiss to a beam read from a file — e.g. to inject a
+LEBT-derived particle file with an RFQ's matched input.  Backtracking
+always reads its exit file as it is.
+
 ## Importing a TraceWin `.ini` project beam
 
 The **Import TraceWin .ini…** button reads `<project>.ini`, the binary
@@ -115,9 +125,9 @@ single-bunch values.
 **With space charge off** nothing else moves at all: same losses, same
 transmission, same transverse coordinates to 1e-12.  **With space
 charge on** the solver sees a compact bunch instead of a multi-bucket
-clump, so the run genuinely differs — on the PXIE 66 kV deck at 5 mA,
-line transmission moved 62.0 → 60.6 % and ε_nx 0.142 → 0.194
-π·mm·mrad.
+clump, so the run genuinely differs — on the PXIE 66 kV deck at 5 mA
+with the per-cell card model, line transmission moved 62.0 → 60.6 %
+and ε_nx 0.142 → 0.194 π·mm·mrad.
 That is the intended effect, not a side effect; see
 [RFQ cell → bunch train](../03_elements/09_rfqcell.md) for the numbers
 and their comparison with the PIP2IT measurement.

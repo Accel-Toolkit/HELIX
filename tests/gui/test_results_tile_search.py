@@ -20,6 +20,16 @@ def _keys():
     return [c[0] for _sec, cards in rt._SECTIONS for c in cards]
 
 
+def _no_lattice_keys():
+    """The tiles shown without a lattice: all but the RFQ section, which
+    shows only for a lattice with RFQ cells."""
+    return [k for k in _keys() if not k.startswith("rfq_")]
+
+
+def _rfq_only(cards):
+    return bool(cards) and all(c._key.startswith("rfq_") for c in cards)
+
+
 def _hay(key):
     import linac_gen_gui.interphase.tabs.results_tab as rt
     for sec, cards in rt._SECTIONS:
@@ -91,7 +101,7 @@ def test_filter_hides_repacks_and_restores(qapp):
     st, tab = _tab(qapp)
     try:
         all_keys = _visible(tab)
-        assert len(all_keys) == len(_keys())
+        assert sorted(all_keys) == sorted(_no_lattice_keys())
         before = {c._key: _pos(g, c) for _h, g, cards in tab._tile_sections for c in cards}
         tab._search.setText("bmag")
         vis = _visible(tab)
@@ -108,7 +118,8 @@ def test_filter_hides_repacks_and_restores(qapp):
         assert not tab._no_match.isHidden()
         tab._search.clear()
         assert _visible(tab) == all_keys
-        assert all(not hdr.isHidden() for hdr, _g, _c in tab._tile_sections)
+        assert all(hdr.isHidden() == _rfq_only(cards)
+                   for hdr, _g, cards in tab._tile_sections)
         assert tab._no_match.isHidden()
         assert {c._key: _pos(g, c) for _h, g, cards in tab._tile_sections for c in cards} == before
     finally:
@@ -177,7 +188,8 @@ def test_escape_clears_and_shortcut_exists(qapp):
     try:
         tab._search.setText("rms")
         tab._clear_search()
-        assert tab._search.text() == "" and len(_visible(tab)) == len(_keys())
+        assert tab._search.text() == "" and \
+            len(_visible(tab)) == len(_no_lattice_keys())
         seqs = {sc.key().toString() for sc in tab.findChildren(QShortcut)}
         assert QKeySequence(QKeySequence.StandardKey.Find).toString() in seqs
         assert QKeySequence("Esc").toString() in seqs

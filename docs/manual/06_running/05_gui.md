@@ -186,6 +186,18 @@ between elements; the partial recorder is discarded and the
 results tab reverts to the previous run.  Closing the window also
 cancels any active worker.
 
+## Runs with the window in the background (macOS)
+
+macOS puts an app whose window is not in front into *App Nap*: its
+threads drop to a low scheduling priority and a computation gets
+fewer cores (measured: priority 4 instead of 46 within about 35 s, and
+1.5 to 2.9 of 3 cores).  While HELIX computes — a run, a study, a
+scan, a match, an ORM fit or any other job that keeps at least half a
+core busy — it tells macOS that user-initiated work is in progress,
+which keeps it out of App Nap at full speed.  The hold ends a few
+seconds after the work stops; the Mac may still go to sleep as usual.
+Runs from the command line are not affected by App Nap.
+
 ## See also
 
 * [Python API](01_python_api.md) — the same code paths the GUI

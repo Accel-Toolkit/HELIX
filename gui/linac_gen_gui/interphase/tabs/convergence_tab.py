@@ -233,7 +233,9 @@ class _ScanWorker(QThread):
             rfq_solver=str(getattr(st, "rfq_solver", "auto")),
             rfq_td_steps_per_period=int(getattr(st, "rfq_td_steps_per_period",
                                                 48)),
-            rfq_td_sc_every=int(getattr(st, "rfq_td_sc_every", 4)))
+            rfq_td_sc_every=int(getattr(st, "rfq_td_sc_every", 4)),
+            rfq_stats_accelerated=bool(getattr(st, "rfq_stats_accelerated",
+                                               True)))
 
     def _scan_sc_overrides(self) -> tuple:
         """The tab's settings for pool workers, minus what a scan point
@@ -494,8 +496,20 @@ class ConvergenceTab(QWidget):
             "Time-domain RFQ: leapfrog steps per RF period (48 is converged:\n"
             "96 gives the same transmission and emittances).")
         self._rfq_td_sc_every = 4      # no control; kept from project/lattice
+        self._rfq_stats_acc = QCheckBox("RFQ statistics: accelerated particles only")
+        self._rfq_stats_acc.setChecked(True)
+        self._rfq_stats_acc.setToolTip(
+            "Time-domain RFQ: a particle that leaves the RFQ unaccelerated (it gains\n"
+            "less than half the reference particle's energy) stays in the beam --\n"
+            "transmission and the exported distribution count it -- but the rms\n"
+            "sizes, emittances, energy spread, Twiss and density leave it out from\n"
+            "the cell where it falls behind the bunch, so they describe the\n"
+            "accelerated beam.  A handful of such particles, ~2 MeV below the bunch\n"
+            "at the exit, would otherwise dominate the energy spread.\n"
+            "Untick to count every surviving particle (as in HELIX 1.19).")
         self._rfq_solver.currentIndexChanged.connect(self._on_rfq_solver)
         self._rfq_td_steps.valueChanged.connect(self._on_rfq_td_steps)
+        self._rfq_stats_acc.toggled.connect(self._on_rfq_stats)
         self._rfq_td_steps.setEnabled(True)     # "auto" may use them
         # PIC FFT backend.  'auto' picks GPU when cupy is installed and a
         # CUDA device is visible, else CPU.  'gpu' forces GPU and errors if
@@ -886,6 +900,7 @@ class ConvergenceTab(QWidget):
         sec_step.addRow(self._drift_single_push)
         sec_step.addRow("RFQ solver", self._rfq_solver)
         sec_step.addRow("RFQ time steps", self._rfq_td_steps)
+        sec_step.addRow(self._rfq_stats_acc)
         # Switching to "Custom" on any manual edit -- otherwise the
         # preset label and the spinbox values would drift apart silently.
         self._fixed_step1.valueChanged.connect(self._on_step_manual_edit)
@@ -1158,6 +1173,7 @@ class ConvergenceTab(QWidget):
         self._drift_single_push.toggled.connect(_mark_dirty)
         self._rfq_solver.currentIndexChanged.connect(_mark_dirty)
         self._rfq_td_steps.valueChanged.connect(_mark_dirty)
+        self._rfq_stats_acc.toggled.connect(_mark_dirty)
         # snapshot controls are serialized into the project too
         self._snapshot_every_n.valueChanged.connect(_mark_dirty)
         self._snapshot_elements.textChanged.connect(_mark_dirty)
@@ -1423,13 +1439,20 @@ class ConvergenceTab(QWidget):
 
     def _on_rfq_solver(self, index: int) -> None:
         try:
-            self._rfq_td_steps.setEnabled(
-                _RFQ_SOLVER_VALUES[int(index)] != "cells")
+            td = _RFQ_SOLVER_VALUES[int(index)] != "cells"
+            self._rfq_td_steps.setEnabled(td)
+            self._rfq_stats_acc.setEnabled(td)
         except RuntimeError:
             return                                  # widget destroyed
         self._write_rfq_to_lattice()
 
     def _on_rfq_td_steps(self, _value: int) -> None:
+        try:
+            self._write_rfq_to_lattice()
+        except RuntimeError:
+            pass                                    # widget destroyed
+
+    def _on_rfq_stats(self, _checked: bool) -> None:
         try:
             self._write_rfq_to_lattice()
         except RuntimeError:
@@ -1446,12 +1469,15 @@ class ConvergenceTab(QWidget):
         project or lattice)."""
         return dict(rfq_solver=self.current_rfq_solver(),
                     rfq_td_steps_per_period=int(self._rfq_td_steps.value()),
-                    rfq_td_sc_every=int(self._rfq_td_sc_every))
+                    rfq_td_sc_every=int(self._rfq_td_sc_every),
+                    rfq_stats_accelerated=bool(
+                        self._rfq_stats_acc.isChecked()))
 
     def set_rfq_solver(self, solver: str, steps: int | None = None,
-                       sc_every: int | None = None) -> None:
+                       sc_every: int | None = None,
+                       stats_accelerated: bool | None = None) -> None:
         """Show a StepConfig's RFQ settings without marking the tab dirty."""
-        for w in (self._rfq_solver, self._rfq_td_steps):
+        for w in (self._rfq_solver, self._rfq_td_steps, self._rfq_stats_acc):
             w.blockSignals(True)
         value = str(solver).strip().lower().replace("-", "_")
         self._rfq_solver.setCurrentIndex(
@@ -1461,8 +1487,12 @@ class ConvergenceTab(QWidget):
             self._rfq_td_steps.setValue(int(steps))
         if sc_every is not None:
             self._rfq_td_sc_every = int(sc_every)
-        self._rfq_td_steps.setEnabled(self.current_rfq_solver() != "cells")
-        for w in (self._rfq_solver, self._rfq_td_steps):
+        if stats_accelerated is not None:
+            self._rfq_stats_acc.setChecked(bool(stats_accelerated))
+        td = self.current_rfq_solver() != "cells"
+        self._rfq_td_steps.setEnabled(td)
+        self._rfq_stats_acc.setEnabled(td)
+        for w in (self._rfq_solver, self._rfq_td_steps, self._rfq_stats_acc):
             w.blockSignals(False)
         self._write_rfq_to_lattice()
 

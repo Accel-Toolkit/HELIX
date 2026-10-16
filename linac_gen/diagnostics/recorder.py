@@ -98,6 +98,18 @@ def run_current_mA(results):
     return cur if math.isfinite(cur) else None
 
 
+def stat_particles(beam) -> np.ndarray:
+    """The particles the recorded statistics describe: the alive ones, less
+    any marked in ``beam.stats_excluded`` (the time-domain RFQ solver marks
+    particles that leave an RFQ unaccelerated, from the cell where they fall
+    behind the bunch: :attr:`StepConfig.rfq_stats_accelerated`).  Such
+    particles stay alive and count in the transmission."""
+    ex = getattr(beam, "stats_excluded", None)
+    if ex is None or ex.shape != beam.lost.shape or not ex.any():
+        return beam.alive_particles
+    return beam.particles[beam.alive_mask & ~ex]
+
+
 class DiagnosticRecorder:
     """Records beam diagnostics at each tracking step."""
 
@@ -208,6 +220,10 @@ class DiagnosticRecorder:
         # consumers unpack it (io/hdf5_output.py, io/openpmd_output.py).
         # Lets viewers filter a snapshot to alive particles like the exit.
         self._snapshot_masks = {}
+        # Per-snapshot statistics mask (True = left out of the statistics,
+        # ``beam.stats_excluded``), another parallel dict; only snapshots
+        # taken while particles were marked have an entry.
+        self._snapshot_stat_masks = {}
 
         # ------------------------------------------------------------------
         # 2-D density grids — one column per s-step, one row per bin.
@@ -234,7 +250,7 @@ class DiagnosticRecorder:
         record corresponds to (``"INPUT"`` for the pre-lattice record).
         """
         self.s.append(s_position)
-        alive = beam.alive_particles
+        alive = stat_particles(beam)
         # Per-step continuous-beam flag.  Downstream plots can use this
         # to mark / colour pre-RFQ sections and to warn that σ_φ / σ_W /
         # ε_z are the values of a uniform DC distribution rather than a
@@ -513,7 +529,7 @@ class DiagnosticRecorder:
         """
         if not self.density_axes:
             return
-        alive = beam.alive_particles
+        alive = stat_particles(beam)
         if len(alive) == 0:
             # Append zero columns so the result is rectangular vs the
             # main s-array — keeps shape consistent for downstream plots.
@@ -571,6 +587,12 @@ class DiagnosticRecorder:
         lost = getattr(beam, "lost", None)
         self._snapshot_masks[s_position] = (
             None if lost is None else np.asarray(lost).copy())
+        ex = getattr(beam, "stats_excluded", None)
+        stat_masks = self.__dict__.setdefault("_snapshot_stat_masks", {})
+        if ex is not None and np.shape(ex) == (len(beam.particles),) and np.any(ex):
+            stat_masks[s_position] = np.asarray(ex, bool).copy()
+        else:
+            stat_masks.pop(s_position, None)
 
     def beam_at(self, s_position: float):
         """Retrieve saved snapshot. Returns (particles, ref) or raises KeyError."""
@@ -585,3 +607,19 @@ class DiagnosticRecorder:
         if lost is None or len(lost) != len(particles):
             return particles
         return particles[~lost]
+
+    def stat_at(self, s_position: float):
+        """The particles of the snapshot at ``s_position`` that the
+        statistics describe: :meth:`alive_at` less those marked in
+        ``beam.stats_excluded`` when the snapshot was taken (see
+        :func:`stat_particles`).  Equal to :meth:`alive_at` when none were
+        marked.  Raises KeyError if there is no snapshot there."""
+        particles, _ref = self._snapshots[s_position]
+        ex = getattr(self, "_snapshot_stat_masks", {}).get(s_position)
+        if ex is None or len(ex) != len(particles):
+            return self.alive_at(s_position)
+        lost = self._snapshot_masks.get(s_position)
+        keep = ~ex
+        if lost is not None and len(lost) == len(particles):
+            keep &= ~lost
+        return particles[keep]

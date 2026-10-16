@@ -74,6 +74,7 @@ class ScanPoint:
     rfq_solver: str = "auto"        # StepConfig RFQ solver fields for the worker
     rfq_td_steps_per_period: int = 48
     rfq_td_sc_every: int = 4
+    rfq_stats_accelerated: bool = True
     capture_errors: bool = False    # True: a raised point returns an
     #                                 {"error", "traceback"} row instead
     #                                 of killing the whole pool
@@ -236,6 +237,7 @@ def _run_one_point_worker(point: ScanPoint) -> dict:
             rfq_solver=str(point.rfq_solver),
             rfq_td_steps_per_period=int(point.rfq_td_steps_per_period),
             rfq_td_sc_every=int(point.rfq_td_sc_every),
+            rfq_stats_accelerated=bool(point.rfq_stats_accelerated),
         )
         # Element-parameter overrides (a batch-mode scan over e.g. a quad
         # gradient).  Empty for the GUI convergence-tab caller — no import

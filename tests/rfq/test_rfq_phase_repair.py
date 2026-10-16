@@ -225,8 +225,10 @@ def test_pxie_repair_closes_the_energy_gap(pxie):
         b.particles[:] = 0.0
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
+            # the card model, whose θs the repair changes (the deck's
+            # vane file would otherwise set up the vane geometry)
             Simulation(lat, b, space_charge="off",
-                       record_substeps=False).run()
+                       record_substeps=False, rfq_geometry="off").run()
         return b.ref.w_kin * 1e3
 
     from tests.rfq import ref_loaders as rl

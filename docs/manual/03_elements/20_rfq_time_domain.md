@@ -171,8 +171,29 @@ error, failure and parameter studies.
 - A particle is lost when it is inside metal (a vane tip, a vane body or
   an end plate), turns back, or is still inside the RFQ after three times
   the entrance transit time.
+- It is also lost when it leaves the stored field region, the near-axis
+  box beyond the vane tips (7.9 mm from the axis for PXIE), between the
+  vanes.  No field is stored there.  Without this rule such a particle
+  flew on in zero field: one did, to 1 m off axis at the exit, and its
+  offset dominated the rms rows along the RFQ.
 - Each loss is recorded at the particle's own z, with the name of the
   cell it died in.
+
+**Statistics of the accelerated beam.**  Some particles fall behind the
+bunch: they lag the reference particle by more than half of its energy gain.
+On PXIE at 5 mA, about 10 in 15 500 leave the RFQ near 28 keV, 2 MeV below
+the bunch, and a few more are lost on the vanes later.  They stay in the
+beam until then: the transmission, the losses and the exported
+distribution count them.  But with `rfq_stats_accelerated` (on by
+default), the recorded statistics leave them out.  These are the rms sizes,
+emittances, energy spread, Twiss parameters and density.  Each particle is
+left out from the cell after the last one where it lagged the reference
+energy by less than a tenth of the reference gain, that is, from where it
+fell behind the bunch, so every plot and tile describes the accelerated
+beam.  Otherwise those few particles set the exit energy spread: 57 keV
+against 8.1 keV.  Turn the setting off, with Numerics →
+*RFQ statistics: accelerated particles only* or `--rfq-stats all`, to count
+every surviving particle.  The run's log line gives the count.
 
 ## Results on the PXIE RFQ
 
@@ -288,6 +309,7 @@ does the per-cell model's vane-geometry profile solve.
 | `rfq_solver` | `"auto"` | `"auto"`: this solver when it can run, else the per-cell model; `"time_domain"`: always this solver; `"cells"`: the per-cell model |
 | `rfq_td_steps_per_period` | 48 | leapfrog steps per RF period |
 | `rfq_td_sc_every` | 4 | steps between space-charge kicks |
+| `rfq_stats_accelerated` | `True` | statistics leave out the particles that leave the RFQ unaccelerated (see Physics) |
 
 **Not supported yet** (with `"auto"`, these run on the per-cell model):
 - image charges;
@@ -297,6 +319,11 @@ does the per-cell model's vane-geometry profile solve.
 - bunch-train (multibunch) runs;
 - envelope mode and backtracking, which keep the per-cell model
   (backtracking through the RFQ warns that it does).
+
+**Plots.**  The Results tab's [RFQ panels](../10_gui/07_results_tab.md#rfq-panels)
+draw these vanes, their field map once it is cached (on-axis field,
+peak surface field against the Kilpatrick limit) and the run cell by
+cell.
 
 ## Source
 

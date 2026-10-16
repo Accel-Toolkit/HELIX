@@ -174,6 +174,71 @@ class _ChainRun:
     plane_ref: np.ndarray            # (P, 4) ref at each record plane
     train_gate: bool = False         # PIC train-image gate at the chain exit
     info: dict = field(default_factory=dict)
+    # particles that leave the chain unaccelerated (rfq_stats_accelerated):
+    # their beam ids and the record plane from which the statistics leave
+    # them out
+    behind_pid: np.ndarray = field(
+        default_factory=lambda: np.zeros(0, np.int64))
+    behind_plane: np.ndarray = field(
+        default_factory=lambda: np.zeros(0, np.int64))
+
+
+def chain_electrodes(lattice, cells, chain_len, notes=True):
+    """The electrodes of one RFQ cell chain as the time-domain solver uses
+    them, and the factor its field map is scaled by: ``(electrodes,
+    voltage_scale)``.  From the deck's ``RFQ_GEOM`` vane file (scale = the
+    cells' voltage over the file's inter-vane voltage), else from the
+    ``RFQ_CELL`` cards at unit voltage (scale = the cells' voltage).
+    Raises :class:`RfqTdError` when the vanes cannot be used.  Also used by
+    the GUI's RFQ panels, so they show the solver's own geometry; they pass
+    ``notes=False``, which leaves the solver's once-per-lattice log notes to
+    the run."""
+    from linac_gen.io.tracewin_vane import parse_vane_file
+    from linac_gen.rfq_td.geometry import EndPlate, RfqElectrodes
+    lat = lattice
+    if not lat.rfq_geom_file:
+        from linac_gen.rfq_td.cards_geometry import electrodes_from_cards
+        if notes:
+            _note_once(lat, logging.INFO,
+                       "time-domain RFQ: no RFQ_GEOM vane file -- the "
+                       "electrodes are built from the RFQ_CELL cards")
+        try:
+            # at unit voltage: one field map serves every vane voltage
+            el = electrodes_from_cards(
+                cells, gaps=getattr(lat, "rfq_gaps_mm", None),
+                voltage=1.0)
+        except ValueError as exc:
+            raise RfqTdError(f"RFQ electrodes from the cards: {exc}") \
+                from exc
+        return el, float(cells[0].voltage_V)
+    from linac_gen.rfq_td.geometry import end_plate_hole
+    vane = parse_vane_file(lat.rfq_geom_file)
+    plates = [EndPlate(z_face=0.0, side=-1,
+                       hole_radius=end_plate_hole(cells[0].r0_mm)),
+              EndPlate(z_face=chain_len, side=+1,
+                       hole_radius=end_plate_hole(cells[-1].r0_mm))]
+    el = RfqElectrodes.from_vane(vane, plates=plates,
+                                 source=str(lat.rfq_geom_file))
+    el.check_symmetric()
+    zs, ze = el.z_span
+    if zs < -1e-6 or ze > chain_len + 1e-3:
+        raise RfqTdError(
+            f"vane table z {zs:.3f}..{ze:.3f} mm does not fit inside the "
+            f"RFQ cell chain 0..{chain_len:.3f} mm -- wrong vane file?")
+    gaps = getattr(lat, "rfq_gaps_mm", None)
+    if gaps is not None and notes:
+        if abs(zs - gaps[0]) > 0.05 or abs(chain_len - ze - gaps[1]) > 0.05:
+            _note_once(
+                lat, logging.WARNING,
+                "RFQ_GAP_RMS_FFS (%.4f, %.4f mm) disagrees with the vane "
+                "table (vanes %.4f..%.4f mm in a %.4f mm chain); the "
+                "vane table is used", gaps[0], gaps[1], zs, ze, chain_len)
+    # one voltage for all cells (validated); scale the vane field to it
+    v_cells = float(cells[0].voltage_V)
+    v_vane = abs(el.V_y - el.V_x)
+    if v_vane <= 0:
+        raise RfqTdError("vane file has no inter-vane voltage")
+    return el, v_cells / v_vane
 
 
 class RfqTdDriver:
@@ -187,6 +252,11 @@ class RfqTdDriver:
         cfg = getattr(lat, "step_config", None)
         self.steps = int(getattr(cfg, "rfq_td_steps_per_period", 48))
         self.sc_every = int(getattr(cfg, "rfq_td_sc_every", 4))
+        self.stats_accelerated = bool(getattr(cfg, "rfq_stats_accelerated",
+                                              True))
+        # the particles this run leaves out of the statistics are marked as
+        # its chains are replayed; nothing is left over from an earlier run
+        tracker.beam.stats_excluded = None
         self.chains = find_chains(lat.elements)
         self._owner = {}
         for ci, (i0, i1) in enumerate(self.chains):
@@ -351,58 +421,15 @@ class RfqTdDriver:
         return np.array(tab), sub
 
     def _electrodes(self, cells, chain_len):
-        from linac_gen.io.tracewin_vane import parse_vane_file
-        from linac_gen.rfq_td.geometry import EndPlate, RfqElectrodes
-        lat = self.tr.lattice
-        if not lat.rfq_geom_file:
-            from linac_gen.rfq_td.cards_geometry import electrodes_from_cards
-            _note_once(lat, logging.INFO,
-                       "time-domain RFQ: no RFQ_GEOM vane file -- the "
-                       "electrodes are built from the RFQ_CELL cards")
-            try:
-                # at unit voltage: one field map serves every vane voltage
-                el = electrodes_from_cards(
-                    cells, gaps=getattr(lat, "rfq_gaps_mm", None),
-                    voltage=1.0)
-            except ValueError as exc:
-                raise RfqTdError(f"RFQ electrodes from the cards: {exc}") \
-                    from exc
-            return el, float(cells[0].voltage_V)
-        from linac_gen.rfq_td.geometry import end_plate_hole
-        vane = parse_vane_file(lat.rfq_geom_file)
-        plates = [EndPlate(z_face=0.0, side=-1,
-                           hole_radius=end_plate_hole(cells[0].r0_mm)),
-                  EndPlate(z_face=chain_len, side=+1,
-                           hole_radius=end_plate_hole(cells[-1].r0_mm))]
-        el = RfqElectrodes.from_vane(vane, plates=plates,
-                                     source=str(lat.rfq_geom_file))
-        el.check_symmetric()
-        zs, ze = el.z_span
-        if zs < -1e-6 or ze > chain_len + 1e-3:
-            raise RfqTdError(
-                f"vane table z {zs:.3f}..{ze:.3f} mm does not fit inside the "
-                f"RFQ cell chain 0..{chain_len:.3f} mm -- wrong vane file?")
-        gaps = getattr(lat, "rfq_gaps_mm", None)
-        if gaps is not None:
-            if abs(zs - gaps[0]) > 0.05 or abs(chain_len - ze - gaps[1]) > 0.05:
-                _note_once(
-                    lat, logging.WARNING,
-                    "RFQ_GAP_RMS_FFS (%.4f, %.4f mm) disagrees with the vane "
-                    "table (vanes %.4f..%.4f mm in a %.4f mm chain); the "
-                    "vane table is used", gaps[0], gaps[1], zs, ze, chain_len)
-        # one voltage for all cells (validated); scale the vane field to it
-        v_cells = float(cells[0].voltage_V)
-        v_vane = abs(el.V_y - el.V_x)
-        if v_vane <= 0:
-            raise RfqTdError("vane file has no inter-vane voltage")
-        return el, v_cells / v_vane
+        return chain_electrodes(self.tr.lattice, cells, chain_len)
 
     def _run_chain(self, ci):
         from linac_gen.elements.rfq_cell import RfqCell
         from linac_gen.pic.macrocharge import macro_charge_for
         from linac_gen.rfq_td.build import get_field_map
         from linac_gen.rfq_td.space_charge import PeriodicTrainSpaceCharge
-        from linac_gen.rfq_td.tracker import Aborted, TimeDomainTracker
+        from linac_gen.rfq_td.tracker import (REASON_OUTSIDE, Aborted,
+                                              TimeDomainTracker)
         tr = self.tr
         beam = tr.beam
         i0, i1 = self.chains[ci]
@@ -436,7 +463,10 @@ class RfqTdDriver:
             info = dict(steps=0, wall_s=round(time.time() - t_start, 2),
                         track_s=0.0, sc=False, sc_solves=0, map_key="",
                         outside_map_steps=0, n_tracked=0, n_lost=0,
-                        n_stalled=0, phase_origin_deg=0.0,
+                        n_stalled=0, n_left_map=0,
+                        stats_accelerated=self.stats_accelerated,
+                        n_unaccelerated=0, n_left_out=0,
+                        phase_origin_deg=0.0,
                         exit_w_offset_kev=0.0,
                         steps_per_period=self.steps, sc_every=self.sc_every,
                         geometry="", voltage_scale=1.0)
@@ -545,6 +575,12 @@ class RfqTdDriver:
                                                   side="right") - 1,
                                   0, n_cells - 1)
         gate = self._train_gate(states, crossed, exit_idx)
+        behind = (self._behind_planes(states, crossed, plane_ref[:, 0],
+                                      float(ref.w_kin))
+                  if self.stats_accelerated else np.full(alive.size, -1))
+        b_sel = np.flatnonzero(behind >= 0)
+        n_unacc = int(np.count_nonzero(crossed[-1, b_sel]))
+        n_left_map = int((res.loss_reason == REASON_OUTSIDE).sum())
         # where the bunch leaves relative to the reference particle, which
         # follows the RFQ_CELL cards (as TraceWin's does)
         w_off = (float(np.median(states[-1][out, 5].astype(np.float64)))
@@ -563,6 +599,9 @@ class RfqTdDriver:
                     outside_map_steps=res.outside_map_steps,
                     n_tracked=int(alive.size), n_lost=int(lost.sum()),
                     n_stalled=int((res.loss_reason == 3).sum()),
+                    n_left_map=n_left_map,
+                    stats_accelerated=self.stats_accelerated,
+                    n_unaccelerated=n_unacc, n_left_out=int(b_sel.size),
                     phase_origin_deg=math.degrees(core),
                     bucket_shifted=int(np.count_nonzero(
                         periods != np.median(periods))) if periods.size
@@ -570,10 +609,22 @@ class RfqTdDriver:
                     exit_w_offset_kev=round(1e3 * w_off, 3),
                     steps_per_period=self.steps, sc_every=self.sc_every,
                     geometry=str(el.source), voltage_scale=vscale)
-        if res.outside_map_steps:
+        if n_left_map:
+            _log.warning("time-domain RFQ: %d particle(s) left the stored field "
+                         "region (%.1f mm from the axis, between the vanes) "
+                         "and are counted as lost there", n_left_map,
+                         float(getattr(fmap, "box_half_width", float("nan"))))
+        # the step on which a particle leaves is counted as well
+        if res.outside_map_steps > n_left_map:
             _log.warning("time-domain RFQ: %d particle-steps fell outside the "
                          "stored field region (zero field there)",
-                         res.outside_map_steps)
+                         res.outside_map_steps - n_left_map)
+        if b_sel.size:
+            _log.info("time-domain RFQ: the statistics leave out %d "
+                      "particle(s) from where they fall behind the bunch: %d "
+                      "leave the RFQ unaccelerated (they stay in the beam and "
+                      "the transmission), %d are lost on the vanes later",
+                      b_sel.size, n_unacc, b_sel.size - n_unacc)
         _log.info("time-domain RFQ: %d particles, %d lost, %d steps, %.1f s",
                   alive.size, int(lost.sum()), res.steps, info["wall_s"])
         tr.recorder.rfq_td = info
@@ -582,7 +633,9 @@ class RfqTdDriver:
                          crossed=crossed, loss_cell=loss_cell, loss_z=lz,
                          loss_xy=res.loss_xy, loss_W=res.loss_W,
                          exit_idx=exit_idx, plane_z=plane_z,
-                         plane_ref=plane_ref, train_gate=gate, info=info)
+                         plane_ref=plane_ref, train_gate=gate, info=info,
+                         behind_pid=alive[b_sel].astype(np.int64),
+                         behind_plane=behind[b_sel].astype(np.int64))
 
     @staticmethod
     def _bucket_periods(phi_in, d_exit):
@@ -641,6 +694,39 @@ class RfqTdDriver:
         idx = np.flatnonzero(out)[cap]           # captured: their bucket
         n[idx] = r_main + (r[cap] - r_main).astype(np.int64)
         return n
+
+    @staticmethod
+    def _behind_planes(states, crossed, w_ref, w_in) -> np.ndarray:
+        """Per tracked particle, the record plane from which the statistics
+        leave it out (-1: never).  A particle that fell behind the bunch --
+        at its last record plane (the exit, or the last before its loss on
+        the vanes) below the reference energy by more than half the reference
+        particle's gain since the entrance, once that gain exceeds a tenth
+        of the RFQ's -- is left out from the plane after the last one where
+        it lagged the reference by less than a tenth of the gain.  Left out
+        only once half the gain behind, a particle that slips out of the
+        bucket slowly would inflate the energy spread until then; one lost
+        later still counts in the transmission until its loss.
+        ``states`` (P, N, 6) hold W - ``w_ref`` (MeV) in column 5.  An RFQ
+        that hardly accelerates (gain under 10 % of the entrance energy)
+        has no unaccelerated particles in this sense: none is left out."""
+        n = states.shape[1]
+        out = np.full(n, -1, np.int64)
+        gain = np.asarray(w_ref, float) - float(w_in)
+        if gain.size == 0 or not gain[-1] > 0.1 * float(w_in):
+            return out
+        dw = states[:, :, 5].astype(np.float64)
+        seen = np.flatnonzero(crossed.any(axis=0))
+        last = gain.size - 1 - np.argmax(crossed[::-1, seen], axis=0)
+        g_last = gain[last]
+        with np.errstate(invalid="ignore"):
+            fell = ((g_last > 0.1 * gain[-1])
+                    & (dw[last, seen] < -0.5 * g_last))
+            lag = crossed & (dw < -0.1 * gain[:, None])
+        for i in seen[fell]:
+            ok = np.flatnonzero(crossed[:, i] & ~lag[:, i])
+            out[i] = int(ok[-1]) + 1 if ok.size else 0
+        return out
 
     @staticmethod
     def _train_gate(states, crossed, exit_idx) -> bool:
@@ -711,6 +797,14 @@ class RfqTdDriver:
         ids = run.alive_in[ok]
         keep = ~beam.lost[ids]
         beam.particles[ids[keep]] = run.states[p, ok][keep].astype(np.float64)
+        out = run.behind_plane <= p
+        if out.any():
+            # left out of the statistics from here on (the recorder reads
+            # beam.stats_excluded); still in the beam and its transmission
+            ex = getattr(beam, "stats_excluded", None)
+            if ex is None or ex.shape != beam.lost.shape:
+                ex = beam.stats_excluded = np.zeros(beam.lost.shape, bool)
+            ex[run.behind_pid[out]] = True
         if p <= int(run.exit_idx[0]) and getattr(self.tr, "_periodic_phase",
                                                   False):
             # the tracker folds a bunch train from the element after the

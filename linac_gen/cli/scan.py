@@ -65,6 +65,11 @@ def add_arguments(p) -> None:
     p.add_argument("--rfq-td-steps", type=int, default=None,
                    dest="rfq_td_steps",
                    help="time-domain RFQ: leapfrog steps per RF period")
+    p.add_argument("--rfq-stats", choices=("accelerated", "all"),
+                   default=None, dest="rfq_stats",
+                   help="time-domain RFQ: statistics of the accelerated "
+                        "particles (default) or of all surviving ones "
+                        "(see `run`)")
     p.add_argument("--backend", help="compute backend (auto / cpu / gpu)")
     p.add_argument("--kernel", help="fixed PIC deposit kernel (cic / tsc)")
     p.add_argument("--sc-method", dest="sc_method", metavar="NAME",
@@ -148,6 +153,7 @@ def run(args) -> int:
                                            else args.drift_single_push == "on"),
                      "rfq_solver": args.rfq_solver,
                      "rfq_td_steps": args.rfq_td_steps,
+                     "rfq_stats": args.rfq_stats,
                      "backend": args.backend}
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)

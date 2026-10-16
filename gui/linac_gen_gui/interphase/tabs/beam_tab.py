@@ -189,6 +189,17 @@ class BeamTab(QWidget):
         self._clear_file_btn.clicked.connect(self._clear_file_source)
         self._clear_file_btn.hide()
         row.addWidget(self._clear_file_btn)
+        # Re-shape the loaded file onto the α/β fields (the file's
+        # emittance kept).  Shown only while a file is the source.
+        self._reshape_cb = QCheckBox("re-shape to α, β")
+        self._reshape_cb.setToolTip(
+            "Re-shape the file's particles onto the α_x, β_x, α_y, β_y "
+            "fields: each transverse plane is mapped linearly, keeping the "
+            "file's rms emittance, centroid and phase-space shape (e.g. to "
+            "inject a file with an RFQ's matched input Twiss).  Unticked: "
+            "the file is used as it is.  Click Apply to take effect.")
+        self._reshape_cb.hide()
+        row.addWidget(self._reshape_cb)
         row.addStretch(1)
 
         self._status = QLabel("")
@@ -410,6 +421,9 @@ class BeamTab(QWidget):
         if hasattr(self, "_file_chip"):
             self._file_chip.hide()
             self._clear_file_btn.hide()
+        if hasattr(self, "_reshape_cb"):
+            self._reshape_cb.setChecked(False)
+            self._reshape_cb.hide()
         self._apply(quiet=True)
 
     def _recompute_derived(self) -> None:
@@ -485,6 +499,8 @@ class BeamTab(QWidget):
         self._source = str(getattr(cfg, "source", "generate") or "generate")
         path = getattr(cfg, "distribution_file", None)
         self._distribution_file = str(path) if path else None
+        self._reshape_cb.setChecked(bool(getattr(cfg, "reshape_to_twiss",
+                                                 False)))
         self._refresh_file_chip()
         self._apply(quiet=True)
         # A full-config load (project import, matched-beam apply, .dst
@@ -499,14 +515,26 @@ class BeamTab(QWidget):
             self._file_chip.setToolTip(self._distribution_file)
             self._file_chip.show()
             self._clear_file_btn.show()
+            self._reshape_cb.show()
         else:
             self._file_chip.hide()
             self._clear_file_btn.hide()
+            self._reshape_cb.hide()
+
+    def set_reshape_to_twiss(self, on: bool) -> bool:
+        """Tick / untick "re-shape to α, β" (the Matching dialog's Apply
+        on a file beam).  Returns False, changing nothing, when the beam
+        is not read from a file."""
+        if self._source != "file" or not self._distribution_file:
+            return False
+        self._reshape_cb.setChecked(bool(on))
+        return True
 
     def _clear_file_source(self) -> None:
         """Drop the .dst file association and revert to generate mode."""
         self._source = "generate"
         self._distribution_file = None
+        self._reshape_cb.setChecked(False)
         self._refresh_file_chip()
         self._apply(quiet=True)
         self._status.setText("file source cleared — using generated distribution")
@@ -579,6 +607,7 @@ class BeamTab(QWidget):
 
         self._source = "file"
         self._distribution_file = fp
+        self._reshape_cb.setChecked(False)      # a new file is used as is
         self._refresh_file_chip()
 
         # Apply pushes the BeamConfig to AppState; regen rebuilds the
@@ -693,6 +722,8 @@ class BeamTab(QWidget):
             halo_ratio=float(self._halo_ratio.value()),
             source=self._source,
             distribution_file=self._distribution_file,
+            reshape_to_twiss=bool(self._source == "file"
+                                  and self._reshape_cb.isChecked()),
         )
 
     def _apply(self, *, quiet: bool = False) -> None:

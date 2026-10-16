@@ -61,6 +61,7 @@ class BeamConfig:
     # File source
     source: str = "generate"            # "generate" | "file"
     distribution_file: Optional[str] = None
+    reshape_to_twiss: bool = False      # file only: re-shape onto alpha/beta
 
     # DC (continuous, pre-RFQ) mode
     continuous: bool = False
@@ -144,10 +145,13 @@ Used to inject deliberate Twiss mismatch for stability studies.
 |---|---|
 | `source` | `"generate"` (default) or `"file"` |
 | `distribution_file` | path to `.dst` (TraceWin binary) or ASCII text file — required when `source="file"` |
+| `reshape_to_twiss` | `False` (default): the file is used as it is.  `True`: each transverse plane of the file's particles is re-shaped linearly onto `alpha_x`/`beta_x` and `alpha_y`/`beta_y`, keeping the file's rms emittance, centroid and normalised phase-space shape (`linac_gen.distributions.factory.reshape_to_twiss`) |
 
 When `source="file"`, the file's metadata (energy, frequency, ε,
 Twiss, current) **overrides** the corresponding BeamConfig fields.
-This matches TraceWin's behaviour with input `.dst` files.
+This matches TraceWin's behaviour with input `.dst` files.  With
+`reshape_to_twiss` the transverse α / β are the exception: they are the
+target the particles are re-shaped onto, and stay as set.
 
 ### DC mode
 

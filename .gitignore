@@ -111,6 +111,10 @@ linac_gen/csrc/build_mac/
 Fields/
 Tracewin_code/
 TraceWIn_Tools/
+# the RFQ vane table the lebt_plus_rfq decks read from their own folder
+examples/lebt_plus_rfq/pxie-rfq.vane
+# the RFQ input particles make_rfq_only_matched.py writes from a Toutatis run
+examples/lebt_plus_rfq/rfq_only_matched_input.dst
 
 # RFQ vane-geometry profile disk caches
 *.geomprofile.npz

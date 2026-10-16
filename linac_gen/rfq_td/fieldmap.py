@@ -119,6 +119,27 @@ class RfqFieldMap:
     def z_span(self):
         return float(self.core0[0]), float(self.core1[-1])
 
+    @property
+    def box_half_width(self) -> float:
+        """Smallest half-width (mm) of the stored near-axis box over the
+        blocks: the reach of :meth:`field` across the RFQ."""
+        return float((int(self.nx.min()) - 2) * self.h)
+
+    def outside(self, x, y, z) -> np.ndarray:
+        """Points (mm) within the map's z span but beyond its near-axis box
+        (where :meth:`field` has no stored field and returns zero), as a
+        bool array.  Upstream of the first block (before the entrance
+        plate) and past the last are not counted: those are the drifts the
+        particles enter from and leave into."""
+        x = np.asarray(x, float)
+        y = np.asarray(y, float)
+        z = np.asarray(z, float)
+        b = np.searchsorted(self.core0, z, side="right") - 1
+        inz = (b >= 0) & (z <= self.core1[-1])
+        lim = self.nx[np.clip(b, 0, self.core0.size - 1)] - 2
+        return inz & ((np.abs(x) / self.h >= lim)
+                      | (np.abs(y) / self.h >= lim))
+
     def scaled(self, factor: float) -> "RfqFieldMap":
         """The same map with every potential multiplied by ``factor`` (a
         vane voltage different from the geometry's)."""

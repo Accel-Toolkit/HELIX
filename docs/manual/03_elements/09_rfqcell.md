@@ -208,9 +208,10 @@ condition (validated to 0.03–0.14 % against the PXIE
 W&nbsp;<&nbsp;0 kill for back-accelerated junk.  ±3 front-end/exit
 cells skip the transverse check (their real vanes flare to ~3.5·R₀).
 With TraceWin's measured input distribution the full LEBT+RFQ line
-reproduces TW's LEBT scraping (77.5 % vs 77.3 % — requires the
-solenoids' ``.ouv`` bore profiles, i.e. ``Ka=1`` on their FIELD_MAP
-cards as in TW's own decks), the transmission–voltage S-curve has its
+reproduces TW's LEBT scraping (77.25 % vs 77.29 % of 100 000 particles
+at 5 mA — requires the solenoids' ``.ouv`` bore profiles, i.e. ``Ka=1``
+on their FIELD_MAP cards as in TW's own decks, checked at every
+integration step), the transmission–voltage S-curve has its
 shoulder just below nominal voltage as measured at PIP2IT, and the
 captured beam exits at ε = 0.133/0.167 π·mm·mrad vs the PIP2IT
 measurement 0.17/0.16.  Known gap: RFQ transmission of LEBT survivors
@@ -322,9 +323,10 @@ rather than reusing one across the switch.
 *What does change under space charge*: the solver now sees a compact
 bunch instead of a clump spread over several buckets, so the charge
 density it works from is genuinely different and the transverse
-emittance responds.  Measured at 5 mA on the 66 kV deck (3000
-particles), ε_nx went 0.142 → 0.194 π·mm·mrad against the PIP2IT
-measurement 0.17 — the unfolded run undershoots and the folded one
+emittance responds.  Measured at 5 mA on the 66 kV deck with the
+per-cell card model (3000 particles), ε_nx went 0.142 → 0.194
+π·mm·mrad against the PIP2IT measurement 0.17 — the unfolded run
+undershoots and the folded one
 overshoots by a similar margin.  At 0 mA the two agree exactly, which
 is what identifies this as a space-charge effect rather than a
 bookkeeping artefact.
@@ -478,16 +480,23 @@ to the vane file) and feeds it into the existing card tracker.
 **TW-faithful automatic behaviour.**  TraceWin's Partran mode hands
 the RFQ to Toutatis (vane geometry) whenever `RFQ_GEOM` names an
 existing file, while its envelope mode ignores the card.  HELIX
-mirrors that split: a **multiparticle** `Simulation.run()`
-automatically uses the vane profile when the deck's `RFQ_GEOM` file
-exists (deck-relative path, loud log line), and **envelope/matrix**
-runs always stay on the cards.  Control it per run:
+mirrors that split.  When the deck's `RFQ_GEOM` file exists
+(deck-relative path), a **multiparticle** run with the default
+`rfq_solver = "auto"` tracks the RFQ in time through the field of those
+vanes ([Time-domain RFQ solver](20_rfq_time_domain.md)); when that
+solver cannot run, or with `rfq_solver = "cells"`, the per-cell model
+uses the vane profile described here (loud log line).
+**Envelope/matrix** runs always stay on the cards.  Control the
+per-cell model per run:
 
 ```{.python .skip}
 Simulation(lat, beam)                          # "auto" (default)
 Simulation(lat, beam, rfq_geometry="off")      # classic card model
 Simulation(lat, beam, rfq_geometry="per_plane")  # force a mode
 ```
+
+`rfq_geometry="off"` keeps a multiparticle run on the cards also when the
+vane file exists, for comparisons with TraceWin's envelope mode.
 
 When the vane file is absent (or `rfq_geometry="off"`), every run is
 bit-identical to previous releases.  Explicit arming is also
@@ -602,8 +611,45 @@ benchmark.  This per-cell model tracks the RFQ otherwise, in envelope
 runs and backtracking, and with `rfq_solver = "cells"`; see
 [Time-domain RFQ solver](20_rfq_time_domain.md).
 
+## Matched input Twiss
+
+The input beam an RFQ is matched to is the periodic Twiss of its first
+regular focusing period — its first two regular cells of opposite sign,
+after the radial matching (±3) and transition (±4) cells; in a TraceWin
+deck, the cells right after the `LATTICE 2` card — carried back through
+the radial matching section to the **RFQ entrance**.  This cell model's
+transfer matrices give it for the synchronous particle; with space
+charge, for a DC input beam.  Three ways to get it:
+
+* **GUI** — Matching tab → **Open Matching Dialog**: a lattice with an
+  RFQ opens on the RFQ's period ([Matching tab → RFQs](../10_gui/05_matching_tab.md#rfqs)).
+* **CLI** — `python -m linac_gen twiss <deck or project>` picks the RFQ
+  period by default; `--current` adds space charge
+  ([CLI: twiss](../06_running/10_cli_twiss.md#rfqs)).
+* **Python** — `find_rfq_periods` / `find_rfq_matched_input_twiss` in
+  `linac_gen.matching.periodic` ([Matching API → RFQs](../07_matching/03_python_api.md#rfqs)).
+
+Behind a LEBT, the result is the target the LEBT must deliver at the
+RFQ entrance, not the beam at the lattice entrance.  A beam read from a
+particle file can be re-shaped onto it, keeping the file's emittance
+(**re-shape to α, β** in the [Beam tab](../10_gui/03_beam_tab.md),
+`BeamConfig.reshape_to_twiss`).
+
+A DC beam enters at every RF phase, so one input ellipse suits it only
+when the radial matching section makes the match independent of the
+phase.  Every result reports `phase_sensitivity`: the largest mismatch
+factor between the match and the one 30° and 60° either side of the
+synchronous phase, flagged above 0.1.  The demo RFQ's single-cell radial
+matching section (half a focusing period) gives 2.65 — and in a
+zero-current time-domain run its round input waist transmits 90.4 %
+against 80.5 % for the synchronous-particle match; two focusing periods
+or more give ≤ 0.04.  Check a flagged input with a multiparticle run.
+
 ## See also
 
+* [RFQ panels](../10_gui/07_results_tab.md#rfq-panels) of the Results
+  tab — the cells' geometry, modulation, phase, focusing figures,
+  fields, losses and bunching, and a per-cell table.
 * [VaneRFQ](10_vanerfq.md) — `.vane` file wrapper.
 * LEBT + RFQ worked example.
 * `Tracewin_code/Toutatis_*.pdf` — RFQ-design code reference.

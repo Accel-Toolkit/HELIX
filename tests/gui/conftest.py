@@ -48,6 +48,83 @@ if "QT_PLUGIN_PATH" not in os.environ:
 os.environ.setdefault("HELIX_QSETTINGS_DIR",
                       tempfile.mkdtemp(prefix="helix-test-qsettings-"))
 
+
+# ---------------------------------------------------------------------------
+# No audio device in GUI tests.
+#
+# The assistant panel's hands-free mode opens the microphone: a PortAudio
+# InputStream read on a daemon thread.  With the real sounddevice that
+# reader could still be blocked inside PortAudio when the interpreter
+# exited; sounddevice's atexit Pa_Terminate then tore the library down
+# under it, and the suite died with exit 138/139 after printing its
+# summary.  A stand-in module replaces sounddevice for the whole session
+# (the app imports it inside functions, so every stream finds it): input
+# streams deliver silence at the device's pace, output streams and
+# play/stop/wait do nothing.  It is never removed, so a thread that
+# outlives its test still finds it; tests that need their own fake
+# install it with monkeypatch.setitem, which puts this one back.
+# ---------------------------------------------------------------------------
+def _fake_sounddevice():
+    import time
+    import types
+
+    import numpy as np
+
+    class InputStream:
+        def __init__(self, samplerate=16000, channels=1, dtype="float32",
+                     blocksize=0, **_kw):
+            self.samplerate = float(samplerate or 16000)
+            self.channels = int(channels or 1)
+            self.blocksize = int(blocksize or 0)
+            self.active = False
+
+        def start(self):
+            self.active = True
+
+        def stop(self):
+            self.active = False
+
+        abort = stop
+
+        def close(self):
+            self.active = False
+
+        def read(self, frames):
+            n = int(frames or self.blocksize or 160)
+            time.sleep(n / self.samplerate)
+            return np.zeros((n, self.channels), np.float32), False
+
+    class OutputStream:
+        def __init__(self, samplerate=24000, channels=1, dtype="float32",
+                     **_kw):
+            self.samplerate = samplerate
+            self.channels = channels
+            self.active = False
+
+        def start(self):
+            self.active = True
+
+        def stop(self):
+            self.active = False
+
+        abort = stop
+        close = stop
+
+        def write(self, _data):
+            return False                                # no underflow
+
+    sd = types.ModuleType("sounddevice")
+    sd.__doc__ = ("Test stand-in (tests/gui/conftest.py): no audio device "
+                  "is opened.")
+    sd.InputStream = InputStream
+    sd.OutputStream = OutputStream
+    sd.PortAudioError = OSError
+    sd.play = sd.stop = sd.wait = lambda *a, **k: None
+    return sd
+
+
+sys.modules["sounddevice"] = _fake_sounddevice()
+
 import pytest
 
 from PyQt6.QtCore import QCoreApplication, QEvent

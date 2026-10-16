@@ -74,6 +74,14 @@ class BeamConfig:
     mismatch_z: float = 0.0            # %
     source: str = "generate"
     distribution_file: Optional[str] = None
+    # File source only, OFF by default: re-shape the particles read from
+    # ``distribution_file`` onto alpha_x/beta_x and alpha_y/beta_y — each
+    # transverse plane mapped linearly, keeping the file's rms emittance,
+    # centroid and normalised phase-space shape
+    # (distributions.factory.reshape_to_twiss).  E.g. a LEBT-derived beam
+    # injected with an RFQ's matched input Twiss
+    # (matching.periodic.find_rfq_matched_input_twiss).
+    reshape_to_twiss: bool = False
     # ---- DC / continuous-beam (pre-RFQ / LEBT) -----------------------
     # When ``True`` the beam is generated with uniform phase over one RF
     # period (no longitudinal bunching) and propagated in 4-D through

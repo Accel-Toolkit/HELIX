@@ -27,6 +27,14 @@ vane profile armed with ``apply_rfq_geometry``); ``"time_domain"`` always
 uses the time-domain solver (a case it cannot run is an error); ``"cells"``
 always uses the per-cell model.
 Envelope runs and backtracking use the per-cell model in every case.
+
+``rfq_stats_accelerated`` (default on): with the time-domain solver, a
+particle that leaves the RFQ unaccelerated (it gains less than half the
+reference particle's energy gain) stays in the beam -- transmission and the
+exported distribution are unchanged -- but the recorded statistics (rms
+sizes, emittances, energy spread, Twiss, density) leave it out from the cell
+where it falls behind the bunch, so they describe the accelerated beam.  Off:
+every surviving particle counts, as in HELIX <= 1.19.
 """
 from dataclasses import dataclass
 from typing import ClassVar
@@ -52,6 +60,8 @@ class StepConfig:
     rfq_solver: str = "auto"
     rfq_td_steps_per_period: int = 48
     rfq_td_sc_every: int = 4
+    # time-domain RFQ: statistics of the accelerated beam (module docstring)
+    rfq_stats_accelerated: bool = True
 
     # Lower bounds so that very short drifts still get at least one
     # half-kick split and one SC call.  ClassVar so they remain true
@@ -88,6 +98,8 @@ class StepConfig:
             raise ValueError("rfq_td_sc_every must be >= 1, got "
                              f"{self.rfq_td_sc_every!r}")
         object.__setattr__(self, "rfq_td_sc_every", every)
+        object.__setattr__(self, "rfq_stats_accelerated",
+                           bool(self.rfq_stats_accelerated))
 
     def integration_steps_for_length_mm(self, length_mm: float) -> int:
         """Number of integration sub-steps for a drift / field map of this length.

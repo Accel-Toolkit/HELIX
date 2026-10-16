@@ -65,7 +65,13 @@ the entrance.  With the option off, losses inside drifts are recorded
 at the end of the sub-step bundle that first saw the particle outside
 (up to one bundle, 20 mm at `PARTRAN_STEP 100 50`, past the true
 crossing).  Losses in every other element are recorded at the
-element's sub-step boundaries as before.
+element's sub-step boundaries as before.  A field map with an aperture
+map (an `.ouv` file, `Ka=1` on its FIELD_MAP card) is checked against
+that map after every integration call, every 0.1 mm in the PXIE
+solenoids.  A narrow ring of the map shorter than a space-charge bundle
+therefore stops the particles that hit it, whatever the space-charge
+step.  A field map without one checks its scalar aperture once per
+bundle.
 
 The full log is available after the run as `Beam.loss_table` — a
 structured numpy array with fields `particle_id`, `s`, `x`, `y`,

@@ -63,6 +63,40 @@ def geometric_emittances(config, bg: float) -> tuple:
             config.emit_z * sz)   # longitudinal is already geometric
 
 
+def reshape_to_twiss(particles, alpha_x: float, beta_x: float,
+                     alpha_y: float, beta_y: float):
+    """Particles re-shaped onto the given transverse rms Twiss.
+
+    Each plane ``(u, u')`` (mm, mrad) is mapped by
+    ``A(α, β) · A(α₀, β₀)⁻¹`` about its centroid, with
+    ``A(α, β) = [[√β, 0], [−α/√β, 1/√β]]`` and (α₀, β₀) the particles' own
+    rms Twiss: a symplectic linear map that keeps the plane's rms
+    emittance, centroid and normalised phase-space shape (halo, tails,
+    x–y correlations transform along) and gives exactly (α, β), β in
+    mm/mrad.  The longitudinal columns are untouched.  Returns a new
+    array; ``particles`` is not modified.
+    """
+    out = np.array(particles, dtype=float, copy=True)
+    for (i, j), (a_t, b_t) in (((0, 1), (alpha_x, beta_x)),
+                               ((2, 3), (alpha_y, beta_y))):
+        u, up = out[:, i], out[:, j]
+        c = np.cov(u, up)
+        eps = float(np.sqrt(np.linalg.det(c)))
+        if not (eps > 0.0 and b_t > 0.0):
+            raise ValueError(
+                f"cannot re-shape plane {'xy'[i // 2]}: rms emittance "
+                f"{eps:g} mm mrad, target beta {b_t:g} mm/mrad")
+        a0, b0 = -c[0, 1] / eps, c[0, 0] / eps
+        A0 = np.array([[np.sqrt(b0), 0.0], [-a0 / np.sqrt(b0), 1.0 / np.sqrt(b0)]])
+        At = np.array([[np.sqrt(b_t), 0.0],
+                       [-a_t / np.sqrt(b_t), 1.0 / np.sqrt(b_t)]])
+        T = At @ np.linalg.inv(A0)
+        mu = np.array([u.mean(), up.mean()])
+        new = T @ (np.vstack([u, up]) - mu[:, None]) + mu[:, None]
+        out[:, i], out[:, j] = new[0], new[1]
+    return out
+
+
 def create_beam(config: BeamConfig, seed: int = None) -> Beam:
     """Create a Beam from a BeamConfig by generating the specified distribution.
 
@@ -166,12 +200,15 @@ def create_beam(config: BeamConfig, seed: int = None) -> Beam:
             # downstream consumers (envelope solver matching display, GUI
             # beam-summary, lgproj round-trip) see the file's values rather
             # than the (now-overridden) lgproj inputs.  The user is informed
-            # of the override via _log.info.
+            # of the override via _log.info.  With reshape_to_twiss the
+            # config's transverse alpha/beta are the target (kept).
+            keep = (("alpha_x", "beta_x", "alpha_y", "beta_y")
+                    if getattr(config, "reshape_to_twiss", False) else ())
             for fld in ("emit_nx", "emit_ny", "emit_z",
                         "alpha_x", "beta_x",
                         "alpha_y", "beta_y",
                         "alpha_z", "beta_z"):
-                if fld in header:
+                if fld in header and fld not in keep:
                     new_val = header[fld]
                     old_val = getattr(config, fld, None)
                     if old_val is not None and abs(new_val - old_val) > 1e-6:
@@ -193,6 +230,13 @@ def create_beam(config: BeamConfig, seed: int = None) -> Beam:
                     ref_w_kin=ref.w_kin,
                     ref_phi_s=0.0,
                 )
+        if getattr(config, "reshape_to_twiss", False):
+            particles_array = reshape_to_twiss(
+                particles_array, config.alpha_x, config.beta_x,
+                config.alpha_y, config.beta_y)
+            _log.info("re-shaped %s onto alpha/beta x %.4g/%.4g, y %.4g/%.4g "
+                      "(the file's emittances kept)", path, config.alpha_x,
+                      config.beta_x, config.alpha_y, config.beta_y)
         n_particles = len(particles_array)
     elif config.continuous:
         # DC / continuous beam.  Generate transverse phase space only

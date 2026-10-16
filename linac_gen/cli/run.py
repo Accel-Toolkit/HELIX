@@ -64,6 +64,14 @@ def add_arguments(p) -> None:
                    dest="rfq_td_steps",
                    help="time-domain RFQ: leapfrog steps per RF period "
                         "(default 48)")
+    p.add_argument("--rfq-stats", choices=("accelerated", "all"),
+                   default=None, dest="rfq_stats",
+                   help="time-domain RFQ: whom the statistics describe -- "
+                        "accelerated (the default: a particle that leaves "
+                        "the RFQ unaccelerated stays in the beam and the "
+                        "transmission but not in sizes, emittances and "
+                        "energy spread, from where it falls behind the "
+                        "bunch) or all surviving particles")
     p.add_argument("--kernel", help="PIC deposit kernel (cic / tsc)")
     p.add_argument("--sc-method", dest="sc_method", metavar="NAME",
                    action=common.ScMethodAction,
@@ -113,6 +121,7 @@ def _cli_overrides(args) -> dict:
         "drift_single_push": (None if args.drift_single_push is None
                               else args.drift_single_push == "on"),
         "rfq_solver": args.rfq_solver, "rfq_td_steps": args.rfq_td_steps,
+        "rfq_stats": args.rfq_stats,
         "kernel": args.kernel, "backend": args.backend,
         "sc_method": args.sc_method,
         "fieldmap_sampling": args.fieldmap_sampling,

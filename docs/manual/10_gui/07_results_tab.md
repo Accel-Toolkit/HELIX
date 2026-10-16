@@ -28,7 +28,10 @@ The footprint tile stays plain until you compute one in its popup.
 
 Across the top, six always-visible KPI cards summarise the latest
 run at a glance: **σ_x end**, **σ_y end**, **σ_z end** (mm),
-**ε_x growth**, **transmission** (%), and **loss** (%).
+**ε_x growth**, **transmission** (%), and **loss** (%).  The growth is
+that of the normalised emittance, end over start: the geometric one
+shrinks with acceleration.  Through an RFQ it would read ×0.14 for a beam
+whose normalised emittance grows ×1.17.
 
 ## Import Results…
 
@@ -55,7 +58,8 @@ assistant's *open plot* command.
 
 ## Tile sections
 
-Nine section headers, top to bottom:
+Ten section headers, top to bottom (the RFQ section only for a lattice
+with RFQ cells):
 
 * **BEAM SIZE & EMITTANCE** — RMS σ (x · y · z), geometric
   emittance, normalised emittance, 6-D emittance.
@@ -79,7 +83,14 @@ Nine section headers, top to bottom:
   space-charge diagnostics described below.
 * **ENERGY · KINEMATICS** — energy · γ · transmission, beam power,
   4-D invariant ε_4D, eigenemittances ε₁ · ε₂ · ε₃, and **intrinsic ε
-  (canonical, norm.)**.  The last tile shows the 6-D intrinsic
+  (canonical, norm.)**.  The energy tile's number is the reference
+  particle's kinetic energy at the end of the line, the energy the RF
+  phases are referred to.  The beam's mean energy can differ from it:
+  at the exit of the PXIE RFQ the bunch's mean is about 25 keV above
+  the reference particle's 2.0985 MeV.  The tile's tooltip gives
+  both, and the popup draws the mean (the reference plus the
+  centroid's ΔW) dashed beside the reference curve wherever the two
+  differ.  The last tile shows the 6-D intrinsic
   emittances in normalised canonical units against the projected
   ε_nx, ε_ny and ε_nz, plus the projected/intrinsic coupling ratios.
   These modes stay invariant through dispersion and RF coupling (see
@@ -141,6 +152,13 @@ the checkbox.
     The table follows the location selector, and ++ctrl+s++ exports it
     like any other popup data.
 
+    The longitudinal panel shows Δφ and ΔW, the phase and energy of each
+    particle relative to the reference particle.  The **basis** selector
+    redraws it in TraceWin's (z, δ) instead: z = −Δφ·βλ/360 and
+    δ = Δp/p = ΔW/(β²γ mc²), with β, γ and the RF wavelength λ of the
+    reference particle at the plotted location (for the regenerated
+    input beam, the Beam tab's energy).
+
     The **ellipses** checkbox (2026-10) overlays two ellipses on the
     x–x′, y–y′ and φ–W panels: the beam's own rms (Courant–Snyder)
     ellipse (solid) and the *design* ellipse (dashed) — the design α
@@ -166,8 +184,42 @@ the checkbox.
     "design ellipse".  Each overlaid panel carries a small legend;
     clicking an entry hides that ellipse (without changing the view).
     The checkbox is off by default and remembered.
+
+    The **profiles** checkbox (2026-10) adds each map's two projected
+    distributions: the horizontal quantity's histogram in a strip
+    below the map and the vertical quantity's in a strip to its left
+    (counts grow away from the map), so a Gaussian beam shows a
+    Gaussian on both sides.  Each profile sums the plotted particles
+    over the other coordinate, with the same range and bins as the
+    map, on a linear scale and scaled to its own peak (the map's
+    colours stay logarithmic).  With **rms Gaussian** ticked, the
+    Gaussian with the plotted particles' mean and rms is dashed over
+    each profile, normalised the same way, so a peaked core or a flat
+    top stands out.  The strips carry the axis titles and tick values,
+    follow the map's zoom, and follow the basis, location, fold and
+    colour selectors; ++ctrl+s++ exports their curves as
+    "‹quantity› profile" and "rms Gaussian".  Both checkboxes are on
+    by default and remembered; with profiles off the panels look as
+    before.
+
+    The popup plots the particles the run's statistics describe.  When
+    the time-domain RFQ solver leaves particles out of the statistics
+    (Numerics → **RFQ statistics: accelerated particles only**: those
+    that fall behind the bunch and leave the RFQ unaccelerated), they
+    are left out of the four panels, the profiles, the ellipses and
+    the Beam-parameters table's statistics too, and the toolbar says
+    how many ("3 unaccelerated particles not shown").  The table still
+    counts them in its macroparticle and transmission rows, as the run
+    does, and has a row "left out of the statistics".  Two MeV below
+    the bunch, a handful of them would otherwise stretch the φ–W
+    energy axis several times over.
 * **LATTICE PARAMETERS** — per-element field/optics scalars read off the
   lattice itself; see [Lattice-parameter field plots](#lattice-params) below.
+* **RFQ** — ten panels on the RFQ: vane geometry, cross-section,
+  modulation and aperture, synchronous phase and energy, focusing and
+  acceleration, surface field, fields along the axis, losses, bunching,
+  and the cell table; see [RFQ panels](#rfq-panels) below.  Shown only
+  when the lattice has `RFQ_CELL` elements.
 * **CROSS-CHECKS · COMPARE** — compare with TraceWin partran
   output.
 * **ADVANCED · MATRIX VIEWERS** — Σ matrix (6×6), transfer matrix
@@ -359,14 +411,14 @@ lattice has no element of that type.
 |---|---|---|---|
 | Quadrupole gradient | `G` | quads | T/m |
 | Quadrupole ∫G·ds | `G·L` | quads | T |
-| RF voltage (V₀) | `\|ke\|·∫\|E_z\|dz/\|norm\|` (or lumped `voltage`) | RF gaps, cavity field maps | MV |
+| RF voltage (V₀) | `\|ke\|·∫\|E_z\|dz/\|norm\|` (or lumped `voltage`; the inter-vane voltage for RFQ cells) | RF gaps, cavity field maps, RFQ cells | MV |
 | Peak E_acc | peak axial accelerating gradient | cavity field maps | MV/m |
 | Peak solenoid \|B_z\| | on-axis peak field | solenoids, magnetic field maps | T |
 | **Solenoid ∫B²·dz** | **integrated B_z² — focusing strength** | **solenoids, magnetic field maps** | **T²·m** |
 | Dipole field \|B\| | `Bρ/\|ρ\|` (hard-edge) | dipoles (`BEND`) | T |
 | Dipole ∫B·dl | `B·L = Bρ·θ` | dipoles (`BEND`) | T·m |
 | Floor plan (survey) | design-trajectory geometry | whole lattice | m |
-| Synchronous phase | `φ_s` | RF / field-map elements | deg |
+| Synchronous phase | `φ_s` | RF / field-map elements, RFQ cells | deg |
 
 **∫B²·dz** is the energy-independent measure of a solenoid's transverse
 focusing strength: the solenoid focusing parameter is
@@ -411,6 +463,138 @@ lattice geometry — no run required; a straight lattice draws a straight
 line. Sign conventions: positive horizontal bend angle curves toward
 `+x`, positive vertical angle (`hv=1`) toward `+y`; MAD-style negative
 drifts step backward.
+
+## RFQ panels {#rfq-panels}
+
+The **RFQ** section appears when the loaded lattice contains `RFQ_CELL`
+elements and hides again for a lattice without them (the tile search
+follows the same rule).  The design panels draw from the loaded lattice
+before any run.  After a multiparticle run, the panels add the run's
+values at every cell exit when the results belong to the loaded lattice,
+matched by cell name; otherwise they show the design alone and say so.
+A results file read back with **Import Results…** works the same way:
+the cell parameters come from the loaded lattice, the beam values from
+the file.  Editing a cell in the lattice redraws the open panels.  With
+several RFQ cell chains in the lattice, the panels show the first.
+
+**The vanes.**  The panels draw the vanes the time-domain solver uses:
+those of the deck's `RFQ_GEOM` vane file (with the file's own pole
+numbering, pole 1 = +y), or, without one, the vanes built from the
+`RFQ_CELL` cards (the two-term tip condition, the flare law in the ±3
+cells, the `RFQ_GAP_RMS_FFS` gaps).  When the solver cannot use the
+vanes — a vane file that cannot be read, several vane voltages, several
+cell chains — the panels draw the cards' vanes and give the reason.
+
+**Nothing is built for a plot.**  A panel never solves a field map or a
+vane profile.  The surface-field panel and the 3-D fields use the
+time-domain solver's field map of these vanes only when it is already
+cached (the first time-domain run builds it), and the vane-field profile
+is read from the per-cell model's cache file.
+
+| Tile | What it shows |
+|---|---|
+| RFQ vane geometry | Top (x) and side (y) views along s: the ±x and ±y vane tips and r0 per cell; with a vane file, the tips the cards describe as a dashed grey line for comparison; after a run, the beam's largest \|x\|, \|y\| and ±3σ at each cell exit. |
+| RFQ vane cross-section | The four electrodes in a transverse cut at any z, chosen with the slider or the cell box: the metal in grey, the smallest tip distance at that z (dashed circle) and r0 (dotted); the line below gives the four tip distances and the tip radius. |
+| RFQ modulation & aperture | Per cell from the cards: modulation m; r0, the smallest tip distance a and the widest m·a; the cell length L, with βλ/2 of the run's reference particle after a run (synchronism: L = βλ/2). |
+| RFQ synchronous phase & energy | φ_s of the cards and φ_s implied by the cell lengths; the reference energy (design from β = 2L/λ, or the run's reference particle) and the beam's mean energy; the beam's mean phase and energy minus the reference's at each cell exit. |
+| RFQ focusing & acceleration | A10 of the cards and A10 from (r0, m, L); RF defocusing Δ_rf; the zero-current phase advances σ0t and σ0l per βλ; the transverse and longitudinal current limits, with the beam current drawn across; the focusing strength B in the note. |
+| RFQ surface field (Kilpatrick) | The peak surface field on the ±x and ±y vane tips along s, the Kilpatrick limit at the RF frequency, and their ratio. |
+| RFQ fields along the axis | E_z on the axis and the quadrupole gradient ∂E_x/∂x at the RF crest: the time-domain field map when it is cached (solid) and the cards' two-term field; with a vane file whose per-cell profile is cached, the vane-field profile g_x, g_y of the per-cell model. |
+| RFQ losses | Macroparticles lost per cell, the energy at loss against s, the lost power per cell, and where in x–y each particle was lost. |
+| RFQ bunching & transmission | Transmission, σ_φ (with \|φ_s\|) and σ_W at each cell exit; when the run ends at the RFQ exit (or after at most 100 mm of drift), the exit longitudinal phase space. |
+| RFQ cell table | One row per cell: name, type, s, L, V, r0, m, a, A10, φ_s from the cards and from the lengths, β, W_ref, E0T, B, Δ_rf, σ0t, σ0l, the current limits, and after a run the transmission, losses, σ_x, σ_y and σ_φ at the cell exit.  The header says which solver tracked the RFQ and why, with the time-domain run's statistics. |
+
+The plots along the RFQ can be drawn against the cell number instead of
+s (the **x: cell number** box; cell k is centred on k, and s maps
+linearly through each cell).  ++ctrl+s++ exports any panel's data, the
+cell table included.
+
+### Formulas
+
+The design quantities use the smooth approximation of the two-term
+potential in HELIX's convention (A01 = 1),
+
+  U = V/2 · [(y² − x²)/r0² ∓ A10·I0(kr)·cos kz],  k = π/L,
+
+with V the inter-vane voltage of the cards, q the charge state, m c² the
+rest energy, λ the RF wavelength, and β, γ of the reference particle:
+
+| Quantity | Formula |
+|---|---|
+| energy gain per cell | ΔW = q·(π/4)·A10·V·cos φ_s, i.e. E0T = π·A10·V/(2βλ) |
+| focusing strength | B = q·V·λ²/(m c²·r0²) |
+| RF defocusing | Δ_rf = π²·q·A10·V·sin φ_s/(2 m c² β² γ) (negative below the crest) |
+| transverse phase advance per βλ | σ0t² = B²/(8π²) + Δ_rf |
+| longitudinal phase advance per βλ | σ0l² = π²·q·A10·V·\|sin φ_s\|/(m c² β² γ³) |
+| transverse current limit | I_t = 8π·(m c²/q)·γ³·a²·b·σ0t²/(3 Z0 λ³ (1 − f)) |
+| longitudinal current limit | I_l = 4π·(m c²/q)·γ³·a²·b·σ0l²/(3 Z0 λ³ f) |
+
+The current limits are those of a uniformly charged ellipsoidal bunch,
+one per RF period, whose transverse semi-axis is the cell's smallest
+aperture a and whose half-length b = βλ·1.5\|φ_s\|/(2π) fills the
+separatrix; f is the form factor of that spheroid (axis ratio p = γb/a;
+f = 1/3 for a sphere), Z0 the impedance of free space.  They are the
+currents at which the linear space-charge force of that bunch cancels
+the zero-current focusing.  β is the run's reference particle at each
+cell exit when the run belongs to the lattice; before a run it is the
+design β = 2L/λ of the accelerating cells (types ±2), and Δ_rf, σ0 and
+the current limits are left blank for the other cells.  The demo RFQ
+gives B = 5.68.
+
+φ_s from the cell lengths takes β = 2L/λ of consecutive cells as the
+design energy gain and solves ΔW = q·(π/4)·A10·V·cos φ_s for φ_s (below
+the crest); A10 from (r0, m, L) is the Crandall–Wangler two-term
+relation (the [RFQ cell](../03_elements/09_rfqcell.md) page has both).
+
+### The surface field
+
+The tip of each pole is a circular arc of radius ρ.  At each z the
+panel evaluates |E| of the time-domain field map on arcs at 3 and 5 map
+steps from the tip surface, on the side facing the bore and the
+neighbouring pole, extrapolates to the surface with the fall-off of a
+curved conductor, E(δ) = E_s·ρ_e/(ρ_e + δ), fitted to the two samples,
+and takes the largest value on the arc.  The field is at the RF crest,
+scaled to the cards' voltage.  On a plain quadrupole (ρ/r0 = 0.75) the
+estimate gives E_s = 1.24 V/r0 at the map's 0.1 mm step, within 1 % of
+a solve on a twice finer grid; for r0 = 5.576 mm at 60 kV that is
+13.3 MV/m, against 13.4 MV/m from a CST/SUPERFISH design study of that
+cross-section (G. Romanov et al., *Project X RFQ EM design*, IPAC2012,
+THPPP064).  The estimate assumes a tip that is
+straight along z, so it is left out where a tip's slope |dR/dz| exceeds
+0.35 within ±3 mm: the flares, the vane ends and steps between
+neighbouring cells.  Field enhancement at sharp corners of the real
+vanes (vane ends, undercuts) is not in a 0.1 mm map.
+
+The Kilpatrick limit E_K is the root of f = 1.643·E_K²·exp(−8.5/E_K)
+(f in MHz, E_K in MV/m): 13.6 MV/m at 162.5 MHz, 18.4 MV/m at
+352.21 MHz.  The second plot is the peak of the two planes divided by
+E_K (the bravery factor).
+
+### Fields, losses and bunching
+
+The cards' two-term field takes each cell at its own voltage.  It is
+defined cell by cell, so it jumps at a cell boundary where neighbouring
+cards do not match; when the time-domain map is shown, the plot is
+framed on it.  Mid-cell, where the A10 term's gradient (∝ cos kz)
+vanishes, the gradient is the quadrupole term's V/r0².
+
+The lost power of a cell is Σ E_loss·I_avg/N, the energy of each
+macroparticle at its loss times the average current per macroparticle
+(the convention of the loss-power tile, with the Beam-tab current and
+duty cycle).  Where a particle counts as lost depends on the solver: the
+time-domain solver records the point where it touched the metal or left
+the stored field region between the vanes, the per-cell model the point
+where it left the cell's vane-tip boundary.
+
+The exit phase space folds φ into one RF period about the bunch, as the
+Phase Space plot does (a view only); a run made with
+[periodic phase coordinates](03_beam_tab.md#periodic-phase-bunch-train)
+is drawn as it is.
+
+**Loss and envelope plots.**  Through the RFQ, the aperture drawn in
+the loss and envelope plots is the cards' vane-tip distance, x and y
+separately (display only: RFQ cells carry no aperture of their own, and
+their losses come from their solver).
 
 ## Popup details
 
@@ -460,8 +644,9 @@ figure itself.  **Ctrl+W** or **Esc** closes the popup.
 ## Tile availability
 
 Every card is always present (the search box only hides the ones that
-do not match the typed words), and cards whose data is missing simply
-open an empty/"no data" view.  The one
+do not match the typed words), except the RFQ section, which shows only
+for a lattice with RFQ cells; cards whose data is missing simply open
+an empty/"no data" view.  The one
 exception is **Intra-beam stripping (H⁻)**: the card is disabled
 unless the beam species is H⁻, and its tooltip explains how to
 switch (Beam tab → Species → H- → Apply).  **Loss power** needs a
