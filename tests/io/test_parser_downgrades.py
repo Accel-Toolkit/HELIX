@@ -21,9 +21,11 @@ def _parse(tmp_path, text, **kw):
 # ── superposition / beam-mutating cards ──────────────────────────────────
 @pytest.mark.parametrize("card,frag", [
     # SUPERPOSE_MAP and SHIFT_IN_FIELD_MAP left the downgrade class in
-    # the superposition round (tests/io/test_superpose_parsing.py); a
-    # DANGLING card still warns via the cluster/shift machinery.
-    ("SUPERPOSE_MAP_OUT 100 0 0 0 0 0", "not modelled"),
+    # the superposition round (tests/io/test_superpose_parsing.py), and
+    # SUPERPOSE_MAP_OUT with the curved field-map clusters
+    # (tests/elements/test_curved_field_map.py); a DANGLING card still
+    # warns via the cluster/shift machinery.
+    ("SUPERPOSE_MAP_OUT 100 0 0 0 0 0", "not followed by a SUPERPOSE_MAP"),
     ("SHIFT_IN_FIELD_MAP 5", "not followed by a diagnostic"),
     ("READ_DST beam.dst", "ignored"),
     ("BEAM_ROT 0 0 30", "ignored"),

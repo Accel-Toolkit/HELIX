@@ -645,7 +645,9 @@ summary line (path length, Σ|θ|, dipole counts, exit coordinates). Pure
 lattice geometry — no run required; a straight lattice draws a straight
 line. Sign conventions: positive horizontal bend angle curves toward
 `+x`, positive vertical angle (`hv=1`) toward `+y`; MAD-style negative
-drifts step backward.
+drifts step backward. A curved field-map cluster (`SUPERPOSE_MAP_OUT`)
+follows its traced reference and continues from its exit frame, drawn
+the way a bend with the same dispersion sign is.
 
 ## RFQ panels {#rfq-panels}
 

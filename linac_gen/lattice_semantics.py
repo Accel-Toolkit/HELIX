@@ -95,6 +95,13 @@ def classify_element(e: Any) -> dict:
     (e.g. ``"RF E+B field map"``, ``"3D"``, ``True``).
     """
     cls = type(e).__name__
+    if getattr(e, "is_curved", False):
+        # SUPERPOSE_MAP_OUT cluster: a bend given as 3-D magnetic maps
+        kb = sum(abs(float(getattr(c, "kb", 0.0) or 0.0))
+                 for _z, c in getattr(e, "children", []) or [])
+        return {"kind": "dipole",
+                "field_type": "bend field map (curved reference trajectory)",
+                "dims": "3D", "powered": kb > 1e-12}
     # command cards (FREQ / SET_* / ADJUST_* …) declare a KEYWORD
     if getattr(e, "KEYWORD", None) is not None or cls in (
             "Freq", "SetSyncPhase"):

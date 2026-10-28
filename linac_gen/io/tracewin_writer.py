@@ -162,10 +162,12 @@ def write_tracewin(lattice, filepath, frequency=None):
         tokens = list(required) + [tok for tok, _ in optionals[:last + 1]]
         fh.write(_label_prefix(elem) + keyword + " " + " ".join(tokens) + "\n")
 
-    def _emit_field_map_card(fh, elem, emitted_fmp):
+    def _emit_field_map_card(fh, elem, emitted_fmp, label_elem=None):
         """Emit one FIELD_MAP card (with the stateful FIELD_MAP_PATH
         machinery); returns the updated ``emitted_fmp`` state.  Shared
-        by plain maps and SUPERPOSE cluster children."""
+        by plain maps and SUPERPOSE cluster children (``label_elem``: the
+        element whose deck label prefixes the card — the maps of a curved
+        cluster keep theirs)."""
         geom = getattr(elem, "geom", None)
         field_file = getattr(elem, "field_file", None)
         if geom is None or not field_file:
@@ -223,7 +225,7 @@ def write_tracewin(lattice, filepath, frequency=None):
         ]
         p_flag = int(getattr(elem, "p_flag", 0) or 0)
         optionals = [(str(p_flag), p_flag == 0)]
-        _emit_card(fh, "FIELD_MAP", required, optionals)
+        _emit_card(fh, "FIELD_MAP", required, optionals, elem=label_elem)
         return emitted_fmp
 
     # latin-1 keeps written decks byte-compatible with TraceWin and
@@ -521,7 +523,20 @@ def write_tracewin(lattice, filepath, frequency=None):
                                      or [])
                     fh.write(_label_prefix(mk) + kw_mk + ((" " + ps_mk) if ps_mk else "")
                              + "\n")
-                if getattr(elem, "_from_plain_wrap", False):
+                if getattr(elem, "is_curved", False):
+                    # SUPERPOSE_MAP_OUT cluster: the exit frame first, then
+                    # every child with its full placement (all six
+                    # operands count after SUPERPOSE_MAP_OUT) and label.
+                    _xl = type("_L", (), {"label": getattr(elem, "exit_label", None)})
+                    fh.write(_label_prefix(_xl) + "SUPERPOSE_MAP_OUT "
+                             + " ".join(_fmt(v) for v in elem.exit_frame) + "\n")
+                    for (_z0, child), pl in zip(elem.children, elem.placements,
+                                                  strict=True):
+                        fh.write("SUPERPOSE_MAP "
+                                 + " ".join(_fmt(v) for v in pl) + "\n")
+                        emitted_fmp = _emit_field_map_card(
+                            fh, child, emitted_fmp, label_elem=child)
+                elif getattr(elem, "_from_plain_wrap", False):
                     # Container created only to host SHIFT diagnostics
                     # around a plain FIELD_MAP card — the source deck had
                     # no SUPERPOSE_MAP line, so don't invent one.

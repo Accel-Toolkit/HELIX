@@ -37,6 +37,14 @@ def looks_like_a_ring(lattice) -> bool:
             if a:
                 total += a
                 any_bend = True
+        elif getattr(e, "is_curved", False):
+            # curved field-map cluster: its horizontal bend (survey sign)
+            from linac_gen.elements.curved_field_map import survey_geometry
+            A = survey_geometry(e)[2]
+            a = math.degrees(math.atan2(A[0, 2], A[2, 2]))
+            if a:
+                total += a
+                any_bend = True
     return any_bend and abs(abs(total) - 360.0) < 1e-3 and math.isfinite(total)
 
 

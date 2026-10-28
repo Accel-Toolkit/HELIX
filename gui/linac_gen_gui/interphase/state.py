@@ -136,9 +136,45 @@ class AppState(QObject):
 
     def _rebroadcast_bus_change(self) -> None:
         try:
+            self.prepare_curved_elements()
             self.lattice_changed.emit(self._lattice)
         except RuntimeError:        # state torn down mid-delivery
             pass
+
+    def prepare_curved_elements(self) -> bool:
+        """Trace the reference through the lattice's curved field-map
+        clusters (SUPERPOSE_MAP_OUT) for the Beam tab's beam, so their path
+        lengths and the s positions after them are right before any run;
+        True when a length changed (the lattice views must redraw).  A
+        no-op for lattices without one.  Touches no other element (only
+        clusters whose entering energy is the beam's are traced; the others
+        wait for a run) and never waits: skipped while a run or a
+        background walk holds the walk lock."""
+        lat, cfg = self._lattice, self._beam_config
+        if lat is None or cfg is None or self._running:
+            return False
+        curved = [e for e in getattr(lat, "elements", None) or []
+                  if getattr(e, "is_curved", False)]
+        if not curved:
+            return False
+        from linac_gen.elements.curved_field_map import (
+            prepare_curved_elements,
+        )
+        from linac_gen_gui.interphase.workers import WALK_LOCK
+        if not WALK_LOCK.acquire(blocking=False):
+            return False
+        before = [float(e.length) for e in curved]
+        try:
+            from linac_gen.cli.common import build_ref
+            prepare_curved_elements(lat, build_ref(cfg), replay=False)
+        except Exception as exc:                        # noqa: BLE001
+            msg = f"curved field map: reference not traced ({exc})"
+            if msg != getattr(self, "_curved_warning", None):
+                self._curved_warning = msg
+                self.log_event.emit("warning", msg)
+        finally:
+            WALK_LOCK.release()
+        return [float(e.length) for e in curved] != before
 
     # --- tab -----------------------------------------------------------
     @property
@@ -176,6 +212,7 @@ class AppState(QObject):
         # Loading a fresh lattice resets the undo stack and dirty flag.
         if hasattr(self, "bus"):
             self.bus.reset()
+        self.prepare_curved_elements()
         self.lattice_changed.emit(lattice)
         self.selected_element_changed.emit(None)
         self.s_cursor_changed.emit(0.0)
@@ -275,7 +312,11 @@ class AppState(QObject):
         # useless.  Replace the cache rather than .clear() so consumers
         # holding the old dict see a stable snapshot.
         self.matrix_cache = {}
+        lengths_changed = self.prepare_curved_elements()
         self.beam_config_changed.emit(cfg)
+        if lengths_changed:
+            # a curved cluster's path depends on the beam: s positions moved
+            self.lattice_changed.emit(self._lattice)
 
     # --- tweaks --------------------------------------------------------
     @property

@@ -144,7 +144,9 @@ def _with_tilt(element, M_elem: np.ndarray) -> np.ndarray:
     ``dx``/``dy`` do not enter a transfer matrix.
     """
     from linac_gen.elements.multipole import Multipole
-    if isinstance(element, (PassiveElement, Multipole)):
+    if (isinstance(element, (PassiveElement, Multipole))
+            or getattr(element, "self_aligned", False)):
+        # (a curved field-map cluster moves its own maps)
         return M_elem
     tilt = float(getattr(element, "tilt_deg", 0.0) or 0.0)
     if abs(tilt) <= 1e-12:

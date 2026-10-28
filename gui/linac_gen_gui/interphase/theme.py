@@ -53,6 +53,7 @@ EL_COLORS = {
     "Drift":      "#6b7280",
     "Quadrupole": "#22d3ee",
     "Dipole":     "#fb923c",
+    "CurvedFieldMapCluster": "#fb923c",   # a bend given as 3-D maps (SUPERPOSE_MAP_OUT)
     "RFGap":      "#a3e635",
     "FieldMap":   "#a3e635",
     "FieldMap3D": "#22d3ee",  # cyan — distinguishes 3-D maps from 1-D/2-D

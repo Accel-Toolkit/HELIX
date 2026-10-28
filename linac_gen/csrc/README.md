@@ -75,6 +75,22 @@ r = 1e-12, lost and non-finite particles, a frequency jump, `p_flag = 1`,
 the envelope's matrices, 1/2/7/14 threads).  Kill switch:
 `LINAC_GEN_FIELDMAP1D_KERNEL=0`.
 
+`curved_rk4_steps` pushes particles through a curved field-map cluster
+(`SUPERPOSE_MAP_OUT`, `linac_gen/elements/curved_field_map.py`): RK4 in the
+reference's path length, in the planes normal to the reference, with the
+exact equations of motion in a static magnetic field.  Its inputs are the
+particles (updated in place), the stage frames of the steps (position,
+tangent, the two transverse axes and the curvatures, computed in Python),
+the children's maps with their placements, and q/p and 1/β per particle.
+It reproduces `curved_rk4_numpy` bit for bit: the same expressions in the
+same order, the trilinear sampling of `interp3_multi`, only square roots
+and divisions (no transcendental function), no FP contraction, each
+particle on its own (threaded over particles with a static schedule, so
+any thread count gives the same bits).
+`tests/elements/test_curved_field_map.py` pins it with `np.array_equal`
+against the numpy code and across 1, 2 and 4 threads.  Kill switch:
+`LINAC_GEN_CURVED_KERNEL=0`.
+
 ## TSC deposit/gather twin (`_tsc_kernels`)
 
 Same direct compile, with the source and module name swapped:

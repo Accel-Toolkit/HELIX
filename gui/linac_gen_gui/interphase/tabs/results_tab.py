@@ -2559,6 +2559,10 @@ def _cluster_metric(el, kind: str) -> float | None:
     ∫B²·dz is split as Σ ∫B_i² (each map on its own samples) + 2 Σ ∫B_iB_j
     (on the union grid), so it changes smoothly when a corrector is
     powered from zero instead of jumping by the regridding error."""
+    if getattr(el, "is_curved", False):
+        # a bend given as field maps (SUPERPOSE_MAP_OUT): neither a solenoid
+        # nor a cavity, and its maps' z axis is not the beam's path
+        return None
     electric = kind in ("eacc", "vgap")
     single = {"bpeak": _fieldmap_bpeak_T, "int_b2": _fieldmap_int_b2,
               "eacc": _fieldmap_eacc_MV_per_m, "vgap": _fieldmap_vgap_MV}[kind]
@@ -9133,7 +9137,9 @@ def _survey_lattice(lattice, ds_mm: float = 100.0):
     (horizontal bend, hv=0) or n_h (vertical bend, hv=1) via Rodrigues
     steps, sampling the arc every ~``ds_mm``.  Positive horizontal angle
     curves toward +x; positive vertical angle toward +y — matching the
-    sign convention of the BEND cards.
+    sign convention of the BEND cards.  A curved field-map cluster
+    (SUPERPOSE_MAP_OUT) follows its traced reference and continues from
+    its exit frame, drawn in the same convention (``survey_geometry``).
 
     Returns None when the lattice is missing, else a dict of float
     arrays in metres: ``s, z, x, y`` plus ``dip_h`` / ``dip_v`` lists of
@@ -9182,6 +9188,27 @@ def _survey_lattice(lattice, ds_mm: float = 100.0):
                 s += dl
                 pts.append(p.copy()); svals.append(s)
             (dip_v if vertical else dip_h).append((i0, len(pts) - 1))
+        elif L > 0.0 and getattr(el, "is_curved", False):
+            # Curved field-map cluster (SUPERPOSE_MAP_OUT): the traced
+            # reference, then on from the card's exit frame
+            from linac_gen.elements.curved_field_map import survey_geometry, survey_points
+            Lc, P, A = survey_geometry(el)
+            i0 = len(pts) - 1
+            for sk, d in zip(*survey_points(el, ds_mm), strict=True):
+                pts.append(p + d[2] * t + d[0] * n_h + d[1] * n_v)
+                svals.append(s + sk)
+            p = p + P[2] * t + P[0] * n_h + P[1] * n_v
+            t, n_h, n_v = (A[2, 2] * t + A[0, 2] * n_h + A[1, 2] * n_v,
+                           A[2, 0] * t + A[0, 0] * n_h + A[1, 0] * n_v,
+                           A[2, 1] * t + A[0, 1] * n_h + A[1, 1] * n_v)
+            s += Lc
+            pts.append(p.copy())
+            svals.append(s)
+            ang = float(np.degrees(np.arccos(np.clip(A[2, 2], -1.0, 1.0))))
+            total_bend += ang
+            if ang > 1e-9:
+                vertical = abs(A[1, 2]) > abs(A[0, 2])
+                (dip_v if vertical else dip_h).append((i0, len(pts) - 1))
         else:
             p = p + t * L
             s += L

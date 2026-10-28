@@ -925,7 +925,8 @@ class EnvelopeSolver:
         # and Multipole self-handles its misalignment inside the kick —
         # wrapping either would double-apply or corrupt.
         from linac_gen.elements.multipole import Multipole
-        _skip_wrap = isinstance(element, (PassiveElement, Multipole))
+        _skip_wrap = (isinstance(element, (PassiveElement, Multipole))
+                      or getattr(element, "self_aligned", False))
         tilt = 0.0 if _skip_wrap else \
             float(getattr(element, "tilt_deg", 0.0) or 0.0)
         dx = 0.0 if _skip_wrap else \
@@ -1106,6 +1107,11 @@ class EnvelopeSolver:
         # (second full call starts at z=length: no gap ever fires).
         if isinstance(element, FieldMapElement):
             element.reset_run_state()
+            # a curved cluster (SUPERPOSE_MAP_OUT): its length is the path
+            # of the reference it traces for the entering energy
+            _prep = getattr(element, "prepare_reference", None)
+            if _prep is not None:
+                _prep(self._ref)
 
         # NOTE: the full-element 6x6 matrix is computed lazily on the
         # branches that consume it (pure-linear I=0 path; thin-element
@@ -1243,6 +1249,7 @@ class EnvelopeSolver:
                     M = _fitted_matrix_slice_at(element, self._ref,
                                                 piece, z_cursor)
                     self._probe_push(M)
+                    self._orbit_offset_push(element, piece)
                     sigma = M @ sigma @ M.T
                     element.advance_ref_over(self._ref, z_cursor,
                                              z_cursor + piece)
@@ -1255,6 +1262,7 @@ class EnvelopeSolver:
                 M = _fitted_matrix_slice_at(element, self._ref,
                                             remaining, z_cursor)
                 self._probe_push(M)
+                self._orbit_offset_push(element, remaining)
                 sigma = M @ sigma @ M.T
                 element.advance_ref_over(self._ref, z_cursor,
                                          z_cursor + remaining)
@@ -1454,6 +1462,7 @@ class EnvelopeSolver:
                         M = _fitted_matrix_slice_at(element, self._ref,
                                                     piece, z_cursor)
                         self._probe_push(M)
+                        self._orbit_offset_push(element, piece)
                         sigma = M @ sigma @ M.T
                         element.advance_ref_over(self._ref, z_cursor,
                                                  z_cursor + piece)
@@ -1467,6 +1476,7 @@ class EnvelopeSolver:
                     M = _fitted_matrix_slice_at(element, self._ref,
                                                 remaining, z_cursor)
                     self._probe_push(M)
+                    self._orbit_offset_push(element, remaining)
                     sigma = M @ sigma @ M.T
                     element.advance_ref_over(self._ref, z_cursor,
                                              z_cursor + remaining)

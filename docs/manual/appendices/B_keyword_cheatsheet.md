@@ -26,6 +26,7 @@ mapped to its HELIX class.
 | `GAP V φ_s aper [p_flag]` | RFGap |
 | `FIELD_MAP geom L θᵢ R kb ke Ki Ka FileName [p_flag]` | FieldMap / FieldMap3D |
 | `SUPERPOSE_MAP Z0 [X0 Y0 θz θx θy]` before each `FIELD_MAP` of a cluster | [SuperposedFieldMap](../03_elements/19_superposedfieldmap.md) — overlapping maps summed per slice; X/Y/θ ignored (as TraceWin does without `SUPERPOSE_MAP_OUT`) |
+| `SUPERPOSE_MAP_OUT Z X Y θz θx θy` before a cluster | [curved cluster](../03_elements/19_superposedfieldmap.md#curved-clusters-superpose_map_out) — the maps bend the reference (static magnetic 3-D maps); exit point and direction; every `SUPERPOSE_MAP` operand places its map |
 | `SHIFT_IN_FIELD_MAP dz` before diagnostics | interior diagnostic dz mm inside the next map/cluster (recorder row at s_entry + dz) |
 | `RFQ_CELL` (Toutatis format) | RfqCell / VaneRFQ |
 | `THIN_STEERING bx_l by_l aper [elec]` | Steerer |
@@ -113,11 +114,11 @@ HELIX cannot honour them — each card WARNS in permissive mode and is a
 hard **error under `strict=True`**):
 
 ```
-SUPERPOSE_MAP_OUT   (curved reference trajectory through dipole maps —
-    straight-axis SUPERPOSE_MAP clusters ARE supported)
 READ_DST  BEAM_ROT                                     (the beam is not
     re-loaded or rotated mid-lattice)
 ```
+
+A `SUPERPOSE_MAP_OUT` that no cluster follows warns (strict: refused).
 
 The same warn-or-refuse rule applies to `ERROR_*_DYN` (treated as
 static), coupled `ERROR_*_CPL_*` groups (sampled independently),

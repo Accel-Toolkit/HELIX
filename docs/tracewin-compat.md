@@ -32,8 +32,9 @@ cleanly under the legacy parser, read this before re-running them.
 - **Unsupported cards are skipped with a warning — and physics
   downgrades are never silent** (honesty round, 2026-07).  Three
   classes: diagnostic-hardware markers stay silent; cards whose
-  TraceWin meaning HELIX cannot honour (`SUPERPOSE_MAP` /
-  `SHIFT_IN_FIELD_MAP`, `READ_DST` / `BEAM_ROT`, `ERROR_*_DYN`
+  TraceWin meaning HELIX cannot honour (`READ_DST` / `BEAM_ROT`,
+  dangling `SUPERPOSE_MAP` / `SUPERPOSE_MAP_OUT` /
+  `SHIFT_IN_FIELD_MAP` cards, `ERROR_*_DYN`
   treated as static, coupled `ERROR_*_CPL_*` sampled independently,
   negative field-map geometry codes, missing field-map files) each
   emit a warning in `metadata["warnings"]` (shown by the GUI status

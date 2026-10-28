@@ -60,6 +60,10 @@ def _is_magnetic_only_fieldmap(element) -> bool:
         )
     except Exception:
         return False
+    if getattr(element, "is_curved", False):
+        # a curved cluster (SUPERPOSE_MAP_OUT) has its own exact RK4 push
+        # and step policy: the floor below is for the first-order KD push
+        return False
     if isinstance(element, SuperposedFieldMap):
         # A cluster is solenoid-type iff EVERY child is.
         return all(_is_magnetic_only_fieldmap(child)
@@ -627,7 +631,9 @@ class Tracker:
         # (a 1 mm offset kicked like 2 mm; a 45° skew tracked as 90°).
         # The envelope solver has always excluded it for this reason.
         from linac_gen.elements.multipole import Multipole
-        if isinstance(element, (PassiveElement, Multipole)):
+        if (isinstance(element, (PassiveElement, Multipole))
+                or getattr(element, "self_aligned", False)):
+            # (a curved field-map cluster moves its own maps)
             dx = dy = 0.0
             tilt_deg = 0.0
         else:
@@ -1066,6 +1072,11 @@ class Tracker:
         # the envelope solver and the present run is multi-particle, the
         # MP pass would inherit env's calibration and mis-phase the cavity.
         effective_element.reset_run_state()
+        # A curved cluster (SUPERPOSE_MAP_OUT) traces its reference for the
+        # entering energy first: its length is that path's length.
+        _prep = getattr(element, "prepare_reference", None)
+        if _prep is not None:
+            _prep(self.beam.ref)
         # Canonical cadence — shared with EnvelopeSolver and the
         # backtracker so all modes slice field maps identically (rules
         # and rationale live on field_map_step_counts).
@@ -1119,16 +1130,21 @@ class Tracker:
                 return None
 
         for b in range(n_bundles):
-            # First half of the bundle — record after each full ds
-            # (= 2 half-steps) so samples are evenly spaced.  The inner
-            # loop does ds/2 per track_rk4 call; pair them up.
+            # A bundle is 2·sc_every half-steps of ds/2 with the SC kick
+            # between its two halves.  Sub-step rows go after every SECOND
+            # half-step, counted through the kick, so they fall every full
+            # ds over the whole bundle (sc_every rows, the last at the
+            # bundle exit); a row in the first half shows the beam before
+            # this bundle's kick, as the split step has it there.
+            n_half = 0
             for k in range(sc_every):
                 effective_element.track_rk4(self.beam, ds / 2)
                 if fine_aperture:
                     self._check_aperture(element)
                 _record_marker_crossings()
-                # Second half of the pair happens in the "second half of
-                # bundle" loop below, after the SC kick.
+                n_half += 1
+                if self._record_substeps and n_half % 2 == 0:
+                    self._record_substep(element)
             if scc_active:
                 z_local_mm = (b + 0.5) * sc_every * ds
                 scc_z = float(np.interp(
@@ -1140,15 +1156,13 @@ class Tracker:
                 self._sc_factor = saved
             else:
                 self._apply_sc_kick(sc_every * ds)
-            # Second half of the bundle — record after each full ds slice.
             for k in range(sc_every):
                 effective_element.track_rk4(self.beam, ds / 2)
                 if fine_aperture:
                     self._check_aperture(element)
                 _record_marker_crossings()
-                if self._record_substeps:
-                    # k-th pair is now complete (one ds/2 before SC, one
-                    # ds/2 after).  Record at the slice's exit position.
+                n_half += 1
+                if self._record_substeps and n_half % 2 == 0:
                     self._record_substep(element)
             if not fine_aperture:
                 self._check_aperture(element)

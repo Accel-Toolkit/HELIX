@@ -186,6 +186,11 @@ def element_matrix_torch(element, kin: RefKinematics, *,
 
     # Non-linear / unsupported element.
     cls_name = type(element).__name__
+    if getattr(element, "is_curved", False):
+        raise TypeError(
+            f"element_matrix_torch: '{element.name}' is a field map with a "
+            "curved reference trajectory (SUPERPOSE_MAP_OUT); the torch path "
+            "has no model of it")
     if on_nonlinear == "error":
         raise TypeError(
             f"element_matrix_torch: '{cls_name}' ('{element.name}') is not a "

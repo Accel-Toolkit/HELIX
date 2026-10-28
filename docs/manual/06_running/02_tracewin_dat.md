@@ -398,7 +398,9 @@ elements, thin lenses and electric steerers.  By default each becomes a
 `MARKER` plus a body `DRIFT` of the element's length (the geometry
 survives) and a warning naming it; `write_madx(…,
 on_unsupported="error")` / `export --strict` refuses the export
-instead.  Misalignments (`dx`, `dy`, tilt) are not exported and warn —
+instead.  A curved field-map cluster (`SUPERPOSE_MAP_OUT`) also warns
+that its bend cannot be kept — the MAD-X line continues straight after
+it — and the strict export refuses it.  Misalignments (`dx`, `dy`, tilt) are not exported and warn —
 MAD-X carries them through `EALIGN`, which this writer does not emit.
 
 **Linearised export** (`write_madx(…, linearize=True)` /

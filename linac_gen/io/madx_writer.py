@@ -612,6 +612,18 @@ def write_madx(lattice: Lattice, filepath, ref: ReferenceParticle, *,
             unsupported(elem, "asymmetric thin lens has no MAD-X element")
             i += 1
             continue
+        elif getattr(elem, "is_curved", False):
+            why = ("a field map with a curved reference trajectory "
+                   "(SUPERPOSE_MAP_OUT) has no MAD-X element, and the bend "
+                   "of the reference line cannot be kept")
+            if on_unsupported == "error":
+                raise ValueError(f"MAD-X export refused: {elem.name!r} "
+                                 f"({type(elem).__name__}): {why}")
+            warnings.append(f"{elem.name!r} ({type(elem).__name__}): {why} "
+                            "— the MAD-X line continues straight after it")
+            unsupported(elem, "no MAD-X representation")
+            i += 1
+            continue
         else:
             unsupported(elem, "no MAD-X representation")
             i += 1

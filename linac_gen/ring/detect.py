@@ -57,6 +57,15 @@ def survey_2d(lattice):
             X += chord * math.sin(mid)
             Z += chord * math.cos(mid)
             th += a
+        elif L and getattr(e, "is_curved", False):
+            # curved field-map cluster: on from its exit frame, drawn like a
+            # Dipole (survey_geometry)
+            from linac_gen.elements.curved_field_map import survey_geometry
+            _L, P, A = survey_geometry(e)
+            X += P[2] * math.sin(th) + P[0] * math.cos(th)
+            Z += P[2] * math.cos(th) - P[0] * math.sin(th)
+            th += math.atan2(A[0, 2], A[2, 2])
+            vert += math.asin(max(-1.0, min(1.0, float(A[1, 2]))))
         elif L:
             X += L * math.sin(th)
             Z += L * math.cos(th)

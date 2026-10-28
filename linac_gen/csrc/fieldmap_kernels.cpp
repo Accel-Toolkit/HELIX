@@ -504,6 +504,215 @@ void fm1d_step(py::array particles, py::array idx_in, py::array rs_in,
     }
 }
 
+// ---------------------------------------------------------------------------
+// Curved field-map clusters (TraceWin SUPERPOSE_MAP_OUT): RK4 steps in the
+// path length s of a precomputed reference trajectory, in the planes
+// orthogonal to it -- the compiled twin of curved_rk4_numpy
+// (linac_gen/elements/curved_field_map.py), BIT FOR BIT: the same
+// expressions in the same order, sqrt and division only, no FP contraction,
+// each particle on its own (OpenMP over particles; any thread count gives
+// the same bits).  Exact equations for a static magnetic field, with
+// r = r0 + x e1 + y e2, h = 1 - k1 x - k2 y, u = u1 e1 + u2 e2 + ut t:
+//   dx/ds = (h/ut) u1, dy/ds = (h/ut) u2,
+//   du1/ds = (h/ut) kq (u x B).e1 - k1 ut,  du2/ds = (h/ut) kq (u x B).e2 - k2 ut,
+//   dphi/ds = c_phi ((h/ut) / beta - 1 / beta_ref)          (W unchanged).
+//
+// particles : (N, 6) float64 C-contiguous, writeable -- every row is pushed
+// frames    : (2 n + 1, 14) stage frames at s0, s0 + ds/2, ..., s0 + n ds:
+//             r0 (3), t (3), e1 (3), e2 (3), k1, k2   (mm, 1/mm)
+// packs     : list of (gx, gy, gz, fields (M,nx,ny,nz), slots (3,) int64,
+//             amp, R (3,3) map -> cluster axes, o (3,) map origin, zstart):
+//             B += R (amp F(R^T (r - o) + zstart e_z)), summed in list order
+// kq        : (N,) charge / (B rho) [1/(T mm)];  inv_beta : (N,) 1 / beta
+// ---------------------------------------------------------------------------
+namespace {
+
+struct CPack { Map3 map; long slot[3]; double amp; double R[9]; double o[3];
+               double zstart; };
+
+inline void cluster_field_pt(const std::vector<CPack>& packs, double rx,
+                             double ry, double rz, double& Bx, double& By,
+                             double& Bz) {
+    Bx = 0.0; By = 0.0; Bz = 0.0;
+    for (const CPack& p : packs) {
+        const double* R = p.R;
+        const double dx = rx - p.o[0];
+        const double dy = ry - p.o[1];
+        const double dz = rz - p.o[2];
+        const double xm = (R[0] * dx + R[3] * dy) + R[6] * dz;
+        const double ym = (R[1] * dx + R[4] * dy) + R[7] * dz;
+        const double zm = ((R[2] * dx + R[5] * dy) + R[8] * dz) + p.zstart;
+        double v[3];
+        sample_point(p.map, xm, ym, zm, v);
+        double fx = p.slot[0] >= 0 ? v[p.slot[0]] : 0.0;
+        double fy = p.slot[1] >= 0 ? v[p.slot[1]] : 0.0;
+        double fz = p.slot[2] >= 0 ? v[p.slot[2]] : 0.0;
+        fx = fx * p.amp;
+        fy = fy * p.amp;
+        fz = fz * p.amp;
+        Bx = Bx + ((R[0] * fx + R[1] * fy) + R[2] * fz);
+        By = By + ((R[3] * fx + R[4] * fy) + R[5] * fz);
+        Bz = Bz + ((R[6] * fx + R[7] * fy) + R[8] * fz);
+    }
+}
+
+inline void curved_deriv(const double* f, double x, double y, double u1,
+                         double u2, const std::vector<CPack>& packs,
+                         double kq, double inv_beta, double inv_beta_ref,
+                         double c_phi, double* out) {
+    const double r0x = f[0], r0y = f[1], r0z = f[2];
+    const double tx = f[3], ty = f[4], tz = f[5];
+    const double e1x = f[6], e1y = f[7], e1z = f[8];
+    const double e2x = f[9], e2y = f[10], e2z = f[11];
+    const double k1 = f[12], k2 = f[13];
+    const double h = (1.0 - k1 * x) - k2 * y;
+    const double ut = std::sqrt((1.0 - u1 * u1) - u2 * u2);
+    const double rx = (r0x + x * e1x) + y * e2x;
+    const double ry = (r0y + x * e1y) + y * e2y;
+    const double rz = (r0z + x * e1z) + y * e2z;
+    double bx, by, bz;
+    cluster_field_pt(packs, rx, ry, rz, bx, by, bz);
+    const double ux = (u1 * e1x + u2 * e2x) + ut * tx;
+    const double uy = (u1 * e1y + u2 * e2y) + ut * ty;
+    const double uz = (u1 * e1z + u2 * e2z) + ut * tz;
+    const double cx = uy * bz - uz * by;
+    const double cy = uz * bx - ux * bz;
+    const double cz = ux * by - uy * bx;
+    const double fe1 = (cx * e1x + cy * e1y) + cz * e1z;
+    const double fe2 = (cx * e2x + cy * e2y) + cz * e2z;
+    const double g = h / ut;
+    out[0] = g * u1;
+    out[1] = g * u2;
+    out[2] = g * (kq * fe1) - k1 * ut;
+    out[3] = g * (kq * fe2) - k2 * ut;
+    out[4] = c_phi * (g * inv_beta - inv_beta_ref);
+}
+
+}  // namespace
+
+void curved_rk4_steps(py::array particles, py::array frames_in, double ds,
+                      long n_steps, py::list packs_in, py::array kq_in,
+                      py::array inv_beta_in, double inv_beta_ref,
+                      double c_phi) {
+    if (particles.ndim() != 2 || particles.shape(1) != 6
+        || !py::isinstance<py::array_t<double>>(particles)
+        || !(particles.flags() & py::array::c_style)
+        || !particles.writeable())
+        throw std::invalid_argument(
+            "particles must be a writeable C-contiguous float64 (N, 6) array");
+    double* P = static_cast<double*>(particles.mutable_data());
+    const long N = static_cast<long>(particles.shape(0));
+    using arr = py::array_t<double, py::array::c_style | py::array::forcecast>;
+    arr fr = arr::ensure(frames_in);
+    if (n_steps < 1 || !fr || fr.ndim() != 2 || fr.shape(1) != 14
+        || fr.shape(0) != 2 * n_steps + 1)
+        throw std::invalid_argument("frames must have shape (2 n_steps + 1, 14)");
+    const double* F = fr.data();
+    arr kq_a = arr::ensure(kq_in), ib_a = arr::ensure(inv_beta_in);
+    if (!kq_a || !ib_a || kq_a.ndim() != 1 || ib_a.ndim() != 1
+        || kq_a.shape(0) != N || ib_a.shape(0) != N)
+        throw std::invalid_argument("kq and inv_beta must have shape (N,)");
+    const double* KQ = kq_a.data();
+    const double* IB = ib_a.data();
+
+    std::vector<CPack> packs;
+    std::vector<py::object> keep;      // holds converted arrays alive
+    for (auto item : packs_in) {
+        py::tuple t = py::reinterpret_borrow<py::tuple>(item);
+        if (t.size() != 9)
+            throw std::invalid_argument("pack tuple needs 9 entries");
+        arr gx = arr::ensure(t[0]), gy = arr::ensure(t[1]),
+            gz = arr::ensure(t[2]), fl = arr::ensure(t[3]);
+        auto sl = py::array_t<int64_t, py::array::c_style
+                              | py::array::forcecast>::ensure(t[4]);
+        arr Rm = arr::ensure(t[6]), om = arr::ensure(t[7]);
+        if (!gx || !gy || !gz || !fl || !sl || !Rm || !om || gx.ndim() != 1
+            || gy.ndim() != 1 || gz.ndim() != 1 || fl.ndim() != 4
+            || sl.ndim() != 1 || sl.shape(0) != 3 || Rm.ndim() != 2
+            || Rm.shape(0) != 3 || Rm.shape(1) != 3 || om.ndim() != 1
+            || om.shape(0) != 3)
+            throw std::invalid_argument("malformed pack arrays");
+        const long nx = gx.shape(0), ny = gy.shape(0), nz = gz.shape(0);
+        const long M = fl.shape(0);
+        if (fl.shape(1) != nx || fl.shape(2) != ny || fl.shape(3) != nz
+            || nx < 2 || ny < 2 || nz < 2 || M < 1 || M > 3)
+            throw std::invalid_argument("fields shape does not match axes");
+        for (const auto* g : {&gx, &gy, &gz}) {
+            const double* d = g->data();
+            for (py::ssize_t k = 1; k < g->shape(0); ++k)
+                if (!(d[k] > d[k - 1]))
+                    throw std::invalid_argument(
+                        "map axes must be strictly ascending");
+        }
+        CPack c;
+        c.map = Map3{gx.data(), gy.data(), gz.data(), nx, ny, nz,
+                     fl.data(), M};
+        for (int a = 0; a < 3; ++a) {
+            c.slot[a] = static_cast<long>(sl.at(a));
+            if (c.slot[a] < -1 || c.slot[a] >= M)
+                throw std::invalid_argument("component slot out of range");
+        }
+        c.amp = t[5].cast<double>();
+        for (int a = 0; a < 9; ++a) c.R[a] = Rm.data()[a];
+        for (int a = 0; a < 3; ++a) c.o[a] = om.data()[a];
+        c.zstart = t[8].cast<double>();
+        keep.push_back(gx); keep.push_back(gy); keep.push_back(gz);
+        keep.push_back(fl); keep.push_back(Rm); keep.push_back(om);
+        packs.push_back(c);
+    }
+
+    const helix::FpEnv fpenv;           // the caller's, for every thread
+    py::gil_scoped_release release;
+
+#ifdef _OPENMP
+#pragma omp parallel num_threads(helix::num_threads())
+#endif
+    {
+    const helix::FpEnv::Use use_fpenv(fpenv);
+#ifdef _OPENMP
+#pragma omp for schedule(static)
+#endif
+    for (long k = 0; k < N; ++k) {
+        double* p = P + 6 * k;
+        const double kq = KQ[k], ib = IB[k];
+        const double xp = p[1] * 1e-3;
+        const double yp = p[3] * 1e-3;
+        const double inv = 1.0 / std::sqrt((1.0 + xp * xp) + yp * yp);
+        double x = p[0], y = p[2], u1 = xp * inv, u2 = yp * inv, phi = p[4];
+        const double half = 0.5 * ds;
+        const double sixth = ds / 6.0;
+        for (long s = 0; s < n_steps; ++s) {
+            const double* fa = F + (2 * s) * 14;
+            const double* fm = F + (2 * s + 1) * 14;
+            const double* fb = F + (2 * s + 2) * 14;
+            double a[5], b[5], c[5], d[5];
+            curved_deriv(fa, x, y, u1, u2, packs, kq, ib, inv_beta_ref,
+                         c_phi, a);
+            curved_deriv(fm, x + half * a[0], y + half * a[1],
+                         u1 + half * a[2], u2 + half * a[3], packs, kq, ib,
+                         inv_beta_ref, c_phi, b);
+            curved_deriv(fm, x + half * b[0], y + half * b[1],
+                         u1 + half * b[2], u2 + half * b[3], packs, kq, ib,
+                         inv_beta_ref, c_phi, c);
+            curved_deriv(fb, x + ds * c[0], y + ds * c[1], u1 + ds * c[2],
+                         u2 + ds * c[3], packs, kq, ib, inv_beta_ref, c_phi,
+                         d);
+            x = x + sixth * (((a[0] + 2.0 * b[0]) + 2.0 * c[0]) + d[0]);
+            y = y + sixth * (((a[1] + 2.0 * b[1]) + 2.0 * c[1]) + d[1]);
+            u1 = u1 + sixth * (((a[2] + 2.0 * b[2]) + 2.0 * c[2]) + d[2]);
+            u2 = u2 + sixth * (((a[3] + 2.0 * b[3]) + 2.0 * c[3]) + d[3]);
+            phi = phi + sixth * (((a[4] + 2.0 * b[4]) + 2.0 * c[4]) + d[4]);
+        }
+        const double ut = std::sqrt((1.0 - u1 * u1) - u2 * u2);
+        p[0] = x;
+        p[1] = (u1 / ut) * 1e3;
+        p[2] = y;
+        p[3] = (u2 / ut) * 1e3;
+        p[4] = phi;
+    }
+    }
+}
+
 PYBIND11_MODULE(_fieldmap_kernels, m) {
     m.doc() = "Fused trilinear field-map sampling (bitwise-mirrors scipy "
               "RGI linear with fill_value=0) and the fused KD step";
@@ -523,6 +732,10 @@ PYBIND11_MODULE(_fieldmap_kernels, m) {
           py::arg("do_slip"), py::arg("slip"), py::arg("do_kick"),
           py::arg("factor_E"), py::arg("factor_B"),
           py::arg("team_particles") = 1500.0);
+    m.def("curved_rk4_steps", &curved_rk4_steps,
+          py::arg("particles"), py::arg("frames"), py::arg("ds"),
+          py::arg("n_steps"), py::arg("packs"), py::arg("kq"),
+          py::arg("inv_beta"), py::arg("inv_beta_ref"), py::arg("c_phi"));
     m.def("set_num_threads", &helix::set_num_threads, py::arg("n"),
           "Threads for this module's OpenMP loops (0 = the OpenMP default)");
     m.def("get_num_threads", &helix::num_threads,

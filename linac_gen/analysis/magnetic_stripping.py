@@ -115,6 +115,11 @@ def _design_b_for_element(element, brho: float,
     """
     cls = type(element).__name__
 
+    # Curved field-map cluster (SUPERPOSE_MAP_OUT): a bend given as 3-D
+    # maps — the largest field normal to its traced reference.
+    if getattr(element, "is_curved", False):
+        return _design_b_for_curved(element), "dipole"
+
     # Dipole — B = brho / |ρ|, transverse (⊥ to v).  ρ stored in mm → m.
     if cls == "Dipole":
         rho_m = abs(float(getattr(element, "rho", 0.0))) * 1.0e-3
@@ -159,6 +164,27 @@ def _design_b_for_element(element, brho: float,
     # Everything else (Drift, RfCavity, Edge, DipoleEdge, PassiveElement, …):
     # no magnetic field that contributes to Lorentz stripping at lowest order.
     return 0.0, "passive"
+
+
+def _design_b_for_curved(element) -> float:
+    """Largest |B_⊥| [T] across the reference a curved field-map cluster has
+    traced (the field normal to the path); before a trace, the largest |B|
+    in any of its maps."""
+    from linac_gen.elements.curved_field_map import cluster_field
+    packs = element.packs()
+    traj = getattr(element, "reference_trajectory", None)
+    if traj is not None:
+        r, t = traj.r, traj.t
+        bx, by, bz = cluster_field(packs, r[:, 0].copy(), r[:, 1].copy(),
+                                   r[:, 2].copy())
+        B = np.column_stack([bx, by, bz])
+        b_perp = B - np.sum(B * t, axis=1)[:, None] * t
+        return float(np.max(np.linalg.norm(b_perp, axis=1)))
+    best = 0.0
+    for p in packs:
+        mag = np.sqrt(np.sum(np.asarray(p.fields, dtype=float) ** 2, axis=0))
+        best = max(best, float(mag.max()) * abs(p.amp))
+    return best
 
 
 def _design_b_for_fieldmap(element, sigma_x_mm: float, sigma_y_mm: float,

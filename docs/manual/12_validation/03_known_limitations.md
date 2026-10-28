@@ -109,10 +109,12 @@ Straight-axis field-map superposition is implemented
 2026-07).  Three deliberate v1 restrictions remain:
 
 * **`SUPERPOSE_MAP_OUT`** (dipole maps that curve the reference
-  trajectory, with a user-specified exit frame) is refused at parse —
-  the deviated-reference bookkeeping is separate work.  Without it,
-  TraceWin itself ignores the X/Y/θ operands of `SUPERPOSE_MAP`, so
-  HELIX ignoring them is faithful.
+  trajectory) is modelled since 2026-10 as a
+  [curved cluster](../03_elements/19_superposedfieldmap.md#curved-clusters-superpose_map_out),
+  with its own limits: static magnetic 3-D maps only; no backtracking,
+  Sacherer envelope, torch matrix path, ring mode or MAD-X export; θX /
+  θZ placements follow the TraceWin manual's figure, which no example
+  run pins (the parser warns).
 * **Mixed RF frequencies** in one cluster are refused at construction
   (a single `ref.phi_s` clock exists); permissive parses fall back to
   the legacy end-to-end layout with a warning.

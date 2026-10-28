@@ -156,6 +156,13 @@ class SachererSolver:
     def __init__(self, lattice, ref: ReferenceParticle, init: dict,
                  current: float = 0.0, n_record_per_element: int = 21):
         self.lattice = lattice
+        for _e in getattr(lattice, "elements", []):
+            if getattr(_e, "is_curved", False):
+                raise ValueError(
+                    "the Sacherer envelope solver has no model of a field map "
+                    "with a curved reference trajectory (SUPERPOSE_MAP_OUT, "
+                    f"'{getattr(_e, 'label', None) or _e.name}') — use "
+                    "env_solver='matrix'")
         self.ref = ref
         self.init = init
         self.current = float(current)

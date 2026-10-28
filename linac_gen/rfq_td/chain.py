@@ -400,12 +400,13 @@ class RfqTdDriver:
             n_int, _n_sc, ds, sc_every, n_bundles = field_map_step_counts(
                 self.tr.lattice, c)
             pts = []
-            # the per-cell walk records after each second-half pair of a
-            # bundle and after each trailing step (Tracker._track_field_map)
+            # the per-cell walk records after every second half-step of a
+            # bundle, counted through the kick, and after each trailing
+            # step (Tracker._track_field_map)
             for _b in range(n_bundles):
                 for _k in range(2 * sc_every):
                     c.track_rk4(ghost, ds / 2)
-                    if n_sub and _k >= sc_every:
+                    if n_sub and _k % 2 == 1:
                         pts.append(point())
             for _ in range(n_int - n_bundles * sc_every):
                 c.track_rk4(ghost, ds)

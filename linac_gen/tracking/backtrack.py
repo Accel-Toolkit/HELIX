@@ -176,6 +176,11 @@ def _replay_field_map_ref_states(lattice, element, ref) -> list[_FmStep]:
     from linac_gen.core.beam import Beam
     from linac_gen.tracking.tracker import field_map_step_counts
 
+    # a curved cluster (SUPERPOSE_MAP_OUT): its length — hence the step
+    # counts — is the path it traces for this reference (Tracker order)
+    _prep = getattr(element, "prepare_reference", None)
+    if _prep is not None:
+        _prep(ref)
     n_int, n_sc, ds, sc_every, n_bundles = field_map_step_counts(
         lattice, element)
 
@@ -910,6 +915,20 @@ def _warn_applied_grid_cards(lattice, start, end, pic) -> None:
 
 
 # ---------------------------------------------------------------------------
+
+def _refuse_curved(lattice, start, end) -> None:
+    """Backtracking through a curved field-map cluster (SUPERPOSE_MAP_OUT)
+    is not supported — TraceWin does not offer it either."""
+    els = lattice.elements
+    stop = len(els) - 1 if end is None else int(end)
+    for e in els[int(start):stop + 1]:
+        if getattr(e, "is_curved", False):
+            raise NotImplementedError(
+                f"backtracking through '{getattr(e, 'label', None) or e.name}', "
+                "a field map with a curved reference trajectory "
+                "(SUPERPOSE_MAP_OUT), is not supported — TraceWin does not "
+                "offer it either")
+
 def backtrack_distribution(lattice, beam,
                            entrance_ref: ReferenceParticle, *,
                            start: int = 0, end: int | None = None,
@@ -958,6 +977,7 @@ def backtrack_distribution(lattice, beam,
         last = the supplied exit distribution, tagged ``"INPUT"``), with
         ``.direction == "backward"`` and ``.backtrack_range``.
     """
+    _refuse_curved(lattice, start, end)
     elements = lattice.elements
     if end is None:
         end = len(elements) - 1
@@ -1248,6 +1268,7 @@ def backtrack_envelope(lattice, entrance_ref: ReferenceParticle,
         state), tagged ``.direction = "backward"`` and
         ``.backtrack_range = (start, end)``.
     """
+    _refuse_curved(lattice, start, end)
     if current and current > 0.0:
         raise ValueError(
             "backtrack_envelope does not support space charge (the "

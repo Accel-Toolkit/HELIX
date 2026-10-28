@@ -334,8 +334,9 @@ the stored values are used verbatim (no extra scale beyond `1/Norm`).
 
 ## Currently deferred (documented as follow-up)
 
-- **`SUPERPOSE_MAP` / `SUPERPOSE_MAP_OUT`** — positioning of overlapping
-  field maps is not yet implemented.
+- (Implemented since: **`SUPERPOSE_MAP`** clusters of overlapping maps,
+  2026-07, and **`SUPERPOSE_MAP_OUT`** curved clusters, 2026-10 — see the
+  manual's SuperposedFieldMap page.)
 - **`EXCITATION_CURVE`** — `kb` as a function of power-supply current;
   the manual §18230 describes a lookup-table mechanism not yet wired up.
 - **Negative `geom`** — the 2nd-order off-axis expansion; `second_order`

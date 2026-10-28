@@ -248,6 +248,14 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
     null_pos0_aperture: list = []
     null_map_files: set = set()
     pending_superpose: list = []  # [z0] of one unbound SUPERPOSE_MAP
+    # … and its transverse/rotation operands (X Y θZ θX θY), honoured only
+    # in a curved cluster (SUPERPOSE_MAP_OUT before it)
+    pending_superpose_extra: list = []
+    open_cluster_place: list = []    # [(Z, X, Y, θZ, θX, θY)] per open_cluster entry
+    open_cluster_labels: list = []   # deck label of each open_cluster entry
+    # SUPERPOSE_MAP_OUT (Z X Y θZ θX θY): the next cluster curves the
+    # reference trajectory (CurvedFieldMapCluster)
+    pending_exit: list = []
     # SHIFT_IN_FIELD_MAP: diagnostics placed INSIDE the span of the
     # following FIELD_MAP/cluster (TraceWin: dz > 0, several allowed).
     pending_shift_dz: list = []      # [dz] of one unbound SHIFT card
@@ -302,28 +310,93 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
         null_span = max(open_cluster_null, default=None)
         open_cluster_null.clear()
         span = max((z0 + c.length for z0, c in open_cluster), default=0.0)
-        _flush_cluster_children(line_num)
+        curved = _flush_cluster_children(line_num)
         null_pos0_aperture.clear()
-        if null_span is not None and null_span > span + 1e-9:
+        if not curved and null_span is not None and null_span > span + 1e-9:
             # A field-free child (missing map, kb = ke = 0) reaches past
             # every real child: the cluster still spans null_span in the
             # deck, so the remainder follows as a drift and every
             # downstream element keeps its position.
             lattice.add(Drift(next_name("DRIFT"), length=null_span - span))
 
-    def _flush_cluster_children(line_num) -> None:
+    def _flush_cluster_children(line_num) -> bool:
+        """Build the open cluster; True when it is a curved one (its length
+        is the reference's path: no field-free remainder follows it)."""
         if pending_superpose:
             _downgrade(
                 f"Line {line_num}: SUPERPOSE_MAP not followed by a "
                 "FIELD_MAP card — the dangling placement is ignored."
             )
             pending_superpose.clear()
+            pending_superpose_extra.clear()
+        if pending_exit and not open_cluster:
+            _downgrade(
+                f"Line {line_num}: SUPERPOSE_MAP_OUT not followed by a "
+                "SUPERPOSE_MAP / FIELD_MAP cluster — the exit frame is "
+                "ignored."
+            )
+            pending_exit.clear()
         if not open_cluster:
-            return
+            open_cluster_place.clear()
+            open_cluster_labels.clear()
+            return False
         children = list(open_cluster)
         open_cluster.clear()
+        places = list(open_cluster_place)
+        open_cluster_place.clear()
+        labels = list(open_cluster_labels)
+        open_cluster_labels.clear()
         span = max(z0 + c.length for z0, c in children)
-        interior = _take_interior(span, line_num)
+        # a curved cluster's diagnostics sit along the reference's path, known
+        # once it is traced (the element checks them then)
+        interior = _take_interior(float("inf") if pending_exit else span,
+                                  line_num)
+        if pending_exit:
+            # SUPERPOSE_MAP_OUT: the maps curve the reference trajectory —
+            # every placement operand counts and s runs along the arc
+            exit_frame = tuple(pending_exit[0][:6])
+            exit_label = pending_exit[0][7]
+            pending_exit.clear()
+            from linac_gen.elements.curved_field_map import (
+                CurvedFieldMapCluster,
+            )
+            try:
+                curved = CurvedFieldMapCluster(
+                    next_name("SUPERP"), children, placements=places,
+                    exit_frame=exit_frame, interior_markers=interior)
+            except ValueError as exc:
+                _downgrade(
+                    f"Line {line_num}: the curved field-map cluster "
+                    f"(SUPERPOSE_MAP_OUT) cannot be built ({exc}) — its "
+                    "maps are tracked on a straight axis instead (physics "
+                    "differs from TraceWin)."
+                )
+                curved = None
+                kept = []
+                for dz, mk in interior:
+                    if dz <= span + 1e-9:
+                        kept.append((dz, mk))
+                    else:
+                        _downgrade(
+                            f"Line {line_num}: SHIFT_IN_FIELD_MAP dz={dz:g} mm "
+                            f"is outside the following map span ({span:g} mm) "
+                            f"— diagnostic '{mk.name}' dropped."
+                        )
+                interior = kept
+            if curved is not None:
+                for (_z0, child), lab in zip(children, labels, strict=True):
+                    if lab:
+                        child.label = lab
+                curved.exit_label = exit_label
+                first = exit_label or next((lab for lab in labels if lab), None)
+                if first:
+                    curved.label = first
+                if curved._pos0_child is None and null_pos0_aperture:
+                    curved.aperture = null_pos0_aperture[0]
+                    curved.ka = 0
+                lattice.add(curved)
+                _register_cav(curved)
+                return True
         if (len(children) == 1 and abs(children[0][0]) < 1e-12
                 and interior):
             # Interior diagnostics need the container walk even for a
@@ -335,7 +408,7 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                                       interior_markers=interior)
             lattice.add(cont)
             _register_cav(cont)
-            return
+            return False
         if len(children) == 1 and abs(children[0][0]) < 1e-12:
             # The dominant "SUPERPOSE_MAP 0 as furniture" idiom: emit
             # the plain element (bit-identical physics; every existing
@@ -345,7 +418,7 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
             elem.superpose_z0 = 0.0
             lattice.add(elem)
             _register_cav(elem)
-            return
+            return False
         from linac_gen.elements.superposed_field_map import (
             SuperposedFieldMap,
         )
@@ -369,7 +442,7 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                 # Best effort: restore consumed diagnostics as ordinary
                 # markers so their readings aren't lost entirely.
                 lattice.add(mk)
-            return
+            return False
         if cont._pos0_child is None and null_pos0_aperture:
             # the position-0 carrier is a field-free card whose map is
             # missing: it still carries the aperture
@@ -750,7 +823,8 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                 # by the matcher), and ERROR_* directives.  FREQ closes
                 # WITH a warning (mixed-frequency clusters are
                 # unsupported); everything else closes silently.
-                if open_cluster or pending_superpose or open_cluster_null:
+                if (open_cluster or pending_superpose or open_cluster_null
+                        or pending_exit):
                     transparent = (
                         keyword in ("SUPERPOSE_MAP", "TITLE",
                                     "PARTRAN_STEP", "FIELD_MAP_PATH")
@@ -759,14 +833,17 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                         or (keyword == "FIELD_MAP"
                             and bool(pending_superpose))
                     )
-                    if keyword == "FREQ":
+                    if keyword == "FREQ" and (open_cluster or pending_superpose
+                                              or open_cluster_null):
                         # Physics downgrade, not furniture: the maps
                         # that were meant to OVERLAP become sequential
                         # elements, so the line is LONGER than the deck
                         # intends (span max(z0+L) → ΣL) and every
                         # downstream element shifts.  _downgrade so
                         # strict refuses instead of returning the
-                        # mislengthened lattice.
+                        # mislengthened lattice.  (With only a pending
+                        # SUPERPOSE_MAP_OUT, FREQ closes it as any card
+                        # does: the dangling-card warning says so.)
                         _downgrade(
                             f"Line {line_num}: FREQ closes the open "
                             "SUPERPOSE cluster (mixed-frequency "
@@ -775,6 +852,8 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                             "overlapped, lengthening the lattice and "
                             "shifting every downstream element."
                         )
+                        transparent = False
+                    elif keyword == "FREQ":
                         transparent = False
                     if not transparent:
                         _flush_cluster(line_num)
@@ -787,7 +866,8 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                 if pending_shift_dz or pending_interior:
                     shift_transparent = (
                         keyword in ("SHIFT_IN_FIELD_MAP", "SUPERPOSE_MAP",
-                                    "FIELD_MAP", "TITLE", "PARTRAN_STEP",
+                                    "SUPERPOSE_MAP_OUT", "FIELD_MAP",
+                                    "TITLE", "PARTRAN_STEP",
                                     "FIELD_MAP_PATH")
                         or keyword in shift_capturable
                         or keyword in COMMAND_CLASSES
@@ -947,6 +1027,8 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                     kw = parse_positionals(SCHEMA["FIELD_MAP"], params)
                     if pending_superpose:
                         z0 = pending_superpose.pop()
+                        extra = (pending_superpose_extra.pop()
+                                 if pending_superpose_extra else ())
                         elem = _build_field_map_card(kw, line_num,
                                                      in_cluster=True)
                         if isinstance(elem, _NullFieldMap):
@@ -955,6 +1037,10 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                                 null_pos0_aperture.append(elem.aperture)
                         elif elem is not None:
                             open_cluster.append((z0, elem))
+                            ex = (list(extra) + [0.0] * 5)[:5]
+                            open_cluster_place.append((z0, *ex))
+                            open_cluster_labels.append(
+                                label if pending_exit else None)
                         else:
                             metadata["warnings"].append(
                                 f"Line {line_num}: SUPERPOSE cluster "
@@ -1315,6 +1401,7 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                                 "— the earlier placement is ignored."
                             )
                             pending_superpose.clear()
+                            pending_superpose_extra.clear()
                         z0 = float(params[0])
                         extras = []
                         for tok in params[1:7]:
@@ -1323,14 +1410,24 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                             except ValueError:
                                 break
                         if any(abs(v) > 0.0 for v in extras):
-                            metadata["warnings"].append(
-                                f"Line {line_num}: SUPERPOSE_MAP "
-                                "transverse/rotation operands ignored — "
-                                "TraceWin itself honours them only with "
-                                "SUPERPOSE_MAP_OUT (curved reference "
-                                "frames), which HELIX does not support."
-                            )
+                            if pending_exit:
+                                if any(abs(v) > 0.0 for v in extras[2:4]):
+                                    metadata["warnings"].append(
+                                        f"Line {line_num}: SUPERPOSE_MAP "
+                                        "θZ/θX rotation — HELIX follows the "
+                                        "manual's figure for its sign; only "
+                                        "θY is verified against TraceWin.")
+                            else:
+                                metadata["warnings"].append(
+                                    f"Line {line_num}: SUPERPOSE_MAP "
+                                    "transverse/rotation operands ignored — "
+                                    "TraceWin itself honours them only after "
+                                    "a SUPERPOSE_MAP_OUT card (curved "
+                                    "reference trajectory)."
+                                )
                         pending_superpose.append(z0)
+                        # X Y θZ θX θY (a 7th operand is not TraceWin's)
+                        pending_superpose_extra.append(tuple(extras[:5]))
 
                 elif keyword == "SHIFT_IN_FIELD_MAP":
                     # ``SHIFT_IN_FIELD_MAP dz`` — the FOLLOWING diagnostic
@@ -1360,16 +1457,36 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                         pending_shift_dz.append(dz_val)
 
                 elif keyword == "SUPERPOSE_MAP_OUT":
-                    # Declares a CURVED reference trajectory through the
-                    # cluster (dipole field maps), which HELIX cannot
-                    # model.  Physics downgrade: warn / strict-refuse.
-                    _downgrade(
-                        f"Line {line_num}: SUPERPOSE_MAP_OUT is not "
-                        "modelled — curved-reference clusters (dipole "
-                        "field maps) are unsupported; the exit-frame "
-                        "card is ignored."
-                    )
-                    lattice.add(Marker(next_name(keyword), snapshot=False))
+                    # ``SUPERPOSE_MAP_OUT Z X Y θZ θX θY``: the following
+                    # cluster curves the reference trajectory (a dipole
+                    # field map): exit point (mm) and exit direction (deg)
+                    # in the cluster's entrance frame.  Built at the
+                    # cluster's flush (CurvedFieldMapCluster).
+                    vals = []
+                    for tok in params[:6]:
+                        try:
+                            vals.append(float(tok))
+                        except ValueError:
+                            break
+                    if not vals:
+                        _downgrade(
+                            f"Line {line_num}: SUPERPOSE_MAP_OUT needs its "
+                            "exit point (Z X Y θZ θX θY) — card ignored.")
+                    else:
+                        if len(vals) < 6:
+                            _downgrade(
+                                f"Line {line_num}: SUPERPOSE_MAP_OUT has "
+                                f"{len(vals)} of its 6 operands (Z X Y θZ θX "
+                                "θY) — the missing ones are taken as 0.")
+                        vals = (vals + [0.0] * 6)[:6]
+                        if abs(vals[3]) > 0.0 or abs(vals[4]) > 0.0:
+                            metadata["warnings"].append(
+                                f"Line {line_num}: SUPERPOSE_MAP_OUT θZ/θX "
+                                "rotation — HELIX follows the manual's "
+                                "figure for its sign and the composition "
+                                "order; only θY is verified against "
+                                "TraceWin.")
+                        pending_exit[:] = [(*vals, line_num, label)]
 
                 elif keyword in ("READ_DST", "BEAM_ROT"):
                     # Both mutate the BEAM mid-line in TraceWin (re-read a

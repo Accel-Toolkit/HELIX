@@ -1,6 +1,6 @@
 # Element catalog overview
 
-HELIX has 21 concrete element classes covering every component
+HELIX has 22 concrete element classes covering every component
 you'd find in a proton/H⁻ linac.  Each element is a Python class in
 `linac_gen/elements/` with a corresponding TraceWin `.dat` keyword.
 This page is the catalog; click an entry to see the chapter for that
@@ -29,6 +29,7 @@ element.
 | Space-charge compensation marker (LEBT) | [SpaceChargeComp](17_spacechargecomp.md) |
 | Multi-gap cavity (TraceWin `NCELLS`) | [NCells](18_ncells.md) |
 | Overlapping field maps (TraceWin `SUPERPOSE_MAP`) | [SuperposedFieldMap](19_superposedfieldmap.md) |
+| Bend given as 3-D field maps (TraceWin `SUPERPOSE_MAP_OUT`) | [CurvedFieldMapCluster](19_superposedfieldmap.md#curved-clusters-superpose_map_out) |
 | Explicit 6×6 transfer matrix (Elegant `EMATRIX` import; no `.dat` keyword, import-only) | [MatrixElement](../06_running/02_tracewin_dat.md) |
 | Mid-lattice PIC grid-extent directive (`; HELIX_SC_GRID extent_sigma`, 3-D bunched PIC only) | [ScGridDirective](../appendices/B_keyword_cheatsheet.md) |
 
@@ -52,6 +53,7 @@ Solenoid                Multipole                RfqCell               SpaceChar
 Dipole                  Foil                     VaneRFQ               Edge
 MatrixElement           ThinLens                 NCells                ScGridDirective
                                                  SuperposedFieldMap
+                                                 CurvedFieldMapCluster
 ```
 
 * **TransferMapElement** — linear elements with a closed-form 6×6

@@ -531,7 +531,8 @@ class _Builder:
         name = type(e).__name__
         refused = {
             "Solenoid": "solenoids", "FieldMap": "field maps", "FieldMap3D": "field maps",
-            "SuperposedFieldMap": "field maps", "RfqCell": "RFQ cells", "VaneRFQ": "RFQs",
+            "SuperposedFieldMap": "field maps", "CurvedFieldMapCluster": "curved field maps",
+            "RfqCell": "RFQ cells", "VaneRFQ": "RFQs",
             "NCells": "NCELLS cavities",
         }
         if name in refused:
