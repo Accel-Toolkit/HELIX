@@ -49,18 +49,34 @@ def _ps():
     return plot_style
 
 
+def _dispose(*widgets):
+    """Delete standalone widgets now, whole, while they are still held (by
+    the test, or by the fixture that closes what a test leaves behind).  A
+    deleteLater left for later, after pyqtgraph's own close() of a plot —
+    which takes the plot's view box, its legend and curves out of the scene
+    — left that part to Python's garbage collector, which deleted it in the
+    middle of a later test (a crash).  A graphics view is hidden, not closed,
+    so that its scene still holds every item when it is deleted."""
+    import pyqtgraph as pg
+    from PyQt6.QtCore import QCoreApplication, QEvent
+    for w in widgets:
+        try:
+            if isinstance(w, pg.GraphicsView):
+                w.hide()
+            else:
+                w.close()
+            w.deleteLater()
+        except RuntimeError:                 # (deleted already)
+            pass
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 @pytest.fixture(autouse=True)
 def _close_new_windows(qapp):
-    """Close the top-level widgets a test leaves behind."""
+    """Close and delete the top-level widgets a test leaves behind."""
     before = set(map(id, qapp.topLevelWidgets()))
     yield
-    for w in qapp.topLevelWidgets():
-        if id(w) not in before:
-            try:
-                w.close()
-                w.deleteLater()
-            except RuntimeError:
-                pass
+    _dispose(*[w for w in qapp.topLevelWidgets() if id(w) not in before])
     qapp.processEvents()
 
 
@@ -341,9 +357,7 @@ def results_tab(qapp, gui_message_boxes):
     tab = rt.ResultsTab(st, _noop, _noop, _noop)
     st.set_results(res)
     yield tab, st, res, lat
-    for d in tab._popups.values():
-        d.close()
-    tab.deleteLater()
+    _dispose(*tab._popups.values(), tab)
     qapp.processEvents()
 
 
@@ -420,9 +434,7 @@ def test_an_empty_popup_with_a_cursor_shows_the_lattice(qapp, gui_message_boxes)
         x0, x1 = _vb(dlg._triple._p_x).viewRange()[0]
         assert x0 == pytest.approx(0.0, abs=1e-6) and x1 == pytest.approx(5000.0)
     finally:
-        for d in tab._popups.values():
-            d.close()
-        tab.deleteLater()
+        _dispose(*tab._popups.values(), tab)
 
 
 def test_the_lattice_parameter_popup_leaves_auto_range_on(qapp, results_tab):
@@ -542,8 +554,7 @@ def test_a_parameter_scan_refits_at_its_start_and_keeps_a_zoom(
         dlg._on_point_done(2, 3.0, 5.0)
         assert not _auto(dlg._plot)[0]           # the zoom is kept
     finally:
-        dlg.close()
-        dlg.deleteLater()
+        _dispose(dlg)
 
 
 def test_a_new_failure_study_refits_its_plots(qapp):
@@ -557,7 +568,7 @@ def test_a_new_failure_study_refits_its_plots(qapp):
         assert _auto(tab._bar) == (True, True)
         assert _auto(tab._heat) == (True, True)
     finally:
-        tab.deleteLater()
+        _dispose(tab)
 
 
 def test_study_panels_refit_for_a_new_choice_not_for_a_new_run(qapp, monkeypatch):
@@ -580,7 +591,7 @@ def test_study_panels_refit_for_a_new_choice_not_for_a_new_run(qapp, monkeypatch
             panel.load_study("unused")                    # a study opened
             assert _auto(sub.plot) == (True, True)
     finally:
-        panel.deleteLater()
+        _dispose(panel)
 
 
 def test_reliability_bars_refit_for_new_results(qapp):
@@ -607,7 +618,7 @@ def test_the_train_summary_refits_for_new_results(qapp):
         dlg.set_results(None)
         assert _auto(dlg._plot) == (True, True)
     finally:
-        dlg.deleteLater()
+        _dispose(dlg)
 
 
 # ---------------------------------------------------------------- end to end

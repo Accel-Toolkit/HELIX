@@ -12,6 +12,7 @@ deferred to call time so importing this module stays cheap.
 from __future__ import annotations
 
 import argparse
+import contextlib
 from pathlib import Path
 
 __all__ = [
@@ -96,6 +97,17 @@ def load_lattice(path, *, fallback_beam=None):
     # provenance/ group can record WHICH physics downgrades the parse
     # accepted (previously echoed to stderr and lost).
     lat.parse_warnings = list(warns)
+    # The beam the importer scaled the magnets with (a deck's BEAM, or the
+    # importer's default when the deck states none — "declared" False): ring
+    # mode keeps the magnets' normalized strengths from it and runs at a
+    # declared one; nothing on the linac side reads it.
+    ref = meta.get("reference") if isinstance(meta, dict) else None
+    if ref is not None:
+        with contextlib.suppress(AttributeError, TypeError, ValueError):
+            lat.ring_reference_beam = {"species": ref.species.name,
+                                       "energy": float(ref.w_kin),
+                                       "frequency": float(ref.frequency),
+                                       "declared": bool(meta.get("reference_declared", True))}
     return lat
 
 

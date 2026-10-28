@@ -16,6 +16,27 @@ import pytest
 pytest.importorskip("PyQt6")
 
 
+def _dispose(*widgets):
+    """Delete standalone widgets now, whole, while the test still holds them.
+    A deleteLater left for later, after pyqtgraph's own close() of a plot —
+    which takes the plot's view box, its legend and curves out of the scene
+    — left that part to Python's garbage collector, which deleted it in the
+    middle of a later test (a crash).  A graphics view is hidden, not closed,
+    so that its scene still holds every item when it is deleted."""
+    import pyqtgraph as pg
+    from PyQt6.QtCore import QCoreApplication, QEvent
+    for w in widgets:
+        try:
+            if isinstance(w, pg.GraphicsView):
+                w.hide()
+            else:
+                w.close()
+            w.deleteLater()
+        except RuntimeError:                 # (deleted already)
+            pass
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
 class _Click:
     def __init__(self, button):
         self._b = button
@@ -78,7 +99,7 @@ def test_click_hides_and_refits_then_restores(qapp):
         assert big.isVisible()
         assert _vb(p).viewRange()[1][1] >= 90.0
     finally:
-        p.close(); p.deleteLater()
+        _dispose(p)
 
 
 def test_manual_zoom_is_overridden_by_legend_click(qapp):
@@ -91,7 +112,7 @@ def test_manual_zoom_is_overridden_by_legend_click(qapp):
         assert _vb(p).state["autoRange"][1]
         assert _vb(p).state["autoRange"][0]                        # x not linked: re-enabled too
     finally:
-        p.close(); p.deleteLater()
+        _dispose(p)
 
 
 def test_right_click_does_nothing(qapp):
@@ -102,7 +123,7 @@ def test_right_click_does_nothing(qapp):
         assert big.isVisible()
         assert _vb(p).viewRange() == before
     finally:
-        p.close(); p.deleteLater()
+        _dispose(p)
 
 
 def test_xlinked_slave_refits_y_only(qapp):
@@ -121,7 +142,7 @@ def test_xlinked_slave_refits_y_only(qapp):
         assert _vb(p).state["autoRange"][0] == x_state           # x auto state untouched
         assert _vb(master).viewRange()[0] == master_x            # master x untouched
     finally:
-        p.close(); p.deleteLater(); master.close(); master.deleteLater()
+        _dispose(p, master)
 
 
 def test_symmetric_band_follows_its_legend_entry(qapp):
@@ -143,7 +164,7 @@ def test_symmetric_band_follows_its_legend_entry(qapp):
         assert pos.isVisible() and neg.isVisible() and fill.isVisible()
         assert _vb(p).viewRange()[1][1] >= 90.0
     finally:
-        p.close(); p.deleteLater()
+        _dispose(p)
 
 
 def test_ignore_bounds_item_toggles_without_refit(qapp):
@@ -165,7 +186,7 @@ def test_ignore_bounds_item_toggles_without_refit(qapp):
         assert not ring.isVisible()
         assert _vb(p).viewRange() == before and _vb(p).state["autoRange"] == state
     finally:
-        p.close(); p.deleteLater()
+        _dispose(p)
 
 
 def test_fixed_range_opt_out(qapp):
@@ -180,7 +201,7 @@ def test_fixed_range_opt_out(qapp):
         assert _vb(p).viewRange() == before
         assert _vb(p).state["autoRange"][1] is False
     finally:
-        p.close(); p.deleteLater()
+        _dispose(p)
 
 
 # ------------------------------------------------------------ real popup
@@ -226,6 +247,5 @@ def test_bmag_popup_refits_after_hiding_z(qapp, gui_message_boxes):
         assert "BMAG_z" in names                                  # export unaffected by visibility
         assert gui_message_boxes == []
     finally:
-        for d in tab._popups.values():
-            d.close()
-        tab.deleteLater(); rt._COMPANION_PROBE.clear()
+        _dispose(*tab._popups.values(), tab)
+        rt._COMPANION_PROBE.clear()

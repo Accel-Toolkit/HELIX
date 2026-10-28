@@ -28,15 +28,19 @@ its kick at one s-position and adds no length to the lattice.
 A foil does two things to each macroparticle:
 
 1. **Multiple Coulomb scattering** — many small-angle deflections add
-   up to a random transverse kick on `xp`, `yp`.  HELIX uses the
-   **Highland (1991)** RMS-angle formula:
+   up to a random transverse kick on `xp`, `yp`.  HELIX uses Highland's
+   RMS-angle formula in the form of Lynch & Dahl (1991) that the Particle
+   Data Group's review gives:
 
    $$
    \theta_0 = \frac{13.6\ \text{MeV}}{\beta c p}\,|z|\,
-   \sqrt{x/X_0}\,\bigl[1 + 0.038\ln(x/X_0)\bigr]
+   \sqrt{x/X_0}\,\bigl[1 + 0.038\ln\bigl(x z^2/(X_0 \beta^2)\bigr)\bigr]
    $$
 
-   where `x/X₀` is the foil thickness in radiation lengths.
+   where `x/X₀` is the foil thickness in radiation lengths, `z` the
+   particle's charge number and `β` its speed.  (Before 2026-10-24 the
+   logarithm was of `x/X₀` alone; with `z²/β²` in it θ0 is 2.3 % larger for
+   800 MeV protons and 20 % larger for 24 MeV ones.)
 
 2. **Energy loss** — the mean ionisation loss (Bethe–Bloch, tabulated
    at minimum-ionising rates per material) is subtracted from `dw`,

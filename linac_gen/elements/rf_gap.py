@@ -5,6 +5,14 @@ from linac_gen.elements.base import ThinKickElement
 from linac_gen.elements.mixins import Misalignment, FieldError
 
 
+class RFFrequencyError(ZeroDivisionError):
+    """An RF gap with a voltage would set the reference clock to a frequency
+    that is not positive.  A ZeroDivisionError — what the reference particle
+    has always raised for a zero frequency — so code that handled that, and
+    code that handled only ValueError, sees exactly what it saw before; the
+    message now names the gap."""
+
+
 class RFGap(ThinKickElement, Misalignment, FieldError):
     """Thin RF gap with energy kick, adiabatic damping, and RF defocusing.
 
@@ -230,14 +238,32 @@ class RFGap(ThinKickElement, Misalignment, FieldError):
         if eff_freq > 0 and eff_freq != f_entry:
             beam.particles[alive, 4] *= f_entry / eff_freq
 
+    def _keeps_clock(self, ref) -> bool:
+        """True when the gap has no frequency of its own (not positive) and no
+        voltage — a cavity whose RF settings live elsewhere, e.g. a MAD-X
+        RFCAVITY with no VOLT, FREQ or HARMON: it does nothing and the
+        reference clock stays as it is (multiparticle runs always did so).
+        With a voltage, raise :class:`RFFrequencyError` before anything is
+        changed (the reference particle used to fail deep inside, half
+        updated, on ``wavelength = c / f``)."""
+        f = self.effective_frequency
+        if f > 0 or f == ref.frequency:
+            return False
+        if self.effective_voltage == 0.0:
+            return True
+        raise RFFrequencyError(
+            f"RF gap {self.name!r} has no frequency ({f} MHz): give the cavity a "
+            "frequency (FREQ), or a harmonic number in a ring deck")
+
     def advance_ref(self, ref) -> None:
         """Update reference energy and frequency for envelope/matrix tracking."""
+        keep_clock = self._keeps_clock(ref)
         charge = ref.species.charge
         self._entry_phi_s = float(ref.phi_s)
         phi_s_rad = self._operating_phase(ref) * np.pi / 180.0
         dW_sync = charge * self.effective_voltage * self.ttf * np.cos(phi_s_rad)
         ref.w_kin += dW_sync
-        if self.effective_frequency != ref.frequency:
+        if self.effective_frequency != ref.frequency and not keep_clock:
             ref.frequency = self.effective_frequency
 
     def kick_matrix(self, ref) -> np.ndarray:
@@ -246,6 +272,7 @@ class RFGap(ThinKickElement, Misalignment, FieldError):
         Does NOT modify the reference particle (uses a copy for computing
         post-acceleration quantities).
         """
+        keep_clock = self._keeps_clock(ref)
         M = np.eye(6)
         charge = ref.species.charge
         mass = ref.species.mass
@@ -259,7 +286,7 @@ class RFGap(ThinKickElement, Misalignment, FieldError):
         dW_sync = charge * eff_V * self.ttf * np.cos(phi_s_rad)
         ref_copy = ref.copy()
         ref_copy.w_kin += dW_sync
-        if eff_freq != ref_copy.frequency:
+        if eff_freq != ref_copy.frequency and not keep_clock:
             ref_copy.frequency = eff_freq
         bg_new = ref_copy.bg
         wl = ref_copy.wavelength  # mm

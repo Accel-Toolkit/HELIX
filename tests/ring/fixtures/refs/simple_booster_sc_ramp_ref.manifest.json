@@ -1,0 +1,46 @@
+{
+ "generator": "dev-only",
+ "lattice_sha256": "03fdc4dabf69fb159bef23bd67b2e1dc56d059c65f660a38876f5a756e167323",
+ "output_sha256": "c7fdbdef5969b8ae90ef956e261f858cf8037fbcbfb035ffa28a82624616dbee",
+ "program": {
+  "energy": {
+   "end_kinetic_mev": 6000.0,
+   "frequency_hz": 15.0,
+   "kind": "sine",
+   "start_kinetic_mev": 800.0,
+   "t_min_s": 0.0005,
+   "t_start_s": 0.0008
+  },
+  "gamma_t": 5.449167323,
+  "voltage": {
+   "kind": "table",
+   "times_s": [
+    0.0,
+    0.003,
+    0.03
+   ],
+   "values_mv": [
+    0.4,
+    1.2,
+    1.2
+   ]
+  }
+ },
+ "reference": "reference code B (exact elements, curvilinear bend multipoles) on a ramp, with its 2.5-D space charge (transverse kick)",
+ "settings": {
+  "before_transition": 300,
+  "beta_long_m": 154.0,
+  "grid": 64,
+  "harmonic": 84,
+  "intensity": 15000000000.0,
+  "kicks_per_turn": 666,
+  "longitudinal_kick": false,
+  "particle_shape": 2,
+  "particles": 5000,
+  "prob_relative": 1.1,
+  "seed": 20261025,
+  "sigma_t_m": 0.1,
+  "turns": 600,
+  "z_bins": 128
+ }
+}

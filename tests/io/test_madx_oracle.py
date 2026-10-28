@@ -24,6 +24,8 @@ cpymad = pytest.importorskip("cpymad.madx")
 
 from linac_gen.cli.common import build_ref
 from linac_gen.core.config import BeamConfig
+from linac_gen.elements.dipole import Dipole
+from linac_gen.elements.edge import Edge
 from linac_gen.io.madx_parser import parse_madx
 from linac_gen.io.madx_writer import write_madx
 from linac_gen.io.tracewin_parser import parse_tracewin
@@ -100,6 +102,48 @@ def test_transverse_matrix_matches_real_madx(tmp_path, deck, species):
     M = np.asarray(compute_transfer_matrix(lat, copy.deepcopy(ref)))
     L = sum(float(getattr(e, "length", 0.0) or 0.0) for e in lat.elements)
     assert s_end == pytest.approx(L * 1e-3, rel=1e-12)
+    np.testing.assert_allclose(M[:4, :4], R[:4, :4], rtol=1e-8, atol=1e-10)
+
+
+def _fringe_faces(case):
+    """Bends whose faces differ in their fringe: a magnet split in two (the
+    inner faces have no edge), a gapless face, unequal gaps."""
+    def edge(nm, beta, gap, k1=0.45):
+        return Edge(name=nm, pole_rotation=beta, rho=1500.0, gap=gap, k1=k1)
+    parts = {
+        "split_angled": [edge("E1", 2.0, 50.0), Dipole(name="B1", angle=8.0, rho=1500.0),
+                         Dipole(name="B2", angle=8.0, rho=1500.0), edge("E2", 2.0, 50.0)],
+        "split_sector": [edge("E1", 0.0, 50.0), Dipole(name="B1", angle=8.0, rho=1500.0),
+                         Dipole(name="B2", angle=8.0, rho=1500.0), edge("E2", 0.0, 50.0)],
+        "gapless_exit": [edge("E1", 2.0, 50.0), Dipole(name="B", angle=8.0, rho=1500.0),
+                         edge("E2", 2.0, 0.0)],
+        "unequal_gaps": [edge("E1", 2.0, 50.0), Dipole(name="B", angle=8.0, rho=1500.0),
+                         edge("E2", -3.0, 30.0, k1=0.6)],
+        "gapless_entrance": [edge("E1", 0.0, 0.0), Dipole(name="B", angle=8.0, rho=1500.0),
+                             edge("E2", 0.0, 40.0, k1=0.5)],
+    }[case]
+    lat = Lattice()
+    lat.add(Drift(name="d1", length=100.0))
+    for e in parts:
+        lat.add(e)
+    lat.add(Drift(name="d2", length=100.0))
+    return lat
+
+
+_FRINGE_CASES = ["split_angled", "split_sector", "gapless_exit", "unequal_gaps",
+                 "gapless_entrance"]
+
+
+@pytest.mark.parametrize("case", _FRINGE_CASES)
+def test_exported_fringe_faces_match_real_madx(tmp_path, case):
+    """MAD-X's own transfer matrix of the exported bends is HELIX's: no
+    fringe at a face without a gapped edge, the right one where there is."""
+    lat = _fringe_faces(case)
+    ref = _ref()
+    out = tmp_path / f"{case}.madx"
+    write_madx(lat, out, ref)
+    R, _s = _madx_end_rmatrix(out)
+    M = np.asarray(compute_transfer_matrix(lat, copy.deepcopy(ref)))
     np.testing.assert_allclose(M[:4, :4], R[:4, :4], rtol=1e-8, atol=1e-10)
 
 

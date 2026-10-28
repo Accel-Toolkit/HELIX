@@ -12,7 +12,9 @@ a duplicate-keyword TypeError (they now work; see
 tests/parallelization/test_scan_point_sc.py).  The ``--sc`` values used here
 avoid the fields whose text conversion changed (train_images, halo; see
 tests/core/test_sc_methods.py).  The shipped projects are found by glob at
-test time.
+test time; a project that names a space-charge method other than "custom"
+was saved after named methods existed and resolves through that method
+(tests/core/test_sc_methods.py), so it is left out here.
 """
 from __future__ import annotations
 
@@ -104,6 +106,8 @@ def _projects():
             conv = json.load(open(p)).get("convergence") or {}
         except (OSError, ValueError):
             continue
+        if conv.get("sc_method") not in (None, "custom"):
+            continue                    # (a named method: not a legacy project)
         out.append(pytest.param(conv, id=os.path.relpath(p, _REPO)))
     return out
 

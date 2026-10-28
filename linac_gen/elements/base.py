@@ -3,6 +3,26 @@
 from abc import ABC, abstractmethod
 import numpy as np
 
+
+def angle_nearest(angle_deg: float, ref_deg: float) -> float:
+    """``angle_deg`` moved by whole turns to within 180 deg of ``ref_deg``
+    (returned unchanged when it already is)."""
+    while angle_deg - ref_deg > 180.0:
+        angle_deg -= 360.0
+    while angle_deg - ref_deg < -180.0:
+        angle_deg += 360.0
+    return angle_deg
+
+
+def wrap_deg(angle_deg: float) -> float:
+    """``angle_deg`` moved by whole turns into [-180, 180] (returned
+    unchanged when it already is)."""
+    while angle_deg > 180.0:
+        angle_deg -= 360.0
+    while angle_deg < -180.0:
+        angle_deg += 360.0
+    return angle_deg
+
 class Element(ABC):
     """Base class for all lattice elements."""
     def __init__(self, name: str, length: float, aperture: float, n_steps: int):

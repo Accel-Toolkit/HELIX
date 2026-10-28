@@ -512,6 +512,49 @@ def test_split_bend_shares_one_edge_pair(tmp_path):
                                _line_matrix(lat, _ref()), rtol=1e-12, atol=1e-13)
 
 
+def _fringe_faces(case):
+    """Bends whose faces differ in their fringe: a magnet split in two (the
+    inner faces have no edge), a gapless face, unequal gaps."""
+    def edge(nm, beta, gap, k1=0.45):
+        return Edge(name=nm, pole_rotation=beta, rho=1500.0, gap=gap, k1=k1)
+    parts = {
+        "split_angled": [edge("E1", 2.0, 50.0), Dipole(name="B1", angle=8.0, rho=1500.0),
+                         Dipole(name="B2", angle=8.0, rho=1500.0), edge("E2", 2.0, 50.0)],
+        "split_sector": [edge("E1", 0.0, 50.0), Dipole(name="B1", angle=8.0, rho=1500.0),
+                         Dipole(name="B2", angle=8.0, rho=1500.0), edge("E2", 0.0, 50.0)],
+        "gapless_exit": [edge("E1", 2.0, 50.0), Dipole(name="B", angle=8.0, rho=1500.0),
+                         edge("E2", 2.0, 0.0)],
+        "unequal_gaps": [edge("E1", 2.0, 50.0), Dipole(name="B", angle=8.0, rho=1500.0),
+                         edge("E2", -3.0, 30.0, k1=0.6)],
+        "gapless_entrance": [edge("E1", 0.0, 0.0), Dipole(name="B", angle=8.0, rho=1500.0),
+                             edge("E2", 0.0, 40.0, k1=0.5)],
+    }[case]
+    lat = Lattice()
+    lat.add(Drift(name="d1", length=100.0))
+    for e in parts:
+        lat.add(e)
+    lat.add(Drift(name="d2", length=100.0))
+    return lat
+
+
+_FRINGE_CASES = ["split_angled", "split_sector", "gapless_exit", "unequal_gaps",
+                 "gapless_entrance"]
+
+
+@pytest.mark.parametrize("case", _FRINGE_CASES)
+def test_each_face_keeps_its_own_fringe(tmp_path, case):
+    """A face with no edge of its own (inside a split magnet) or with a
+    gapless edge gets no fringe term in the export (fint / fintx = 0 there),
+    and an exit gap other than the hgap written is kept through fintx: the
+    deck read back gives HELIX's matrix again."""
+    lat = _fringe_faces(case)
+    out = tmp_path / f"{case}.madx"
+    write_madx(lat, out, _ref())
+    back, meta = parse_madx(str(out))
+    np.testing.assert_allclose(_line_matrix(back, meta["reference"]),
+                               _line_matrix(lat, _ref()), rtol=1e-12, atol=1e-13)
+
+
 def test_inconsistent_edges_warn_and_body_e1_is_combined(tmp_path):
     e1, b, e2 = _bend_parts()
     e1.rho = 1000.0                          # edge rho != body rho

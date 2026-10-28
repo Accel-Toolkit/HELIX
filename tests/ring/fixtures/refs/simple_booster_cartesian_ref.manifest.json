@@ -1,0 +1,8 @@
+{
+ "deck": "simple_booster.madx",
+ "deck_sha256": "9cec8414b5f44ca468fe25d3775e17659def20ff85915ea1e53c33587458d6a6",
+ "generator": "dev-only",
+ "output_sha256": "b8119ceb5dbdb86a8262e8b2f489dce0d86bc13f3c777dd0aa24bdf287d5e32b",
+ "reference": "reference code A: its own 4-D optics of the deck",
+ "settings": "RF voltage 0; bends: rot-kick-rot, yoshida4, 98 kicks; 4-D Twiss"
+}

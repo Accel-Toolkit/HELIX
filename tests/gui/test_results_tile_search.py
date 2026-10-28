@@ -22,12 +22,15 @@ def _keys():
 
 def _no_lattice_keys():
     """The tiles shown without a lattice: all but the RFQ section, which
-    shows only for a lattice with RFQ cells."""
-    return [k for k in _keys() if not k.startswith("rfq_")]
+    shows only for a lattice with RFQ cells, and the RING RUN section, which
+    shows only while a ring run is shown."""
+    return [k for k in _keys() if not k.startswith(("rfq_", "ring_"))]
 
 
 def _rfq_only(cards):
-    return bool(cards) and all(c._key.startswith("rfq_") for c in cards)
+    """A section hidden here: the RFQ one (no RFQ cells) or RING RUN (no ring
+    run shown)."""
+    return bool(cards) and all(c._key.startswith(("rfq_", "ring_")) for c in cards)
 
 
 def _hay(key):

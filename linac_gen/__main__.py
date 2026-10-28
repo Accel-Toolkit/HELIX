@@ -23,6 +23,8 @@ Subcommands:
   compensation, imperfections with faults on error seeds, foil scenarios
   and availability as one resumable campaign with a report; job export /
   import and a built-in self-test;
+* ``ring`` — ring mode: ``ring optics`` gives a ring's tunes, chromaticity,
+  momentum compaction and periodic Twiss from the ring kernels;
 * ``match`` — delegates to the matcher (``python -m linac_gen.matching``).
 
 Every subcommand takes ``--threads N|all``: the CPU threads for the
@@ -80,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     from linac_gen.cli import orm as orm_cmd
     from linac_gen.cli import tracewin_ini as twini_cmd
     from linac_gen.cli import reliability as rel_cmd
+    from linac_gen.cli import ring as ring_cmd
 
     run_cmd.add_arguments(command(
         "run", help="run one headless simulation"))
@@ -115,6 +118,11 @@ def main(argv: list[str] | None = None) -> int:
         "reliability", help="Reliability Study mode — faults + compensation, imperfections, "
                             "foil, availability as one resumable campaign with a report; "
                             "job export/import; self-test"))
+    ring_cmd.add_arguments(command(
+        "ring", help="ring mode — `ring optics`: tunes, chromaticity, momentum "
+                     "compaction and periodic Twiss of a ring; `ring run`: turns of a bunch, "
+                     "at fixed energy or through a ramp; `ring ramp`: the reference "
+                     "particle through a ramp"))
     sub.add_parser("match", add_help=False,
                    help="run the matcher (delegates to linac_gen.matching)")
 
@@ -146,6 +154,8 @@ def main(argv: list[str] | None = None) -> int:
         return twini_cmd.run(args)
     if args.command == "reliability":
         return rel_cmd.run(args)
+    if args.command == "ring":
+        return ring_cmd.run(args)
     return 2
 
 

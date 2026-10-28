@@ -55,7 +55,7 @@ class Edge(PassiveElement):
     def transfer_matrix(self, ref: ReferenceParticle) -> np.ndarray:
         M = np.eye(6)
         beta_deg = self.pole_rotation
-        if beta_deg == 0.0 or self.rho == 0.0:
+        if self.rho == 0.0:
             return M
         beta_rad = math.radians(beta_deg)
         rho_m = self.rho * 1e-3
@@ -67,6 +67,8 @@ class Edge(PassiveElement):
                    / (rho_m * max(math.cos(beta_rad), 1e-12)))
         else:
             psi = 0.0
+        if beta_deg == 0.0 and psi == 0.0:
+            return M              # (a square face and no fringe: no edge effect)
         if self.hv == 0:          # horizontal bend plane
             M[1, 0] = +tan_b / rho_m
             M[3, 2] = -math.tan(beta_rad - psi) / rho_m

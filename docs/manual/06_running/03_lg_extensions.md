@@ -18,18 +18,33 @@ file remains valid TraceWin input.
 ```
 
 The parser recognises the `;@LG` prefix.  The remainder is parsed as
-`key=value` pairs and stored in `metadata["lg_options"]` (the second
-return value of `parse_tracewin`) and mirrored onto
-`lattice.lg_options`.
+`key=value` pairs (several may share a line; text after `#` or `;` is a
+comment) and stored in `metadata["lg_options"]` (the second return value
+of `parse_tracewin`) and mirrored onto `lattice.lg_options`.  Numbers
+become numbers, `true` and `false` become booleans, anything else stays
+text.
 
-!!! note "Parsed and stored — not yet wired into the runtime"
-    `;@LG` directives are currently **informational**: HELIX parses
-    them, keeps them for round-tripping and for external tooling, but
-    nothing in the simulation core or the GUI reads
-    `lattice.lg_options` when building a run's configuration.  To
-    actually set SC / tracking options, use the GUI (Numerics tab),
-    the CLI flags (`--nx`, `--kernel`, `--sc NAME=VALUE`, …), or the
-    Python API (`SpaceChargeConfig`, `Simulation` arguments).
+A value runs to the next `key=` on its line, so it may contain spaces:
+`;@LG note=booster ring study` gives `note` the value
+`"booster ring study"`.  A key on its own is a flag (`true`).  A flag
+therefore goes before the pairs of its line, or on a line of its own:
+`;@LG ring harmonic=84` declares a ring with harmonic 84, while
+`;@LG harmonic=84 ring` gives `harmonic` the text `"84 ring"`.
+
+!!! note "Parsed and stored — mostly informational"
+    The space-charge and tracking directives below are **informational**:
+    HELIX parses them and keeps them — the deck writer (`write_tracewin`,
+    the GUI's Save Lattice) writes them back — and external tooling can
+    read them, but nothing in the simulation core or the GUI reads them
+    when building a run's configuration.  To actually set SC / tracking
+    options, use the GUI (Numerics tab), the CLI flags (`--nx`,
+    `--kernel`, `--sc NAME=VALUE`, …), or the Python API
+    (`SpaceChargeConfig`, `Simulation` arguments).  Two keys are read:
+    `ring` declares the deck a ring (the Lattice tab then offers ring mode,
+    as it does for a lattice whose bends close on themselves), and
+    `harmonic` gives ring mode the RF harmonic number h — unless the ring
+    settings name one, every cavity runs at h times the revolution
+    frequency.
 
 ## Recognised keys
 
@@ -64,6 +79,13 @@ noted above.
 |---|---|---|---|
 | `env_solver` | str | `matrix` | envelope flavour: `matrix` or `sacherer` |
 
+### Ring mode (read by HELIX)
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `ring` | flag | — | declares the deck a ring: the Lattice tab offers ring mode ([Ring mode](../17_ring/01_overview.md)) |
+| `harmonic` | int | — | the RF harmonic number h: in ring mode every cavity runs at h times the revolution frequency, unless the ring settings name a harmonic |
+
 ## Why comment-prefix?
 
 Two reasons:
@@ -76,12 +98,13 @@ Two reasons:
 
 ## Where they end up
 
-The directives are read at parse time and stored — nothing more:
+The directives are read at parse time and stored:
 
 | Where | Contents |
 |---|---|
-| `metadata["lg_options"]` | dict of every `;@LG key=value` pair, in file order |
+| `metadata["lg_options"]` | dict of every `;@LG key=value` pair (a flag as `True`), in file order |
 | `lattice.lg_options` | the same dict, attached to the `Lattice` for downstream consumers |
+| a deck saved by `write_tracewin` | the same options as `;@LG` lines at the top, one per line, so they read back as they were; an option that could not (a key with a blank, a value holding `#` or `;` …) is left out with a warning |
 
 If you write a driver script, you can consume them yourself, e.g.:
 

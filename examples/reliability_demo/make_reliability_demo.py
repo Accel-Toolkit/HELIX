@@ -186,7 +186,10 @@ def run_chain(off: str | None, frozen: bool, pins: dict[str, float] | None):
 def highland_theta_rad(w_mev: float, x_over_x0: float) -> float:
     p = momentum_mev_c(w_mev)
     beta = beta_of(w_mev)
-    return 13.6 / (beta * p) * math.sqrt(x_over_x0) * (1.0 + 0.038 * math.log(x_over_x0))
+    # (Lynch & Dahl's form, as the Particle Data Group gives it: z^2/beta^2 in
+    # the logarithm, z = 1)
+    return 13.6 / (beta * p) * math.sqrt(x_over_x0) * (
+        1.0 + 0.038 * math.log(x_over_x0 / (beta * beta)))
 
 
 def truth() -> dict:

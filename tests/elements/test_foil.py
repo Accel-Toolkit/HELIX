@@ -50,10 +50,29 @@ def test_supported_materials_lists_all_table_entries():
     assert set(supported_materials()) == set(_MATERIALS.keys())
 
 
+@pytest.mark.parametrize("material, x0, dedx, i_ev, z_over_a", [
+    ("Ti", 16.16, 1.477, 233.0, 22 / 47.867),   # PDG 2024 titanium
+    ("AIR", 36.62, 1.815, 85.7, 0.49919),        # PDG 2024 dry air, 1 atm
+])
+def test_window_and_air_materials_carry_pdg_numbers(material, x0, dedx, i_ev, z_over_a):
+    """A titanium extraction window and lumped in-air flight paths rely on
+    these two rows; pin the PDG values so a retyped table cannot drift
+    silently."""
+    row = _MATERIALS[material]
+    assert row["X0_g_cm2"] == x0
+    assert row["dEdx_min_MeVcm2_g"] == dedx
+    assert row["I_eV"] == i_ev
+    assert abs(row["Z"] / row["A"] - z_over_a) < 1e-4
+    foil = Foil(name="F", material=material, thickness_ug_cm2=57658.0, seed=1)
+    assert foil.material == material
+    assert foil._thickness_over_X0() == pytest.approx(57658.0e-6 / x0, rel=1e-12)
+
+
 # ── Highland scattering ──────────────────────────────────────────────────────
 
 def test_highland_theta_rms_matches_textbook_for_carbon_at_800MeV():
-    """Verify the leading 13.6 MeV / βcp · √(x/X0) · log_term formula."""
+    """Verify the formula of Lynch & Dahl as the Particle Data Group gives it:
+    13.6 MeV / βcp · |z| · √(x/X0) · [1 + 0.038 ln(x z² / (X0 β²))]."""
     foil = Foil(name="F", material="C", thickness_ug_cm2=600.0, seed=42)
     beam = _make_beam(species=H_MINUS, w_kin_MeV=800.0, n=1)
 
@@ -61,8 +80,9 @@ def test_highland_theta_rms_matches_textbook_for_carbon_at_800MeV():
     p_MeV = beam.ref.bg * beam.ref.species.mass
     beta = beam.ref.beta
     x_X0 = (600.0e-6) / _MATERIALS["C"]["X0_g_cm2"]
-    expected = (13.6 / (beta * p_MeV)) * math.sqrt(x_X0) * (
-        1.0 + 0.038 * math.log(x_X0)
+    z = 1.0                                  # (H-: |z| = 1)
+    expected = (13.6 / (beta * p_MeV)) * z * math.sqrt(x_X0) * (
+        1.0 + 0.038 * math.log(x_X0 * z * z / (beta * beta))
     )
     measured = foil._highland_theta_rms(beam)
     assert measured == pytest.approx(expected, rel=1e-12)

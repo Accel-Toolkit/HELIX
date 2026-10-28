@@ -278,6 +278,8 @@ class EnvelopeTriple(QWidget):
             v.addWidget(p, stretch=1)
         self._lattice = None
         self._aperture_visible = True
+        # a ring run turn by turn: no aperture (the pipe is a function of s)
+        self._turn_domain = False
         self._ap_x_cache: tuple[np.ndarray, np.ndarray] | None = None
         self._ap_y_cache: tuple[np.ndarray, np.ndarray] | None = None
 
@@ -332,10 +334,20 @@ class EnvelopeTriple(QWidget):
 
     def set_aperture_visible(self, visible: bool) -> None:
         self._aperture_visible = bool(visible)
-        _set_aperture_visibility(self._ap_x, self._ap_x_cache, visible)
-        _set_aperture_visibility(self._ap_y, self._ap_y_cache, visible)
+        shown = self._aperture_visible and not self._turn_domain
+        _set_aperture_visibility(self._ap_x, self._ap_x_cache, shown)
+        _set_aperture_visibility(self._ap_y, self._ap_y_cache, shown)
         for p in (self._p_x, self._p_y):
             _autorange(p)
+
+    def set_x_domain(self, domain: str) -> None:
+        """"turn" (a ring run turn by turn): the aperture overlay is cleared —
+        the pipe is a function of s — and the s cursors hidden; back to "s":
+        the overlay as chosen, the cursors shown."""
+        self._turn_domain = domain == "turn"
+        self.set_aperture_visible(self._aperture_visible)
+        for c in self._cursors:
+            c.setVisible(not self._turn_domain)
 
     def set_s_cursor(self, s: float) -> None:
         for c in self._cursors:

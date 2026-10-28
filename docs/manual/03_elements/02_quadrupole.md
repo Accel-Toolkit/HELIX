@@ -20,7 +20,8 @@ Conventions:
 
 * HELIX uses signed gradient: G > 0 focuses x, defocuses y for
   positive-charge particles (proton).  For H⁻, sign flips
-  automatically inside the matrix.
+  automatically inside the matrix — and so do the kicks of `g3..g6`
+  (every field kick takes the sign of the charge).
 * `g3..g6` are TraceWin's higher-multipole content.  Until recently
   these were parsed but ignored; HELIX now applies them as thin
   [Multipole](11_multipole.md) kicks **distributed across every

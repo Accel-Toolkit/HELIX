@@ -1,0 +1,33 @@
+{
+ "cases": [
+  "drift_expanded",
+  "drift_exact",
+  "quad",
+  "quad_defocusing_3kicks",
+  "sextupole",
+  "octupole_3kicks",
+  "multipole_thin",
+  "bend_rot-kick-rot_yoshida4",
+  "bend_rot-kick-rot_teapot",
+  "bend_rot-kick-rot_uniform",
+  "bend_bend-kick-bend_yoshida4",
+  "bend_mat-kick-mat_uniform",
+  "bend_drift-kick-drift-exact_teapot",
+  "bend_field_error",
+  "bend_edges_linear",
+  "bend_edges_full",
+  "bend_negative_edges_full",
+  "straight_bend",
+  "cavity",
+  "srotation",
+  "xyshift",
+  "yrotation",
+  "wedge",
+  "dipole_edge_linear"
+ ],
+ "generator": "dev-only",
+ "n_particles": 64,
+ "output_sha256": "a77d356de3c2e150a1dee6fc25c87f4413282fc9caa980b3d3b5401e6d6ec9bc",
+ "reference": "reference code A (element maps, Cartesian bend multipoles)",
+ "seed": 20261022
+}

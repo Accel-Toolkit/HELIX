@@ -43,7 +43,8 @@ first order since <dE> / W ~ 1e-6 here).
 moments, so there is nothing for it to see.
 
 Materials supported (areal-density basis, ug/cm2):
-  C, Be, Al, Cu, Mo, W
+  C, Be, Al, Cu, Mo, W, Ti, AIR  (AIR = dry air at 1 atm, for lumped
+  in-air flight paths)
 
 Used in HELIX primarily for the BTL -> Booster charge-exchange stripper
 in the PIP-II model. Round-trips through TraceWin .dat as a comment line
@@ -85,6 +86,16 @@ _MATERIALS: dict[str, dict[str, float]] = {
     "Cu": {"X0_g_cm2": 12.86, "dEdx_min_MeVcm2_g": 1.403, "Z": 29, "A":  63.546, "I_eV": 322.0},
     "Mo": {"X0_g_cm2":  9.80, "dEdx_min_MeVcm2_g": 1.274, "Z": 42, "A":  95.95,  "I_eV": 424.0},
     "W":  {"X0_g_cm2":  6.76, "dEdx_min_MeVcm2_g": 1.145, "Z": 74, "A": 183.84,  "I_eV": 727.0},
+    # Ti: PDG 2024 atomic & nuclear properties (titanium_Ti): X0 16.16
+    # g/cm2, dE/dx_min 1.477 MeV cm2/g, I 233.0 eV, rho 4.540 g/cm3 --
+    # e.g. a beam extraction window.
+    "Ti": {"X0_g_cm2": 16.16, "dEdx_min_MeVcm2_g": 1.477, "Z": 22, "A":  47.867, "I_eV": 233.0},
+    # AIR: PDG 2024 (air_dry_1_atm): X0 36.62 g/cm2, dE/dx_min 1.815
+    # MeV cm2/g, I 85.7 eV, Z/A 0.49919, rho 1.205e-3 g/cm3 at 20 C.
+    # Z/A is what the Bethe and Bohr terms use; the Z, A pair below is an
+    # effective one chosen so Z/A = 0.49919 (atomic-fraction mean Z of
+    # 0.76 N + 0.23 O + 0.01 Ar), for lumped in-air flight paths.
+    "AIR": {"X0_g_cm2": 36.62, "dEdx_min_MeVcm2_g": 1.815, "Z": 7.37, "A": 14.764, "I_eV": 85.7},
 }
 
 _STRAGGLING_MODES = ("auto", "landau", "gaussian")
@@ -362,13 +373,16 @@ class Foil(ThinKickElement):
         return x_g_cm2 / mat["X0_g_cm2"]
 
     def _highland_theta_rms(self, beam_or_ref) -> float:
-        """Highland (1991) RMS scattering angle in **radians** for this foil
-        and the current reference particle.
+        """Highland's RMS scattering angle in **radians** for this foil and the
+        current reference particle, in the form of G. R. Lynch and O. I. Dahl
+        (Nucl. Instrum. Methods B 58, 6 (1991)) that the Particle Data Group's
+        review gives:
 
-        θ_rms = (13.6 MeV / βcp) · |z| · √(x/X0) · [1 + 0.038·ln(x/X0)]
+        θ_rms = (13.6 MeV / βcp) · |z| · √(x/X0) · [1 + 0.038·ln(x z² / (X0 β²))]
 
         where ``z`` is the projectile charge (in electron units), ``p`` is
-        the momentum in MeV/c, and ``x/X0`` the fractional thickness.
+        the momentum in MeV/c, ``β`` its speed and ``x/X0`` the fractional
+        thickness.
         """
         ref = self._ref_of(beam_or_ref)
         x_over_X0 = self._thickness_over_X0()
@@ -383,7 +397,7 @@ class Foil(ThinKickElement):
             return 0.0
         # 13.6 MeV / (β · p_MeVc) — the leading constant in Highland.
         base = 13.6 / (beta * p_MeVc)
-        log_correction = 1.0 + 0.038 * math.log(x_over_X0)
+        log_correction = 1.0 + 0.038 * math.log(x_over_X0 * z_proj * z_proj / (beta * beta))
         theta = base * z_proj * math.sqrt(x_over_X0) * log_correction
         return float(theta)
 

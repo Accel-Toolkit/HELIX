@@ -188,7 +188,7 @@ GUI package lives in the repository, not on PyPI.
 | **TraceWin-compatible** | Reads `.dat` lattices · MAD-X, MAD8 and Elegant `.lte` import · Bmad, SciBmad and PALS import via lattix · `.dst` / partran / field-map I/O |
 | **Matching** | Periodic and transfer-line matched Twiss · multi-algorithm optimiser |
 | **GUI workbench** | PyQt6 — Beam · Lattice · Matching · Numerics · Surrogates · Param Study · Error Study · Failure Study · Results |
-| **Batch CLI** | `run` · `scan` · `batch` · `study` · `twiss` · `mo` · `failures` · `backtrack` · `export` · `orm` · `twini` · `reliability` · `match` · `assist` — headless, parallel, scriptable |
+| **Batch CLI** | `run` · `scan` · `batch` · `study` · `twiss` · `mo` · `failures` · `backtrack` · `export` · `orm` · `twini` · `reliability` · `ring` · `match` · `assist` — headless, parallel, scriptable |
 | **Interoperable** | HDF5 · openPMD-beamphysics · TraceWin `.dst` |
 | **Diagnostics** | Emittances · halo · transmission · dispersion · phase advance |
 | **Error studies** | Monte-Carlo misalignment / RF jitter · SVD orbit correction · failure studies |
@@ -309,7 +309,7 @@ linac_gen/
   pic/           CIC / TSC deposition, FFT Poisson solver, C++ kernels (csrc/)
   distributions/ Gaussian, KV, Waterbag, Parabolic, Uniform, file import
   matching/      matching engine, periodic & transfer-line matched Twiss
-  cli/           batch-mode CLI — run / scan / batch / study / twiss / mo / failures / backtrack / export / orm / twini / reliability / match / assist
+  cli/           batch-mode CLI — run / scan / batch / study / twiss / mo / failures / backtrack / export / orm / twini / reliability / ring / match / assist
   errors/        error models, Monte-Carlo studies, orbit correction (SVD)
   diagnostics/   DiagnosticRecorder, moments (RMS / Twiss / emittance)
   io/            TraceWin (.dat, .dst, .ini options file), MAD-X, MAD8 & Elegant I/O, lattix bridge (Bmad/SciBmad/PALS), field maps, HDF5 / openPMD output

@@ -1,0 +1,15 @@
+{
+ "generator": "dev-only",
+ "histograms": "dev-only (foil_c_ref.npz)",
+ "kinetic_mev": 800.0,
+ "n_particles": 200000,
+ "output_sha256": "7d82ef442082af2d3c7a70a6a6e853582aa979ecae0173207d646dacef9a72c9",
+ "reference": "reference code C: a carbon foil's multiple scattering as a Monte Carlo of single screened-Rutherford scatters (and, the full model, with nuclear scattering and ionization loss)",
+ "seed": 20261024,
+ "thickness_ug_cm2": [
+  380.0,
+  600.0,
+  6000.0,
+  20000.0
+ ]
+}

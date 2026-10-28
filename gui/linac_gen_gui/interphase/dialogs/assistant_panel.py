@@ -141,6 +141,140 @@ def _make_context(state, calc_dir: str, nav=None):
             self._results_path = path
             self._state.set_results(results)
 
+        # -- ring mode (WorkContext ring hooks): the Ring tab's settings,
+        # the mode switch and the ring results live in AppState and the
+        # Ring tab; reads of the tab's pages and every write hop to the GUI
+        # thread (a write whose hop timed out never lands late).
+        def _ring_tab(self):
+            app = (getattr(self._nav, "_app", None)
+                   if self._nav is not None else None)
+            return getattr(app, "ring_tab", None)
+
+        @property
+        def ring_config(self):
+            # (what the Ring tab's Run would use; without the tab, the
+            # state's settings)
+            tab = self._ring_tab()
+            if tab is None:
+                return dict(self._state.ring_config or {})
+
+            def _do():
+                return {"ok": True, "cfg": tab.current_settings()}
+            try:
+                return dict(self._gui_sync(_do, {"cancelled": False})["cfg"])
+            except RuntimeError:
+                return dict(self._state.ring_config or {})
+
+        @ring_config.setter
+        def ring_config(self, v):
+            pass
+
+        @property
+        def ring_mode(self):
+            return bool(self._state.ring_mode)
+
+        @ring_mode.setter
+        def ring_mode(self, v):
+            pass
+
+        @property
+        def ring_results(self):
+            return self._state.ring_results
+
+        @ring_results.setter
+        def ring_results(self, v):
+            pass
+
+        @property
+        def ring_results_path(self):
+            # (the file of the results the state holds — the Ring tab's run
+            # or the assistant's)
+            res = self._state.ring_results
+            path = ((getattr(res, "meta", None) or {}).get("dump_path")
+                    if res is not None else None)
+            return str(path) if path else ""
+
+        @ring_results_path.setter
+        def ring_results_path(self, v):
+            pass
+
+        def ring_running(self):
+            tab = self._ring_tab()
+            return bool(tab is not None and tab.is_running())
+
+        def ring_beam_config(self):
+            # (the Beam tab's form — what the Ring tab's Run and a project save
+            # read; without the tab, the state's beam)
+            tab = self._ring_tab()
+            provider = getattr(tab, "beam_config_provider", None) if tab is not None else None
+            if provider is None:
+                return self._state.beam_config
+
+            def _do():
+                try:
+                    return {"ok": True, "cfg": provider()}
+                except Exception as exc:          # noqa: BLE001 — a form that does not read
+                    return {"ok": False, "err": f"Beam settings: {exc}"}
+            return self._gui_sync(_do, {"cancelled": False})["cfg"]
+
+        def lattice_snapshot(self, lattice=None, should_stop=None):
+            # (copied while no walk or run changes the elements, as the Ring
+            # tab's workers copy it)
+            import copy
+
+            from linac_gen_gui.interphase.workers import WALK_LOCK, acquire_walk_lock
+            lat = self._state.lattice if lattice is None else lattice
+            if not acquire_walk_lock(should_stop):
+                raise RuntimeError("stopped while waiting for the lattice")
+            try:
+                return copy.deepcopy(lat)
+            finally:
+                WALK_LOCK.release()
+
+        def set_ring_config(self, cfg):
+            # the settings land in the state AND on the Ring tab's pages
+            # (its Run button reads the pages; a project save the state,
+            # whose ring section is written once ring settings exist)
+            box = {"cancelled": False}
+
+            def _do():
+                if box["cancelled"]:
+                    return {"ok": False, "err": "cancelled"}
+                self._state.ring_config = dict(cfg)
+                # (no settings — a project without a ring section — have nothing
+                # to save, as File > Open Project leaves them)
+                self._state.ring_used = bool(cfg)
+                tab = self._ring_tab()
+                if tab is not None:
+                    tab.reload_settings()
+                self._state.mark_project_dirty()
+                return {"ok": True}
+            self._gui_sync(_do, box)
+
+        def set_ring_mode(self, on):
+            box = {"cancelled": False}
+
+            def _do():
+                if box["cancelled"]:
+                    return {"ok": False, "err": "cancelled"}
+                self._state.set_ring_mode(bool(on))
+                return {"ok": True, "on": bool(self._state.ring_mode)}
+            return self._gui_sync(_do, box)["on"]
+
+        def set_ring_results(self, results, path=""):
+            box = {"cancelled": False}
+
+            def _do():
+                if box["cancelled"]:
+                    return {"ok": False, "err": "cancelled"}
+                tab = self._ring_tab()
+                if tab is not None and tab.is_running():
+                    return {"ok": False,
+                            "err": "a ring run of the Ring tab is in progress"}
+                self._state.set_ring_results(results)
+                return {"ok": True}
+            self._gui_sync(_do, box)
+
         # -- element-parameter mutation hooks (WorkContext overrides) --
         # Tools run OFF the GUI thread (_AgentWorker QThread, JobManager
         # pool, SDK executor); the edit must become ONE undoable command
@@ -345,7 +479,8 @@ def _make_context(state, calc_dir: str, nav=None):
             def _do():
                 from PyQt6.QtCore import QEventLoop
                 from PyQt6.QtWidgets import QApplication
-                app.show_result_plot(key)          # opens + switches
+                if app.show_result_plot(key) is None:   # opens + switches
+                    return None        # (refused: never a stale, hidden window)
                 QApplication.processEvents(        # let it lay out — but
                     QEventLoop.ProcessEventsFlag   # never re-enter user
                     .ExcludeUserInputEvents)       # input (click storms)
@@ -628,6 +763,26 @@ class AssistantPanel(QDialog):
         "openai": [],
     }
 
+    @property
+    def plot_catalog(self):
+        """[(key, label)] of the Results tab's plots, read when asked (the
+        RING RUN plots join it once ring mode is on or a ring run exists);
+        a list assigned to it is used instead."""
+        own = self.__dict__.get("_plot_catalog_own")
+        if own is not None:
+            return own
+        app = getattr(self, "_app", None)
+        if app is not None and hasattr(app, "result_plot_catalog"):
+            try:
+                return app.result_plot_catalog()
+            except Exception:                    # noqa: BLE001
+                return []
+        return []
+
+    @plot_catalog.setter
+    def plot_catalog(self, value):
+        self.__dict__["_plot_catalog_own"] = None if value is None else list(value)
+
     def __init__(self, parent, state):
         super().__init__(parent)
         self.setWindowTitle("HELIX Assistant  (AI · optional)")
@@ -646,10 +801,8 @@ class AssistantPanel(QDialog):
                            if self._app is not None
                            and hasattr(self._app, "assistant_subtabs")
                            else {})
-        self.plot_catalog = (self._app.result_plot_catalog()
-                             if self._app is not None
-                             and hasattr(self._app, "result_plot_catalog")
-                             else [])
+        # (plot_catalog: read from the Results tab when asked — the RING RUN
+        # plots join it with ring mode or a ring run)
 
         # the panel's design system: 14 px body type, rounded controls,
         # accent-filled Send, ghost secondaries with hover states

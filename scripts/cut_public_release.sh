@@ -91,8 +91,13 @@ rm -rf examples/pipii examples/MEBT_To_Foil examples/pipii_tunable \
        examples/pip2_misalignment_study examples/pipii_hwr_ssr1_match \
        examples/piplattice examples/emittance_min examples/lebt_pxie \
        examples/lebt_plus_rfq examples/hebt_diag \
-       examples/pipii_multibunch examples/commissioning
+       examples/pipii_multibunch examples/commissioning \
+       examples/ring_pipii benchmarks/ring/dev tests/ring/dev \
+       scripts/dev_only
 rm -f  tests/analysis/test_scc_pxie_anchor.py
+# the release scanner's own tests read the dev-only token lists and name a
+# dev-only ramp file (scripts/dev_only is removed above): dev only
+rm -f  tests/scripts/test_release_scan.py
 # Instability-paper machinery: HELD from public releases until the PRAB
 # paper is submitted (user decision 2026-08-06) — remove these lines to
 # ship the tools alongside the paper.
@@ -180,6 +185,31 @@ BAD=$(find . -path ./.git -prune -o -type f -print \
 if [ -n "$BAD" ]; then
     echo "REMNANTS FOUND — refusing to release:"; echo "$BAD"; exit 1
 fi
+# Private lattice collections: their tokens live in the dev-only folder
+# (removed from the stage in step 2, so this script ships without them).
+# The lists are checked first (each pattern against its canary and against
+# public text it must not match), then matched against file names and file
+# contents; a grep that fails refuses the release instead of passing it.
+TOKENS="$DEV_ROOT/scripts/dev_only"
+python3 "$DEV_ROOT/scripts/release_scan.py" check-tokens "$TOKENS" \
+    || { echo "REFUSED: fix the private token lists in scripts/dev_only/"; exit 1; }
+set +e
+BADN=$(find . -path ./.git -prune -o -type f -print \
+       | grep -iEf "$TOKENS/private_name_tokens.txt"); RC_N=$?
+BADC=$(grep -rail --exclude-dir=.git -Ef "$TOKENS/private_content_tokens.txt" .); RC_C=$?
+set -e
+if [ "$RC_N" -gt 1 ] || [ "$RC_C" -gt 1 ]; then
+    echo "REFUSED: the private-token sweep failed (grep exit $RC_N / $RC_C)"; exit 1
+fi
+if [ -n "$BADN$BADC" ]; then
+    echo "PRIVATE LATTICE REFERENCES FOUND — refusing to release:"
+    echo "$BADN"; echo "$BADC"; exit 1
+fi
+# What a plain grep cannot read (compressed or re-encoded text: .npz, PNG
+# text chunks, UTF-16), links that leave the stage, and byte-for-byte copies
+# of the private lattice files.
+python3 "$DEV_ROOT/scripts/release_scan.py" deep . "$TOKENS" \
+    || { echo "PRIVATE CONTENT FOUND — refusing to release"; exit 1; }
 echo "sweep clean"
 
 echo "── 5/5 graft the release commit ──────────────────────────────"

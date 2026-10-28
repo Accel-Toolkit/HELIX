@@ -26,12 +26,49 @@ jobs:
       - name: Install HELIX (core)
         run: |
           pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[dev,ring]"
       - name: Run the core suite
         # GUI (PyQt6) and torch-heavy dirs are exercised in the full local
         # suite (about 3,900 tests); CI gates the pure-Python physics core.
         run: |
           pytest tests/core tests/elements tests/io tests/matching tests/assist tests/pic/test_openmp_single_runtime.py tests/pic/test_tsc_kernels_cpp.py tests/pic/test_torch_engine_kernels.py tests/pic/test_torch_devices.py tests/pic/test_gpu_particles.py tests/pic/test_greens_vertex.py tests/pic/test_greens_threads.py tests/pic/torch/test_torch_greens_cache.py tests/reliability tests/cli/test_run_mp_sim_hook.py tests/cli/test_sc_method_cli.py tests/parallelization/test_scan_point_sc.py tests/pic/test_field_reuse.py tests/pic/test_greens_guard.py tests/pic/test_greens_symmetric.py tests/pic/test_pic_kick_stages.py tests/pic/test_sc_factory.py tests/scripts tests/parallelization/test_threads.py tests/parallelization/test_pool_shares.py tests/pic/test_fft_split.py tests/pic/test_fft_pruned.py tests/pic/test_lean_solve.py tests/pic/test_deposit_threads.py tests/pic/test_thread_independence.py tests/cli/test_threads_option.py tests/rfq_td tests/cli/test_rfq_solver_cli.py tests/analysis/test_rfq_design.py tests/rfq_td -q
+
+  ring:
+    name: Ring mode (ubuntu, ${{ matrix.shard.name }})
+    runs-on: ubuntu-latest
+    # The ring tests (tests/ring, the ring CLI) on their own, in three shards
+    # balanced by measured time: on a 2-core runner they take about 100 min
+    # in all (33 min locally at 2 threads; one 90-minute job was cancelled at
+    # 72 %), each shard about a third.  The last shard is everything the
+    # others leave out, so a new test file always runs somewhere
+    # (tests/scripts/test_ci_ring_shards.py checks the split).  Linux only:
+    # Windows bills 2x on a private repository.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - name: "1 of 3"
+            args: "tests/ring/test_painting_reference.py tests/ring/test_ramp.py tests/ring/test_ramp_reference.py"
+          - name: "2 of 3"
+            args: "tests/ring/test_engine.py tests/ring/test_matched_beam.py tests/ring/test_ramp_aperture_reference.py"
+          - name: "3 of 3"
+            args: "tests/ring tests/cli/test_ring_cli.py --ignore=tests/ring/test_painting_reference.py --ignore=tests/ring/test_ramp.py --ignore=tests/ring/test_ramp_reference.py --ignore=tests/ring/test_engine.py --ignore=tests/ring/test_matched_beam.py --ignore=tests/ring/test_ramp_aperture_reference.py"
+    env:
+      LINAC_GEN_REQUIRE_CPP: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install HELIX (core and ring)
+        run: |
+          pip install --upgrade pip
+          pip install -e ".[dev,ring]"
+      - name: Run the ring tests (shard ${{ matrix.shard.name }})
+        run: |
+          pytest ${{ matrix.shard.args }} -q
 
   macos:
     name: Core suite (macOS)
@@ -53,7 +90,7 @@ jobs:
       - name: Install HELIX (core)
         run: |
           pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[dev,ring]"
       - name: Run the core suite
         run: |
           pytest tests/core tests/elements tests/io tests/matching tests/assist tests/pic/test_openmp_single_runtime.py tests/pic/test_tsc_kernels_cpp.py tests/pic/test_torch_engine_kernels.py tests/pic/test_torch_devices.py tests/pic/test_gpu_particles.py tests/pic/test_greens_vertex.py tests/pic/test_greens_threads.py tests/pic/torch/test_torch_greens_cache.py tests/reliability tests/cli/test_run_mp_sim_hook.py tests/cli/test_sc_method_cli.py tests/parallelization/test_scan_point_sc.py tests/pic/test_field_reuse.py tests/pic/test_greens_guard.py tests/pic/test_greens_symmetric.py tests/pic/test_pic_kick_stages.py tests/pic/test_sc_factory.py tests/scripts tests/parallelization/test_threads.py tests/parallelization/test_pool_shares.py tests/pic/test_fft_split.py tests/pic/test_fft_pruned.py tests/pic/test_lean_solve.py tests/pic/test_deposit_threads.py tests/pic/test_thread_independence.py tests/cli/test_threads_option.py tests/rfq_td tests/cli/test_rfq_solver_cli.py tests/analysis/test_rfq_design.py tests/rfq_td -q
@@ -82,7 +119,7 @@ jobs:
         run: call setup.bat
       - name: Install dev extras into the setup venv
         shell: cmd
-        run: .venv\Scripts\python -m pip install -e ".[dev]"
+        run: .venv\Scripts\python -m pip install -e ".[dev,ring]"
       - name: Run the core suite (same selection as ubuntu)
         shell: cmd
         run: .venv\Scripts\python -m pytest tests/core tests/elements tests/io tests/matching tests/assist tests/pic/test_openmp_single_runtime.py tests/pic/test_tsc_kernels_cpp.py tests/pic/test_torch_engine_kernels.py tests/pic/test_torch_devices.py tests/pic/test_gpu_particles.py tests/pic/test_greens_vertex.py tests/pic/test_greens_threads.py tests/pic/torch/test_torch_greens_cache.py tests/reliability tests/cli/test_run_mp_sim_hook.py tests/cli/test_sc_method_cli.py tests/parallelization/test_scan_point_sc.py tests/pic/test_field_reuse.py tests/pic/test_greens_guard.py tests/pic/test_greens_symmetric.py tests/pic/test_pic_kick_stages.py tests/pic/test_sc_factory.py tests/scripts tests/parallelization/test_threads.py tests/parallelization/test_pool_shares.py tests/pic/test_fft_split.py tests/pic/test_fft_pruned.py tests/pic/test_lean_solve.py tests/pic/test_deposit_threads.py tests/pic/test_thread_independence.py tests/cli/test_threads_option.py tests/rfq_td tests/cli/test_rfq_solver_cli.py tests/analysis/test_rfq_design.py tests/rfq_td -q

@@ -42,6 +42,16 @@ class _Sparkline(pg.PlotWidget):
             brush=pg.mkBrush(r, g, b, 70),
         )
 
+    def set_thinned(self, on: bool) -> None:
+        """Draw the series thinned to the tile's width (each pixel column's
+        lowest and highest point): a ring run's turns, up to some 10^5; a
+        linac run's series is drawn as it is."""
+        if bool(on) != getattr(self, "_thinned", False):
+            self._thinned = bool(on)
+            self._curve.setDownsampling(auto=self._thinned, method="peak")
+            # (a wide pen on one long zig-zag path is slow to stroke: segments)
+            self._curve.curve.setSegmentedLineMode("on" if self._thinned else "auto")
+
     def set_series(self, xs, ys):
         xs = np.asarray(xs, dtype=float)
         ys = np.asarray(ys, dtype=float)
@@ -91,6 +101,10 @@ class ResultCard(QFrame):
         Optional callable ``fn(results) -> str``: the tile's tooltip, set
         on every :meth:`set_results` (also with ``results=None``).  An
         exception leaves the tile without a tooltip.
+    show_trend
+        Show the change from start to end next to the end value (default).
+        False for quantities where that percentage means nothing, such as
+        a correlation that starts near 0.
     """
 
     clicked = pyqtSignal(str)
@@ -101,13 +115,15 @@ class ResultCard(QFrame):
                  unit: str = "",
                  value_fmt: str = "{:.3g}",
                  series_fn=None,
-                 tooltip_fn=None):
+                 tooltip_fn=None,
+                 show_trend: bool = True):
         super().__init__()
         self._key = key
         self._accent = accent
         self._series_attr = series_attr
         self._series_fn = series_fn
         self._tooltip_fn = tooltip_fn
+        self._show_trend = bool(show_trend)
         self._unit = unit
         self._value_fmt = value_fmt
 
@@ -217,7 +233,7 @@ class ResultCard(QFrame):
             self._value_lbl.setText(self._value_fmt.format(y_end))
         except Exception:
             self._value_lbl.setText(f"{y_end:.3g}")
-        if abs(y_start) > 1e-30:
+        if self._show_trend and abs(y_start) > 1e-30:
             pct = (y_end - y_start) / abs(y_start) * 100.0
             arrow = "↑" if pct > 0.5 else ("↓" if pct < -0.5 else "→")
             color = (theme.OK if abs(pct) < 5
@@ -233,6 +249,8 @@ class ResultCard(QFrame):
 
     def set_results(self, results) -> None:
         """Update sparkline + footer (and tooltip).  Gracefully handles None."""
+        if self._spark is not None:
+            self._spark.set_thinned(getattr(results, "x_domain", "s") == "turn")
         if self._tooltip_fn is not None:
             try:
                 self.setToolTip(self._tooltip_fn(results) or "")

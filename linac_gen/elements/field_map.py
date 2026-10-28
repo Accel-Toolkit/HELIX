@@ -33,6 +33,7 @@ import sys
 import numpy as np
 
 from linac_gen.elements.base import FieldMapElement as FieldMapBase
+from linac_gen.elements.base import angle_nearest, wrap_deg
 from linac_gen.io.field_map_data import FieldMapData, FieldChannel
 from linac_gen.io.tracewin_geom import Channel
 from linac_gen.tracking.rk4 import numerical_jacobian_batched
@@ -394,12 +395,17 @@ class FieldMap(FieldMapBase, Misalignment, FieldError):
         relax = 0.7
         for _ in range(max_iter):
             re_v, im_v = self._probe_voltage_integral(ref_entry, theta_s - psi)
-            psi_new = float(np.rad2deg(np.arctan2(im_v, re_v)))
+            # psi and psi_new are angles: take psi_new on the branch
+            # nearest psi, or near +-180 deg the relaxation below averages
+            # across the wrap, never converges, and leaves a phase that
+            # can be ~100 deg off (a decelerating cavity)
+            psi_new = angle_nearest(
+                float(np.rad2deg(np.arctan2(im_v, re_v))), psi)
             if abs(psi_new - psi) < tol_deg:
                 psi = psi_new
                 break
             psi = (1.0 - relax) * psi + relax * psi_new
-        self._sync_offset_deg = float(psi)
+        self._sync_offset_deg = wrap_deg(float(psi))
 
     def _scale(self, ch_enum: Channel, ch: FieldChannel) -> float:
         """Combined amplitude: global scale × k_e/k_b × 1/norm_factor.

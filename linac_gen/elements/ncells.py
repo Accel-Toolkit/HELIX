@@ -35,7 +35,7 @@ from typing import Optional
 import numpy as np
 
 from linac_gen.core.constants import C_LIGHT
-from linac_gen.elements.base import FieldMapElement
+from linac_gen.elements.base import FieldMapElement, angle_nearest, wrap_deg
 from linac_gen.core.beam import transport_alive
 
 
@@ -483,12 +483,15 @@ class NCells(FieldMapElement):
         psi = 0.0
         for _ in range(30):
             re_v, im_v = self._probe_voltage_integral(ref_entry, theta - psi)
-            psi_new = float(np.rad2deg(np.arctan2(im_v, re_v)))
+            # angles: psi_new on the branch nearest psi (see
+            # FieldMap3D._calibrate_sync_phase — no averaging across +-180)
+            psi_new = angle_nearest(
+                float(np.rad2deg(np.arctan2(im_v, re_v))), psi)
             if abs(psi_new - psi) < 0.005:
                 psi = psi_new
                 break
             psi = 0.3 * psi + 0.7 * psi_new
-        self._sync_offset_deg = float(psi)
+        self._sync_offset_deg = wrap_deg(float(psi))
 
     def _probe_voltage_integral(self, ref_entry, phi_input_deg: float):
         """Σ q·V·e^{i·φ_gen} over the gaps with self-consistent β (for calibration).

@@ -31,6 +31,7 @@ same for any number —
 | `orm` | orbit-response matrix — compare a measurement with the model, LOCO-style calibration of quads, trims and BPM gains, recalibrated-deck export | [CLI: orm](13_cli_orm.md) |
 | `reliability` | Reliability Study mode — fault tolerance with compensation, imperfections with faults on error seeds, foil scenarios and availability as one resumable campaign with a report; job export/import; self-test | [CLI: reliability](14_cli_reliability.md) |
 | `twini` | TraceWin project options file (`.ini`) — the converted beam, a decode report, or a `.lgproj` for the deck | [Importing TraceWin project settings](02_tracewin_dat.md#importing-tracewin-project-settings-ini) |
+| `ring` | ring mode — `ring optics`: tunes with their integer part, chromaticity, momentum compaction, transition, periodic Twiss and dispersion (`--twiss-out`), with `--six-d` the synchrotron tune and RF bucket; `ring run`: turns of a bunch at fixed energy or through a ramp (`--ramp`), with space charge (`--space-charge`, `--intensity`), filled through a stripping foil (`--injection`) — statistics, snapshots, losses, NAFF tunes, checkpoints and `--restart` → `<stem>_ring.h5`; `ring ramp`: the reference particle through a ramp | [Ring optics](../17_ring/02_optics.md#from-the-command-line), [Ring runs](../17_ring/04_run.md#from-the-command-line), [The ramp](../17_ring/05_programs.md#from-the-command-line), [Space charge](../17_ring/06_space_charge.md#from-the-command-line), [Injection](../17_ring/07_injection.md#from-the-command-line) |
 
 ## The input model
 

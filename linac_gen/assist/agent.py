@@ -37,7 +37,7 @@ from linac_gen.assist.messages import (
 LONG_RUNNING = {"run_envelope", "run_mp", "run_match", "parameter_scan",
                 "run_campaign", "tuning_plan", "hofmann_stability",
                 "lebt_scc", "run_train", "run_study", "orm_calibrate",
-                "run_reliability"}
+                "run_reliability", "run_ring"}
 
 _MAX_TOOL_RESULT_CHARS = 20_000
 
@@ -375,9 +375,11 @@ class AgentSession:
                     now = time.time()
                     if now - last[0] >= 0.25:
                         last[0] = now
-                        self._emit(type="progress", tool=_name,
-                                   text=f"{_name}: s = "
-                                        f"{float(s_mm) / 1000.0:.1f} m")
+                        # (a ring run reports turns, not a position)
+                        text = (f"{_name}: turn {int(i)} of {int(n)}"
+                                if _name == "run_ring" else
+                                f"{_name}: s = {float(s_mm) / 1000.0:.1f} m")
+                        self._emit(type="progress", tool=_name, text=text)
                 return _tool.fn(self.context,
                                 progress_callback=cb,
                                 should_abort=should_abort, **_params)

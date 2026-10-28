@@ -167,15 +167,23 @@ def refit_view_to_visible(item) -> None:
     vb.updateAutoRange()
 
 
+def _view_box(p):
+    """The ViewBox of a PlotWidget, or of a PlotItem (a plot inside a
+    GraphicsLayoutWidget)."""
+    get_item = getattr(p, "getPlotItem", None)
+    return (get_item() if get_item is not None else p).getViewBox()
+
+
 def fix_plot_range(p, xrange=None, yrange=None, padding=None) -> None:
     """Mark a plot's view as deliberately scaled: legend clicks still hide
     curves but never refit it, and View All fits it once instead of
     switching auto-range on.  ``xrange`` / ``yrange`` (``(lo, hi)``, with
     pyqtgraph's ``padding``) are its designed frame: set now, and restored
     by :func:`rearm_autorange` whenever the plot is drawn anew.  Plots that
-    set their frame at every redraw just call ``fix_plot_range(p)``."""
+    set their frame at every redraw just call ``fix_plot_range(p)``.
+    ``p`` is a PlotWidget or a PlotItem."""
     try:
-        vb = p.getPlotItem().getViewBox()
+        vb = _view_box(p)
     except Exception:                                        # noqa: BLE001
         return
     vb._helix_fixed_range = True
@@ -186,6 +194,21 @@ def fix_plot_range(p, xrange=None, yrange=None, padding=None) -> None:
             padding,
         )
         _restore_frame(vb)
+
+
+def release_plot_range(p) -> None:
+    """Undo :func:`fix_plot_range`: the plot auto-ranges like any other
+    (a panel that switches from a designed frame to a quantity of its own
+    scale).  ``p`` is a PlotWidget or a PlotItem."""
+    try:
+        vb = _view_box(p)
+    except Exception:                                        # noqa: BLE001
+        return
+    vb._helix_fixed_range = False
+    vb._helix_frame = None
+    vb.enableAutoRange(pg.ViewBox.YAxis, True)
+    if _x_leader(vb) is None:
+        vb.enableAutoRange(pg.ViewBox.XAxis, True)
 
 
 # ---------------------------------------------------------------------------

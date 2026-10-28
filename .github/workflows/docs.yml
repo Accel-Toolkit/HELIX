@@ -45,9 +45,10 @@ jobs:
           cache: pip
 
       - name: Install HELIX + docs extras
+        # (with the ring extra: the ring chapter's examples run compiled)
         run: |
           pip install --upgrade pip
-          pip install -e ".[docs]"
+          pip install -e ".[docs,ring]"
 
       - name: Regenerate figures
         run: python docs/manual/_build/regen_plots.py

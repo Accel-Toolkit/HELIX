@@ -40,7 +40,7 @@ import math
 
 import numpy as np
 
-from linac_gen.elements.base import FieldMapElement
+from linac_gen.elements.base import FieldMapElement, angle_nearest, wrap_deg
 from linac_gen.elements.field_map import FieldMap, _C_LIGHT
 from linac_gen.elements.field_map_3d import FieldMap3D
 from linac_gen.elements.mixins import FieldError, Misalignment
@@ -624,12 +624,15 @@ class SuperposedFieldMap(FieldMapElement, Misalignment, FieldError):
             for _ in range(max_iter):
                 re_v, im_v = self._probe_cluster_voltage_integral(
                     child, ref_entry, theta_s - psi)
-                psi_new = float(np.rad2deg(np.arctan2(im_v, re_v)))
+                # angles: psi_new on the branch nearest psi (see
+                # FieldMap3D._calibrate_sync_phase — no averaging across +-180)
+                psi_new = angle_nearest(
+                    float(np.rad2deg(np.arctan2(im_v, re_v))), psi)
                 if abs(psi_new - psi) < tol_deg:
                     psi = psi_new
                     break
                 psi = (1.0 - relax) * psi + relax * psi_new
-            child._sync_offset_deg = float(psi)
+            child._sync_offset_deg = wrap_deg(float(psi))
         finally:
             for _z, c in self.children:
                 c._phi_s_at_entrance = saved[id(c)]

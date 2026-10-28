@@ -393,6 +393,12 @@ def _build_bend(name, ef, l_mm, ref, sbrho, warnings, rect):
                    rho=rho_mm, gap=gap_mm, k1=fint)
     body = Dipole(name=name, angle=angle * _RAD_TO_DEG, rho=rho_mm,
                   field_index=field_index)
+    k2 = N("k2")
+    if k2:
+        # sextupole component: ignored by the linac bend, kept for ring mode
+        body.k2 = k2
+        warnings.append(f"Elegant: {name}.K2 = {k2:g} — not modelled by the HELIX linac "
+                        "bend (ignored there); kept on the bend for ring mode")
     edge_out = Edge(name=f"{name}_e2", pole_rotation=e2 * _RAD_TO_DEG,
                     rho=rho_mm, gap=gap_mm, k1=fint)
     return [edge_in, body, edge_out], body.length
@@ -451,6 +457,10 @@ def parse_elegant(filepath, name: str | None = None,
         carry no beam energy (it lives in the run file), so supply it here;
         the strength conversion is self-consistent regardless of the value
         chosen (``k1`` is preserved through gradient = sign(q)·Bρ·k1).
+
+    ``metadata["reference"]`` is that particle and
+    ``metadata["reference_declared"]`` is always False (the file declares
+    no beam).
     """
     with open(filepath, "r", encoding="utf-8", errors="replace") as fh:
         text = fh.read()
@@ -491,5 +501,6 @@ def parse_elegant(filepath, name: str | None = None,
             f"{len(ef.unresolved)} expression(s) referenced undefined "
             f"variables and were defaulted to 0 (e.g. {sample})")
 
-    meta = {"title": root, "warnings": warnings, "reference": ref}
+    meta = {"title": root, "warnings": warnings, "reference": ref,
+            "reference_declared": False}
     return lattice, meta

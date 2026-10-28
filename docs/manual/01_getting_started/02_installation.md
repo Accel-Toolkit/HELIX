@@ -73,6 +73,14 @@ For the manual build extras (this document):
 pip install -e ".[docs]"
 ```
 
+For ring mode's compiled kernels (numba; [Ring mode](../17_ring/01_overview.md)
+runs the same code without it, as plain Python, about a hundred times
+slower).  The one-click setup does not install them; add them afterwards:
+
+```bash
+pip install -e ".[ring]"
+```
+
 ### 1b. Quick install on macOS with uv (recommended)
 
 For macOS users (Intel or Apple Silicon), `uv` is the fastest path to

@@ -31,7 +31,17 @@ run at a glance: **σ_x end**, **σ_y end**, **σ_z end** (mm),
 **ε_x growth**, **transmission** (%), and **loss** (%).  The growth is
 that of the normalised emittance, end over start: the geometric one
 shrinks with acceleration.  Through an RFQ it would read ×0.14 for a beam
-whose normalised emittance grows ×1.17.
+whose normalised emittance grows ×1.17.  A value the run shown does not
+have reads "—" (2026-10-25: an envelope run shown after a multiparticle
+run used to keep the multiparticle run's transmission and loss).  For a
+[ring run](#ring-runs) the six are σ_x, σ_y and σ_ζ (mm) on the last
+statistics row, at the start of the ring; the growth of the normalised
+betatron emittance in x (the dispersion's share removed) from the first
+row to the last; and the survival (%) and the particles lost (%) — with
+injection, of the particles the ring received.  The survival counts
+macroparticles: with both a starting beam and injection, whose
+macroparticles stand for different numbers of real particles, it is not the
+fraction of real particles.
 
 ## Import Results…
 
@@ -41,7 +51,10 @@ feeds it through the same path a live simulation uses, so the KPI
 cards, sparklines, and every popup re-populate from the on-disk
 arrays.  The file dialog opens in the configured calculation
 directory, where every run's auto-saved dumps land (see
-[Running → GUI](../06_running/05_gui.md)).
+[Running → GUI](../06_running/05_gui.md)).  A ring run's file
+(`<time>_ring.h5`) is shown as the ring run ([Ring runs](#ring-runs));
+it is refused while a Ring-tab run is going, whose results it would
+replace.
 
 ## Searching the tiles
 
@@ -58,8 +71,9 @@ assistant's *open plot* command.
 
 ## Tile sections
 
-Ten section headers, top to bottom (the RFQ section only for a lattice
-with RFQ cells):
+Eleven section headers, top to bottom (the RFQ section only for a
+lattice with RFQ cells; RING RUN only while a ring run is shown, and then
+at the top):
 
 * **BEAM SIZE & EMITTANCE** — RMS σ (x · y · z), geometric
   emittance, normalised emittance, 6-D emittance.
@@ -222,13 +236,103 @@ the checkbox.
   when the lattice has `RFQ_CELL` elements.
 * **CROSS-CHECKS · COMPARE** — compare with TraceWin partran
   output.
-* **ADVANCED · MATRIX VIEWERS** — Σ matrix (6×6), transfer matrix
-  (6×6), SC convergence.  These three cards don't open popups of
-  their own: the Σ-matrix and transfer-matrix cards route to the
-  **Tools → Show Sigma Matrix… / Show Transfer Matrix…** dialogs,
-  and the SC-convergence card jumps to the
+* **ADVANCED · MATRIX VIEWERS** — Σ matrix along s, transfer matrix
+  (6×6), SC convergence.  The Σ card opens the
+  [Σ matrix along s](#sigma-terms) popup, as does **Tools → Show
+  Sigma Matrix…**.  The other two cards don't open popups of their
+  own: the transfer-matrix card routes to the **Tools → Show Transfer
+  Matrix…** dialog, and the SC-convergence card jumps to the
   [Numerics tab](04_convergence_tab.md), where the convergence
   scans live.
+* **RING RUN** — what only a ring run has: its ramp, the bunch in eV·s,
+  the losses along the ring, the tune diagram, phase space at the
+  snapshot turns, the periodic optics and the injection; see
+  [Ring runs](#ring-runs) below.
+
+## Ring runs {#ring-runs}
+
+With the results of a ring run — a run of the Ring tab, the assistant's
+`run_ring`, or a `_ring.h5` file imported — a selector **Run shown:
+Linac run | Ring run** appears beside **Import Results…** (2026-10-25).  A
+new ring run is shown when it ends (with ring mode on; a ring results file
+imported is shown in any case), a new linac run likewise, and the selector
+switches between the two at any time: neither run is changed, the project
+is not marked as changed, and each window keeps the zoom it had on each
+run.  The status bar and **Export
+openPMD output…** keep following the linac run.  The Ring tab's **Show in
+the Results tab** button opens this tab on the ring run, and so does the
+assistant's *open plot* for a RING RUN tile.
+
+While the ring run is shown:
+
+* A line above the tiles says what they show: the beam turn after turn at
+  the start of the ring (s = 0), on every turn (every k turns for runs of
+  more than 100 000 turns).
+* **The beam's tiles show it turn by turn**: RMS size, the emittances
+  (geometric, normalised, 6-D, 4-D, eigen- and canonical), Twiss,
+  longitudinal Twiss, divergence, energy, transmission (the survival),
+  centroid, longitudinal offset, dispersion, σ(Δp/p) and the Σ matrix.
+  Their horizontal axis is the turn, without a lattice strip (the
+  **Show lattice**, **Show aperture** and **live match preview** boxes are
+  hidden), and their quantities and units are the linac run's: each
+  statistics row's mean
+  and covariance, in the ring's coordinates (x, px = Px/P0, y, py, ζ, δ),
+  are carried into x′ = px/pz with pz = √((1+δ)² − px² − py²),
+  Δφ = −360° f ζ/(β0 c) and ΔW, to first order about the row's mean, at
+  the RF frequency f of the first turn (the revolution frequency without
+  RF).  The dispersion is D = ⟨u δ⟩/⟨δ²⟩ of the bunch, the dispersion
+  window's transfer-matrix model is off and its box hidden (the ring's
+  periodic dispersion is in **Ring optics**), and the centroid window draws no
+  BPM goals.  Switching back to the linac run brings its axes, strips
+  and boxes back as they were.
+* **Tiles that do not apply are dimmed** — the largest excursion and
+  the halo parameter (not recorded turn by turn), BPM readings, a linac
+  channel's phase advance, tune depression, BMAG, Hofmann chart and
+  frozen footprint, the LEBT compensation (SCC) and the halo action scan
+  (linac runs only), beam power, the aperture-loss and loss-power
+  profiles, the H⁻ stripping tiles, the error ensemble, the phase-space
+  window, the density along s, transit-time factors and the comparison
+  with a linac code's output, and the RFQ panels.  Each tooltip says why,
+  and where in RING RUN the ring's counterpart is.  Their windows close
+  when the ring run is shown.
+* **The lattice tiles** (gradients, RF voltages, fields, …) show the
+  loaded lattice as always; the bend tiles' field uses the ring run's
+  rigidity at its first statistics row (the start of a ramp).
+* **RING RUN**, at the top, adds what only a ring run has:
+    * **Ring ramp** — the reference's kinetic energy, the synchronous
+      phase (of the net voltage), the RF voltage and frequency turn by
+      turn, the transition turn marked;
+    * **Ring bunch** — the rms longitudinal emittance (eV·s), the bunch
+      length σ_ζ (m) and σ_t = σ_ζ/(β0 c) (ns), the relative momentum
+      spread σ_δ, and with space charge the line-density bins the run
+      used;
+    * **Ring losses** — the particles lost along the ring (with the
+      lattice strip) and in each turn, and the elements where most were
+      lost;
+    * **Ring tunes** — the tune diagram: the probes' NAFF tunes, the bare
+      working point (+), with space charge the analytic tune shift at the
+      bunch centre (×, when it is within half an integer), the resonance
+      lines m Qx + n Qy = p up to the fourth order, framed on the points;
+      and the tunes as text;
+    * **Ring phase space** — at each snapshot turn, x–px, y–py and ζ–δ as
+      density maps of all the particles (or as dots), each with its two
+      profiles and their rms Gaussians, the separatrix of that turn's RF
+      bucket on ζ–δ, and the line density along the bunch in the run's
+      own line-density bins, with the Gaussian of the same rms;
+    * **Ring optics** — the run's periodic β_x, β_y and D_x at every
+      element's exit (at the start of a ramp), with the 4-D and 6-D
+      tunes, the chromaticities, the momentum compaction, γ_t and the
+      synchrotron tune (a file written before 2026-10-25 carries no
+      optics table);
+    * **Ring injection** — the macroparticles injected, the waste and the
+      circulating beam's foil crossings in each turn, drawn at the turn
+      counted from 1 (where the circulating count rises), the particles
+      circulating, the closed orbit at the foil with each turn's magnets,
+      and the foil's hit map.
+
+    A RING RUN tile is dimmed, with the reason, when the run has none of
+    its data: no ramp, no particle lost, no tune probe, no snapshot turn,
+    no foil.
 
 ## Raw vs Dispersion-corrected toggle {#raw-vs-dispersion-corrected}
 
@@ -320,6 +424,85 @@ tile applies internally, so the two are mathematically consistent.
 (uses the same `sigma_w` / `ref_beta` / `ref_gamma` / `mass_mev`
 fields as the Dispersion popup, with the same fallback for
 `mass_mev` when it's not in the results).
+
+## Σ matrix along s {#sigma-terms}
+
+Every row of a run records the beam's 6×6 second-moment matrix Σ, in the
+order (x, x′, y, y′, Δφ, ΔW) with x, y in mm, x′, y′ in mrad, Δφ in
+degrees of the local RF and ΔW in MeV.
+- **Multiparticle run:** the centred covariance (1/N) of the particles
+  the statistics describe. Lost particles, and the time-domain RFQ's
+  unaccelerated ones, are left out.
+- **Envelope run:** the propagated matrix, including the coupling of
+  solenoids and field maps.
+
+Σ is symmetric, so 21 of its 36 entries are independent. The popup plots
+all 21 along s, in the matrix's own layout (its lower triangle):
+
+* **Diagonal panels:** the rms values σᵢ = √Σᵢᵢ: σx, σx′, σy, σy′, σΔφ and
+  σΔW (in keV).
+* **Below the diagonal:** the correlations r_ij = Σ_ij / √(Σᵢᵢ Σⱼⱼ), each
+  between −1 and 1 on a fixed −1…1 frame. With **Quantity → covariance**,
+  these panels show Σ_ij instead, in the units of its row times its
+  column (mm·mrad, mm·deg, …).
+* **Colours:** the terms within one plane take the plane's colour (x
+  cyan, y green, z amber). The 12 terms between two planes share one
+  colour, so coupling stands out. A solenoid shows up as strong x–y′
+  and x′–y correlations inside its field (the beam rotates).
+
+**Inside elements.** A run records a row at every element exit. The terms
+inside a solenoid or field map show only with **Numerics → Record
+per-sub-step** on, which adds rows inside the elements; the popup says so
+when a run has element-exit rows only.
+
+As a check, HELIX and TraceWin agree for the PXIE LEBT, run from the same
+100 000 particles with the same solenoid settings, at TraceWin's output
+positions:
+- r(x, y′) and r(x′, y) reach ±0.999 inside the third solenoid in both
+  codes (TraceWin +0.9994, HELIX +0.9993), with the same signs everywhere.
+- The two codes differ by at most 0.03 in r. Where |r| > 0.5, Σ differs by
+  3 % on average.
+- x–y and x′–y′ stay within ±0.01 in both codes.
+
+**Position.** The slider, or a click on any panel, picks a recorded row.
+A cursor marks it in every panel, and the right-hand side shows at that
+position:
+- the whole correlation matrix as colours with the numbers written in;
+- Σ itself, in the units of its row and column;
+- for each plane, the rms values, the rms emittance, α and β.
+
+Hovering reads the value under the mouse. A double-click enlarges a panel
+to the full width, with the lattice strip.
+
+**Basis.** **(x, x′, y, y′, z, δ) — TraceWin** converts each row with that
+row's reference particle and RF frequency: z = −βλ·Δφ/360 (in mm) and
+δ = ΔW/(β²γ·mc²) (in ‰). Because each row is converted on its own, z and
+its moments do not jump at a frequency change, while Δφ, counted in
+degrees of the local RF, does (σΔφ doubles at a 162.5 → 325 MHz jump). The
+correlations are the same in both bases, except that those with z have
+the opposite sign of those with Δφ, since z = −k·Δφ. The z plane's
+emittance then comes out in mm·mrad (δ in ‰ = mrad), as in TraceWin, and
+the (Δφ, ΔW) plane's in deg·MeV.
+
+**Gaps, not zeros.** A term that is not defined is not drawn:
+- the phase terms where the beam is continuous (no bunch), with a note
+  saying where;
+- correlations with a zero variance, such as a beam without energy
+  spread;
+- every term of a row that has no particles left.
+
+An envelope run of a beam injected continuously with zero energy spread
+seeds a longitudinal block with no area at the first RF element. That
+beam has r(Δφ, ΔW) = ±1 and zero longitudinal emittance, which is the
+model's answer, not a display fault.
+
+The tile's sparkline is the largest |r| between two planes along s: 0
+means uncoupled, 1 fully coupled. Its tooltip gives where that largest
+value occurs.
+
+**Source**: `linac_gen/analysis/sigma_terms.py` (the 21 terms, the basis
+conversion, the plane summary: pure functions, usable from scripts) and
+`gui/linac_gen_gui/interphase/tabs/sigma_popup.py` (the popup).
 
 ## Space-charge diagnostics — Hofmann chart & tune footprint {#sc-diagnostics}
 
@@ -621,8 +804,8 @@ Each tile popup shows:
   auto-scaling back on, and it stays on; on a lower panel they act on
   the horizontal axis it shares with the panel above.  Charts with a
   designed frame keep it: the Hofmann and tune-depression charts, the
-  halo-scan map and slice, the transmission panel (0–100 %) and SCC
-  f_c (0–1).  View All fits a designed axis once (the other axis keeps
+  halo-scan map and slice, the transmission panel (0–100 %), SCC
+  f_c (0–1) and the correlation panels of the Σ matrix (−1 to 1).  View All fits a designed axis once (the other axis keeps
   fitting), and the next new plot restores the frame.  The plots in the
   other tabs and dialogs follow the same rule: a new study, parameter
   scan, failure study, convergence scan, calibration, campaign or
@@ -645,8 +828,10 @@ figure itself.  **Ctrl+W** or **Esc** closes the popup.
 
 Every card is always present (the search box only hides the ones that
 do not match the typed words), except the RFQ section, which shows only
-for a lattice with RFQ cells; cards whose data is missing simply open
-an empty/"no data" view.  The one
+for a lattice with RFQ cells, and RING RUN, which shows only while a
+ring run is shown (when the tiles that do not apply to a ring run are
+dimmed, each with its reason — see [Ring runs](#ring-runs)); cards
+whose data is missing simply open an empty/"no data" view.  The one
 exception is **Intra-beam stripping (H⁻)**: the card is disabled
 unless the beam species is H⁻, and its tooltip explains how to
 switch (Beam tab → Species → H- → Apply).  **Loss power** needs a
@@ -660,13 +845,17 @@ ensemble popup fills only after an Error Study run, the
 phase-space popup needs snapshot markers (or Numerics → "Snapshot
 every N") to have data, and the halo action scan needs Numerics →
 "Record halo action scan" and a multi-particle run (it says so in
-place; openPMD files written before 2026-09-27 do not carry it).
+place; openPMD files written before 2026-09-27 do not carry it).  The
+Σ matrix along s needs results that record Σ: results files written
+before 2026-09-27, Sacherer envelope runs and bunch-train files have
+none, and the popup says so in place.
 
 ## Exporting to openPMD
 
 The toolbar's **Export openPMD output…** action writes the most
-recent run to an openPMD-1.1 HDF5 file (`*.opmd.h5`) — a portable
-interchange format readable by openPMD-aware tools.  See
+recent linac run to an openPMD-1.1 HDF5 file (`*.opmd.h5`) — a portable
+interchange format readable by openPMD-aware tools.  (A ring run is
+written by the run itself, as `<time>_ring.h5`.)  See
 [Reading results → openPMD](../06_running/04_results.md#openpmd-interchange-format).
 
 ## Cross-references

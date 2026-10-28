@@ -1,0 +1,15 @@
+{
+ "cases": [
+  "x",
+  "x_fringe",
+  "x_faces",
+  "x_negative",
+  "y_fringe",
+  "y_faces_negative"
+ ],
+ "generator": "dev-only",
+ "n_particles": 48,
+ "output_sha256": "c2813e42a1d826ad79e447204484e17fec381c3d280414672e264feae6082f1f",
+ "reference": "reference code A: a dipole in a straight frame with hard-edge dipole fringe and pole faces (the bump magnet of an injection)",
+ "seed": 20261024
+}

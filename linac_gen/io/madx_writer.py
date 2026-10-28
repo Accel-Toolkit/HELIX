@@ -183,6 +183,20 @@ def _command_comment(elem) -> str:
     return f"! HELIX: {text}"
 
 
+def _thin_bend_note(names: list) -> str:
+    """The warning for Multipoles with a dipole component (the importer's
+    note, the other way): MAD-X takes such a MULTIPOLE as a thin bend."""
+    uniq = list(dict.fromkeys(names))
+    which = (f"Multipole {uniq[0]!r} has" if len(uniq) == 1 else
+             f"{len(uniq)} Multipoles (e.g. {', '.join(repr(u) for u in uniq[:4])}"
+             f"{' …' if len(uniq) > 4 else ''}) have")
+    return (f"{which} a dipole component (knl[0]/ksl[0]), a kick about a straight reference "
+            "in HELIX.  MAD-X takes it as a thin bend: its reference orbit turns there "
+            "(KNL[0] in SURVEY and TWISS, KSL[0] in TWISS; an ANGLE=0 does not prevent it), so "
+            "MAD-X's closed orbit and dispersion differ from HELIX's there, and so does its "
+            "survey for knl[0] (reading the file back into HELIX gives the same kick)")
+
+
 def _misalignment_warning(elem, warnings: list) -> None:
     fr = getattr(elem, "field_rel", 0.0)
     if fr and type(elem).__name__ == "Dipole":
@@ -239,6 +253,7 @@ def write_madx(lattice: Lattice, filepath, ref: ReferenceParticle, *,
     # / quotes / newlines would break the HELIX importer's line splitter.
     title = re.sub(r'[!;"\r\n]+', " ", str(title or filepath.stem)).strip() or "helix"
     warnings: list[str] = []
+    thin_bends: list[str] = []    # Multipoles MAD-X takes as thin bends
     brho = _signed_brho(ref)
     sanitise = _name_sanitiser(reserved_names=(seq_name,))
 
@@ -540,6 +555,8 @@ def write_madx(lattice: Lattice, filepath, ref: ReferenceParticle, *,
             nm = sanitise(elem.name, "mult")
             knl = [float(x) for x in (elem.knl or [0.0])]
             ksl = [float(x) for x in (elem.ksl or [])]
+            if knl[0] or (ksl and ksl[0]):
+                thin_bends.append(elem.name)
             parts = ["knl={" + ", ".join(_fmt(x) for x in knl) + "}"]
             if any(ksl):
                 parts.append("ksl={" + ", ".join(_fmt(x) for x in ksl) + "}")
@@ -602,6 +619,9 @@ def write_madx(lattice: Lattice, filepath, ref: ReferenceParticle, *,
 
         s_mm += length
         i += 1
+
+    if thin_bends:
+        warnings.append(_thin_bend_note(thin_bends))
 
     if n_rfcav[0] and abs(rf_gain[0]) > 1e-9 * max(float(ref.w_kin), 1e-9):
         warnings.append(
@@ -772,16 +792,27 @@ def _emit_sbend(body: Dipole, e_in, e_out, brho: float, sanitise, defs,
     gap = gap_in or gap_out
     if gap > 0:
         parts.append(f"hgap={_fmt(gap / 2.0 * _MM_TO_M)}")
-        k1_in = float(getattr(e_in, "k1", 0.45)) if e_in is not None else 0.0
-        k1_out = float(getattr(e_out, "k1", 0.45)) if e_out is not None else 0.0
-        # MAD-X: fint applies to both faces unless fintx is given
-        parts.append(f"fint={_fmt(k1_in if e_in is not None else k1_out)}")
-        if e_in is not None and e_out is not None and abs(k1_out - k1_in) > 1e-12:
+        # each face its own fringe term, fint*hgap (MAD-X applies fint at the
+        # exit too unless fintx is given): a face whose edge has no gap, or
+        # that has no edge of its own (the inner faces of a split magnet),
+        # gets none; an exit gap other than the hgap written goes into fintx,
+        # since an edge's fringe term is K1*gap
+        k1_in = float(getattr(e_in, "k1", 0.45)) if gap_in > 0 else 0.0
+        k1_out = float(getattr(e_out, "k1", 0.45)) * gap_out / gap if gap_out > 0 else 0.0
+        parts.append(f"fint={_fmt(k1_in)}")
+        if abs(k1_out - k1_in) > 1e-12:
             parts.append(f"fintx={_fmt(k1_out)}")
+            if k1_out < 0.0:
+                warnings.append(
+                    f"{body.name!r}: the exit edge's fringe integral is negative "
+                    f"(fintx={k1_out:g}) — MAD-X reads a negative fintx as fint (its "
+                    f"default, -1, means 'as the entrance'), so the exit face gets "
+                    f"fint={k1_in:g} in MAD-X and when the file is read back")
         if gap_in and gap_out and abs(gap_out - gap_in) > 1e-9:
             warnings.append(
                 f"{body.name!r}: entrance/exit edges differ in gap — MAD-X "
-                "SBEND carries one hgap (entrance value used)")
+                "SBEND carries one hgap (the entrance's); the exit's fringe "
+                "term K1*gap is kept through fintx")
         for edge in (e_in, e_out):
             if edge is not None and abs(float(getattr(edge, "k2", 2.80)) - 2.80) > 1e-12:
                 warnings.append(

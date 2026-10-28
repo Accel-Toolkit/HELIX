@@ -79,6 +79,8 @@ class Toolbar(QFrame):
     # Global font-size scaling (spinbox in the toolbar).  Emits the new
     # base point size; the app re-applies the stylesheet.
     font_size_changed        = pyqtSignal(int)
+    # Simulate → Ring Mode (checkable; the app keeps it in step with the state)
+    ring_mode_toggled        = pyqtSignal(bool)
 
     def __init__(self, state: AppState):
         super().__init__()
@@ -120,12 +122,20 @@ class Toolbar(QFrame):
             ("---", None),
             ("Exit",            lambda: self.window().close()),
         ]))
+        # Ring mode: a retained checkable action (opt-in multi-turn tracking;
+        # it adds the Ring tab, which a linac session never shows)
+        self._ring_action = QAction("Ring Mode", self)
+        self._ring_action.setCheckable(True)
+        self._ring_action.setChecked(False)
+        self._ring_action.toggled.connect(self.ring_mode_toggled.emit)
         lay.addWidget(self._mk_menu("Simulate", [
             ("Run Envelope",       self.run_envelope_requested.emit),
             ("Run Multi-particle", self.run_mp_requested.emit),
             ("---", None),
             ("Backtrack Distribution…", self.run_backtrack_requested.emit),
             ("Multibunch / Pulse Study…", self.open_train_requested.emit),
+            ("---", None),
+            ("Ring Mode", self._ring_action),
         ]))
         lay.addWidget(self._mk_menu("Tools", [
             ("Assistant…  (AI, optional)", self.open_assistant_requested.emit),
@@ -333,6 +343,12 @@ class Toolbar(QFrame):
         f = self._update_action.font()
         f.setBold(True)
         self._update_action.setFont(f)
+
+    def set_ring_mode_checked(self, on: bool) -> None:
+        """Show the ring-mode state without re-emitting ``ring_mode_toggled``."""
+        self._ring_action.blockSignals(True)
+        self._ring_action.setChecked(bool(on))
+        self._ring_action.blockSignals(False)
 
     def set_update_check_enabled(self, on: bool) -> None:
         self._update_toggle.blockSignals(True)

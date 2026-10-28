@@ -14,6 +14,26 @@ def test_edge_identity_when_zero_rotation():
     np.testing.assert_allclose(M, np.eye(6), atol=1e-14)
 
 
+@pytest.mark.parametrize("hv", [0, 1])
+def test_a_square_pole_face_with_a_fringe_gap_still_acts(hv):
+    """At zero pole-face angle the fringe field still acts: in the plane
+    across the bend -tan(beta - psi)/rho = tan(psi)/rho > 0 (a weak
+    defocusing) with psi = K1 g / rho (MAD-X's edge); nothing in the bend
+    plane; without a gap (psi = 0) the face does nothing."""
+    ref = ReferenceParticle(species=PROTON, w_kin=3.0, frequency=352.21)
+    rho_mm, gap_mm, k1 = 10_000.0, 60.0, 0.5
+    M = Edge("E", pole_rotation=0.0, rho=rho_mm, gap=gap_mm, k1=k1, hv=hv).transfer_matrix(ref)
+    psi = k1 * gap_mm * 1e-3 / (rho_mm * 1e-3)
+    across, along = ((3, 2), (1, 0)) if hv == 0 else ((1, 0), (3, 2))
+    assert M[across] == pytest.approx(math.tan(psi) / (rho_mm * 1e-3), rel=1e-14)
+    assert M[along] == 0.0
+    off = np.eye(6)
+    off[across] = M[across]
+    np.testing.assert_array_equal(M, off)
+    square = Edge("S", pole_rotation=0.0, rho=rho_mm, gap=0.0, k1=k1, hv=hv)
+    np.testing.assert_array_equal(square.transfer_matrix(ref), np.eye(6))
+
+
 def test_edge_horizontal_focusing_sign():
     """Positive pole-face rotation DEFOCUSES in the bend plane (M[1,0] = +tan β/ρ)
     and focuses in the other plane — TraceWin's EDGE convention, read literally."""

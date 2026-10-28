@@ -1,0 +1,85 @@
+{
+ "beam": "generic, matched inside the bucket: 800 MeV protons, 1.5e10 per bunch, normalized rms emittances 2.5 um, 0.01 eV s (6 pi times the rms), beta_t 1160.25 m, Gaussian with the deck's periodic Twiss",
+ "generator": "dev-only (the reference codes' runs and this script)",
+ "output_sha256": "6efb4f28ac949a381df3dcf07276d0adb14590668306848840f4adb440867c55",
+ "reference": {
+  "A_seed1": "reference code A, seed 1",
+  "B_seed1": "reference code B, seed 1",
+  "B_seed2": "reference code B, seed 2"
+ },
+ "settings": {
+  "A_seed1": {
+   "bends": "exact curved-frame body with kicks between (fourth-order Yoshida, 98 kicks), full pole faces",
+   "beta_t": 1160.25,
+   "emit_ev_s": 0.01,
+   "emit_n_rms": 2.5e-06,
+   "every": 5,
+   "grid": 64,
+   "intensity": 15000000000.0,
+   "kicks": 96,
+   "kicks_installed": 96,
+   "kinetic_mev": 800.0,
+   "partial": true,
+   "particles": 50000,
+   "pic_sigmas": 5.0,
+   "seed": 1,
+   "solver": "averaged 2.5-D (the whole bunch's transverse distribution times its line density)",
+   "space_charge": true,
+   "turns": 1000,
+   "turns_done": 150,
+   "wall_s_so_far": 19407.9,
+   "z_bins": 128,
+   "z_kick": true
+  },
+  "B_seed1": {
+   "beta_t": 1160.25,
+   "emit_ev_s": 0.01,
+   "emit_n_rms": 2.5e-06,
+   "every": 5,
+   "grid": 64,
+   "harmonic": 84,
+   "intensity": 15000000000.0,
+   "kicks_per_turn": 666,
+   "kinetic_mev": 800.0,
+   "longitudinal_kick": true,
+   "particles": 50000,
+   "seed": 1,
+   "space_charge": true,
+   "turns": 1000,
+   "twiss": {
+    "alpha_x": -0.012986739600260077,
+    "alpha_y": 0.006089861210659329,
+    "beta_x": 33.73645362843065,
+    "beta_y": 5.252517912567208,
+    "disp_px": 0.0011360050676256783,
+    "disp_x": 3.187407765856291
+   },
+   "z_bins": 128
+  },
+  "B_seed2": {
+   "beta_t": 1160.25,
+   "emit_ev_s": 0.01,
+   "emit_n_rms": 2.5e-06,
+   "every": 5,
+   "grid": 64,
+   "harmonic": 84,
+   "intensity": 15000000000.0,
+   "kicks_per_turn": 666,
+   "kinetic_mev": 800.0,
+   "longitudinal_kick": true,
+   "particles": 50000,
+   "seed": 2,
+   "space_charge": true,
+   "turns": 1000,
+   "twiss": {
+    "alpha_x": -0.012986739600260077,
+    "alpha_y": 0.006089861210659329,
+    "beta_x": 33.73645362843065,
+    "beta_y": 5.252517912567208,
+    "disp_px": 0.0011360050676256783,
+    "disp_x": 3.187407765856291
+   },
+   "z_bins": 128
+  }
+ }
+}

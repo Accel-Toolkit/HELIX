@@ -204,36 +204,122 @@ Path("ring.madx").unlink()
 ```
 
 `meta` carries `"title"`, `"warnings"` (a list — unsupported
-constructs are skipped, not fatal) and `"reference"` (the
-`ReferenceParticle` built from the `BEAM` command).
+constructs are skipped, not fatal), `"reference"` (the
+`ReferenceParticle` built from the `BEAM` command, the magnets' rigidity;
+a 1 GeV kinetic-energy beam when the deck gives no energy) and
+`"reference_declared"` (true only when the `BEAM` gives the energy:
+`energy`, `pc`, `gamma`, `beta` or `brho`).
 
-**Supported:** `!` / `//` / `/* */` comments; `name = expr` and
-`name := expr` assignments with `+ - * / ^`, parentheses, the
-constants `pi` / `twopi` / `e` / `clight`, and `sqrt` / `abs` /
-`sin` / `cos`; element definitions; `SEQUENCE … ENDSEQUENCE` with
-`elem, at=…` members (gap-filling drifts are inserted automatically);
-the `BEAM` command; `USE, SEQUENCE=…`.
+The importer reads a deck the way MAD-X 5.09 does; each rule below is
+checked against MAD-X itself in `tests/io/test_madx_lines.py`.
+
+**Supported:**
+
+* `!` / `//` / `/* */` comments (whichever comes first on a line wins).
+* Expressions with `+ - * / ^` (`a^b^c` is `(a^b)^c`, as in MAD-X),
+  MAD-X's constants (`pi`, `twopi`, `e`, `clight`, `pmass`, `emass`,
+  `degrad`, `version` …) and functions (`sqrt`, `abs`, `sin` … `tanh`,
+  `asin`, `acos`, `atan`, `log`, `log10`, `exp`, `erf`, `erfc`, `floor`,
+  `ceil`, `round`, `frac`, `sinc`), dotted names (`kqf.a12`),
+  `elem->attr` (written without blanks, as MAD-X requires) and
+  `beam->brho`-style reads.  A name used where it is not
+  (yet) defined is 0, as in MAD-X, and the names are listed once in the
+  warnings; a division by zero is 0 (MAD-X's rule), RANF/GAUSS/TGAUSS are
+  taken at their mean, and `table(…)` reads 0 — as MAD-X does before any
+  `TWISS`, `SURVEY`, `CREATE` … made a table, and always where it is
+  written in an `IF` or `WHILE` condition; elsewhere after one (a
+  variable set to it, say) the importer, which keeps no tables, cannot know
+  the value — all reported.
+* `name = expr` (evaluated at once), `name := expr` (evaluated where it
+  is used), `CONST` / `REAL` / `INT` declarations (an `INT` is truncated
+  towards zero and held in 32 bits); redefining a built-in or `CONST`
+  constant is ignored, as MAD-X does.
+* Element definitions, `child: parent, …` inheritance (the parent is
+  copied when the child is defined), deferred attributes `attr := expr`,
+  `elem->attr = …` and `elem, attr = …` modifications.
+* `SEQUENCE … ENDSEQUENCE` (`at`, `at := …`, `refer`; `from = name`
+  counts from the centre of the first `name`, `from = name[k]` from the
+  k-th, `from = seq$start` / `seq$end` from the ends; members are kept in
+  the order written and no drift is laid for a gap under 1 µm, as MAD-X
+  does).  Assignments, `EXEC`, `IF` and `WHILE` inside a sequence run as
+  they do anywhere.  Beam lines `LINE = (…)` with `N*`, reflection and
+  nesting; `USE, SEQUENCE=…` / `PERIOD=…`.  Member positions, the
+  sequence length and element lengths are those at the last `USE` (MAD-X
+  expands the line there: a later `pq = …`, `q->l = …`, bend angle or
+  `OPTION, RBARC` moves nothing; a `USE` of a sequence not yet defined
+  freezes nothing, as MAD-X skips it, though when no other `USE` names a
+  line it still names the one imported); strengths and angles are those
+  at the end of the deck.
+* `BEAM` (a later `BEAM` changes only what it gives; `particle=ion` has
+  MAD-X's NMASS), `OPTION, RBARC`.
+* `IF` / `ELSEIF` / `ELSE` and `WHILE` with MAD-X's conditions (a blank
+  between operator characters is dropped, so `< =` is `<=`; `a b` stays
+  two names): one comparison (`==`, `<>`, `<`, `>`, `<=`,
+  `>=`), or two joined by `&&` or `||`.  The first part decides
+  `false && …` and `true || …`; a first part that is not one comparison
+  (`(a == 1)`, `a`) counts as not false.  Otherwise what follows must be
+  one comparison.  Anything else — three comparisons the first does not
+  decide, a lone `(a == 0)`, `if (a)`, `1 < a < 3` — is what MAD-X calls
+  an illegal IF construct: it is false, with a warning.  A statement that
+  no `;` ends (before a block's closing brace, or at the end of the file)
+  does not run, a block never closed does not run, and a `}` that closes
+  no block ends reading (unless its statement holds as many `{` as `}`, as
+  in `title, "a}b{c"`).
+* `MACRO` with `EXEC` (also written `exec name` without the comma): each
+  parameter is replaced as text wherever it appears, inside names too
+  (`lhcBIM` with `BIM = b1` is `lhcb1`), and an argument is one MAD-X
+  token — `mk(1+1)` passes `1`, `mk(qd->k1)` passes `qd->k1`, `$i` the
+  value of `i` as an integer; an argument list that starts with a sign
+  starts with `0` (`mk(-0.5)` passes `0`), a sign elsewhere passes itself.
+* `RETURN` (the statement under way — an `IF` body, every pass of a
+  `WHILE`, a macro — finishes; nothing after it is read) and `STOP`.
+* A `WHILE` loop whose pass runs `TWISS`, `MATCH` … or reads `table(…)`
+  in its body after a table was made is undone (MAD-X would iterate on
+  results the importer does not compute), as is a loop still running
+  after 100 000 passes; both are reported, and the values are those
+  before the loop.
+* `HARMON`: f = h·βc/C with C the length of the expanded line and h as
+  written (it overrides `FREQ`, as in MAD-X).  An `RFCAVITY` with no `VOLT`, `FREQ`
+  or `HARMON` does nothing; one with a voltage but no frequency is
+  refused by envelope and matrix runs.
+* A bend's `K0` and `K2` are kept on the `Dipole` (`k0`, `k2`) for ring
+  mode; the linac maps ignore them.  A bend's skew components `K1S` and
+  `K2S` are not modelled (reported; MAD-X's `TWISS` leaves them out too).
+  A bend `tilt` written rounded (`1.5708`, `3.1416`) is taken as ±π/2 or
+  π, with a note.
 
 **Element mapping:**
 
 | MAD-X | HELIX |
 |---|---|
 | `DRIFT` | `Drift` |
-| `QUADRUPOLE` | `Quadrupole` (`k1` → gradient via Bρ; `tilt` → `skew_angle`, a bare `tilt` = π/4) |
-| `SBEND` | `Edge` + `Dipole` + `Edge` (ρ > 0 with the direction in the angle's sign; `k1` → field index n = −k1·ρ²; `tilt=+π/2` / `−π/2` → vertical bend towards +y / −y; pole faces `e1`/`e2` → β = sign(angle)·e, because MAD-X's edge focusing is `h·tan e` with the signed curvature while HELIX's is `tan β/ρ`; `hgap`/`fint`/`fintx` → edge gap and K1, with MAD-X's default `fint = 0`) |
+| `QUADRUPOLE` | `Quadrupole` (`k1` → gradient via Bρ; `tilt` → `skew_angle`, a bare `tilt` = π/4; a skew component `k1s` turns it as MAD-X does: √(k1² + k1s²) at `tilt` − atan2(k1s, k1)/2) |
+| `SBEND` | `Edge` + `Dipole` + `Edge` (ρ > 0 with the direction in the angle's sign; `k1` → field index n = −k1·ρ²; `tilt=+π/2` / `−π/2` → vertical bend towards +y / −y; pole faces `e1`/`e2` → β = sign(angle)·e, because MAD-X's edge focusing is `h·tan e` with the signed curvature while HELIX's is `tan β/ρ`; `hgap`/`fint`/`fintx` → edge gap and K1, with MAD-X's default `fint = 0`; a negative `fintx`, MAD-X's default −1, is `fint`) |
 | `RBEND` | `Edge` + `Dipole` + `Edge` (edges pick up ±angle/2; same extras as `SBEND`). `l` is the straight chord under MAD-X's default `OPTION, RBARC=true` and the arc is `l·(θ/2)/sin(θ/2)`; `OPTION, RBARC=false` (LHC-style files) makes `l` the arc length |
-| `KICKER` / `HKICKER` / `VKICKER` | `Steerer` (kick angles → ∫B·dl through the charge-signed Bρ, so an H⁻ deck kicks the same way MAD-X does) |
+| `KICKER` / `HKICKER` / `VKICKER` / `TKICKER` | `Steerer` (kick angles → ∫B·dl through the charge-signed Bρ, so an H⁻ deck kicks the same way MAD-X does; as MAD-X, an `HKICKER` (`VKICKER`) kicks by `kick`, or by `hkick` (`vkick`) when `kick` is zero — a deck may give either —, `KICKER` and `TKICKER` by `hkick` and `vkick`; `chkick` (`cvkick`), a corrector's setting, adds to the horizontal (vertical) kick; `tilt` rolls the kick about s; a flag without a value (`kick`, `tilt`, …) is 0 and an attribute MAD-X refuses on the type is not read, each with a warning) |
 | `RCOLLIMATOR` / `ECOLLIMATOR` | `Aperture` (rectangular / circular; `xsize`, `ysize` are half-apertures) |
-| `SEXTUPOLE` / `MULTIPOLE` | `Multipole` (`MULTIPOLE tilt` → `tilt_deg`, same rotation sense as MAD-X's `tilt` and `Quadrupole.skew_angle`; a `SEXTUPOLE tilt` is not imported) |
+| `SEXTUPOLE` | thin `Multipole` between half drifts (`k2·l`; `tilt` → `tilt_deg`, a bare `tilt` = π/6; a skew component `k2s` turns it as MAD-X does: √(k2² + k2s²) at `tilt` − atan2(k2s, k2)/3) |
+| `MULTIPOLE` | `Multipole` (`knl`, `ksl`; `tilt` → `tilt_deg`, same rotation sense as MAD-X's `tilt` and `Quadrupole.skew_angle`).  In MAD-X a dipole component `knl[0]` or an `angle` makes the multipole a thin bend — the reference orbit turns there — and its `TWISS` takes `ksl[0]` as a vertical one.  HELIX's `Multipole` has no curvature — the dipole part is a kick about a straight reference — and the import says so |
 | `MATRIX` | `MatrixElement` (`rm11…rm66`, `kick1…kick6` converted from MAD-X's canonical basis at the local reference energy; a `kick6` becomes a ΔW offset on every particle — HELIX's reference stays at the `BEAM` energy) |
 | `RFCAVITY` | `RFGap` (`volt` in MV; `lag` follows the MAD-X definition — reference gain `V·sin(2π·lag)`, **not** multiplied by the charge, whereas HELIX gains `q·V·T·cos φs` — so the synchronous phase is `360·lag − 90°`, plus 180° when `volt` and the charge have opposite signs; TTF = 1) |
 | `SOLENOID` | `Solenoid` (`ks` → field via Bρ) |
 | `MARKER` | `Marker` |
 | `MONITOR` / `HMONITOR` / `VMONITOR` | `Marker` (BPM-flagged) |
 
-**Not supported** (skipped with a warning): `MACRO`, `LINE = (…)`
-expansion, `IF` / `WHILE`, `MATCH` / `TRACK` blocks, and deferred
-expressions that reference later-defined variables.
+**Not supported** (reported with a warning): `CALL` (the deck must be
+self-contained — flatten it or inline the called files), tables and
+`SETVARS`, `MATCH` / `TRACK` / `TWISS` and other commands, error and
+alignment commands (`EALIGN`, `EFCOMP`), `SEQEDIT`, lines with formal
+arguments, sequences that contain other sequences, a bend rolled by an
+angle other than 0, ±π/2 or ±π (imported as a horizontal bend), the
+curvature of thin bends written as `MULTIPOLE`s (see above), macros
+nested more than 50 deep, and element types HELIX does not model
+(`OCTUPOLE`, `COLLIMATOR`, … — kept as a marker or a drift of their
+length).
+
+One MAD-X quirk is not copied: MAD-X drops a block that follows another
+statement on the same line (`x = 1; if (…) {…}`) when nothing comes after
+it in the file; the importer runs it.
 
 > MAD-X lengths are in **metres**; HELIX converts them to its
 > internal millimetres on import.
@@ -301,7 +387,7 @@ charge=…` since MAD-X has no named particle for them):
 | `Solenoid` | `SOLENOID` (`ks = B/Bρ`) |
 | `RFGap` | `RFCAVITY, l=0` (`volt = sign(q)·V·TTF` — MAD-X does not multiply the RF kick by the charge and has no transit-time factor, so the sign carries the species and a TTF ≠ 1 is folded into `volt` with a warning; `lag = (φs + 90°)/360°`, the inverse of the import rule; `freq` in MHz) |
 | `Steerer` (magnetic) | `KICKER` (`hkick`/`vkick` from ∫B·dl and the signed Bρ; electric steerers are not representable) |
-| `Multipole` | `MULTIPOLE, knl={…}, ksl={…}, tilt` (same sense, see the import row) |
+| `Multipole` | `MULTIPOLE, knl={…}, ksl={…}, tilt` (same sense, see the import row).  A dipole component `knl[0]` / `ksl[0]` is a kick about a straight reference in HELIX but a thin bend in MAD-X (see the import row): the export warns, and reading the file back gives the same kick |
 | `Aperture` | `RCOLLIMATOR` / `ECOLLIMATOR` with both `xsize`/`ysize` (MAD-X `TRACK` losses) and `apertype`/`aperture` (its `APERTURE` module); the rectangular family (types 0, 3, 4, 5) is rectangular, type 1 circular; pepperpot and ring are not representable |
 | `Marker` / BPM marker | `MARKER` / `MONITOR` |
 | `FREQ`, `SET_*`, `ADJUST_*`, `DIAG_*`, `LATTICE`, `SPACE_CHARGE_COMP`, … | a `! HELIX: …` comment at the element's position — nothing vanishes silently |

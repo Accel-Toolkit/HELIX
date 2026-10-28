@@ -81,6 +81,9 @@ class LatticeStripWidget(pg.PlotWidget):
         self._total_length_mm: float = 0.0
         # Plot x per lattice mm: 1 for plots in mm, 1e-3 for plots in m.
         self._scale = float(scale)
+        # True while its plot shows a ring run turn by turn (x = turn): the
+        # strip is hidden and never frames that plot on the lattice
+        self.suppress_framing = False
 
         # No axes, no grid, no mouse.
         plot_item = self.getPlotItem()
@@ -162,7 +165,7 @@ class LatticeStripWidget(pg.PlotWidget):
         x auto-range is left off -- a cursor line alone would otherwise
         re-centre it -- and the next new plot re-arms it (rearm_autorange).
         A plot with data keeps its frame."""
-        if self._total_length_mm <= 0.0:
+        if self._total_length_mm <= 0.0 or self.suppress_framing:
             return
         try:
             host = self.getPlotItem().getViewBox().linkedView(pg.ViewBox.XAxis)

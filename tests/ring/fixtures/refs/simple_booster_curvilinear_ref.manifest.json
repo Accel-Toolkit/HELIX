@@ -1,0 +1,23 @@
+{
+ "generator": "dev-only",
+ "lattice_sha256": "03fdc4dabf69fb159bef23bd67b2e1dc56d059c65f660a38876f5a756e167323",
+ "n_parity": 1000,
+ "optics_qx_qy_dqx_dqy_per_delta": [
+  0.7099967573779307,
+  0.809997788367179,
+  -7.998305820532403,
+  -7.998719904035445
+ ],
+ "output_sha256": "4a114c3e0e424026773c75590e29d6ade394e05648d0887aae184677bcc2f3e8",
+ "parity_change": "sextupoles integrated at 6th order with 6 steps (the published deck: 4th order, 5 steps)",
+ "published_vs_parity_max_abs_diff_turn2": 4.185089774733086e-12,
+ "reference": "reference code B (exact elements, curvilinear bend multipoles)",
+ "reference_mass_MeV_beta_gamma_bg_pt": [
+  938.2720894282575,
+  0.8418107058090253,
+  1.8526311386790644,
+  1.559564726455201,
+  -1.8526311386790644
+ ],
+ "seed": 20261022
+}

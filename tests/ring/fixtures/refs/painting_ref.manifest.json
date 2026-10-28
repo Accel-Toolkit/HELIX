@@ -1,0 +1,52 @@
+{
+ "generator": "dev-only",
+ "output_sha256": "7a5595cf4edc697b25c824c7876c3de335a1d932b73b6fb3a62aaa0dcf63340d",
+ "reference": "reference code C (thick elements, a foil of single scatters)",
+ "seed": 20261026,
+ "settings": {
+  "emit_n": 2.5e-07,
+  "foil_box": [
+   -0.02,
+   0.02,
+   0.002,
+   0.02
+  ],
+  "k1": 0.35,
+  "kickers": [
+   [
+    "kb1",
+    0.6,
+    1.0
+   ],
+   [
+    "kb2",
+    1.4,
+    -1.0
+   ],
+   [
+    "kb3",
+    2.4,
+    -1.0
+   ],
+   [
+    "kb4",
+    3.2,
+    1.0
+   ]
+  ],
+  "per_turn": 20,
+  "quadrupole_fringe": false,
+  "s_foil": 1.9,
+  "seed": 20261026,
+  "sigma_dp": 0.0001,
+  "theta": 0.0075,
+  "thickness_ug_cm2": {
+   "painting": 1e-06,
+   "scattering": 600.0
+  },
+  "turn_time_s": 7.988318645831493e-07,
+  "turns": 400,
+  "turns_inj": 300,
+  "y_inj": 0.006
+ }
+}

@@ -32,6 +32,7 @@ import numpy as np
 from scipy.interpolate import RegularGridInterpolator as RGI
 
 from linac_gen.elements.base import FieldMapElement as FieldMapBase
+from linac_gen.elements.base import angle_nearest, wrap_deg
 from linac_gen.io.field_map_data import FieldMapData
 from linac_gen.io.tracewin_geom import Channel
 
@@ -409,12 +410,17 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
         for _ in range(max_iter):
             probe_input = theta_s - psi
             re_v, im_v = self._probe_voltage_integral(ref_entry, probe_input)
-            psi_new = float(np.rad2deg(np.arctan2(im_v, re_v)))
+            # psi and psi_new are angles: take psi_new on the branch
+            # nearest psi, or near +-180 deg the relaxation below averages
+            # across the wrap, never converges, and leaves a phase that
+            # can be ~100 deg off (a decelerating cavity)
+            psi_new = angle_nearest(
+                float(np.rad2deg(np.arctan2(im_v, re_v))), psi)
             if abs(psi_new - psi) < tol_deg:
                 psi = psi_new
                 break
             psi = (1.0 - relax) * psi + relax * psi_new
-        self._sync_offset_deg = float(psi)
+        self._sync_offset_deg = wrap_deg(float(psi))
 
     # Interpolation order for the field map.  ``"linear"`` is trilinear
     # (8-point), the legacy default; ``"cubic"`` uses SciPy's tricubic

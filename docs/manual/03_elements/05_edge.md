@@ -65,7 +65,10 @@ $$
 $$
 
 where `g` is the full magnetic gap.  ψ is zero when `gap = 0` or
-`k1 = 0`.  Note that **`k2` does not appear** — the implemented
+`k1 = 0`.  At β = 0 with a gap (the face of a sector bend) the fringe field
+still acts: M[3,2] = tan ψ / ρ, a weak defocusing across the bend plane — as
+in MAD-X (checked against it) and in TraceWin's EDGE formula; a square face
+without a gap does nothing.  Note that **`k2` does not appear** — the implemented
 matrix uses the first-order ψ only; `k2` is stored for `.dat`
 round-tripping but never applied.
 
@@ -78,8 +81,9 @@ round-tripping but never applied.
 
 For a **vertical** bend (`hv = 1`), x and y swap throughout.
 
-A **sector bend** has β = 0 → tan(β) = 0 → no edge focusing →
-the Edge element collapses to the identity and can be omitted.
+A **sector bend** has β = 0 → tan(β) = 0 → no geometric edge focusing;
+without a gap (or with `k1 = 0`) the Edge element is the identity and can be
+omitted, but with a gap it keeps the fringe term tan ψ / ρ.
 
 !!! note "Sign of β — the same for either bend direction"
     The sign of the edge kick depends on β alone, exactly as in TraceWin
@@ -110,7 +114,8 @@ edge_out = Edge(name="E1_out", pole_rotation=15.0, rho=1500.0,
                 gap=20.0, k1=0.45, hv=0)
 ```
 
-A sector bend (no edge focusing) skips the Edge elements entirely.
+A sector bend without a fringe gap needs no Edge elements; with a gap it
+keeps them (β = 0), for their fringe term.
 
 ## API reference (developers)
 

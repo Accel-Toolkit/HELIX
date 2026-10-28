@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "linac_gen"
-version = "1.20.0"
+version = "1.21.0"
 description = "Particle tracking code with PIC space charge for proton/ion linacs"
 readme = "README.md"
 # Dict form (not bare SPDX string) so older setuptools still parses it.
@@ -52,6 +52,10 @@ assist = []
 # makes no network call, needs no API key).  Only this surface needs
 # the `mcp` protocol package.
 assist-mcp = ["mcp>=1.0"]
+# Ring mode (multi-turn synchrotron tracking) compiles its particle kernels
+# with numba for multi-core CPUs and CUDA GPUs; it is imported only when a
+# ring run starts, so the linac needs nothing new.
+ring = ["numba>=0.58"]
 # Keyless in-app Claude backend: reason via the Claude Agent SDK, which
 # reuses the user's existing Claude Code login (no API key).  Optional —
 # with it absent or the `claude` CLI not logged in, the panel shows setup
@@ -71,6 +75,8 @@ assist-voice = ["faster-whisper>=1.0", "sounddevice>=0.4",
 # them (or this extra) the speaker falls back to macOS `say`.
 assist-voice-kokoro = ["kokoro-onnx>=0.4"]
 dev = [
+    # (the ring benchmark list's test and YAML ramp / space-charge files)
+    "pyyaml>=6.0",
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "ruff>=0.3",
@@ -94,7 +100,13 @@ pythonpath = [".", "gui"]
 markers = [
     "physics: standard physics benchmarks (drift expansion, focus quad, SC growth); runs by default — deselect with -m 'not physics'.",
     "slow: long integration tests (real-deck ensembles, etc.); runs by default — deselect with -m 'not slow'.",
+    "bench: ring-mode benchmark campaigns against other codes (minutes to hours); skipped unless HELIX_RUN_BENCH=1.",
 ]
+
+[tool.setuptools]
+# the licence of HELIX and those of the code ported into ring mode's kernels
+# (Apache-2.0 and BSD-3-Clause-LBNL ask for their texts with every copy)
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "licenses/*"]
 
 [tool.setuptools.packages.find]
 include = ["linac_gen*"]

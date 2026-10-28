@@ -157,6 +157,7 @@ def test_dipole_combined_function_cosh_branch():
 # ── Edge ────────────────────────────────────────────────────────────────────
 @pytest.mark.parametrize("pole,gap,hv", [
     (0.0, 0.0, 0), (15.0, 0.0, 0), (20.0, 50.0, 0), (20.0, 50.0, 1),
+    (0.0, 50.0, 0), (0.0, 50.0, 1),
 ])
 def test_edge_matrix_matches_numpy(pole, gap, hv):
     ref = _proton_ref()

@@ -384,9 +384,12 @@ class ClaudeSdkBackend:
                 now = time.time()
                 if now - last[0] >= 0.25:
                     last[0] = now
+                    # (a ring run reports turns, not a position)
                     self.session._emit(
                         type="progress", tool=_name,
-                        text=f"{_name}: s = {float(s_mm) / 1000.0:.1f} m")
+                        text=(f"{_name}: turn {int(i)} of {int(n)}"
+                              if _name == "run_ring" else
+                              f"{_name}: s = {float(s_mm) / 1000.0:.1f} m"))
             call["progress_callback"] = _progress
         t0 = time.time()
         try:

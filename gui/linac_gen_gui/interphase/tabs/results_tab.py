@@ -17,7 +17,7 @@ import numpy as np
 import pyqtgraph as pg
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QKeySequence, QShortcut
+from PyQt6.QtGui import QAction, QCursor, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
     QDialog, QFileDialog, QMenu, QTableWidget, QTableWidgetItem,
@@ -57,6 +57,12 @@ def _frame_empty_strip(dlg) -> None:
             strip.frame_host_if_empty()
         except RuntimeError:
             pass
+
+
+def _is_s_title(plain: str) -> bool:
+    """An axis title that means the position s (with or without its unit)."""
+    import re
+    return bool(re.fullmatch(r"s(\s*[\(\[]\s*(m|mm)\s*[\)\]])?", plain.strip()))
 
 
 class _LoadedResults:
@@ -146,6 +152,11 @@ def _curves_from_plotitem(item: pg.PlotItem) -> list[_Curve]:
     for i, di in enumerate(list(item.listDataItems())):
         try:
             x, y = di.getData()
+            o = getattr(di, "opts", None) or {}
+            if o.get("autoDownsample") or o.get("clipToView") or (o.get("downsample") or 1) > 1:
+                # (drawn thinned to the screen or clipped to the view — a ring
+                # run's turns: every point goes into the file)
+                x, y = di.xData, di.yData
         except Exception:
             continue
         if x is None or y is None:
@@ -393,9 +404,131 @@ class _PopupPlot(QDialog):
             pass
 
     def set_lattice_strip_visible(self, visible: bool) -> None:
-        """Hide/show the lattice strip.  No-op if it was never attached."""
+        """Hide/show the lattice strip.  No-op if it was never attached.
+        On a turn axis the strip stays hidden; the choice applies on return."""
         if self._lattice_strip is not None:
+            kept = getattr(self, "_strip_hidden", {}).get(id(self._lattice_strip))
+            if kept is not None:
+                self._strip_hidden[id(self._lattice_strip)] = (kept[0], not bool(visible))
+                return
             self._lattice_strip.setVisible(bool(visible))
+
+    # ------------------------------------------------------------------
+    # x domain: along s (a linac run) or turn by turn (a ring run)
+    # ------------------------------------------------------------------
+    def set_x_domain(self, domain: str) -> None:
+        """The x domain of the results shown — "s" (along the line) or "turn"
+        (a ring run turn by turn).  On a turn axis every axis titled s is
+        titled "turn" (no units), the lattice strips are hidden and so are
+        their "Show lattice" / "Show aperture" boxes and the "live match
+        preview" box, every curve is drawn thinned to the screen, and the plots with
+        a domain of their own (EnvelopeTriple) follow; back on s the titles,
+        strips and boxes are as they were.  The title gets "ring run, turn by
+        turn".  Called by the Results tab before and after each refresh (a
+        popup may re-title its axes when it redraws)."""
+        import re
+
+        from linac_gen_gui.interphase.plots.lattice_strip import LatticeStripWidget
+        turn = domain == "turn"
+        self._x_domain = "turn" if turn else "s"
+        if not hasattr(self, "_axis_orig"):
+            self._axis_orig, self._strip_hidden, self._box_enabled = {}, {}, {}
+        axes = [pw.getPlotItem().getAxis("bottom") for pw in self.findChildren(pg.PlotWidget)
+                if not isinstance(pw, LatticeStripWidget)]
+        for glw in self.findChildren(pg.GraphicsLayoutWidget):
+            axes += [it.getAxis("bottom") for it in list(glw.ci.items)
+                     if isinstance(it, pg.PlotItem)]
+        for ax in axes:
+            if turn:
+                text = ax.labelText or ""
+                plain = re.sub(r"<[^>]+>", "", text).strip()
+                if id(ax) not in self._axis_orig and _is_s_title(plain):
+                    self._axis_orig[id(ax)] = (ax, text, ax.labelUnits, ax.labelUnitPrefix,
+                                               dict(ax.labelStyle))
+                    new = (re.sub(r">\s*[^<>\s][^<>]*<", ">turn<", text, count=1)
+                           if "<" in text else "turn")
+                    ax.setLabel(text=new, units=None)
+                elif id(ax) in self._axis_orig and plain != "turn":
+                    ax.setLabel(text=re.sub(r">\s*[^<>\s][^<>]*<", ">turn<", text, count=1)
+                                if "<" in text else "turn", units=None)
+            elif id(ax) in self._axis_orig:
+                _ax, text, units, prefix, style = self._axis_orig.pop(id(ax))
+                ax.setLabel(text=text, units=units or None, unitPrefix=prefix, **style)
+        for strip in self.findChildren(LatticeStripWidget):
+            if turn:
+                if id(strip) not in self._strip_hidden:
+                    self._strip_hidden[id(strip)] = (strip, strip.isHidden())
+                strip.suppress_framing = True
+                strip.hide()
+            elif id(strip) in self._strip_hidden:
+                _s, hidden = self._strip_hidden.pop(id(strip))
+                strip.suppress_framing = False
+                strip.setHidden(hidden)
+        # (boxes that do not apply to a turn axis are hidden — a disabled check
+        # box looks like an enabled one in the app's style; the match preview
+        # streams a linac match's iterates)
+        for name in ("_chk_lat", "_chk_ap", "_live_cb"):
+            box = getattr(self, name, None)
+            if box is None:
+                continue
+            if turn:
+                self._box_enabled.setdefault(name, (box.isEnabled(), box.isHidden()))
+                box.setEnabled(False)
+                box.hide()
+            elif name in self._box_enabled:
+                enabled, hidden = self._box_enabled.pop(name)
+                box.setEnabled(enabled)
+                box.setHidden(hidden)
+        # (a ring run keeps up to some 10^5 rows: on a turn axis every curve is
+        # drawn thinned to the screen — each pixel column's lowest and highest
+        # point — clipped to the view, and as separate segments (a wide pen on
+        # one long zig-zag path is slow to stroke); the data and a saved file
+        # keep every point; back on s each curve is drawn as before)
+        if not hasattr(self, "_thin_orig"):
+            self._thin_orig = {}
+        items = []
+        for pw in self.findChildren(pg.PlotWidget):
+            if not isinstance(pw, LatticeStripWidget):
+                items += pw.getPlotItem().listDataItems()
+        for glw in self.findChildren(pg.GraphicsLayoutWidget):
+            items += [di for it in list(glw.ci.items) if isinstance(it, pg.PlotItem)
+                      for di in it.listDataItems()]
+        for di in items:
+            if not isinstance(di, pg.PlotDataItem):
+                continue
+            if turn:
+                if id(di) not in self._thin_orig:
+                    o = di.opts
+                    self._thin_orig[id(di)] = (di, o.get("downsample", 1),
+                                               o.get("autoDownsample", False),
+                                               o.get("downsampleMethod", "peak"),
+                                               o.get("clipToView", False),
+                                               di.curve.opts.get("segmentedLineMode", "auto"))
+                    di.setDownsampling(auto=True, method="peak")
+                    di.setClipToView(True)
+                # (a dashed line drawn in segments starts its pattern again at
+                # each point — solid: kept for a short curve, where the dashes
+                # show; a long one, thinned to a zig-zag, is drawn in segments)
+                solid = pg.mkPen(di.opts.get("pen")).style() == Qt.PenStyle.SolidLine
+                n = 0 if di.xData is None else len(di.xData)
+                want = "on" if (solid or n > 2000) else self._thin_orig[id(di)][5]
+                if di.curve.opts.get("segmentedLineMode") != want:
+                    di.curve.setSegmentedLineMode(want)
+            elif not turn and id(di) in self._thin_orig:
+                _di, ds, auto, method, clip, seg = self._thin_orig.pop(id(di))
+                di.setDownsampling(ds=ds, auto=auto, method=method)
+                di.setClipToView(clip)
+                di.curve.setSegmentedLineMode(seg)
+        if not turn:
+            self._thin_orig.clear()
+        for child in self.findChildren(EnvelopeTriple):
+            child.set_x_domain(self._x_domain)
+        raw = getattr(self, "_raw_title", "") or ""
+        if raw:
+            # (on a turn axis, a title "… along s" loses the "along s")
+            self.setWindowTitle(
+                f"{re.sub(r' along s(?![A-Za-z])', '', raw)}  —  ring run, turn by turn  —  "
+                "Ctrl+S to save" if turn else f"{raw}  —  Ctrl+S to save")
 
     # ------------------------------------------------------------------
     # Save-data plumbing
@@ -1829,7 +1962,42 @@ class _DispersionPopup(_PopupPlot):
             # (house rule: bound methods + RuntimeError guard).
             pass
 
+    def _follow_domain(self, domain: str) -> None:
+        """A ring run turn by turn has no model along s: the model box is
+        unchecked (its curve cleared) and disabled; back on s it is as it
+        was."""
+        turn = domain == "turn"
+        if turn == getattr(self, "_model_off_for_turns", False):
+            return
+        self._model_off_for_turns = turn
+        if turn:
+            self._model_kept = (self._chk_model.isChecked(), self._chk_model.toolTip(),
+                                self._chk_model.isHidden())
+            self._chk_model.setChecked(False)
+            self._chk_model.setEnabled(False)
+            self._chk_model.setToolTip("A ring run turn by turn: the ring's periodic dispersion "
+                                       "along s is on the RING RUN tile Ring optics.")
+            self._chk_model.hide()
+        else:
+            checked, tip, hidden = getattr(self, "_model_kept",
+                                           (False, self._chk_model.toolTip(), False))
+            self._chk_model.setToolTip(tip)
+            self._chk_model.setEnabled(self._state is not None)
+            self._chk_model.setHidden(hidden)
+            self._chk_model.setChecked(checked)
+        # (the model curves' legend entries go with the box)
+        for plot, curve in ((self._px, self._cx_m), (self._py, self._cy_m)):
+            leg = plot.getPlotItem().legend
+            if leg is None:
+                continue
+            listed = any(sample.item is curve for sample, _label in leg.items)
+            if turn and listed:
+                leg.removeItem(curve)
+            elif not turn and not listed:
+                leg.addItem(curve, curve.name())
+
     def refresh(self, results):
+        self._follow_domain(getattr(results, "x_domain", "s"))
         S = _sigma_stack(results)
         if S is None or S.size == 0:
             self._cx.setData([], []); self._cy.setData([], []); return
@@ -5846,6 +6014,9 @@ def _energy_tooltip(results) -> str:
     energy; the beam's mean energy differs from it by the centroid's ΔW."""
     note = ("The number is the reference particle's kinetic energy at the "
             "end of the lattice: the energy the RF phases are referred to.")
+    if getattr(results, "x_domain", "s") == "turn":
+        note = ("A ring run: the number is the reference particle's kinetic "
+                "energy on the last turn.")
     w = (np.asarray(getattr(results, "ref_w_kin", []), dtype=float)
          if results is not None else np.empty(0))
     if w.size == 0:
@@ -5858,8 +6029,33 @@ def _energy_tooltip(results) -> str:
     return "\n".join(lines) + "\n\n" + note
 
 
+def _sigma_tooltip(results) -> str:
+    """The Σ tile's sparkline: the largest correlation between two planes."""
+    from linac_gen.analysis.sigma_terms import largest_coupling
+    turn = getattr(results, "x_domain", "s") == "turn"
+    along = "turn by turn" if turn else "along s"
+    note = ("The curve is the largest correlation |r| between two planes "
+            f"(x–y, x–z, y–z) {along}: 0 means uncoupled, 1 fully coupled.\n"
+            f"Click for all 21 terms of the Σ matrix {along}.")
+    c = None if results is None else largest_coupling(results)
+    if c is None:
+        return note
+    fin = np.isfinite(c)
+    if not fin.any():
+        return note
+    k = int(np.nanargmax(c))
+    s = np.asarray(results.s, dtype=float) * (1.0 if turn else 1e-3)
+    where = f"on turn {int(round(s[k]))}" if turn else f"at s = {s[k]:.3f} m"
+    return (f"largest between planes  {c[k]:.3f}  {where}\n"
+            f"at the end  {c[fin][-1]:.3f}\n\n" + note)
+
+
 #: Tile tooltips that depend on the results: key -> fn(results) -> str.
-_TILE_TOOLTIPS = {"energy": _energy_tooltip}
+_TILE_TOOLTIPS = {"energy": _energy_tooltip, "sigma": _sigma_tooltip}
+
+#: Tiles whose end value is shown without a trend against the start
+#: (a correlation that starts near 0 gives a meaningless percentage).
+_NO_TREND_TILES = frozenset({"sigma"})
 
 
 class _EnergyPopup(_PopupPlot):
@@ -7016,7 +7212,9 @@ class _CentroidPopup(_PopupPlot):
         lat = self._state.lattice if self._state is not None else None
         sx_pts, tx_pts, sy_pts, ty_pts = [], [], [], []
         res_x, res_y = [], []
-        if lat is not None and s.size:
+        # (a ring run turn by turn has no BPM positions on its axis)
+        if (lat is not None and s.size
+                and getattr(results, "x_domain", "s") != "turn"):
             from linac_gen.matching.constraints import _effective_targets
             exit_idx = getattr(results, "element_exit_idx", None) or []
             for ei, el in enumerate(lat.elements):
@@ -8862,7 +9060,7 @@ def _bpeak_value(el):
     return _fieldmap_bpeak_T(el)
 
 
-def _brho_for_element(state, el):
+def _brho_for_element(state, el, results_fn=None):
     """Beam rigidity Bρ [T·m] at ``el``.
 
     Species (mass, |q|) always comes from the beam config.  βγ is the
@@ -8871,7 +9069,18 @@ def _brho_for_element(state, el):
     energy — exact for fixed-energy transfer lines, a live preview
     otherwise.  Returns None without a beam config: a BEND card stores
     only geometry (θ, ρ), so B is undefined until a rigidity is known.
+    ``results_fn`` gives the run shown (default ``state.results``); a ring
+    run gives its own species and reference: the rigidity at its first
+    statistics row (the start of a ramp).
     """
+    if results_fn is not None:
+        shown = results_fn()
+        if getattr(shown, "is_ring_view", False):
+            bg_rows = getattr(shown, "ref_bg", None) or []
+            m = float(getattr(shown, "mass_mev", float("nan")))
+            if len(bg_rows) and m > 0.0 and np.isfinite(bg_rows[0]):
+                return float(bg_rows[0]) * m / 299.792458
+            return None
     cfg = getattr(state, "beam_config", None) if state is not None else None
     if cfg is None:
         return None
@@ -8882,7 +9091,7 @@ def _brho_for_element(state, el):
     m = float(ref.species.mass)
     q = abs(float(getattr(ref.species, "charge", 1) or 1))
     bg = float(ref.bg)                       # entrance βγ (preview)
-    res = getattr(state, "results", None)
+    res = results_fn() if results_fn is not None else getattr(state, "results", None)
     lat = getattr(state, "lattice", None)
     if res is not None and lat is not None:
         try:
@@ -8903,10 +9112,11 @@ def _brho_for_element(state, el):
     return bg * m / (299.792458 * q)
 
 
-def _bend_field_T(state):
-    """value_fn factory: hard-edge |B| [T] of a BEND, B = Bρ/|ρ|."""
+def _bend_field_T(state, results_fn=None):
+    """value_fn factory: hard-edge |B| [T] of a BEND, B = Bρ/|ρ|
+    (``results_fn``: the run shown, see :func:`_brho_for_element`)."""
     def fn(el):
-        brho = _brho_for_element(state, el)
+        brho = _brho_for_element(state, el, results_fn)
         rho_m = abs(float(getattr(el, "rho", 0.0) or 0.0)) * 1e-3
         if brho is None or rho_m <= 0:
             return None
@@ -9031,8 +9241,57 @@ def _lattice_param_series(state, element_types, attr=None, value_fn=None,
     return fn
 
 
-def _build_series_fns(state) -> dict:
-    """key → series_fn for every tile whose thumbnail is derivable."""
+def _ring_series_fns() -> dict:
+    """The RING RUN tiles' thumbnails for a ring run shown, turn by turn (None
+    for anything else — nothing of ring mode is imported for a linac run)."""
+    def _ring(results):
+        return getattr(results, "ring", None) if getattr(results, "is_ring_view", False) else None
+
+    def ramp(results):
+        r = _ring(results)
+        w = ((getattr(r, "ramp", None) or {}) if r is not None else {}).get("kinetic_mev")
+        if w is None or not len(w):
+            return None
+        return np.arange(len(w), dtype=float), np.asarray(w, dtype=float)
+
+    def bunch(results):
+        if _ring(results) is None or not results.turns:
+            return None
+        return (np.asarray(results.turns, dtype=float),
+                np.asarray(results.emit_long_evs, dtype=float))
+
+    def losses(results):
+        r = _ring(results)
+        if r is None:
+            return None
+        t = np.asarray((r.losses or {}).get("turn", []), dtype=np.int64)
+        if not t.size:
+            return None
+        h = np.bincount(np.clip(t, 0, None) + 1, minlength=int(r.turns_done) + 1)
+        return np.arange(h.size, dtype=float), np.cumsum(h).astype(float)
+
+    def optics(results):
+        r = _ring(results)
+        t = (getattr(r, "optics_table", None) or {}) if r is not None else {}
+        if "s" not in t or not len(t["s"]):
+            return None
+        return np.asarray(t["s"], dtype=float), np.asarray(t["betx"], dtype=float)
+
+    def injection(results):
+        r = _ring(results)
+        v = ((getattr(r, "injection", None) or {}) if r is not None else {}).get("injected")
+        if v is None or not len(v):
+            return None
+        return np.arange(len(v), dtype=float), np.asarray(v, dtype=float)
+
+    return {"ring_ramp": ramp, "ring_long": bunch, "ring_losses": losses,
+            "ring_optics": optics, "ring_injection": injection}
+
+
+def _build_series_fns(state, results_fn=None) -> dict:
+    """key → series_fn for every tile whose thumbnail is derivable
+    (``results_fn``: the run the tab shows, for the tiles that read a run
+    besides the lattice; default ``state.results``)."""
     from linac_gen.elements.quadrupole import Quadrupole
     from linac_gen.elements.superposed_field_map import SuperposedFieldMap
     from linac_gen.elements.rf_gap import RFGap
@@ -9133,7 +9392,20 @@ def _build_series_fns(state) -> dict:
         if results is None:
             return None
         bz = _beta_z_eff_from_sigma(results)
-        return None if bz is None else np.asarray(bz, float)
+        if bz is None:
+            return None
+        bz = np.asarray(bz, float)
+        if getattr(results, "is_ring_view", False):
+            # (the card's gamma^2 is a linac's slip; a ring's slip is eta:
+            # the plain statistical beta_z)
+            g = _arr(results, "ref_gamma")
+            if g.size == bz.size:
+                bz = bz / (g * g)
+        return bz
+
+    def sigma_coupling(results):
+        from linac_gen.analysis.sigma_terms import largest_coupling
+        return None if results is None else largest_coupling(results)
 
     def _sigma_diag(results, i):
         mats = getattr(results, "sigma_matrix", None) or []
@@ -9282,6 +9554,8 @@ def _build_series_fns(state) -> dict:
         return np.interp(s_mm, s_mm[fin], v[fin])     # gap-filled for the sparkline
 
     return {
+        **_ring_series_fns(),
+        "sigma": sigma_coupling,
         "emit6d": emit6d,
         "bmag_s": bmag_s,
         "eigen_canon": eigen_canon,
@@ -9341,9 +9615,9 @@ def _build_series_fns(state) -> dict:
             state, (RfqCell,), attr="A10"),
         "rfq_losses": _rfq_loss_series(state),
         "bend_b": _lattice_param_series(
-            state, (Dipole,), attr=None, value_fn=_bend_field_T(state)),
+            state, (Dipole,), attr=None, value_fn=_bend_field_T(state, results_fn)),
         "bend_bl": _lattice_param_series(
-            state, (Dipole,), attr=None, value_fn=_bend_field_T(state),
+            state, (Dipole,), attr=None, value_fn=_bend_field_T(state, results_fn),
             # B[T] × arc length[mm] → T·m needs L in metres
             transform=lambda el, v: v * (float(el.length) * 1e-3)),
         "floorplan": _floorplan_series(state),
@@ -9419,7 +9693,8 @@ _TILE_KEYWORDS: dict[str, str] = {
     "floorplan":   "floor plan survey geometry layout coordinates",
     "sync_phase":  "synchronous phase phi_s rf cavity",
     "partran":     "tracewin partran compare comparison cross-check benchmark",
-    "sigma":       "sigma matrix 6x6 second moments covariance",
+    "sigma":       "sigma matrix 6x6 second moments covariance correlation "
+                   "coupling",
     "tmatrix":     "transfer matrix 6x6 r matrix map",
     "rfq_geometry": "rfq vane geometry vane tips electrodes aperture bore "
                     "top side view beam envelope modulation",
@@ -9441,6 +9716,19 @@ _TILE_KEYWORDS: dict[str, str] = {
     "rfq_table":   "rfq cell table parameters export per cell numbers "
                    "solver summary",
     "convergence": "space charge convergence sc steps grid numerics",
+    "ring_ramp":   "ring ramp energy program kinetic synchronous phase rf voltage "
+                   "frequency transition acceleration cycle turn",
+    "ring_long":   "ring bunch longitudinal emittance ev s bunch length energy spread "
+                   "line density bins synchrotron turn",
+    "ring_losses": "ring losses lost particles loss map aperture survival turn element",
+    "ring_tunes":  "ring tunes tune diagram footprint naff probe resonance lines working "
+                   "point space charge tune shift laslett",
+    "ring_phase":  "ring phase space snapshot turn particles density separatrix bucket "
+                   "line density distribution",
+    "ring_optics": "ring optics periodic twiss beta dispersion tunes chromaticity "
+                   "transition gamma momentum compaction lattice functions",
+    "ring_injection": "ring injection foil painting bump stripping injected waste hit map "
+                      "closed orbit chopper",
 }
 
 
@@ -9617,14 +9905,96 @@ _SECTIONS: list[tuple[str, list[tuple]]] = [
             "",         "",       "#f97316"),
     ]),
     ("ADVANCED · MATRIX VIEWERS", [
-        ("sigma",       "Σ matrix (6×6)",             "grid",   None,
-            "",         "",       "#a78bfa"),
+        ("sigma",       "Σ matrix along s",           "grid",   None,
+            "",         "{:.2f}", "#a78bfa"),
         ("tmatrix",     "Transfer matrix (6×6)",     "grid",   None,
             "",         "",       "#a78bfa"),
         ("convergence", "SC convergence",            "heatmap", None,
             "",         "",       "#e879f9"),
     ]),
+    # (a ring run only: shown, at the top of the grid, while the Results tab
+    # shows a ring run; last here so that the plot names the assistant
+    # resolves resolve as before)
+    ("RING RUN", [
+        ("ring_ramp",      "Ring ramp · energy and RF",  "gauge",     None,
+            "MeV",      "{:.4g}", "#fbbf24"),
+        ("ring_long",      "Ring bunch · eV s",          "wave",      None,
+            "eV·s",     "{:.3g}", "#f472b6"),
+        ("ring_losses",    "Ring losses · map",          "collision", None,
+            "",         "{:.0f}", "#f87171"),
+        ("ring_tunes",     "Ring tunes · diagram",       "scatter",   None,
+            "",         "",       "#38bdf8"),
+        ("ring_phase",     "Ring phase space · snapshots", "scatter", None,
+            "",         "",       theme.ACCENT),
+        ("ring_optics",    "Ring optics · periodic β, D", "sliders",  None,
+            "m",        "{:.3g}", "#a3e635"),
+        ("ring_injection", "Ring injection · foil",      "target",    None,
+            "",         "{:.0f}", "#fb923c"),
+    ]),
 ]
+
+#: Tiles that show a ring run turn by turn (x = turn) from its statistics rows.
+_TURN_TILES = frozenset({
+    "rms", "emit", "emit_n", "emit6d", "twiss", "long_twiss", "divergence", "energy",
+    "emit4d", "eigenemit", "eigen_canon", "loss", "centroid", "long_offset", "dispersion",
+    "dpp", "sigma"})
+
+def _n_items(x) -> int:
+    """len(x), 0 for None (never ``x or ()``: an array's truth value raises)."""
+    return 0 if x is None else len(x)
+
+
+def _ring_tile_unavailable(key: str, rr):
+    """Why a RING RUN tile cannot open for the ring results ``rr`` (None: it
+    can)."""
+    if rr is None:
+        return "No ring run yet (Ring tab: Run)."
+    if key == "ring_ramp" and not _n_items((getattr(rr, "ramp", None) or {}).get("t_s")):
+        return "No ramp: the run was at the ring's fixed energy (the Programs page sets a ramp)."
+    if key == "ring_long" and not _n_items(getattr(rr, "turns", None)):
+        return "The ring run has no statistics row."
+    if key == "ring_losses" and not _n_items((getattr(rr, "losses", None) or {}).get("s")):
+        return "No particle was lost."
+    if key == "ring_tunes" and not (getattr(rr, "probes", None) or {}):
+        return "No tune probe (Tune probes 0)."
+    if key == "ring_phase" and not (getattr(rr, "snapshots", None) or {}):
+        return "No snapshot turn was asked for (Run page: Snapshot turns)."
+    if key == "ring_optics" and not (getattr(rr, "optics_table", None) or {}):
+        return "This ring run carries no optics table (a run made before 2026-10-25)."
+    if key == "ring_injection" and not (getattr(rr, "injection", None) or {}):
+        return "No foil in the ring (the Injection page sets the injection)."
+    return None
+
+
+#: Tiles disabled while a ring run is shown, with the reason (their tooltip).
+_RING_OFF = {
+    "peak": "A ring run does not record the largest excursion turn by turn.",
+    "bpms": "BPM readings are per element; a ring run is shown turn by turn.",
+    "halo": "A ring run does not record the halo parameter.",
+    "phase_adv": "A linac channel's phase advance per cell — the ring's tunes are in "
+                 "RING RUN (Ring tunes, Ring optics).",
+    "tune_depr": "A linac channel's tune depression per cell — the ring's tunes are in "
+                 "RING RUN (Ring tunes).",
+    "bmag_s": "Mismatch against a linac design along s — the ring's periodic optics are in "
+              "RING RUN (Ring optics).",
+    "hofmann": "A linac channel's stability chart — the ring's tunes are in RING RUN "
+               "(Ring tunes).",
+    "footprint": "A linac channel's frozen footprint — the ring's tune diagram is in RING RUN "
+                 "(Ring tunes).",
+    "scc": "LEBT space-charge compensation: linac runs only.",
+    "halo_scan": "Recorded by multiparticle linac runs only.",
+    "power": "Needs the beam current of a linac run.",
+    "aperture_loss": "A ring run's losses are in RING RUN (Ring losses).",
+    "loss_power": "Needs the beam current of a linac run — a ring run's losses are in "
+                  "RING RUN (Ring losses).",
+    "ibs": "Intra-beam stripping of an H\u207b linac beam.",
+    "magstrip": "Magnetic stripping of an H\u207b linac beam.",
+    "ensemble": "Error-study results.",
+    "phase": "A ring run's phase space is in RING RUN (Ring phase space).",
+    "density_s": "Recorded by multiparticle linac runs only.",
+    "ttf": "Cavity transit-time factors of a linac.",
+    "partran": "A comparison with a linac code's output.",
+}
 
 
 class ResultsTab(QWidget):
@@ -9637,6 +10007,15 @@ class ResultsTab(QWidget):
         super().__init__()
         self.state = state
         self._popups: dict[str, QDialog] = {}
+        # The run the tiles show: "linac" (state.results) or "ring"
+        # (state.ring_results through linac_gen.ring.view, imported only when
+        # a ring run is shown: a linac session loads no ring module).
+        self._source = "linac"
+        self._ring_view = None
+        self._ring_view_of = None
+        self._gate_tips: dict = {}
+        #: () -> bool, set by the app: whether a Ring-tab run is going
+        self.ring_running_provider = None
 
         # Subtle top-to-bottom gradient so the results canvas has depth
         # instead of a flat BG_0 — reads as a "stage" the cards sit on.
@@ -9675,6 +10054,12 @@ class ResultsTab(QWidget):
         hint.setWordWrap(True)
         v.addWidget(hint)
         self._hint = hint
+        # (while a ring run is shown: what the tiles show)
+        self._ring_banner = QLabel("")
+        self._ring_banner.setWordWrap(True)
+        self._ring_banner.setStyleSheet(f"color:{theme.ACCENT}; font-size:13px;")
+        self._ring_banner.setVisible(False)
+        v.addWidget(self._ring_banner)
 
         # --- Import / load saved run -----------------------------------
         # Loads any HDF5 produced by save_results_hdf5 (auto-saved after
@@ -9713,6 +10098,19 @@ class ResultsTab(QWidget):
             f"padding:6px 12px;"
         )
         self._import_btn.clicked.connect(self._import_results)
+        # "Run shown": a linac run's results or a ring run's (shown while
+        # ring results exist; never saved with the project)
+        self._run_label = QLabel("Run shown:")
+        self._run_label.setStyleSheet(f"color:{theme.TEXT_1};")
+        self._run_combo = QComboBox()
+        self._run_combo.addItem("Linac run", "linac")
+        self._run_combo.addItem("Ring run", "ring")
+        self._run_combo.setToolTip("The run the tiles show: the last linac run (envelope or "
+                                   "multiparticle) or the last ring run, turn by turn.")
+        self._run_combo.currentIndexChanged.connect(self._on_run_combo)
+        for w in (self._run_label, self._run_combo):
+            w.setVisible(False)
+            import_row.addWidget(w)
         import_row.addWidget(self._import_btn)
         v.addLayout(import_row)
 
@@ -9734,9 +10132,9 @@ class ResultsTab(QWidget):
         scroll_lay.setContentsMargins(0, 0, 0, 0)
         scroll_lay.setSpacing(12)
 
-        # Callbacks for classic dialogs (routed through app.py)
+        # Callbacks for classic dialogs (routed through app.py).  The Σ tile
+        # opens its own popup (open_sigma_cb is no longer used here).
         classic_routes = {
-            "sigma":       open_sigma_cb,
             "tmatrix":     open_tmatrix_cb,
             "convergence": open_convergence_cb,
         }
@@ -9747,14 +10145,14 @@ class ResultsTab(QWidget):
         # Derived-series providers (per-cell tunes, dispersion, lattice
         # parameters…) — closures over AppState so lattice tiles render
         # live values even before any run.
-        self._series_fns = _build_series_fns(state)
+        self._series_fns = _build_series_fns(state, results_fn=self._shown_results)
 
         self._ibs_card: Optional[ResultCard] = None
         self._tile_sections: list[tuple[QWidget, QGridLayout, list]] = []
         self._card_haystack: dict[str, str] = {}
+        placed: list = []
         for section_name, cards_def in _SECTIONS:
             hdr = section_header(section_name)
-            scroll_lay.addWidget(hdr)
             grid = QGridLayout(); grid.setSpacing(10)
             section_cards: list = []
             for idx, (key, label, ic, attr, unit, fmt, accent) in enumerate(cards_def):
@@ -9764,6 +10162,7 @@ class ResultsTab(QWidget):
                     value_fmt=fmt if fmt else "{:.3g}",
                     series_fn=self._series_fns.get(key),
                     tooltip_fn=_TILE_TOOLTIPS.get(key),
+                    show_trend=key not in _NO_TREND_TILES,
                 )
                 if key in classic_routes:
                     card.clicked.connect(
@@ -9780,8 +10179,14 @@ class ResultsTab(QWidget):
             # Make the grid columns stretch uniformly
             for c in range(COLS):
                 grid.setColumnStretch(c, 1)
-            scroll_lay.addLayout(grid)
+            placed.append((section_name == "RING RUN", hdr, grid))
             self._tile_sections.append((hdr, grid, section_cards))
+        # (the RING RUN section at the top: it shows only for a ring run)
+        for first in (True, False):
+            for is_ring, hdr, grid in placed:
+                if is_ring == first:
+                    scroll_lay.addWidget(hdr)
+                    scroll_lay.addLayout(grid)
 
         self._no_match = QLabel("No tiles match — clear the search to show all tiles.")
         self._no_match.setStyleSheet(f"color:{theme.TEXT_2}; font-size:13px; padding:12px;")
@@ -9792,7 +10197,8 @@ class ResultsTab(QWidget):
         v.addWidget(scroll, stretch=1)
         self._scroll = scroll
 
-        state.results_changed.connect(self._refresh)
+        state.results_changed.connect(self._on_results_changed)
+        state.ring_results_changed.connect(self._on_ring_results)
         state.lattice_changed.connect(self._on_lattice_for_tiles)
         self._apply_tile_filter("")
         # Tile is H⁻-only — re-evaluate whenever the beam config changes
@@ -9807,6 +10213,7 @@ class ResultsTab(QWidget):
         # the beam rigidity); the other lattice tiles ignore the config.
         state.beam_config_changed.connect(self._refresh_cards_from_state)
         self._refresh_cards_from_state()
+        self._on_ring_results(getattr(state, "ring_results", None))
 
     # ------------------------------------------------------------ tile search
     def _lattice_has_rfq(self) -> bool:
@@ -9832,11 +10239,14 @@ class ResultsTab(QWidget):
         never touched (IBS gating, assistant ``open_plot``)."""
         query = str(text or "")
         any_match = False
-        # the RFQ section shows only for a lattice with RFQ cells
-        rfq_ok = self._lattice_has_rfq()
+        # the RFQ section shows only for a lattice with RFQ cells, the RING RUN
+        # section only while a ring run is shown
+        ring_ok = self._ring_shown()
+        rfq_ok = self._lattice_has_rfq() and not ring_ok
         for hdr, grid, cards in self._tile_sections:
             matches = [_tile_matches(query, self._card_haystack.get(getattr(c, "_key", ""), ""))
                        and (rfq_ok or not str(getattr(c, "_key", "")).startswith("rfq_"))
+                       and (ring_ok or not str(getattr(c, "_key", "")).startswith("ring_"))
                        for c in cards]
             for c in cards:
                 grid.removeWidget(c)
@@ -9857,8 +10267,11 @@ class ResultsTab(QWidget):
             pass
 
     def _open_first_match(self) -> None:
-        """Enter in the search box: open the first visible, enabled tile."""
-        for _hdr, _grid, cards in self._tile_sections:
+        """Enter in the search box: open the first visible, enabled tile (the
+        RING RUN section, at the top while a ring run is shown, first)."""
+        sections = sorted(self._tile_sections,
+                          key=lambda t: not (t[2] and str(t[2][0]._key).startswith("ring_")))
+        for _hdr, _grid, cards in sections:
             for c in cards:
                 if not c.isHidden() and c.isEnabled():
                     self.open_plot(getattr(c, "_key", None))
@@ -9872,9 +10285,311 @@ class ResultsTab(QWidget):
         self._search.clear()
 
     def _refresh_cards_from_state(self, *_a) -> None:
-        results = getattr(self.state, "results", None)
+        self._feed_cards(self._shown_results())
+
+    # ------------------------------------------------------------------
+    # The run shown: a linac run, or a ring run turn by turn
+    # ------------------------------------------------------------------
+    def _ring_shown(self) -> bool:
+        return (getattr(self, "_source", "linac") == "ring"
+                and getattr(getattr(self, "state", None), "ring_results", None) is not None)
+
+    def _shown_results(self):
+        """The results the tiles show: the linac run's (``state.results``) or,
+        while the ring run is shown, a :class:`~linac_gen.ring.view.
+        RingResultsView` of ``state.ring_results`` (built once per run; None
+        when it cannot be built, said on the status bar)."""
+        state = getattr(self, "state", None)
+        if not self._ring_shown():
+            return getattr(state, "results", None)
+        ring = state.ring_results
+        if self._ring_view_of is not ring:
+            self._ring_view_of = ring
+            try:
+                from linac_gen.ring.view import RingResultsView
+                self._ring_view = RingResultsView(ring)
+            except Exception as exc:                         # noqa: BLE001
+                self._ring_view = None
+                state.status_message.emit(f"The ring run cannot be shown: {exc}")
+        return self._ring_view
+
+    def _on_results_changed(self, results) -> None:
+        """``state.results_changed``: a new linac run (or import) is shown; None
+        (a new lattice) refreshes what is shown."""
+        if results is not None and self._source == "ring":
+            self._set_source("linac")
+        else:
+            self._refresh(self._shown_results())
+
+    def _on_ring_results(self, ring) -> None:
+        """``state.ring_results_changed``: a new ring run is shown with ring
+        mode on (with it off — a run stopped by switching it off — the run
+        shown stays, the selector offers the ring run); None (a new lattice)
+        goes back to the linac run."""
+        try:
+            self._ring_view, self._ring_view_of = None, None
+            if ring is None:
+                src = "linac"
+            elif getattr(self.state, "ring_mode", False):
+                src = "ring"
+            else:
+                src = self._source
+            self._set_source(src)
+        except Exception as exc:                             # noqa: BLE001
+            # (an exception out of a slot would abort the process)
+            import traceback
+            traceback.print_exc()
+            self.state.status_message.emit(f"The Results tab cannot show the ring run: {exc}")
+
+    def _on_run_combo(self, index: int) -> None:
+        self._set_source(self._run_combo.itemData(index) or "linac")
+
+    def show_ring_run(self) -> None:
+        """Show the ring run (the Ring tab's "Show in the Results tab"; nothing
+        to do when it is shown already)."""
+        if getattr(self.state, "ring_results", None) is not None and not self._ring_shown():
+            self._set_source("ring")
+
+    def _set_source(self, src: str) -> None:
+        """Show the linac run or the ring run: the selector, the tiles' gates,
+        the windows of tiles not available now closed (their workers stop),
+        the filter and the banner; then the KPIs, cards and open windows."""
+        has_ring = getattr(self.state, "ring_results", None) is not None
+        if not has_ring:
+            src = "linac"
+        changed = src != self._source
+        if changed:
+            self._remember_zoom(self._source)
+        self._source = src
+        self._run_combo.blockSignals(True)
+        self._run_combo.setCurrentIndex(1 if src == "ring" else 0)
+        self._run_combo.blockSignals(False)
+        self._run_label.setVisible(has_ring)
+        self._run_combo.setVisible(has_ring)
+        if changed:
+            # (a match preview of the other run ends here: its title too)
+            for d in self._popups.values():
+                if getattr(d, "_previewing", False):
+                    raw = getattr(d, "_raw_title", None)
+                    if raw:
+                        d.setWindowTitle(f"{raw}  —  Ctrl+S to save")
+                d._previewing = False
+        self._apply_gates()
+        # the windows of what the run shown cannot show: for a ring run the
+        # tiles disabled now, for a linac run the RING RUN tiles (a linac
+        # tile disabled for its own reason, e.g. IBS for a proton beam, keeps
+        # its window as before)
+        for key, d in list(self._popups.items()):
+            card = self._card_of(key)
+            gone = (card is not None and not card.isEnabled()) if src == "ring" \
+                else key.startswith("ring_")
+            if gone and d.isVisible():
+                d.close()
+        self._apply_tile_filter(self._search.text())
+        self._update_banner()
+        shown = self._shown_results()
+        # (the same run still shown — ring results arrived beside it: nothing to
+        # draw again, and no zoom lost)
+        if changed or shown is not getattr(self, "_refreshed_with", None):
+            self._refresh(shown)
+        if changed:
+            self._restore_zoom(src)
+
+    def _zoom_owner(self, src: str):
+        return getattr(self.state, "results" if src == "linac" else "ring_results", None)
+
+    def _remember_zoom(self, src: str) -> None:
+        """Each open window's view ranges on the run shown (``src``), for when
+        that run is shown again."""
+        import pyqtgraph as pg
+
+        from linac_gen_gui.interphase.plots.lattice_strip import LatticeStripWidget
+        mem = {}
+        for key, d in self._popups.items():
+            try:
+                if not d.isVisible():
+                    continue
+                vbs = [pw.getPlotItem().getViewBox() for pw in d.findChildren(pg.PlotWidget)
+                       if not isinstance(pw, LatticeStripWidget)]
+                for glw in d.findChildren(pg.GraphicsLayoutWidget):
+                    vbs += [it.getViewBox() for it in list(glw.ci.items)
+                            if isinstance(it, pg.PlotItem)]
+                mem[key] = [(vb, [list(r) for r in vb.viewRange()],
+                             tuple(vb.autoRangeEnabled())) for vb in vbs]
+            except RuntimeError:
+                continue
+        self.__dict__.setdefault("_zoom_memory", {})[src] = (self._zoom_owner(src), mem)
+
+    def _restore_zoom(self, src: str) -> None:
+        """The view ranges the windows had when this run was last shown (the
+        same run only; a window opened since keeps its new frame)."""
+        import pyqtgraph as pg
+        owner, mem = self.__dict__.get("_zoom_memory", {}).get(src, (None, {}))
+        if owner is None or owner is not self._zoom_owner(src):
+            return
+        for key, items in mem.items():
+            d = self._popups.get(key)
+            try:
+                if d is None or not d.isVisible():
+                    continue
+                # (a plot x-linked to another follows it on the screen: its x
+                # is the leader's, set exactly; its own y is set)
+                for vb, (xr, yr), (ax, ay) in items:
+                    linked = vb.linkedView(pg.ViewBox.XAxis) is not None
+                    if linked:
+                        # (no x fit of its own: it would move the leader)
+                        vb.enableAutoRange(axis=pg.ViewBox.XAxis, enable=False)
+                        vb.setYRange(*yr, padding=0.0)
+                    else:
+                        vb.setRange(xRange=xr, yRange=yr, padding=0.0)
+                        if ax:
+                            vb.enableAutoRange(axis=pg.ViewBox.XAxis, enable=ax)
+                    if ay:
+                        vb.enableAutoRange(axis=pg.ViewBox.YAxis, enable=ay)
+            except RuntimeError:
+                continue
+
+    def _card_of(self, key):
+        for c in self._cards:
+            if getattr(c, "_key", None) == key:
+                return c
+        return None
+
+    def _apply_gates(self) -> None:
+        """Which tiles open for the run shown.  A ring run: the tiles of
+        ``_RING_OFF`` off with their reason, the turn tiles off if the run has
+        no statistics row; the RING RUN tiles on where the run has their data
+        (in the linac view too, hidden: opening one shows the ring run); a
+        linac run: as before (the IBS tile for an H⁻ beam only)."""
+        ring = self._ring_shown()
+        view = self._shown_results() if ring else None
+        rr = getattr(self.state, "ring_results", None)
         for card in self._cards:
-            card.set_results(results)
+            key = getattr(card, "_key", "")
+            if key.startswith("ring_"):
+                why = _ring_tile_unavailable(key, rr)
+                self._gate(card, why is None, why)
+            elif ring and key.startswith("rfq_"):
+                self._gate(card, False, "Not for a ring run.  The RFQ panels belong to a "
+                                        "linac run.")
+            elif ring and key in _RING_OFF:
+                self._gate(card, False, f"Not for a ring run.  {_RING_OFF[key]}")
+            elif ring and key in _TURN_TILES and not (view is not None and view.s):
+                self._gate(card, False, "The ring run has no statistics row to show.")
+            else:
+                self._gate(card, True, None)
+        if not ring:
+            self._update_ibs_tile_state(getattr(self.state, "beam_config", None))
+
+    def _gate(self, card, enabled: bool, why) -> None:
+        """Enable a card, or disable it with ``why`` as its tooltip and a dimmed
+        look; its own tooltip and look come back when it is enabled again (a
+        card this function never disabled is left as it is)."""
+        from PyQt6.QtWidgets import QGraphicsOpacityEffect
+        key = getattr(card, "_key", "")
+        if enabled:
+            if key in self._gate_tips:
+                card.setToolTip(self._gate_tips.pop(key)[0])
+                card.setGraphicsEffect(None)
+                card.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+                card.setEnabled(True)
+            return
+        if key not in self._gate_tips:
+            self._gate_tips[key] = (card.toolTip(), why)
+        else:
+            self._gate_tips[key] = (self._gate_tips[key][0], why)
+        card.setEnabled(False)
+        card.setToolTip(why or "")
+        eff = QGraphicsOpacityEffect(card)
+        eff.setOpacity(0.4)
+        card.setGraphicsEffect(eff)
+        card.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+
+    def _feed_cards(self, results) -> None:
+        """Every card's sparkline and footer from ``results`` — except the
+        cards disabled for a ring run, which get nothing (their functions
+        would read a ring run as a linac channel) and keep their reason."""
+        ring = self._ring_shown()
+        # (the ring run's own tiles — turn by turn and RING RUN — depend on the
+        # run only: a lattice edit or a Beam-tab apply leaves them as they are)
+        same = ring and results is not None and results is getattr(self, "_fed_view", None)
+        for card in self._cards:
+            key = getattr(card, "_key", "")
+            if same and (key in _TURN_TILES or key.startswith("ring_")):
+                continue
+            gated = key in self._gate_tips
+            card.set_results(None if (ring and gated and not key.startswith("ring_"))
+                             else results)
+            if gated:
+                card.setToolTip(self._gate_tips[key][1] or "")
+        self._fed_view = results if ring else None
+
+    def _update_banner(self) -> None:
+        """While the ring run is shown, a line says what the tiles show (and
+        the hint above it that the sparklines are turn by turn)."""
+        linac_hint = getattr(self, "_hint_text", None)
+        if linac_hint is None:
+            linac_hint = self._hint_text = self._hint.text()
+        hint = linac_hint if not self._ring_shown() else linac_hint.replace(
+            "quantity along s.", "quantity, turn by turn for the ring run shown.")
+        if self._hint.text() != hint:
+            self._hint.setText(hint)
+        if not self._ring_shown():
+            self._ring_banner.setVisible(False)
+            return
+        rr = self.state.ring_results
+        meta = rr.meta or {}
+        every = int(meta.get("stats_every", 1) or 1)
+        rows = "every turn" if every <= 1 else f"every {every} turns"
+        self._ring_banner.setText(
+            f"Ring run — {int(rr.turns_done)} turn(s), {meta.get('n_particles', '?')} "
+            f"particles: the tiles show the beam turn after turn at the start of the ring "
+            f"(s = 0), {rows}; RING RUN adds the ramp, the bunch in eV s, the losses, the "
+            "tunes, phase space, the optics and the injection.")
+        self._ring_banner.setVisible(True)
+
+    def _refresh_popup(self, key, dlg, results) -> None:
+        """Refresh one popup with ``results``.  A turn tile follows their x
+        domain — a ring run's: x = turn (the popup cleared first when the
+        domain changes: most refreshes only replace data of matching length);
+        an empty plot is framed on the lattice on s only."""
+        dom = getattr(results, "x_domain", "s")
+        cur = getattr(dlg, "_x_domain", "s")
+        if key in _TURN_TILES and (dom == "turn" or cur == "turn"):
+            if cur != dom:
+                dlg.refresh(None)
+            dlg.set_x_domain(dom)
+            dlg.refresh(results)
+            dlg.set_x_domain(dom)
+        else:
+            dlg.refresh(results)
+        _frame_empty_strip(dlg)
+
+    def _import_ring(self, path) -> None:
+        """A ring results file: shown as the ring run (refused while a ring run
+        is going — it would replace that run's results)."""
+        running = self.ring_running_provider
+        if callable(running) and running():
+            QMessageBox.warning(self, "Ring run in progress",
+                                "A ring run is going on: import the file when it has ended.")
+            return
+        try:
+            from linac_gen.ring.results import load_ring_hdf5
+            res = load_ring_hdf5(path)
+        except Exception as exc:                             # noqa: BLE001
+            QMessageBox.critical(self, "Import failed", str(exc))
+            return
+        res.meta = dict(res.meta or {})
+        res.meta["dump_path"] = str(path)
+        lat = getattr(self.state, "lattice", None)
+        names = [str(getattr(e, "name", "")) for e in (getattr(lat, "elements", None) or [])]
+        file_names = [str(n) for n in (res.meta.get("element_names") or [])]
+        if file_names and names != file_names:
+            self.state.status_message.emit(
+                f"{Path(path).name}: a ring run of another lattice than the one loaded")
+        self.state.set_ring_results(res)
+        self.show_ring_run()                      # (asked for: shown, ring mode or not)
+        self.state.status_message.emit(f"Loaded the ring run {Path(path).name}")
 
     # ------------------------------------------------------------------
     # Load a previously-saved HDF5 run and feed it back through the
@@ -9910,6 +10625,10 @@ class ResultsTab(QWidget):
             import h5py as _h5
             with _h5.File(path, "r") as _f:
                 is_train = "train" in _f
+                is_ring = _f.attrs.get("run_type") == "ring"
+            if is_ring:
+                self._import_ring(path)
+                return
             if is_train:
                 from linac_gen.train import load_train_results
                 from linac_gen_gui.interphase.dialogs.train_dialog import (
@@ -9951,8 +10670,9 @@ class ResultsTab(QWidget):
         self.state.status_message.emit(f"Loaded {Path(path).name}")
 
     def _update_ibs_tile_state(self, cfg) -> None:
-        """Enable the IBS tile only when the active beam is H⁻."""
-        if self._ibs_card is None:
+        """Enable the IBS tile only when the active beam is H⁻ (and a linac
+        run is shown: a ring run keeps it off, see :meth:`_apply_gates`)."""
+        if self._ibs_card is None or self._ring_shown():
             return
         is_hminus = (cfg is not None
                      and getattr(cfg, "species", None) == "H-")
@@ -10007,8 +10727,14 @@ class ResultsTab(QWidget):
 
     def plot_catalog(self):
         """[(key, label)] of every result plot card (from _SECTIONS) — the
-        catalogue the assistant resolves plot names against."""
-        return [(c[0], c[1]) for _sec, cards in _SECTIONS for c in cards]
+        catalogue the assistant resolves plot names against.  The RING RUN
+        plots are in it only with ring mode on or a ring run present: a linac
+        session resolves names as before ring mode."""
+        state = getattr(self, "state", None)
+        ring = (bool(getattr(state, "ring_mode", False))
+                or getattr(state, "ring_results", None) is not None)
+        return [(c[0], c[1]) for _sec, cards in _SECTIONS for c in cards
+                if ring or not c[0].startswith("ring_")]
 
     def open_plot(self, key) -> bool:
         """Open a result plot by its card key, routed EXACTLY like a user
@@ -10019,6 +10745,14 @@ class ResultsTab(QWidget):
         valid = {c[0] for _sec, cards in _SECTIONS for c in cards}
         if key not in valid:
             return False
+        if str(key).startswith("ring_"):
+            # (a RING RUN tile: refused without its data — before anything is
+            # switched; else the ring run shown first, the assistant's way to it)
+            rr = getattr(getattr(self, "state", None), "ring_results", None)
+            if rr is None or _ring_tile_unavailable(key, rr) is not None:
+                return False
+            if not self._ring_shown():
+                self._set_source("ring")
         for card in self._cards:
             if getattr(card, "_key", None) == key:
                 if not card.isEnabled():
@@ -10061,6 +10795,11 @@ class ResultsTab(QWidget):
                 from linac_gen_gui.interphase.tabs.halo_scan_popup import (
                     HaloActionScanPopup)
                 dlg = HaloActionScanPopup(self, self.state)
+            elif key == "sigma":
+                # Own module, imported on first open.
+                from linac_gen_gui.interphase.tabs.sigma_popup import (
+                    SigmaTermsPopup)
+                dlg = SigmaTermsPopup(self, self.state)
             elif key == "partran":     dlg = _PartranComparePopup(self, self.state)
             elif key == "divergence":  dlg = _DivergencePopup(self)
             elif key == "peak":        dlg = _PeakExcursionPopup(self)
@@ -10190,7 +10929,7 @@ class ResultsTab(QWidget):
                           "(rigidity: per-element from the run, "
                           "entrance energy before one)",
                     element_types=(Dipole,), attr=None,
-                    value_fn=_bend_field_T(self.state),
+                    value_fn=_bend_field_T(self.state, self._shown_results),
                     ylabel="|B|", yunits="T",
                     color="#f97316", type_name="dipole (BEND)",
                 )
@@ -10200,7 +10939,7 @@ class ResultsTab(QWidget):
                     self, self.state,
                     title="Dipole field integral  —  ∫B·dl = B·L [T·m] per BEND",
                     element_types=(Dipole,), attr=None,
-                    value_fn=_bend_field_T(self.state),
+                    value_fn=_bend_field_T(self.state, self._shown_results),
                     # B[T] × arc length[mm] → T·m needs L in metres
                     transform=lambda el, v: v * (float(el.length) * 1e-3),
                     ylabel="∫B·dl", yunits="T·m",
@@ -10225,18 +10964,25 @@ class ResultsTab(QWidget):
                 # Own module, imported on first open.
                 from linac_gen_gui.interphase.tabs.rfq_popups import POPUPS
                 dlg = POPUPS[key](self, self.state)
+            elif key.startswith("ring_"):
+                # Own module, imported on first open (a ring run only).
+                from linac_gen_gui.interphase.tabs.ring_popups import POPUPS as RING
+                dlg = RING[key](self, self.state)
             else:
                 QMessageBox.warning(self, "Unknown", f"No popup for {key}")
                 return
-            self._install_live_preview_toggle(dlg)
+            if not key.startswith("ring_"):
+                # (the match preview streams linac iterates: not into ring plots)
+                self._install_live_preview_toggle(dlg)
             self._popups[key] = dlg
         if not dlg.isVisible():
             # Opening a popup draws a new plot: fit all its data.  An
             # already-open one (its card clicked again) keeps the zoom.
             rearm_autorange(dlg)
+            for _owner, mem in getattr(self, "_zoom_memory", {}).values():
+                mem.pop(key, None)              # (and no zoom of before comes back)
         try:
-            dlg.refresh(self.state.results)
-            _frame_empty_strip(dlg)
+            self._refresh_popup(key, dlg, self._shown_results())
         except Exception as exc:
             # Refresh failures should NOT prevent the popup from showing —
             # the user can still close it cleanly and an error message is
@@ -10251,6 +10997,7 @@ class ResultsTab(QWidget):
         dlg.activateWindow()
 
     def _refresh(self, results) -> None:
+        self._refreshed_with = results
         # Update KPIs
         def _fmt(arr, fmt="{:.3f}"):
             try: return fmt.format(arr[-1])
@@ -10262,11 +11009,28 @@ class ResultsTab(QWidget):
             # (the loader returns ndarrays, whereas a live run yields lists).
             try: return x is not None and len(x) >= n
             except TypeError: return bool(x)
+        kpis = (self._k_sx, self._k_sy, self._k_sz, self._k_ex, self._k_loss, self._k_trans)
         if results is None:
-            for k in (self._k_sx, self._k_sy, self._k_sz, self._k_ex,
-                      self._k_loss, self._k_trans):
+            for k in kpis:
                 kpi_set(k, "—")
+        elif getattr(results, "is_ring_view", False):
+            # a ring run: the beam at the end of the run (s = 0), the betatron
+            # emittance's growth over the run, the survival
+            kp = getattr(results, "kpi", None) or {}
+
+            def _kv(name, fmt):
+                v = kp.get(name)
+                return "—" if v is None else fmt.format(v)
+            kpi_set(self._k_sx, _kv("sigma_x_mm", "{:.3f}"))
+            kpi_set(self._k_sy, _kv("sigma_y_mm", "{:.3f}"))
+            kpi_set(self._k_sz, _kv("sigma_z_mm", "{:.3f}"))
+            kpi_set(self._k_ex, _kv("ex_growth", "{:.2f}×"))
+            kpi_set(self._k_trans, _kv("transmission", "{:.2f}"))
+            kpi_set(self._k_loss, _kv("loss", "{:.2f}"))
         else:
+            # (a value this run does not have shows "—", not the last run's)
+            for k in kpis:
+                kpi_set(k, "—")
             sx = getattr(results, "sigma_x", [])
             sy = getattr(results, "sigma_y", [])
             sphi = getattr(results, "sigma_phi", [])
@@ -10296,18 +11060,16 @@ class ResultsTab(QWidget):
                 kpi_set(self._k_trans, f"{trans[-1]:.2f}")
                 kpi_set(self._k_loss, f"{100 - trans[-1]:.2f}")
         # Refresh sparklines + footer values on every result card
-        for card in self._cards:
-            card.set_results(results)
+        self._feed_cards(results)
         # Refresh any open popups.  Isolate each so one popup raising (e.g. a
         # degenerate ensemble seed with an empty transmission array) can't
         # abort the loop and leave every later popup stale for this cycle.
-        for d in self._popups.values():
+        for key, d in list(self._popups.items()):
             if not d.isVisible():
                 continue
             try:
                 rearm_autorange(d)      # a new run: a new plot
-                d.refresh(results)
-                _frame_empty_strip(d)
+                self._refresh_popup(key, d, results)
             except Exception:   # noqa: BLE001 — best-effort live refresh
                 # Keep the loop isolation but preserve observability: before
                 # this guard these exceptions reached the excepthook (stderr
@@ -10352,8 +11114,9 @@ class ResultsTab(QWidget):
         dlg._live_cb = cb
 
     def preview_refresh(self, results, iter_idx: int) -> None:
-        """Fan a mid-match iterate out to visible, opted-in popups."""
-        if results is None:
+        """Fan a mid-match iterate out to visible, opted-in popups (none while
+        a ring run is shown: the iterates are a linac run's)."""
+        if results is None or getattr(self, "_source", "linac") == "ring":
             return
         for d in self._popups.values():
             try:
@@ -10387,7 +11150,8 @@ class ResultsTab(QWidget):
                     # back on the committed results: a new plot (the live
                     # iterates before it kept any zoom)
                     rearm_autorange(d)
-                    d.refresh(self.state.results)
+                    d.refresh(getattr(self, "_shown_results",
+                                      lambda: self.state.results)())
                     _frame_empty_strip(d)
             except RuntimeError:
                 continue

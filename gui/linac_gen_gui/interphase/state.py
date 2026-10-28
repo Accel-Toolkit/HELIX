@@ -43,6 +43,9 @@ class AppState(QObject):
     # lattice .dat file).  Set by tab Apply handlers; cleared by Save
     # Project / Load Project.
     project_dirty_changed   = pyqtSignal(bool)
+    # Ring mode (opt-in multi-turn tracking of a synchrotron)
+    ring_mode_changed       = pyqtSignal(bool)
+    ring_results_changed    = pyqtSignal(object)         # RingResults | None
 
     def __init__(self) -> None:
         super().__init__()
@@ -60,6 +63,17 @@ class AppState(QObject):
         self._s_cursor: float = 0.0
         self._running: bool = False
         self._results: Any = None
+        # Ring mode: off in every linac session.  ``ring_used`` keeps the
+        # project's "ring" section once the mode has been switched on (a
+        # linac project stays byte-identical); ``ring_config`` is the Ring
+        # tab's RingConfig as a dict.
+        self._ring_mode: bool = False
+        self.ring_used: bool = False
+        self.ring_config: dict = {}
+        self._ring_results: Any = None
+        # the lattice the user chose to keep as a line (the Lattice tab's
+        # ring banner stays hidden for it; saved with the project)
+        self.ring_line_choice: Any = None
         # ErrorStudyResults bag (Monte Carlo run output).  Set by the
         # Error Study tab worker; consumed by the Results-tab ensemble plots.
         self.error_study_results: Any = None
@@ -151,6 +165,8 @@ class AppState(QObject):
         # BEFORE any signal fires so lattice_changed consumers that read
         # state.results never see new-lattice + old-results.
         self._results = None
+        had_ring = self._ring_results is not None
+        self._ring_results = None
         self.error_study_results = None
         self.failure_study_results = None
         # Stale matrices from the previous lattice must not leak: replace
@@ -164,6 +180,8 @@ class AppState(QObject):
         self.selected_element_changed.emit(None)
         self.s_cursor_changed.emit(0.0)
         self.results_changed.emit(None)
+        if had_ring:
+            self.ring_results_changed.emit(None)
 
     @property
     def dirty(self) -> bool:
@@ -218,6 +236,23 @@ class AppState(QObject):
         if r != self._running:
             self._running = r
             self.running_changed.emit(r)
+
+    # --- ring mode -----------------------------------------------------
+    @property
+    def ring_mode(self) -> bool: return self._ring_mode
+    def set_ring_mode(self, on: bool) -> None:
+        on = bool(on)
+        if on != self._ring_mode:
+            self._ring_mode = on
+            if on:
+                self.ring_used = True
+            self.ring_mode_changed.emit(on)
+
+    @property
+    def ring_results(self): return self._ring_results
+    def set_ring_results(self, results: Any) -> None:
+        self._ring_results = results
+        self.ring_results_changed.emit(results)
 
     # --- results -------------------------------------------------------
     @property

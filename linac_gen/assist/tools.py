@@ -56,11 +56,22 @@ class WorkContext:
     #: last calibration produced by ``orm_calibrate`` (mode="fit") — what
     #: ``orm_apply`` applies when no calibration file is given.
     orm_calibration: object = None
+    #: ring mode (``tools_ring``): the session's ring settings (RingConfig
+    #: keys — in the GUI the Ring tab's), whether the GUI shows ring mode,
+    #: and the last ring run's results and file.
+    ring_config: dict = field(default_factory=dict)
+    ring_mode: bool = False
+    ring_results: object = None
+    ring_results_path: str = ""
 
     # Overridable hooks (GUI adapter reroutes through AppState setters)
     def set_lattice(self, lattice, path: str) -> None:
         self.lattice = lattice
         self.lattice_path = path
+        # (the last ring run belongs to the old lattice — as the GUI's state
+        # drops it)
+        self.ring_results = None
+        self.ring_results_path = ""
 
     def set_beam_config(self, cfg) -> None:
         self.beam_config = cfg
@@ -68,6 +79,33 @@ class WorkContext:
     def set_results(self, results, path: str = "") -> None:
         self.results = results
         self.results_path = path
+
+    # Ring-mode hooks: the GUI adapter writes the settings into AppState
+    # and the Ring tab's pages, switches the mode, shows the results.
+    # set_ring_mode returns the mode now on, None outside the GUI.
+    def set_ring_config(self, cfg: dict) -> None:
+        self.ring_config = dict(cfg)
+
+    def set_ring_mode(self, on: bool):
+        return None                  # -> tool reports "GUI only"
+
+    def set_ring_results(self, results, path: str = "") -> None:
+        self.ring_results = results
+        self.ring_results_path = path
+
+    def ring_running(self) -> bool:
+        return False                 # GUI: the Ring tab's own run in progress
+
+    def ring_beam_config(self):
+        """The beam a ring run takes: the session's (GUI: the Beam tab's form,
+        which the Ring tab's Run and a project save read)."""
+        return self.beam_config
+
+    def lattice_snapshot(self, lattice=None, should_stop=None):
+        """A copy of ``lattice`` (default: the session's) for a ring run or
+        its optics (GUI: taken while no walk or run changes the elements)."""
+        import copy
+        return copy.deepcopy(self.lattice if lattice is None else lattice)
 
     # Element-parameter mutation hooks.  Headless (CLI / MCP / replay):
     # plain setattr — there is no undo stack.  The GUI adapter overrides
@@ -1052,13 +1090,16 @@ def _look_at_screen(ctx):
        "GUI settings (Numerics-tab grid/steps/integrator/backend, "
        "recording options), same progress bar, results into the tabs.  "
        "PREFER this over run_envelope/run_mp when working in the desktop "
-       "GUI and the user hasn't asked for setting overrides.  Returns "
-       "immediately; the run continues in the GUI (poll get_status).",
+       "GUI and the user hasn't asked for setting overrides.  kind 'ring' "
+       "presses the Ring tab's Run button (ring mode on; its settings, its "
+       "live strip; the results go to the Results tab, Run shown: Ring "
+       "run).  Returns immediately; the run continues in the GUI "
+       "(poll get_status; ring runs: ring_status).",
        {"type": "object",
         "properties": {"kind": {"type": "string",
-                                "enum": ["envelope", "mp"],
-                                "description": "'envelope' or 'mp' "
-                                "(multiparticle)"}},
+                                "enum": ["envelope", "mp", "ring"],
+                                "description": "'envelope', 'mp' "
+                                "(multiparticle) or 'ring' (ring mode)"}},
         "required": ["kind"]},
        "compute")
 def _run_in_gui(ctx, kind: str):
@@ -1066,22 +1107,27 @@ def _run_in_gui(ctx, kind: str):
     if gate:
         return gate
     kind = str(kind).strip().lower()
-    if kind not in ("envelope", "mp"):
-        return _refused(f"kind must be 'envelope' or 'mp', not {kind!r}")
+    if kind not in ("envelope", "mp", "ring"):
+        return _refused(f"kind must be 'envelope', 'mp' or 'ring', not {kind!r}")
     status = ctx.run_gui_simulation(kind)
     if status is None:
         return _refused("run_in_gui presses the desktop GUI's Run button — "
-                        "outside the GUI use run_envelope / run_mp instead")
+                        "outside the GUI use "
+                        + ("run_ring" if kind == "ring"
+                           else "run_envelope / run_mp") + " instead")
     if status == "started":
         return _ok({"kind": kind, "state": "started",
                     "note": "launched exactly like the GUI Run button, "
                             "with the GUI's own settings; results will "
-                            "appear in the tabs — check get_status /"
-                            " result_summary when the run finishes"},
+                            "appear in the tabs — check "
+                            + ("ring_status" if kind == "ring"
+                               else "get_status / result_summary")
+                            + " when the run finishes"},
                    _ctx_provenance(ctx))
     if status == "busy":
-        return _refused("a run is already in progress in the GUI — stop "
-                        "it first or wait for it to finish")
+        return _refused(f"a{' ring' if kind == 'ring' else ''} run is already in "
+                        "progress in the GUI — stop it first or wait for it to "
+                        "finish")
     return _err(status)
 
 
@@ -2204,6 +2250,26 @@ def _is_project_file(path) -> bool:
 # ---------------------------------------------------------------------------
 # MUTATE tools (always confirmed)
 # ---------------------------------------------------------------------------
+def _project_ring_config(path) -> dict | None:
+    """A project's ring settings (its "ring" section's config, as the GUI's
+    Ring tab saved it, read as the GUI reads an earlier version's), {} when it
+    holds none, None when the file cannot be read — read as JSON, without
+    loading ring mode."""
+    import json as _json
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = _json.load(fh)
+    except (OSError, ValueError):
+        return None
+    ring = data.get("ring") if isinstance(data, dict) else None
+    cfg = ring.get("config") if isinstance(ring, dict) else None
+    if not (isinstance(cfg, dict) and cfg):
+        return {}                     # (a project without ring settings: the defaults)
+    # (an earlier version's settings read as the GUI reads them)
+    from linac_gen.ring.config import migrate_source
+    return dict(migrate_source(cfg)[0])
+
+
 @_tool("load_lattice",
        "Load a lattice file (.dat/.madx/.lat/.lte natively; .bmad/.jl/"
        ".pals.yaml through lattix) or .lgproj project into the session "
@@ -2273,11 +2339,23 @@ def _load_lattice(ctx, path: str, tracewin_ini=None):
     ctx.set_lattice(lat, lat_path)
     if beam is not None:
         ctx.set_beam_config(beam)
+    # (a project's ring settings become the session's — none: the defaults, as
+    # File > Open Project in the GUI — as the command line reads them)
+    ring_cfg = _project_ring_config(path) if _is_project_file(path) else None
+    if ring_cfg is not None:
+        try:
+            ctx.set_ring_config(ring_cfg)
+        except RuntimeError as exc:
+            warns = list(warns) + [f"the project's ring settings were not applied: {exc}"]
+            ring_cfg = None
     data = {"n_elements": len(lat.elements),
             "beam_loaded": beam is not None,
             "beam_source": beam_source,
             "parse_warnings": list(getattr(lat, "parse_warnings",
                                            []))[:10]}
+    if ring_cfg is not None:
+        data["ring_settings"] = ("the project's" if ring_cfg
+                                 else "none in the project: the defaults")
     if ini_name:
         data["tracewin_ini"] = ini_name
         data["beam"] = {k: getattr(beam, k) for k in
@@ -2295,7 +2373,8 @@ def _load_lattice(ctx, path: str, tracewin_ini=None):
        "plain arrays object for querying).  Multibunch train files "
        "(provenance run_type='train') are auto-detected and loaded "
        "through the train loader; result_summary then reports the "
-       "per-bunch train summary.",
+       "per-bunch train summary.  Ring-mode results files "
+       "(<stem>_ring.h5) become the session's ring results (ring_status).",
        {"type": "object",
         "properties": {"path": {"type": "string"}},
         "required": ["path"]},
@@ -2310,14 +2389,31 @@ def _load_results(ctx, path: str):
     # Train files carry none of the single-bunch envelope/reference
     # groups — load_results_hdf5 would return an EMPTY namespace
     # (silent uselessness).  Route on the train/ group instead.
-    def _is_train_file(p):
+    def _kind(p):
         import h5py
         with h5py.File(p, "r") as f:
-            return "train" in f
-    is_train, refusal, _ = _capture(_is_train_file, path)
+            if "train" in f:
+                return "train"
+            rt = f.attrs.get("run_type")
+            return "ring" if (rt.decode() if isinstance(rt, bytes) else rt) == "ring" else ""
+    kind, refusal, _ = _capture(_kind, path)
     if refusal:
         return refusal
-    if is_train:
+    if kind == "ring":
+        # (a ring run, turn by turn: the session's ring results)
+        from linac_gen.ring.results import load_ring_hdf5
+        out, refusal, warns = _capture(load_ring_hdf5, path)
+        if refusal:
+            return refusal
+        try:
+            ctx.set_ring_results(out, str(path))
+        except RuntimeError as exc:
+            return _refused(exc)
+        return _ok({"kind": "ring", "turns_done": int(out.turns_done),
+                    "note": "ring results loaded (ring_status reports them; python API: "
+                            "linac_gen.ring.results.load_ring_hdf5)"},
+                   {"ring_results_path": str(path)}, warns)
+    if kind == "train":
         from linac_gen.train.results import load_train_results
         out, refusal, warns = _capture(load_train_results, path)
         if refusal:
@@ -2456,3 +2552,4 @@ from linac_gen.assist import tools_study     # noqa: E402,F401  (registry)
 from linac_gen.assist import tools_reliability  # noqa: E402,F401  (registry)
 from linac_gen.assist import tools_training  # noqa: E402,F401  (registry)
 from linac_gen.assist import tools_grad  # noqa: E402,F401  (registry)
+from linac_gen.assist import tools_ring  # noqa: E402,F401  (registry)

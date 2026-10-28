@@ -107,6 +107,41 @@ def _split_spaced_label(tokens):
     return None
 
 
+def _lg_value(value: str):
+    """A ``;@LG`` value with the common types coerced, so the consumer
+    doesn't have to."""
+    if value.lower() in ("true", "false"):
+        return value.lower() == "true"
+    try:
+        return int(value)
+    except ValueError:
+        try:
+            return float(value)
+        except ValueError:
+            return value  # keep as string
+
+
+def _lg_options(text: str) -> dict:
+    """The options of one ``;@LG`` line (``text``: what follows ``;@LG``):
+    ``key=value`` pairs, a trailing ``#`` or ``;`` comment, bare keys as
+    flags (true).  A value runs to the next ``key=`` — it may hold spaces
+    (``note=booster ring study`` is one value) — so a flag is a word before
+    the first pair of its line."""
+    body = re.sub(r"\s*=\s*", "=", re.split(r"[#;]", text, maxsplit=1)[0])
+    out: dict = {}
+    key = None
+    for w in re.finditer(r"\S+", body):
+        k, eq, value = w.group().partition("=")
+        if eq and k:                       # a pair starts
+            key, start = k, w.start() + len(k) + 1
+            out[key] = _lg_value(value)
+        elif key is not None:              # more words of its value
+            out[key] = _lg_value(body[start:w.end()])
+        elif not eq:                       # a flag (before any pair)
+            out[k] = True
+    return out
+
+
 class _NullFieldMap:
     """A FIELD_MAP card whose map files are missing but which carries
     nothing (kb = ke = 0, no current or aperture map: Ki = Ka = 0) — only
@@ -526,7 +561,12 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
     metadata["lg_options"] = {}
 
     import re
-    _LG_DIRECTIVE = re.compile(r"^\s*;\s*@LG\s+(\S+?)\s*=\s*(.+?)\s*$")
+    # ``;@LG kernel=tsc``, ``;@LG nx=96 ny=96 nz=96  # PIC grid`` (several
+    # pairs; a trailing ``#`` or ``;`` comment), ``;@LG ring`` (a bare key is
+    # a flag, true), ``;@LG note=booster ring study`` (one value with
+    # spaces): see _lg_options
+    _LG_DIRECTIVE = re.compile(r"^\s*;\s*@LG\s+(.*?)\s*$")
+
     # ``; HELIX_FOIL <name> <material> <thickness_ug_cm2>`` — HELIX-specific
     # extension that lives as a TraceWin-invisible comment but materialises
     # as a :class:`linac_gen.elements.foil.Foil` element when re-loaded.
@@ -556,19 +596,7 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
             # ``;@LG key=value`` directive — extract before stripping comments.
             m = _LG_DIRECTIVE.match(raw_line)
             if m:
-                key, value = m.group(1).strip(), m.group(2).strip()
-                # Coerce common types so the consumer doesn't have to.
-                if value.lower() in ("true", "false"):
-                    value = (value.lower() == "true")
-                else:
-                    try:
-                        value = int(value)
-                    except ValueError:
-                        try:
-                            value = float(value)
-                        except ValueError:
-                            pass  # keep as string
-                metadata["lg_options"][key] = value
+                metadata["lg_options"].update(_lg_options(m.group(1)))
                 continue
             # ``; HELIX_FOIL …`` — instantiate the Foil element and skip
             # the regular keyword-parse path.

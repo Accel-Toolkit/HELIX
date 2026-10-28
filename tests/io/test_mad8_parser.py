@@ -1088,9 +1088,17 @@ def test_zero_angle_bend_bare_tilt_is_half_pi(tmp_path):
 
 
 def test_zero_angle_bend_k2_still_warns(tmp_path):
+    # a zero-angle bend becomes a quadrupole (or a drift): its K2 is dropped
+    # and the warning says so; a real bend keeps K2 for ring mode
     text = "BRHO := 4.881\nB0: SBEND, L=1, ANGLE=0, K1=0.5, K2=3.0\nTOP: LINE=(B0)\n"
-    _lat, meta = parse_mad8(_write(tmp_path, text))
-    assert any("B0.K2" in w for w in meta["warnings"])
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    assert any("B0.K2" in w and "dropped" in w for w in meta["warnings"])
+    assert not any(hasattr(e, "k2") for e in lat.elements)
+    text = "BRHO := 4.881\nB1: SBEND, L=1, ANGLE=0.1, K1=0.5, K2=3.0\nTOP: LINE=(B1)\n"
+    lat, meta = parse_mad8(_write(tmp_path, text, "b1.lat"))
+    (b1,) = [e for e in lat.elements if type(e).__name__ == "Dipole"]
+    assert b1.k2 == 3.0
+    assert any("B1.K2" in w and "kept on the bend for ring mode" in w for w in meta["warnings"])
 
 
 def test_lcavity_electron_follows_the_electron_momentum(tmp_path):
@@ -1214,3 +1222,49 @@ def test_lattice_remembers_its_import_beam(tmp_path):
     lat, meta = parse_mad8(_write(tmp_path, "Q1: QUADRUPOLE, L=0.2, K1=1.0\nTOP: LINE=(Q1)\n"),
                            fallback_beam=("H-", 800.0))
     assert lat.mad8_import_beam == {"species": "H-", "energy": pytest.approx(800.0)}
+
+
+def test_rounded_vertical_and_reversed_bends_carry_no_false_warning(tmp_path):
+    # TILT = 1.5708 is a vertical bend and 3.14159 a reversed one (shared rule,
+    # within 1e-4 rad); the MAD8 pass used to add "tilt dropped" for both
+    from linac_gen.elements.dipole import Dipole
+    text = """BRHO := 4.881
+BV: SBEND, L=1.0, ANGLE=0.1, TILT=1.5708
+BR: SBEND, L=1.0, ANGLE=0.1, TILT=3.14159, K2=0.5
+TOP: LINE=(BV, BR)
+"""
+    lat, meta = parse_mad8(_write(tmp_path, text))
+    bv, br = [e for e in lat.elements if isinstance(e, Dipole)]
+    assert bv.hv == 1 and br.hv == 0
+    assert br.angle == pytest.approx(-math.degrees(0.1)) and br.k2 == pytest.approx(-0.5)
+    ws = meta["warnings"]
+    assert not any("tilt dropped" in w for w in ws)
+    assert any("BR.K2 = 0.5 is stored as -0.5" in w for w in ws)
+
+
+@pytest.mark.parametrize("head, kwargs, declared, from_beam", [
+    ("BEAM, PARTICLE=PROTON, ENERGY=1.938272\n", {}, True, True),
+    ("BEAM, PARTICLE=PROTON, PC=1.7\n", {}, True, True),
+    # (only the particle: MAD8's default energy, not the deck's — as MAD-X)
+    ("BEAM, PARTICLE=PROTON\n", {}, False, True),
+    ("BRHO := 4.881\n", {}, False, False),
+    ("", {"brho": 4.881}, False, False),
+    ("", {"fallback_beam": ("H-", 800.0)}, False, False),
+])
+def test_reference_declared_when_the_rigidity_is_the_files_beam(tmp_path, head, kwargs, declared,
+                                                                from_beam):
+    lat, meta = parse_mad8(_write(tmp_path, head + "Q1: QUADRUPOLE, L=0.2, K1=1.0\nTOP: LINE=(Q1)\n"),
+                           **kwargs)
+    assert meta["reference_declared"] is declared
+    assert (meta["rigidity_source"] == "beam") is from_beam
+
+
+def test_quadrupole_k1s_turns_it_as_in_the_madx_importer(tmp_path):
+    """MAD8 has no K1S; one in a file is read as the MAD-X importer reads it
+    (the shared builder), and the MAD8 tilt pass keeps the turned tilt."""
+    text = "BRHO := 4.881\nQS: QUADRUPOLE, L=0.2, K1=-0.5, K1S=0.3, TILT=0.1\nTOP: LINE=(QS)\n"
+    lat, _ = parse_mad8(_write(tmp_path, text))
+    q = lat.elements[0]
+    assert q.skew_angle == pytest.approx(math.degrees(0.1 + 0.5 * math.atan2(0.3, 0.5)))
+    # k1 < 0 kept: K = -sqrt(k1² + k1s²); a bare BRHO is H⁻'s, G = sign(q)·K·Bρ
+    assert q.gradient == pytest.approx(-math.hypot(0.5, 0.3) * -4.881)

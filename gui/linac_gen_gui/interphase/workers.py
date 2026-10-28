@@ -467,3 +467,326 @@ class BacktrackWorker(QThread):
             self.finished_ok.emit(results)
         except Exception as exc:
             self.failed.emit(str(exc))
+
+
+class RingWorker(QThread):
+    """Ring-mode run (Simulate → Ring Mode, Ring tab ▶ Run).
+
+    The worker copies the lattice first — holding WALK_LOCK only while it
+    copies — and runs on the copy: the window's lattice is never touched.
+    Stop takes effect at the end of the turns being tracked (a turn of a
+    large bunch can take seconds); the turns already done come back with
+    ``aborted`` (None when no turn was done).  Progress is emitted at most
+    once per percent; the statistics (``live``) at most five times a second,
+    each time only the rows added since the last (a failure there never
+    stops the run).  With ``dump_path`` the results — partial ones too — are
+    written there (HDF5, ring schema, with ``lattice_path`` and the beam
+    settings) before they are handed over; ``dumped`` carries the path, a
+    failed write ``results.meta["dump_error"]``.
+    """
+
+    finished_ok = pyqtSignal(object)        # RingResults
+    failed = pyqtSignal(str)
+    progress = pyqtSignal(int)              # percent
+    progress_turn = pyqtSignal(int, int)    # (turn, n_turns)
+    aborted = pyqtSignal(object)            # RingResults of the turns done | None
+    # {"start": first row's index, "turns", "n_alive", "cov" (rows from
+    #  start on), "n_turns", "beta0gamma0", "p0c_mev" (each row's reference),
+    #  "ramp" (a run through a ramp)}
+    live = pyqtSignal(object)
+    dumped = pyqtSignal(str)                # the results file written
+
+    LIVE_INTERVAL_S = 0.2
+
+    def __init__(self, lattice, beam_config, ring_config, dump_path=None, lattice_path=None):
+        super().__init__()
+        # 16 MB like every numpy worker (macOS default ~544 KB → SIGBUS)
+        self.setStackSize(16 * 1024 * 1024)
+        self.lattice = lattice
+        self.beam_config = beam_config
+        self.ring_config = ring_config
+        self.dump_path = dump_path
+        self.lattice_path = lattice_path
+        self._stop_event = threading.Event()
+        self._last_pct = -1
+        self._last_live = 0.0
+        self._live_sent = 0
+
+    def request_stop(self) -> None:
+        self._stop_event.set()
+
+    def _should_abort(self) -> bool:
+        return self._stop_event.is_set()
+
+    def _on_turn(self, turn: int, n: int) -> None:
+        pct = int(100 * turn / max(n, 1))
+        if pct != self._last_pct:
+            self._last_pct = pct
+            self.progress.emit(pct)
+            self.progress_turn.emit(int(turn), int(n))
+
+    def _on_live(self, stats: dict, n_turns: int, ref: dict) -> None:
+        import time as _time
+        if _time.monotonic() - self._last_live < self.LIVE_INTERVAL_S:
+            return
+        try:
+            import numpy as _np
+            k0, k1 = self._live_sent, len(stats["turns"])
+            if k1 <= k0:
+                return
+            # (each row's reference: it changes in a ramp)
+            bg = stats.get("ref_bg") or []
+            pc = stats.get("ref_p0c") or []
+            d = {"start": k0,
+                 "turns": _np.asarray(stats["turns"][k0:k1]),
+                 "n_alive": _np.asarray(stats["n_alive"][k0:k1]),
+                 "cov": _np.asarray(stats["cov"][k0:k1]).reshape(-1, 6, 6),
+                 "n_turns": int(n_turns),
+                 "beta0gamma0": (_np.asarray(bg[k0:k1], dtype=float) if len(bg) >= k1
+                                 else _np.full(k1 - k0, float(ref["beta0gamma0"]))),
+                 "p0c_mev": (_np.asarray(pc[k0:k1], dtype=float) if len(pc) >= k1
+                             else _np.full(k1 - k0, float(ref["p0c_mev"]))),
+                 "ramp": getattr(self.ring_config, "ramp", None) is not None}
+            self._live_sent = k1
+            self.live.emit(d)
+        except Exception:                                   # noqa: BLE001 — never the run
+            pass
+        finally:
+            # (measured from the end of this update: the interval holds however
+            # long the copy took)
+            self._last_live = _time.monotonic()
+
+    def _dump(self, results) -> None:
+        if results is None:
+            return
+        if not self.dump_path:
+            return
+        try:
+            from linac_gen.ring.results import save_ring_hdf5
+            path = save_ring_hdf5(results, self.dump_path, lattice_path=self.lattice_path,
+                                  beam_config=self.beam_config)
+            results.meta["dump_path"] = str(path)
+            self.dumped.emit(str(path))
+        except Exception as exc:                            # noqa: BLE001
+            results.meta["dump_error"] = f"{type(exc).__name__}: {exc}"
+
+    def run(self) -> None:
+        try:
+            import copy
+
+            from linac_gen.ring.engine import RingSimulation
+            if not acquire_walk_lock(self._should_abort):
+                self.aborted.emit(None)
+                return
+            try:
+                lattice = copy.deepcopy(self.lattice)
+            finally:
+                WALK_LOCK.release()
+            self.progress.emit(0)
+            results = RingSimulation(lattice, self.beam_config, self.ring_config).run(
+                progress_callback=self._on_turn, should_abort=self._should_abort,
+                live_callback=self._on_live)
+            if self._stop_event.is_set() and results.truncated:
+                # (stopped before a turn was done: nothing to show — the
+                # results of the previous run stay)
+                partial = results if results.turns_done > 0 else None
+                self._dump(partial)
+                self.aborted.emit(partial)
+                return
+            self._dump(results)
+            self.progress.emit(100)
+            self.finished_ok.emit(results)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class RingOpticsWorker(QThread):
+    """Ring optics (Ring tab ▶ Ring & Optics ▶ Compute optics).
+
+    Compiles a copy of the lattice for ring mode (WALK_LOCK held only while
+    it copies) and computes its periodic optics from the ring kernels; with
+    ``six_d`` also the synchrotron tune and the RF bucket.  The first run in
+    a session also compiles the ring kernels (a few seconds).  ``finished_ok``
+    carries a dict: ``optics`` (RingOptics), ``bucket`` (dict or None),
+    ``harmonic``, ``rf_buckets`` (the circumference over the RF period of the
+    cavities with a voltage; None without RF), ``n_nodes``, ``warnings``,
+    ``kinetic_mev``, ``p0c_mev``,
+    ``constants``, ``compiled`` (False: numba is not installed and the kernels
+    ran as plain Python).  A stop request ends the computation before its
+    next pass around the ring, without a result.
+    """
+
+    finished_ok = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, lattice, ring_config, beam_config, six_d: bool = False):
+        super().__init__()
+        self.setStackSize(16 * 1024 * 1024)
+        self.lattice = lattice
+        self.ring_config = ring_config
+        self.beam_config = beam_config
+        self.six_d = bool(six_d)
+        self._stop_event = threading.Event()
+
+    def request_stop(self) -> None:
+        self._stop_event.set()
+
+    def _should_abort(self) -> bool:
+        return self._stop_event.is_set()
+
+    def run(self) -> None:
+        try:
+            import copy
+
+            from linac_gen.core.cancelled import OperationCancelled
+            from linac_gen.ring.compile import compile_from_config
+            from linac_gen.ring.kernels.cpu import numba_available
+            from linac_gen.ring.optics import rf_bucket, twiss
+            if not acquire_walk_lock(self._should_abort):
+                return
+            try:
+                lattice = copy.deepcopy(self.lattice)
+            finally:
+                WALK_LOCK.release()
+            rl = compile_from_config(lattice, self.ring_config, beam=self.beam_config)
+            try:
+                optics = twiss(rl, six_d=self.six_d, should_stop=self._should_abort)
+            except OperationCancelled:
+                return
+            bucket = rf_bucket(rl, optics) if self.six_d else None
+            if self._stop_event.is_set():
+                return
+            from linac_gen.ring.injection.injector import bucket_length
+            from linac_gen.ring.sc.placement import element_starts
+            period = bucket_length(rl, bool(rl.rf_on)) if rl.rf_on else None
+            self.finished_ok.emit({"optics": optics, "bucket": bucket, "harmonic": rl.harmonic,
+                                   "rf_on": bool(rl.rf_on),
+                                   "rf_buckets": (int(round(float(rl.length) / period))
+                                                  if period else None),
+                                   "element_starts_s": element_starts(rl)[1],
+                                   "n_nodes": rl.n_nodes, "warnings": list(rl.warnings),
+                                   "kinetic_mev": rl.reference.kinetic0,
+                                   "p0c_mev": rl.reference.p0c,
+                                   "constants": self.ring_config.constants,
+                                   "compiled": numba_available()})
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class RingMatchedBeamWorker(QThread):
+    """The beam matched to the ring at the start of the run (Ring tab ▶ Ring &
+    Optics ▶ Use the matched beam in the Beam tab).
+
+    Compiles a copy of the lattice (WALK_LOCK held only while it copies) with
+    the run's settings — the element model, the ramp, the injection magnets —
+    and computes the optics of the run's first turn
+    (:meth:`~linac_gen.ring.engine.RingSimulation.matched_beam`).
+    ``finished_ok`` carries its dict: the Twiss functions x, y and, with the RF
+    on, z in the Beam tab's units, the dispersion per MeV, the closed orbit as
+    a centroid, the reference and notes.  A stop request ends the computation
+    before its next pass around the ring, without a result.
+    """
+
+    finished_ok = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, lattice, ring_config, beam_config):
+        super().__init__()
+        self.setStackSize(16 * 1024 * 1024)
+        self.lattice = lattice
+        self.ring_config = ring_config
+        self.beam_config = beam_config
+        self._stop_event = threading.Event()
+
+    def request_stop(self) -> None:
+        self._stop_event.set()
+
+    def _should_abort(self) -> bool:
+        return self._stop_event.is_set()
+
+    def run(self) -> None:
+        try:
+            import copy
+
+            from linac_gen.core.cancelled import OperationCancelled
+            from linac_gen.ring.engine import RingSimulation
+            if not acquire_walk_lock(self._should_abort):
+                return
+            try:
+                lattice = copy.deepcopy(self.lattice)
+            finally:
+                WALK_LOCK.release()
+            try:
+                out = RingSimulation(lattice, self.beam_config, self.ring_config).matched_beam(
+                    should_stop=self._should_abort)
+            except OperationCancelled:
+                return
+            if not self._stop_event.is_set():
+                self.finished_ok.emit(out)
+        except Exception as exc:
+            if not self._stop_event.is_set():
+                self.failed.emit(str(exc))
+
+
+class RingRampWorker(QThread):
+    """The reference particle through a ramp (Ring tab ▶ Programs ▶ Preview).
+
+    Compiles a copy of the lattice for ring mode (WALK_LOCK held only while
+    it copies) at the ramp's start, takes gamma_t from the ring's optics
+    unless the ramp gives it, and runs the reference alone: to the end of the
+    energy program, or ``n_turns`` turns for a flat one.  ``finished_ok``
+    carries a dict: ``orbit`` (Ramp.orbit), ``turns``, ``turns_to_end``,
+    ``mass_mev``, ``gamma_t``, ``harmonic``, ``length_m``, ``voltage_eff_factor``,
+    ``phase_offset_deg``.  More than ``MAX_TURNS`` turns is refused; a stop
+    request ends it without a result.
+    """
+
+    finished_ok = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    MAX_TURNS = 1_000_000
+
+    def __init__(self, lattice, ring_config, beam_config, n_turns: int):
+        super().__init__()
+        self.setStackSize(16 * 1024 * 1024)
+        self.lattice = lattice
+        self.ring_config = ring_config
+        self.beam_config = beam_config
+        self.n_turns = int(n_turns)
+        self._stop_event = threading.Event()
+
+    def request_stop(self) -> None:
+        self._stop_event.set()
+
+    def _should_abort(self) -> bool:
+        return self._stop_event.is_set()
+
+    def run(self) -> None:
+        try:
+            import copy
+
+            from linac_gen.core.cancelled import OperationCancelled
+            from linac_gen.ring.engine import RingSimulation
+            if not acquire_walk_lock(self._should_abort):
+                return
+            try:
+                lattice = copy.deepcopy(self.lattice)
+            finally:
+                WALK_LOCK.release()
+            try:
+                ramp = RingSimulation(lattice, self.beam_config, self.ring_config).ramp()
+                n_end = ramp.turns_to_end(max_turns=self.MAX_TURNS,
+                                          should_stop=self._should_abort)
+                n = n_end if n_end is not None else min(self.n_turns, self.MAX_TURNS)
+                orbit = ramp.orbit(n, should_stop=self._should_abort)
+            except OperationCancelled:
+                return
+            if self._stop_event.is_set():
+                return
+            self.finished_ok.emit({"orbit": orbit, "turns": n, "turns_to_end": n_end,
+                                   "mass_mev": ramp.mass, "gamma_t": ramp.gamma_t,
+                                   "harmonic": int(ramp.h), "length_m": ramp.length,
+                                   "voltage_eff_factor": float(ramp.r_unit),
+                                   "phase_offset_deg": math.degrees(ramp.arg)})
+        except Exception as exc:
+            self.failed.emit(str(exc))

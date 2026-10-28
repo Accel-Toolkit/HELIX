@@ -31,13 +31,17 @@ class Job:
     abort: threading.Event = field(default_factory=threading.Event)
 
     def snapshot(self) -> dict:
-        return {"job_id": self.id, "tool": self.tool,
-                "state": self.state,
-                "progress_s_mm": float(self.progress[0]),
-                "elapsed_s": round((self.ended or time.time())
-                                   - self.submitted, 1),
-                "result": (self.result if self.state in
-                           ("done", "error", "cancelled") else None)}
+        out = {"job_id": self.id, "tool": self.tool,
+               "state": self.state,
+               "progress_s_mm": float(self.progress[0]),
+               "elapsed_s": round((self.ended or time.time())
+                                  - self.submitted, 1),
+               "result": (self.result if self.state in
+                          ("done", "error", "cancelled") else None)}
+        if self.tool == "run_ring":          # (a ring run reports turns too)
+            out["progress_turn"] = int(self.progress[0])
+            out["turns"] = int(self.progress[1])
+        return out
 
 
 class JobManager:

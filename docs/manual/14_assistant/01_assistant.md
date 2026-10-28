@@ -68,9 +68,9 @@ type, geom code and key parameters.  Tools are tiered:
 
 | Tier | Examples | Confirmation |
 |---|---|---|
-| **read** | status, lattice info + hardware rollup, element table, raw-file window, query a result value, beam-parameter table, provenance, matched input Twiss, decode a TraceWin `.ini` options file (`inspect_tracewin_ini`) | auto |
-| **compute** | run envelope / multiparticle / match, parameter scan, compare to TraceWin | confirmed (session auto-approve optional) |
-| **mutate** | load a lattice (optionally with the beam of its TraceWin `.ini`, `tracewin_ini='auto'`), set a beam field or element parameter, write results | **always confirmed** |
+| **read** | status, lattice info + hardware rollup, element table, raw-file window, query a result value, beam-parameter table, provenance, matched input Twiss, decode a TraceWin `.ini` options file (`inspect_tracewin_ini`), the ring verdict and the ramp's preview (`ring_status`, `ring_programs`) | auto |
+| **compute** | run envelope / multiparticle / match, parameter scan, compare to TraceWin, ring optics and ring runs (`ring_optics`, `run_ring`) | confirmed (session auto-approve optional) |
+| **mutate** | load a lattice (optionally with the beam of its TraceWin `.ini`, `tracewin_ini='auto'`), set a beam field or element parameter, write results, set a ring ramp, switch ring mode (`set_ring_program`, `set_ring_mode`) | **always confirmed** |
 
 Every confirmation **echoes the exact resolved call with units** before
 anything runs — important because HELIX's conventions are exacting
@@ -365,6 +365,41 @@ value → exit-metrics table; `compare_runs` diffs two result sets (either
 `search_manual` answers from this manual (offline, cited);
 `generate_report` writes a markdown run report (KPIs, provenance and — in
 the GUI — embedded figures) under `<calc-dir>/reports/`.
+
+**Ring mode.**  For a lattice that closes on itself
+([Ring mode](../17_ring/01_overview.md)): `ring_status` gives the ring
+verdict with its evidence, whether ring mode is on and a ring run is in
+progress in the GUI, the session's ring settings and the last ring run with
+its file; `ring_optics` the tunes, chromaticities, momentum compaction and
+transition gamma (`six_d` adds the synchrotron tune and the RF bucket) — the
+numbers of the Ring tab's **Compute optics** and of `python -m linac_gen ring
+optics`; `ring_programs` the ramp with its preview (the reference particle
+alone through it); `set_ring_program` sets the ramp (checked first, then
+shown on the Programs page) or clears it; `set_ring_mode` switches ring mode
+on or off — in the desktop GUI only.  `run_ring` tracks the bunch turn after
+turn as a background job (its progress in turns; a cancel takes effect at
+the end of the turn being tracked) and writes `<lattice>_<time>_ring.h5`
+into the calc directory; in the GUI its results go to the Ring tab and the
+Results tab (Run shown: Ring run — the tiles turn by turn, and RING RUN);
+while the Ring tab's own run is in progress it refuses to start one.  It
+refuses a run that would need more than 70 % of the machine's memory, as the
+Ring tab does.  `load_results` on a ring results file (`<stem>_ring.h5`)
+makes it the session's ring results (`ring_status` reports them).  `run_in_gui` with kind `ring` presses the Ring tab's **Run** button
+instead, with every setting of its pages (ring mode must be on).  In the GUI
+the session's ring settings are the Ring tab's; without it, a project's
+ring section (`load_lattice` on an `.lgproj`), and 100 turns when nothing
+says otherwise.  A run starts from the session's beam (the Beam tab's
+distribution, particles, emittances and Twiss functions; `particles`
+changes their number, refused for a beam read from a distribution file), as
+the Ring tab's does.  A project loaded without beam settings gives the
+session the default ones, a linac's: its run reports the beam's BMAG and
+notes the mismatch (`source='matched'` starts from a Gaussian matched to the
+ring).  `ring_status` gives the start a run would take and its particles.
+A deck whose `BEAM` says
+which beam the ring's magnets were set for needs no beam settings in the
+session: without them a run starts from a Gaussian matched to the ring with
+the default emittances and 10 000 particles, as the command line does for a
+bare lattice file, and the tools say so in their warnings.
 
 **Guided tour & training drills.**  Say *"give me a tour"* and the
 assistant walks the interface station by station — 15 stops over the

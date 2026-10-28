@@ -17,6 +17,7 @@ from linac_gen_gui.interphase.panels import (
     LatticeListing,
 )
 from linac_gen_gui.interphase.plots.lattice_track import LatticeTimeline
+from linac_gen_gui.interphase.ring_banner import RingBanner
 from linac_gen_gui.interphase.commands import (
     DeleteCommand, InsertCommand, MacroCommand, MoveCommand,
     ParamChangeCommand,
@@ -179,6 +180,10 @@ class LatticeTab(QWidget):
         bl.addWidget(self._summary)
         bl.addStretch(1)
         v.addWidget(bar)
+
+        # ---- Ring banner (hidden unless the lattice closes on itself) --
+        self._ring_banner = RingBanner(state)
+        v.addWidget(self._ring_banner)
 
         # ---- Four-column layout: Palette | Outline | Timeline | Inspector
         body = QHBoxLayout()
@@ -774,6 +779,7 @@ class LatticeTab(QWidget):
         )
 
     def _on_lattice(self, lattice) -> None:
+        self._ring_banner.on_lattice(lattice)
         self._timeline.set_lattice(lattice)
         self._chips.set_lattice(lattice)
         self._refresh_validation()

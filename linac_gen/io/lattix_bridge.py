@@ -115,6 +115,20 @@ def _fidelity_lines(rep, stage: str) -> list[str]:
     return out
 
 
+#: lattix's report codes (any format's prefix) for a reference energy the deck
+#: does not give, and the warning its Bmad reader gives for it instead of a code
+_ENERGY_ASSUMED = ("REFERENCE_ASSUMED", "ENERGY_ASSUMED", "REFERENCE_ENERGY_INVALID",
+                   "REFERENCE_FROM_TWISS")
+_BMAD_NO_ENERGY = "sets neither parameter[e_tot] nor parameter[p0c]"
+
+
+def _energy_assumed(rep, lat_warnings=()) -> bool:
+    """Whether lattix says the reference energy was assumed (the deck gives
+    none): a code in its report, or its Bmad reader's warning."""
+    return (any(str(getattr(e, "code", "")).endswith(_ENERGY_ASSUMED) for e in rep.entries)
+            or any(_BMAD_NO_ENERGY in str(w) for w in lat_warnings))
+
+
 def parse_with_lattix(path, *, species: str | None = None, w_kin: float | None = None,
                       frequency: float | None = None):
     """Parse *path* with lattix and convert it to a HELIX ``Lattice``.
@@ -137,7 +151,9 @@ def parse_with_lattix(path, *, species: str | None = None, w_kin: float | None =
 
     Returns ``(lattice, metadata)`` with ``metadata`` keys ``title``,
     ``warnings`` (list of str), ``reference`` (HELIX ``ReferenceParticle``),
-    ``fidelity`` (both reports as dicts) and ``format``.
+    ``reference_declared`` (whether the deck itself gives the reference
+    energy: not assumed by lattix, not ``w_kin``'s), ``fidelity`` (both
+    reports as dicts) and ``format``.
     """
     lattix = _import_lattix()
     import lattix.ir.reference  # noqa: F401  (species lookup below)
@@ -203,6 +219,8 @@ def parse_with_lattix(path, *, species: str | None = None, w_kin: float | None =
         "title": lat.name,
         "warnings": warnings,
         "reference": ref,
+        "reference_declared": (w_kin is None
+                               and not _energy_assumed(rep, getattr(lat, "warnings", ()))),
         "fidelity": {"read": rep.model_dump(mode="json"),
                      "to_helix": rep2.model_dump(mode="json")},
         "format": fmt,

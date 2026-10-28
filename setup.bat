@@ -38,8 +38,11 @@ if not "%_P:~90,1%"=="" (
 )
 
 REM ---- 1. find a Python 3.10+ --------------------------------------
+REM (the versions torch publishes wheels for first, newest first, as setup.sh
+REM  does: "py -3" alone takes the newest installed, which can be too new)
 set "_PY="
-py -3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)" >nul 2>nul && set "_PY=py -3"
+for %%V in (3.13 3.12 3.11 3.10) do if not defined _PY py -%%V -c "import sys" >nul 2>nul && set "_PY=py -%%V"
+if not defined _PY py -3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)" >nul 2>nul && set "_PY=py -3"
 if not defined _PY python -c "import sys; raise SystemExit(0 if sys.version_info >= (3,10) else 1)" >nul 2>nul && set "_PY=python"
 if not defined _PY (
     echo ERROR: HELIX needs Python 3.10 or newer and none was found.
@@ -70,6 +73,7 @@ if %ERRORLEVEL% NEQ 0 (
     echo ERROR: install failed. Common Windows causes:
     echo   - WinError 206: path too long, see the warning above
     echo   - no internet access / proxy blocking pypi.org
+    echo   - a Python newer than torch supports: install Python 3.12 or 3.13
     goto :fail
 )
 

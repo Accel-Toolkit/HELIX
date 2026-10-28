@@ -101,7 +101,7 @@
     "w_at_foil_mev": 23.71955384992511,
     "mean_loss_mev": 0.001047,
     "straggling": "gaussian",
-    "highland_theta_rms_mrad": 0.62610517797684,
+    "highland_theta_rms_mrad": 0.7510517524006654,
     "note": "mean loss = PDG minimum-ionising rate x areal density (HELIX's MIP model)"
   },
   "availability_closed_forms": {

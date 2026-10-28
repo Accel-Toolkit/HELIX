@@ -241,3 +241,42 @@ def test_importing_lattix_does_not_reload_linac_gen():
     assert sys.modules["linac_gen"] is before is linac_gen
     added = [p for p in sys.path if p not in path_before]
     assert all("Translator" in p or os.environ.get("HELIX_LATTIX_ROOT", "\0") in p for p in added), added
+
+
+def test_a_reference_energy_lattix_assumed_is_not_the_decks():
+    # (the import metadata's reference_declared: ring mode runs at a declared
+    # reference only; the codes as the format readers write them)
+    from types import SimpleNamespace as NS
+
+    from linac_gen.io.lattix_bridge import _energy_assumed
+
+    def rep(*codes):
+        return NS(entries=[NS(code=c) for c in codes])
+
+    assert not _energy_assumed(rep()) and not _energy_assumed(rep("SPECIES_ASSUMED"))
+    for code in ("PALS_REFERENCE_ASSUMED", "ENERGY_ASSUMED", "REFERENCE_ENERGY_INVALID",
+                 "REFERENCE_FROM_TWISS"):
+        assert _energy_assumed(rep("REFERENCE_FROM_TAG", code)), code
+    # (Bmad: a warning, no code)
+    assert _energy_assumed(rep(), ["deck sets neither parameter[e_tot] nor parameter[p0c]; "
+                                   "the reference energy defaults to 1 GeV total"])
+    assert not _energy_assumed(rep(), ["some other note"])
+
+
+@pytest.mark.parametrize("deck, declared", [
+    ("parameter[particle] = proton\nparameter[p0c] = 1e9\n", True),
+    ("parameter[particle] = proton\nparameter[e_tot] = 1.2e9\n", True),
+    ("parameter[particle] = proton\n", False),
+])
+def test_reference_declared_from_a_real_lattix_read(tmp_path, deck, declared):
+    """The same through lattix itself, and the examples: their decks state
+    the energy.  An energy given by the caller (w_kin) is never the deck's."""
+    _lattix_or_skip()
+    from linac_gen.io.lattix_bridge import parse_with_lattix
+    p = tmp_path / "d.bmad"
+    p.write_text(deck + "q1: quadrupole, l = 0.2, k1 = 1.5\nd1: drift, l = 0.3\n"
+                        "l1: line = (q1, d1)\nuse, l1\n")
+    assert parse_with_lattix(str(p))[1]["reference_declared"] is declared
+    assert parse_with_lattix(str(p), w_kin=800.0)[1]["reference_declared"] is False
+    for fmt, path in FODO.items():
+        assert parse_with_lattix(str(path))[1]["reference_declared"] is True, fmt

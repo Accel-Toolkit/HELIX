@@ -7,11 +7,11 @@ provenance.
 
 ## Space charge & PIC
 
-* **Qiang, J.; Lim, R.; Ryne, R.D.** "Self-consistent
-  three-dimensional space-charge effect calculation in a
-  high-intensity ion linac".  *Phys. Rev. ST Accel. Beams* **9**,
-  044204 (2006).  *Source of HELIX's IGF Green's function.*
-  doi:10.1103/PhysRevSTAB.9.044204
+* **Qiang, J.; Lidia, S.; Ryne, R.D.; Limborg-Deprey, C.**
+  "Three-dimensional quasistatic model for high brightness beam
+  dynamics simulation".  *Phys. Rev. ST Accel. Beams* **9**, 044204
+  (2006); erratum **10**, 129901 (2007).  *Source of HELIX's IGF
+  Green's function.*  doi:10.1103/PhysRevSTAB.9.044204
 * **Hockney, R.W.; Eastwood, J.W.** *Computer Simulation Using
   Particles*, Adam Hilger (1988).  Foundational text on PIC.
 * **Wangler, T.P.** *RF Linear Accelerators*, 2nd ed., Wiley-VCH
@@ -71,6 +71,54 @@ provenance.
   integrators".  *Phys. Lett. A* **150**, 262 (1990).
 * **Forest, E.** "Geometric integration for particle accelerators".
   *J. Phys. A: Math. Gen.* **39**, 5321 (2006).
+
+## Ring mode
+
+* **Yoshida, H.** (1990), above — the compositions of order 2, 4 and
+  6 of both element models.
+* **Forest, E.; Ruth, R.D.** "Fourth-order symplectic integration".
+  *Physica D* **43**, 105 (1990).  The composition inside a bend's
+  drift.
+* **Schachinger, L.; Talman, R.** "TEAPOT: a thin-element
+  accelerator program for optics and tracking".  *Part. Accel.*
+  **22**, 35 (1987).  The thin-lens splitting.
+* **Forest, E.** *Beam Dynamics: A New Attitude and Framework*.
+  Harwood Academic (1998).  Exact maps: the exact drift and sector
+  bend, the pole-face rotation, the hard-edge fringe.
+* **Brown, K.L.** "A first- and second-order matrix theory for the
+  design of beam transport systems and charged particle
+  spectrometers".  SLAC-75, Rev. 4 (1982).  The fringe-field
+  correction of a pole face.
+* **Laskar, J.** "Frequency analysis for multi-dimensional systems.
+  Global dynamics and diffusion".  *Physica D* **67**, 257 (1993).
+  NAFF, the tunes of tracked particles.
+* **Qiang, J.; Lidia, S.; Ryne, R.D.; Limborg-Deprey, C.** (2006), above —
+  the integrated Green's function, here in two dimensions for ring mode's
+  2.5-D space charge.
+* **Hockney, R.W.; Eastwood, J.W.** (1988), above — the convolution on a
+  doubled grid (open boundary).
+* **Bassetti, M.; Erskine, G.A.** "Closed expression for the electrical
+  field of a two-dimensional Gaussian charge".  CERN-ISR-TH/80-06 (1980).
+  The reference field of the space-charge checks.
+* **Jones, F.W.** "A method for incorporating image forces in
+  multiparticle tracking with space charge".  Proc. EPAC 2000, p. 1381.
+  The pipe boundary fitted to a rectangle or an ellipse.
+* **Laslett, L.J.** "On intensity limitations imposed by transverse
+  space-charge effects in circular particle accelerators".  BNL-7534,
+  p. 324 (1963).  The incoherent tune shift.
+* **Qiang, J.** *Phys. Rev. Accel. Beams* **28**, 114602 (2025),
+  doi:10.1103/npx1-nclt.  The analytic 2.5-D kick of a Gaussian bunch
+  (eqs. 31–32), a space-charge check.
+* **Highland, V.L.** "Some practical remarks on multiple scattering".
+  *Nucl. Instrum. Methods* **129**, 497 (1975); **Lynch, G.R.; Dahl,
+  O.I.** "Approximations to multiple Coulomb scattering".  *Nucl.
+  Instrum. Methods B* **58**, 6 (1991).  The stripping foil's
+  scattering width θ0 (fitted to the central 98 % of the angles).
+* **Gulley, M.S. et al.** "Measurement of H⁻, H⁰, and H⁺ yields
+  produced by foil stripping of 800-MeV H⁻ ions".  *Phys. Rev. A*
+  **53**, 3201 (1996).  Measured stripping yields, close to the two
+  design values the two-step stripping's cross sections are calibrated
+  to.
 
 ## Boris pusher
 

@@ -66,8 +66,11 @@ def test_imported_run_fills_the_emittance_tiles(run, tmp_path, qapp,
         tab._open_popup(key)
         pop = tab._popups[key]
         n = 0
-        for pw in pop.findChildren(pg.PlotWidget):
-            for it in pw.getPlotItem().listDataItems():
+        items = [pw.getPlotItem() for pw in pop.findChildren(pg.PlotWidget)]
+        for glw in pop.findChildren(pg.GraphicsLayoutWidget):   # e.g. the Σ grid
+            items += [it for it in glw.ci.items if isinstance(it, pg.PlotItem)]
+        for item in items:
+            for it in item.listDataItems():
                 _x, y = it.getData()
                 if y is not None:
                     n += int(np.isfinite(np.asarray(y, float)).sum())
@@ -77,7 +80,7 @@ def test_imported_run_fills_the_emittance_tiles(run, tmp_path, qapp,
     loaded = _LoadedResults(load_results_hdf5(str(p)), p)
     for key in ("emit_n", "emit6d", "dispersion", "eigenemit", "emit4d",
                 "eigen_canon",
-                "long_twiss", "divergence", "aperture_loss"):
+                "long_twiss", "divergence", "aperture_loss", "sigma"):
         live, imp = points(run, key), points(loaded, key)
         assert live > 0 and imp == live, (key, live, imp)
     # the loss-power popup (0 mA here, so nothing to plot either way) read

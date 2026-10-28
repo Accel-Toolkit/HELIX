@@ -169,6 +169,27 @@ class TestQuadHigherMultipoles:
         assert abs(ratio_lin - ratio_g3) > 1e-6
 
 
+    def test_g3_kick_takes_the_charge_sign(self):
+        """A field's kick reverses with the charge: an H- beam gets the
+        opposite sextupole kick of a proton's, as it gets the opposite
+        gradient kick (Bρ = |p/q|)."""
+        from linac_gen.core.particle import H_MINUS
+
+        def xp_after(species, g3):
+            b = Beam(ref=ReferenceParticle(species=species, w_kin=800.0, frequency=162.5),
+                     n_particles=1, current=0.0)
+            b.particles[:, 0] = 5.0
+            Quadrupole("Q", length=200.0, gradient=5.0, g3=g3).track(b)
+            return float(b.particles[0, 1])
+        grad = {sp.name: xp_after(sp, 0.0) for sp in (PROTON, H_MINUS)}
+        sext = {sp.name: xp_after(sp, 50.0) - grad[sp.name] for sp in (PROTON, H_MINUS)}
+        assert grad["proton"] < 0.0 < grad["H-"]
+        assert sext["proton"] < 0.0 < sext["H-"]
+        # (the same magnitude to the orbit difference inside the quad: the
+        # proton is focused, the H- defocused, and the kick goes as x^2)
+        assert 1.0 < sext["H-"] / -sext["proton"] < 1.1
+
+
 # ---------------------------------------------------------------------------
 class TestTrackerMisalignment:
     """End-to-end: tracker honours dx, dy, tilt_deg via the pre/post block."""

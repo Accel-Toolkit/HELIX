@@ -25,6 +25,7 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
+import contextlib
 import sys
 from pathlib import Path
 
@@ -95,8 +96,26 @@ def _parse_lattice_file(fp: str, fallback_beam=None):
 
     ``fallback_beam`` (the session's or the project's beam) gives a MAD8
     file that declares no rigidity its magnet scaling — with a warning.
+
+    The beam the importer scaled the magnets with (a deck's BEAM, that
+    fallback, or the importer's default when the deck states none) is kept on
+    the lattice as ``ring_reference_beam`` — species, kinetic energy (MeV), RF
+    frequency (MHz) and ``declared`` (False: the deck states no beam): ring
+    mode keeps the magnets' normalized strengths from it and runs at a
+    declared one (``linac_gen.ring.config.declared_beam``).  Nothing on the
+    linac side reads it (``linac_gen.cli.common.load_lattice`` does the same
+    for the CLI and the assistant).
     """
-    return _parse_lattice_file_impl(fp, fallback_beam=fallback_beam)
+    lattice, meta = _parse_lattice_file_impl(fp, fallback_beam=fallback_beam)
+    ref = meta.get("reference") if isinstance(meta, dict) else None
+    if ref is not None:
+        with contextlib.suppress(AttributeError, TypeError, ValueError):
+            lattice.ring_reference_beam = {"species": ref.species.name,
+                                           "energy": float(ref.w_kin),
+                                           "frequency": float(ref.frequency),
+                                           "declared": bool(meta.get("reference_declared",
+                                                                     True))}
+    return lattice, meta
 _FONT_MIN, _FONT_MAX     = 9, 22
 
 
@@ -557,6 +576,13 @@ class InterphaseWindow(QMainWindow):
             self._check_updates_manual)
         self._toolbar.update_check_toggled.connect(
             self._set_update_check_enabled)
+        # Ring mode (opt-in): the Ring tab is created the first time the
+        # mode is switched on and appended after the linac tabs, hidden
+        # while the mode is off — a linac session never sees it.
+        self.ring_tab = None
+        self._ring_load_note = None     # (a loaded project's note for the Run page)
+        self._toolbar.ring_mode_toggled.connect(self.state.set_ring_mode)
+        self.state.ring_mode_changed.connect(self._on_ring_mode_changed)
         self._statusbar.update_clicked.connect(self._open_update_flow)
         self._update_check_done.connect(self._on_update_check_done)
         # injectable seams (tests monkeypatch these; offscreen modal
@@ -872,7 +898,7 @@ class InterphaseWindow(QMainWindow):
         for tab in (self.matching_tab, self.convergence_tab,
                     self.study_tab, self.errors_tab, self.failures_tab,
                     self.surrogates_tab, self.results_tab,
-                    self.lattice_tab):
+                    self.lattice_tab, getattr(self, "ring_tab", None)):
             begin = getattr(tab, "shutdown_begin", None)
             if callable(begin):
                 try:
@@ -1049,6 +1075,9 @@ class InterphaseWindow(QMainWindow):
             # A bare-lattice open ends any project session — drop the
             # remembered project so the next launch restores this lattice.
             s.remove(_SETTINGS_LAST_PROJECT)
+            # (… and its ring section: it comes back once ring mode is used)
+            self.state.ring_used = self.state.ring_mode
+            self._clear_ring_load_note()
             msg = f"Loaded {len(lattice.elements)} elements"
             if isinstance(meta, dict) and meta.get("rigidity_source") == "fallback_beam":
                 ref = meta.get("reference")
@@ -1122,6 +1151,70 @@ class InterphaseWindow(QMainWindow):
         self.state.status_message.emit(msg)
         return True
 
+    def _on_ring_mode_changed(self, on: bool) -> None:
+        """Simulate → Ring Mode: create the Ring tab on first use, then show
+        or hide it (a run in progress stops when the mode is switched off, and
+        the computations of the Ring & Optics and Programs pages are dropped)."""
+        self._toolbar.set_ring_mode_checked(on)
+        self.state.mark_project_dirty()        # (the project's "ring" section changes)
+        if on and self.ring_tab is None:
+            try:
+                from .tabs.ring_tab import RingTab
+                self.ring_tab = RingTab(self.state)
+            except Exception as exc:          # noqa: BLE001 — leave the mode off, say why
+                self.ring_tab = None
+                self.state.set_ring_mode(False)
+                self.state.status_message.emit(f"Ring mode could not start: {exc}")
+                return
+            self.ring_tab.beam_config_provider = self.beam_tab.get_beam_config
+            self.ring_tab.beam_config_setter = self.beam_tab.set_beam_config
+            # (a note of the project loaded before the tab existed; also the
+            # Run page's line from the Beam tab's form, now that it is known)
+            self.ring_tab.set_load_note(getattr(self, "_ring_load_note", None))
+            self._ring_load_note = None
+            self.ring_tab.show_in_results_requested.connect(self._show_ring_in_results)
+            # (the Results tab refuses to import a ring run while one is going)
+            self.results_tab.ring_running_provider = self.ring_tab.is_running
+            self._tabs.addTab(self.ring_tab, "Ring")
+        if self.ring_tab is None:
+            return
+        if not on:
+            # (a run stops at the end of its turn; the optics, the matched beam
+            # and the ramp preview being computed are dropped: none may reach
+            # the Beam tab or the project once ring mode is off)
+            self.ring_tab.stop_all()
+        i = self._tabs.indexOf(self.ring_tab)
+        self._tabs.setTabVisible(i, on)
+        if on:
+            self._tabs.setCurrentIndex(i)
+        self.state.status_message.emit("Ring mode on" if on else "Ring mode off")
+
+    def _drop_ring_run(self) -> None:
+        """A ring run (a run going, and the results the state holds) that does
+        not belong to what is loaded now: the run cut off, the results dropped."""
+        tab = getattr(self, "ring_tab", None)
+        if tab is not None:
+            tab._detach()
+            # (and a matched beam being computed for that lattice)
+            tab._stop_matched("The project changed")
+        if getattr(self.state, "ring_results", None) is not None:
+            self.state.set_ring_results(None)
+
+    def _clear_ring_load_note(self) -> None:
+        """An earlier project's note about its ring settings goes (a bare
+        lattice or a new project is not that project)."""
+        self._ring_load_note = None
+        tab = getattr(self, "ring_tab", None)
+        if tab is not None:
+            tab.set_load_note(None)
+
+    def _show_ring_in_results(self) -> None:
+        """The Ring tab's "Show in the Results tab": the Results tab, showing
+        the ring run."""
+        self.results_tab.show_ring_run()
+        from linac_gen_gui.interphase.state import TABS
+        self._tabs.setCurrentIndex([tid for tid, _ in TABS].index("results"))
+
     def _apply_font_size(self, pt: int, *, persist: bool = True) -> None:
         """Re-render the QSS at the requested base size and apply it
         application-wide.  Optionally persist the new value."""
@@ -1147,7 +1240,8 @@ class InterphaseWindow(QMainWindow):
         for w in (self._titlebar, self._toolbar, self._statusbar,
                   self.beam_tab, self.lattice_tab, self.matching_tab,
                   self.convergence_tab, self.surrogates_tab,
-                  self.errors_tab, self.failures_tab, self.results_tab):
+                  self.errors_tab, self.failures_tab, self.results_tab,
+                  getattr(self, "ring_tab", None)):
             apply = getattr(w, "apply_font_size", None)
             if callable(apply):
                 apply(pt)
@@ -1497,6 +1591,18 @@ class InterphaseWindow(QMainWindow):
         _prev = _open_project_sc_previous()
         if _prev is not _NO_SC_PREVIOUS:
             out["convergence"]["sc_previous"] = _prev
+        # Ring mode: only once it has been used (a linac project is written
+        # exactly as before)
+        if self.state.ring_used:
+            # (an entry still being typed on a ring page goes in too)
+            if getattr(self, "ring_tab", None) is not None:
+                self.ring_tab.commit_pending()
+            out["ring"] = {"enabled": bool(self.state.ring_mode),
+                           "config": dict(self.state.ring_config)}
+        from .ring_banner import kept_as_line
+        if kept_as_line(self.state.ring_line_choice, self.state.lattice,
+                        self.state.lattice_path):
+            out.setdefault("ring", {})["keep_as_line"] = True
         return out
 
     def _apply_project_dict(self, data: dict, project_path: str | None = None,
@@ -1529,6 +1635,8 @@ class InterphaseWindow(QMainWindow):
         # Lattice first, since convergence config can depend on the
         # lattice being present.
         lp = data.get("lattice_path")
+        lattice_file = None               # (the project's lattice file, found)
+        lattice_installed = False
         if lp:
             # Resolution order (first existing wins):
             #   relative lp → <project_dir>/<lp>  (the portable form
@@ -1553,6 +1661,7 @@ class InterphaseWindow(QMainWindow):
                                  os.path.basename(lp)))
             resolved = next((os.path.abspath(c) for c in candidates
                              if os.path.exists(c)), None)
+            lattice_file = resolved
             if resolved:
                 try:
                     # Route by extension, as _open_lattice does — a project
@@ -1564,10 +1673,15 @@ class InterphaseWindow(QMainWindow):
                         else self.state.beam_config)
                     self._detach_workers_for_new_lattice()
                     self.state.set_lattice(lattice, resolved)
+                    lattice_installed = True
                 except Exception as exc:
                     _warn("Lattice", f"Could not reload {resolved}:\n{exc}")
             else:
                 _warn("Lattice", f"Lattice file not found:\n{lp}")
+        if not lattice_installed:
+            # (the previous lattice stays: its ring run — and one still going —
+            # belongs to the previous project, not to this one)
+            self._drop_ring_run()
         # Beam form
         beam = data.get("beam")
         if isinstance(beam, dict):
@@ -1736,6 +1850,109 @@ class InterphaseWindow(QMainWindow):
         if isinstance(mode, str) and mode in (
                 "never", "on_errors_only", "always"):
             self.state.auto_correction_mode = mode
+
+        # Ring mode: restored from the project's "ring" section; a project
+        # without one (every linac project) leaves ring mode off
+        ring = data.get("ring")
+        if isinstance(ring, dict):
+            # (a section holding only "keep_as_line": ring mode was never
+            # used in that project, the user kept its ring lattice a line)
+            used = "enabled" in ring or "config" in ring
+            cfg_in = ring.get("config") if isinstance(ring.get("config"), dict) else {}
+            cfg = {}
+            ring_note = None
+            if used:
+                from linac_gen.ring.config import RingConfig, migrate_source
+                # (an earlier version's run could start from a beam matched to
+                # the ring with its own number of particles: a run now takes
+                # the Beam tab's beam — said on the Run page)
+                cfg_in, migrated, old_n = migrate_source(cfg_in)
+                if migrated:
+                    from .tabs.ring_tab import migration_note
+                    ring_note = migration_note(old_n)
+                # (the ramp, the space-charge and the injection settings are
+                # checked each on its own: one that is not valid is left out
+                # with its own warning; the rest of the ring settings stay)
+                optional = ("ramp", "space_charge", "injection")
+                base = {k: v for k, v in cfg_in.items() if k not in optional}
+                # (a ring that starts empty needs its injection: the rest is
+                # checked with the Beam tab's beam, "empty" kept with a valid
+                # injection)
+                empty = base.get("source") == "empty"
+                if empty:
+                    base["source"] = "beam"
+                held = None
+                try:
+                    RingConfig.from_dict(dict(base))
+                    held = dict(base)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    _warn("Ring mode", f"the project's ring settings are not valid ({exc}) — "
+                          "the defaults are used")
+                    cfg = {}
+                if held is not None:
+                    names = {"ramp": "ramp settings", "space_charge": "space-charge settings",
+                             "injection": "injection settings"}
+                    for key in optional:
+                        # (null: none, as when left out)
+                        if cfg_in.get(key) is None:
+                            continue
+                        try:
+                            RingConfig.from_dict(dict(base, **{key: cfg_in[key]}))
+                            held[key] = cfg_in[key]
+                        except (TypeError, ValueError, OverflowError) as exc:
+                            _warn("Ring mode", f"the project's {names[key]} are not valid "
+                                  f"({exc}) — left out; the other ring settings are used")
+                    try:
+                        rc = RingConfig.from_dict(dict(held))
+                    except (TypeError, ValueError, OverflowError) as exc:
+                        # (valid each on its own, not together: the injection goes)
+                        _warn("Ring mode", f"the project's injection settings do not go with "
+                              f"its other ring settings ({exc}) — left out")
+                        held.pop("injection", None)
+                        rc = RingConfig.from_dict(dict(held))
+                    if empty and held.get("injection") is not None:
+                        held["source"] = "empty"
+                        rc = RingConfig.from_dict(dict(held))
+                    elif empty:
+                        _warn("Ring mode", "the project's ring started empty, filled by its "
+                              "injection — without it the run starts with the Beam tab's "
+                              "beam (Run page: Particles from)")
+                    # (only what the project holds: the Ring tab's own
+                    # defaults stand for the rest)
+                    for key in ("n_turns", "model", "edge_model", "constants", "source",
+                                "tune_probes", "snapshot_turns", "device", "ramp",
+                                "corrector_mode", "space_charge", "injection"):
+                        if key in held:
+                            cfg[key] = int(rc.n_turns) if key == "n_turns" else getattr(rc, key)
+            self.state.ring_config = cfg
+            self.state.ring_used = used
+            # (the Ring tab says it on its Run page — the tab of this session,
+            # or the one ring mode makes next)
+            self._ring_load_note = ring_note
+            from .ring_banner import line_choice_key
+            self.state.ring_line_choice = (line_choice_key(None, lattice_file)
+                                           if ring.get("keep_as_line") and lattice_file
+                                           else None)
+            if self.ring_tab is not None:
+                self.ring_tab.load_config()
+                self.ring_tab.set_load_note(ring_note)
+                self._ring_load_note = None
+            self.state.set_ring_mode(bool(ring.get("enabled")))
+        else:
+            self.state.set_ring_mode(False)
+            self.state.ring_used = False
+            self._ring_load_note = None
+            if self.ring_tab is not None:
+                self.ring_tab.set_load_note(None)
+            self.state.ring_config = {}
+            self.state.ring_line_choice = None
+            if self.ring_tab is not None:
+                # (the Ring tab of an earlier project goes back to its defaults)
+                self.ring_tab.load_config()
+        # (the banner follows the project's keep-as-line choice either way)
+        banner = getattr(getattr(self, "lattice_tab", None), "_ring_banner", None)
+        if banner is not None:
+            banner.refresh()
 
         # Auto-correction-on-load: if the user opted into "always" and
         # the loaded lattice has any ADJUST_STEERER cards, fire the
@@ -2047,6 +2264,9 @@ class InterphaseWindow(QMainWindow):
             lattice, meta = _parse_lattice_file(
                 res["lattice_path"], fallback_beam=self.state.beam_config)
             self.state.set_lattice(lattice, res["lattice_path"])
+            # (a new project has a ring section once ring mode is used in it)
+            self.state.ring_used = self.state.ring_mode
+            self._clear_ring_load_note()
             # Warnings from materialising a foreign deck (the wizard parsed
             # it and wrote <name>.dat) come first; the .dat re-parse rarely
             # adds any.
@@ -3008,8 +3228,10 @@ class InterphaseWindow(QMainWindow):
         return kids[0] if kids else None
 
     def assistant_tab_labels(self) -> list:
-        """Tab titles the assistant may switch to (left-to-right order)."""
-        return [self._tabs.tabText(i) for i in range(self._tabs.count())]
+        """Tab titles the assistant may switch to (left-to-right order; a
+        hidden tab — the Ring tab while ring mode is off — is not one)."""
+        return [self._tabs.tabText(i) for i in range(self._tabs.count())
+                if self._tabs.isTabVisible(i)]
 
     def assistant_subtabs(self) -> dict:
         """{tab_title: [subtab_titles]} for tabs holding a nested QTabWidget
@@ -3033,7 +3255,7 @@ class InterphaseWindow(QMainWindow):
         idx = None
         try:
             k = int(tab)
-            if 0 <= k < n:
+            if 0 <= k < n and self._tabs.isTabVisible(k):
                 idx = k
         except (TypeError, ValueError):
             pass
@@ -3046,12 +3268,15 @@ class InterphaseWindow(QMainWindow):
                     want = id2[want].casefold()
             except Exception:                    # noqa: BLE001
                 pass
-            titles = [self._tabs.tabText(i) for i in range(n)]
+            # (a hidden tab — the Ring tab while ring mode is off — is not
+            # a destination)
+            titles = [self._tabs.tabText(i) if self._tabs.isTabVisible(i) else ""
+                      for i in range(n)]
             idx = next((i for i, t in enumerate(titles)
-                        if t.casefold() == want), None)
+                        if t and t.casefold() == want), None)
             if idx is None:
                 idx = next((i for i, t in enumerate(titles)
-                            if want and want in t.casefold()), None)
+                            if t and want and want in t.casefold()), None)
         if idx is None:
             return None
         self._tabs.setCurrentIndex(idx)
@@ -3078,6 +3303,8 @@ class InterphaseWindow(QMainWindow):
         (reached via the panel's run_on_gui round-trip).  Returns
         'started' | 'busy' | an error string — never raises, never pops a
         modal (guards are checked here so the assistant gets a value)."""
+        if kind == "ring":
+            return self._assistant_run_ring()
         if self.state.running:
             return "busy"
         if self.state.lattice is None:
@@ -3095,6 +3322,25 @@ class InterphaseWindow(QMainWindow):
         # running flag is the truth
         return "started" if self.state.running else \
             "the GUI declined to start the run (check its status bar)"
+
+    def _assistant_run_ring(self) -> str:
+        """The Ring tab's Run button for the assistant (its settings, its
+        progress, its live strip; the results go to the Results tab)."""
+        tab = getattr(self, "ring_tab", None)
+        if not self.state.ring_mode or tab is None:
+            return ("ring mode is off in the GUI: switch it on first (Simulate → Ring "
+                    "Mode, or set_ring_mode)")
+        if tab.is_running():
+            return "busy"
+        if self.state.lattice is None:
+            return "no lattice is loaded in the GUI"
+        try:
+            tab.run()                   # identical to clicking the Ring tab's Run
+        except Exception as exc:        # noqa: BLE001
+            return f"{type(exc).__name__}: {exc}"
+        # (the tab says on its Run page why it did not start)
+        return "started" if tab.is_running() else \
+            "the Ring tab declined to start the run (its Run page says why)"
 
     def assistant_open_plots(self) -> list:
         """Labels of result plot windows currently open/visible.  GUI
@@ -3223,15 +3469,9 @@ class InterphaseWindow(QMainWindow):
             QMessageBox.critical(self, "Transfer matrix", str(exc))
 
     def _open_sigma_matrix(self) -> None:
-        if self.state.results is None:
-            QMessageBox.warning(self, "No results",
-                                "Run a simulation first (Envelope or MP)."); return
-        try:
-            from linac_gen_gui.dialogs.sigma_matrix_dialog import SigmaMatrixDialog
-            SigmaMatrixDialog(self, self.state.results,
-                              beam_config=self.state.beam_config).exec()
-        except Exception as exc:
-            QMessageBox.critical(self, "Sigma matrix", str(exc))
+        """The toolbar's "Show Sigma Matrix…": the Results tab's Σ panel
+        (every term along s and the whole matrix at any position)."""
+        self.results_tab.open_plot("sigma")
 
     def _open_parameter_scan(self) -> None:
         if self.state.lattice is None:

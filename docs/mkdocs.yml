@@ -206,6 +206,8 @@ nav:
       - TraceWin parity: 12_validation/01_tracewin_parity.md
       - Known limitations: 12_validation/03_known_limitations.md
       - Convergence checklist: 12_validation/04_convergence_guide.md
+      - Ring-mode benchmarks: 12_validation/06_ring_benchmarks.md
+      - Ring-mode benchmark cases: 12_validation/07_ring_cases.md
   - ML Surrogates:
       - Overview: 13_surrogates/01_overview.md
       - GUI walkthrough: 13_surrogates/02_gui.md
@@ -224,6 +226,18 @@ nav:
       - Foil scenarios: 16_reliability/05_foil.md
       - Results folder and report: 16_reliability/06_results_and_report.md
       - Verifying an installation: 16_reliability/07_selftest.md
+  - Ring mode:
+      - Overview: 17_ring/01_overview.md
+      - Ring optics: 17_ring/02_optics.md
+      - Element models: 17_ring/03_models.md
+      - Ring runs: 17_ring/04_run.md
+      - The ramp: 17_ring/05_programs.md
+      - Space charge: 17_ring/06_space_charge.md
+      - Injection: 17_ring/07_injection.md
+      - GPU runs: 17_ring/08_gpu.md
+      - A first ring run in the GUI: 17_ring/09_gui.md
+      - Command line: 17_ring/10_cli.md
+      - Results files: 17_ring/11_results.md
   - Appendices:
       - A. Physics references: appendices/A_physics_references.md
       - B. Keyword cheatsheet: appendices/B_keyword_cheatsheet.md

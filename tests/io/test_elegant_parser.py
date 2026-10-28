@@ -254,3 +254,12 @@ def test_existing_parsers_unaffected():
     from linac_gen.io.tracewin_parser import parse_tracewin
     lat, _ = parse_tracewin("examples/pipii/mebt/mebt.dat")
     assert len(lat.elements) > 0     # TraceWin path still works
+
+
+def test_reference_is_never_declared(tmp_path):
+    """An .lte file carries no beam: the reference is the caller's (or the
+    default) and ``reference_declared`` is False."""
+    _lat, meta = parse_elegant(_write(tmp_path, _INLINE), name="main",
+                               species="proton", w_kin=100.0)
+    assert meta["reference_declared"] is False
+    assert meta["reference"].w_kin == pytest.approx(100.0)

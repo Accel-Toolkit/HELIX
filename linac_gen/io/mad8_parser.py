@@ -112,10 +112,12 @@ from linac_gen.elements.steerer import Steerer
 from linac_gen.io.madx_parser import (
     _M_TO_MM,
     _RAD_TO_DEG,
+    _TILT_TOL,
     _brho,
     _build_element,
     _convert_raw_matrices,
     _drift_pad,
+    _gf,
     _signed_brho,
     _species_from_name,
     _split_attributes,
@@ -941,10 +943,18 @@ def _build_mad8_element(f: _Mad8File, name: str, brho_signed: float,
         return _drift_pad(gap, l_mm, name)
 
     if etype in ("sbend", "rbend"):
+        zero_angle = abs(float(attrs.get("angle", 0.0) or 0.0)) < 1e-12
         for k in ("k2", "h1", "h2"):
             if float(attrs.get(k, 0.0) or 0.0) != 0.0:
-                f.warnings.append(f"MAD8: {name}.{k.upper()} = {attrs[k]:g} — "
-                                  "not modelled by the HELIX bend, dropped")
+                if k == "k2" and not zero_angle:
+                    # kept on the Dipole (``k2``) by the shared builder for ring mode
+                    # (a zero-angle bend becomes a quadrupole or a drift: dropped)
+                    f.warnings.append(f"MAD8: {name}.K2 = {attrs[k]:g} — not modelled by "
+                                      "the HELIX linac bend (ignored there); kept on the "
+                                      "bend for ring mode")
+                else:
+                    f.warnings.append(f"MAD8: {name}.{k.upper()} = {attrs[k]:g} — "
+                                      "not modelled by the HELIX bend, dropped")
         if abs(float(attrs.get("angle", 0.0) or 0.0)) < 1e-12 \
                 and float(attrs.get("k1", 0.0) or 0.0) != 0.0:
             # h = 0: the bend map IS the quadrupole map (edges vanish).  The
@@ -986,29 +996,33 @@ def _build_mad8_element(f: _Mad8File, name: str, brho_signed: float,
     # not verified against a MAD8 binary, unlike the MAD-X chord rule).
     elems, total_mm = _build_element(name, etype, attrs, brho_signed,
                                      f.warnings, rbend_chord=False)
-    if etype == "quadrupole" and attrs.get("tilt") and attrs["tilt"] is not True:
+    if etype == "quadrupole" and attrs.get("tilt") and attrs["tilt"] is not True \
+            and not _gf(attrs, "k1s"):
+        # (a K1S turns the quadrupole further: the shared builder's tilt stands)
         for el in elems:
             if isinstance(el, Quadrupole):
                 el.skew_angle = float(attrs["tilt"]) * _RAD_TO_DEG
     if etype in ("sbend", "rbend"):
         # MAD8 encodes vertical bends as TILT=±π/2 (a bare TILT = +π/2).
         # The shared _build_element already folds ±π/2 into ``hv`` and the
-        # angle sign (TILT=-π/2 bends towards -y, MAD-X-verified) and emits
-        # ρ > 0; the pass below only warns about other tilts and re-asserts
-        # the HELIX/TraceWin convention (ρ > 0, sign in the angle, plane in
-        # ``hv``) so a future builder change cannot silently break it.
+        # angle sign (TILT=-π/2 bends towards -y, MAD-X-verified), ±π into the
+        # angle sign, and emits ρ > 0 — and it reports any other tilt.  The
+        # pass below re-asserts the HELIX/TraceWin convention (ρ > 0, sign in
+        # the angle, plane in ``hv``) so a future builder change cannot
+        # silently break it.
         tilt = attrs.get("tilt", 0.0)
         tilt = (math.pi / 2.0) if tilt is True else float(tilt or 0.0)
-        vertical = abs(abs(tilt) - math.pi / 2.0) < 1e-6
-        if not vertical and abs(tilt) > 1e-9:
-            f.warnings.append(
-                f"MAD8: {name} has TILT={tilt:.4f} rad — only 0 (horizontal)"
-                " and ±π/2 (vertical) bends are supported; tilt dropped")
+        vertical = abs(abs(tilt) - math.pi / 2.0) <= _TILT_TOL
         for el in elems:
             if isinstance(el, (Dipole, Edge)):
                 el.rho = abs(float(el.rho))
                 if vertical:
                     el.hv = 1
+        k2_stored = next((getattr(el, "k2", None) for el in elems if isinstance(el, Dipole)), None)
+        k2_deck = float(attrs.get("k2", 0.0) or 0.0)
+        if k2_stored is not None and k2_deck and k2_stored != k2_deck:
+            f.warnings.append(f"MAD8: {name}.K2 = {k2_deck:g} is stored as {k2_stored:g}: the "
+                              "TILT turns the bend over (its angle changes sign too)")
     if etype == "rfcavity" and float(attrs.get("freq", 0.0) or 0.0) == 0.0:
         for el in elems:
             if isinstance(el, RFGap):
@@ -1594,8 +1608,11 @@ def parse_mad8(filepath: str, strict: bool = False, brho=None,
     Returns ``(lattice, metadata)`` with metadata keys ``"title"`` (the
     beam line used), ``"warnings"``, ``"reference"`` (ReferenceParticle
     used for the strength conversion), ``"rigidity_source"`` (``"beam"``,
-    ``"argument"``, ``"brho_parameter"`` or ``"fallback_beam"``) and
-    ``"periods"`` (auto-declared LATTICE brackets).
+    ``"argument"``, ``"brho_parameter"`` or ``"fallback_beam"``),
+    ``"reference_declared"`` (True when the rigidity comes from the file's
+    BEAM statement and it gives the energy — ENERGY, PC or GAMMA; with only
+    the particle, MAD8's default energy is not the deck's) and ``"periods"``
+    (auto-declared LATTICE brackets).
 
     ``line`` selects the beam line (default: the file's ``USE``, else the
     largest unreferenced LINE).  ``fallback_beam`` (a ``BeamConfig``, a
@@ -1740,6 +1757,8 @@ def parse_mad8(filepath: str, strict: bool = False, brho=None,
         "warnings": list(dict.fromkeys(warnings)),
         "reference": ref,
         "rigidity_source": source,
+        "reference_declared": source == "beam" and any(
+            k in f.beam_attrs and f.beam_attrs[k] is not True for k in ("energy", "pc", "gamma")),
         "periods": periods,
     }
     if f._calls:

@@ -448,7 +448,7 @@ def edge_matrix(pole_rotation_deg: float, rho_mm: float, gap_mm: float,
 
     Edge has no tunable parameter — the matrix is a constant.
     """
-    if pole_rotation_deg == 0.0 or rho_mm == 0.0:
+    if rho_mm == 0.0:
         return _assemble({})
     beta_rad = math.radians(pole_rotation_deg)
     rho_m = rho_mm * 1e-3
@@ -459,6 +459,8 @@ def edge_matrix(pole_rotation_deg: float, rho_mm: float, gap_mm: float,
                / (rho_m * max(math.cos(beta_rad), 1e-12)))
     else:
         psi = 0.0
+    if pole_rotation_deg == 0.0 and psi == 0.0:
+        return _assemble({})
     if hv == 0:                       # horizontal bend plane
         return _assemble({
             (1, 0): tan_b / rho_m,

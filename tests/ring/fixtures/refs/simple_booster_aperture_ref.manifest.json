@@ -1,0 +1,38 @@
+{
+ "aperture_m": [
+  0.019,
+  0.004
+ ],
+ "before_transition": 300,
+ "generator": "dev-only",
+ "lattice_sha256": "03fdc4dabf69fb159bef23bd67b2e1dc56d059c65f660a38876f5a756e167323",
+ "n_particles": 1000,
+ "output_sha256": "9c6e7932e09a0da11698cecda370ed3fdedbc4e0581d2996d51d252426b8ceca",
+ "program": {
+  "energy": {
+   "end_kinetic_mev": 6000.0,
+   "frequency_hz": 15.0,
+   "kind": "sine",
+   "start_kinetic_mev": 800.0,
+   "t_min_s": 0.0005,
+   "t_start_s": 0.0008
+  },
+  "gamma_t": 5.449167323,
+  "voltage": {
+   "kind": "table",
+   "times_s": [
+    0.0,
+    0.003,
+    0.03
+   ],
+   "values_mv": [
+    0.4,
+    1.2,
+    1.2
+   ]
+  }
+ },
+ "reference": "reference code B (exact elements, curvilinear bend multipoles) on a ramp, with apertures",
+ "seed": 20261024,
+ "turns": 600
+}

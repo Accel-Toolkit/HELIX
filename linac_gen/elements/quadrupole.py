@@ -141,11 +141,12 @@ class Quadrupole(TransferMapElement, Misalignment, FieldError):
         """Apply ``fraction`` of the slice's share of g3/g4/g5/g6 as a
         thin Multipole kick.
 
-        Mapping (MAD-X integrated-strength convention):
-            knl[2] = g3 * Δs / Bρ        (1/m²,  sextupole)
-            knl[3] = g4 * Δs / Bρ        (1/m³,  octupole)
-            knl[4] = g5 * Δs / Bρ        (1/m⁴,  decapole)
-            knl[5] = g6 * Δs / Bρ        (1/m⁵,  dodecapole)
+        Mapping (MAD-X integrated-strength convention, s = the sign of the
+        charge, as for the gradient — Bρ = |p/q|):
+            knl[2] = s · g3 * Δs / Bρ    (1/m²,  sextupole)
+            knl[3] = s · g4 * Δs / Bρ    (1/m³,  octupole)
+            knl[4] = s · g5 * Δs / Bρ    (1/m⁴,  decapole)
+            knl[5] = s · g6 * Δs / Bρ    (1/m⁵,  dodecapole)
 
         ``Δs`` here is the substep length in metres (mm·1e-3).  The
         ``fraction`` factor (0.5 in the split-operator scheme above)
@@ -159,14 +160,17 @@ class Quadrupole(TransferMapElement, Misalignment, FieldError):
         brho = beam.ref.brho
         if brho == 0.0:
             return
+        # brho = |p/q|: a field's kick takes the sign of the charge, as the
+        # gradient's does in transfer_matrix
+        sign = 1.0 if beam.ref.species.charge > 0 else -1.0
         # MAD-X ordering in `knl`: index 0 = dipole, 1 = quad, 2 = sext, ...
         # We zero indices 0 and 1 (the dipole / linear-quad slots) since
         # those are handled by the closed-orbit + transfer-matrix paths.
         knl = [0.0, 0.0,
-               fraction * self.g3 * L_m / brho,
-               fraction * self.g4 * L_m / brho,
-               fraction * self.g5 * L_m / brho,
-               fraction * self.g6 * L_m / brho]
+               sign * fraction * self.g3 * L_m / brho,
+               sign * fraction * self.g4 * L_m / brho,
+               sign * fraction * self.g5 * L_m / brho,
+               sign * fraction * self.g6 * L_m / brho]
         # Trim trailing zeros to keep the inner loop short.
         while knl and knl[-1] == 0.0:
             knl.pop()

@@ -1,0 +1,24 @@
+{
+ "code": "MAD-X via cpymad",
+ "command": "benchmarks/ring/dev/refgen/madx_ring.py --deck tests/ring/fixtures/simple_booster.madx --use booster --ptc --sub K1 = qsf  , K2 = ssf=>K1 = qsf --sub K1 = qsd  , K2 = ssd=>K1 = qsd --out tests/ring/fixtures/refs/simple_booster_madx_nok2.json",
+ "inputs": {
+  "simple_booster.madx": "9cec8414b5f44ca468fe25d3775e17659def20ff85915ea1e53c33587458d6a6"
+ },
+ "machine": "macOS-27.0.1-arm64-arm-64bit",
+ "madx_version": "MAD-X 5.09.03 (2024.04.25)",
+ "options": {
+  "at": [],
+  "ptc": true,
+  "rf_off": true,
+  "sub": [
+   "K1 = qsf  , K2 = ssf=>K1 = qsf",
+   "K1 = qsd  , K2 = ssd=>K1 = qsd"
+  ],
+  "table": false,
+  "use": "booster"
+ },
+ "output_sha256": "b6a6020a7141ae5580ccc0d60d09e72a39b377cb35542c651f0a657ade6e62e0",
+ "python": "3.11.5",
+ "python_isolated": true,
+ "wall_s": 2.31
+}

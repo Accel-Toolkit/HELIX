@@ -92,8 +92,9 @@ At every integration step, the PIC solver:
    folded into the β²γ² factor of step 6), and the reference
    particle is never modified.
 
-Reference for the algorithm: Qiang, Lim, Ryne, *PRSTAB* 9, 044204
-(2006) — same kernel used by Cheetah and OPAL.
+Reference for the algorithm: Qiang, Lidia, Ryne, Limborg-Deprey,
+*PRSTAB* 9, 044204 (2006); erratum 10, 129901 (2007) — same kernel used by
+Cheetah and OPAL.
 
 ![PIC cycle](../_build/figures/fig_05_02_pic_cycle.png)
 

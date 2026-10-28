@@ -67,8 +67,10 @@ def run_repl(session) -> int:
             continue
         if text == "/jobs":
             for j in session.jobs.list_jobs()["data"]["jobs"]:
-                print(f"  {j['job_id']}  {j['tool']:14s} {j['state']:9s}"
-                      f" s={j['progress_s_mm'] / 1000:.1f} m")
+                where = (f" turn {j['progress_turn']} of {j['turns']}"
+                         if "progress_turn" in j else
+                         f" s={j['progress_s_mm'] / 1000:.1f} m")
+                print(f"  {j['job_id']}  {j['tool']:14s} {j['state']:9s}{where}")
             continue
         if text.startswith("/auto"):
             session.auto_approve_compute = text.endswith("on")

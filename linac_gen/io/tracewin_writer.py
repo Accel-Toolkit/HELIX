@@ -11,6 +11,8 @@ field-file provenance the parser stores on the element; a map built
 programmatically without that provenance falls back to a comment).
 
 Unknown element types are silently skipped (a comment line is written instead).
+The deck's ``;@LG`` options (``lattice.lg_options``) are written back at the
+top, one per line.
 
 Positional-order conventions follow ``linac_gen.io.tracewin_syntax.SCHEMA``
 (the authoritative TraceWin ordering).  Trailing fields that match their
@@ -18,6 +20,7 @@ schema defaults are elided so the output stays compact and re-parses
 cleanly via :func:`linac_gen.io.tracewin_parser.parse_tracewin`.
 """
 
+import numbers
 import os
 import re
 import warnings
@@ -44,6 +47,31 @@ from linac_gen.elements.solenoid import Solenoid
 from linac_gen.elements.space_charge_comp import SpaceChargeComp
 from linac_gen.elements.steerer import Steerer
 from linac_gen.elements.vane_rfq import VaneRFQ
+
+
+def _lg_lines(options) -> list:
+    """``;@LG`` lines for ``options`` (``lattice.lg_options``, the parsed
+    deck's ``;@LG`` options), one per line so a flag reads back as a flag.
+    An option that would not read back the same (a key holding a blank or
+    ``=``; a text value holding ``#``, ``;``, a line break or a ``key=`` word,
+    or reading as a number) is left out with a warning."""
+    from linac_gen.io.tracewin_parser import _lg_options
+    lines = []
+    for key, value in dict(options or {}).items():
+        if isinstance(value, bool):
+            text = f"{key}" if value else f"{key}=false"
+        elif isinstance(value, numbers.Integral):
+            text = f"{key}={int(value)}"
+        elif isinstance(value, numbers.Real):
+            text = f"{key}={float(value)!r}"
+        else:
+            text = f"{key}={value}"
+        if "\n" in text or "\r" in text or _lg_options(text) != {key: value}:
+            warnings.warn(f"write_tracewin: the ;@LG option {key}={value!r} would not read "
+                          "back the same — left out of the deck", stacklevel=3)
+            continue
+        lines.append(f";@LG {text}")
+    return lines
 
 
 def write_tracewin(lattice, filepath, frequency=None):
@@ -202,6 +230,11 @@ def write_tracewin(lattice, filepath, frequency=None):
     # round-trips exactly through our latin-1 readers; a stray char
     # outside latin-1 degrades to "?" instead of crashing the writer.
     with open(filepath, "w", encoding="latin-1", errors="replace") as fh:
+
+        # ``;@LG`` directives of the parsed deck (comments to TraceWin), kept
+        # for the round trip
+        for line in _lg_lines(getattr(lattice, "lg_options", None)):
+            fh.write(line + "\n")
 
         # Optional header FREQ
         if frequency is not None:
