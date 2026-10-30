@@ -157,8 +157,29 @@ def _with_tilt(element, M_elem: np.ndarray) -> np.ndarray:
     return R_out @ M_elem @ R_in
 
 
-def _replay_ref(elements, ref_copy: ReferenceParticle) -> None:
-    """Advance ``ref_copy`` in place through ``elements`` (reference only)."""
+def _advance_field_map_ref(lattice, element, ref_copy: ReferenceParticle, *,
+                           reset: bool = True) -> None:
+    """Advance ``ref_copy`` past one field map as a multiparticle run does:
+    FieldMap / FieldMap3D / SuperposedFieldMap on the tracker's own schedule
+    (``field_map_reference_states``, the envelope's walk too), the others
+    with their ``advance_ref``.  ``reset=False``: the caller has just reset
+    the element and computed its matrix at ``ref_copy`` (see
+    ``field_map_reference_states``)."""
+    from linac_gen.tracking.tracker import (
+        field_map_reference_states,
+        tracks_reference_on_tracker_schedule,
+    )
+    if tracks_reference_on_tracker_schedule(element):
+        field_map_reference_states(lattice, element, ref_copy, reset=reset)
+    else:
+        element.advance_ref(ref_copy)
+
+
+def _replay_ref(elements, ref_copy: ReferenceParticle, lattice=None) -> None:
+    """Advance ``ref_copy`` in place through ``elements`` (reference only).
+
+    ``lattice`` (the lattice the elements belong to) supplies the step
+    settings of the field maps' tracker-schedule walk."""
     for element in elements:
         if isinstance(element, FieldMapElement):
             # Stateful elements (slice cursor, βg≤0 resolved geometry,
@@ -168,7 +189,7 @@ def _replay_ref(elements, ref_copy: ReferenceParticle) -> None:
             # tail gaps: −11 MeV on a 45→235 MeV reuse).  Mirrors the
             # Tracker / EnvelopeSolver / backtrack resets.
             element.reset_run_state()
-            element.advance_ref(ref_copy)
+            _advance_field_map_ref(lattice, element, ref_copy)
         else:
             ref_copy.s += element.length
             if element.length > 0:
@@ -188,7 +209,7 @@ def reference_at(lattice: Lattice, ref: ReferenceParticle,
     :func:`compute_transfer_matrix` replays them before its ``start``.
     """
     ref_copy = ref.copy()
-    _replay_ref(lattice.elements[:index], ref_copy)
+    _replay_ref(lattice.elements[:index], ref_copy, lattice)
     return ref_copy
 
 
@@ -209,7 +230,7 @@ def compute_transfer_matrix(lattice: Lattice, ref: ReferenceParticle,
     ref_copy = ref.copy()
     # Replay elements before ``start`` so the reference particle's energy,
     # frequency, phase are correct at the starting boundary.
-    _replay_ref(lattice.elements[:start], ref_copy)
+    _replay_ref(lattice.elements[:start], ref_copy, lattice)
 
     last = len(lattice.elements) - 1 if end is None else end
     if last < start:
@@ -223,7 +244,7 @@ def compute_transfer_matrix(lattice: Lattice, ref: ReferenceParticle,
         M_elem = _with_tilt(element, M_elem)
         M = M_elem @ M
         if isinstance(element, FieldMapElement):
-            element.advance_ref(ref_copy)
+            _advance_field_map_ref(lattice, element, ref_copy, reset=False)
         else:
             ref_copy.s += element.length
             if element.length > 0:

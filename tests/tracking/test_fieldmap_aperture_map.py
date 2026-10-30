@@ -91,6 +91,6 @@ def test_check_cadence(tmp_path, monkeypatch, ka):
     b.particles[:3, 0] = 5.0                               # nobody lost
     Simulation(lat, b, space_charge="off", record_substeps=False).run()
     trailing = n_int - n_bundles * sc_every
-    want = (2 * n_bundles * sc_every + trailing if ka == 1
-            else n_bundles + (1 if trailing else 0))
+    want = (2 * n_int if ka == 1                            # every half-step
+            else n_bundles + (1 if trailing else 0))        # every bundle
     assert len(calls) == want + 1                          # + the exit check

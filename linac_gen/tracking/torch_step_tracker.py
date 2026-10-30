@@ -118,7 +118,13 @@ def _advance_one_element(X, element, kin, overrides, sc_cfg, macro_charge,
             X = _sc(X, sc_cfg, bundle_len, kin, macro_charge, dtype, device)
             X = _apply(half, X)
         remainder = length - n_bundles * bundle_len
-        if remainder > 1e-12:
+        if remainder > 1e-12 and n_int > n_bundles * sc_every:
+            # leftover sub-steps: a short last bundle with its own kick
+            rem_half = drift_matrix(0.5 * remainder, kin)
+            X = _apply(rem_half, X)
+            X = _sc(X, sc_cfg, remainder, kin, macro_charge, dtype, device)
+            X = _apply(rem_half, X)
+        elif remainder > 1e-12:
             X = _apply(drift_matrix(remainder, kin), X)
         return X
 
@@ -156,8 +162,9 @@ def track_beam_torch_stepwise(lattice, ref, particles, *,
     kick; ``macro_charge`` (charge per macro-particle, C) is then required.
 
     SC cadence — replicates the numpy ``Tracker``: a drift follows the
-    step1/step2 grid (``lattice.step_config``) as ``n_sc`` Strang bundles
-    of [drift, SC, drift] plus a no-SC remainder; a quad / solenoid is two
+    step1/step2 grid (``lattice.step_config``) as Strang bundles of
+    [drift, SC, drift], the sub-steps left after the last full bundle as a
+    short bundle with its own kick; a quad / solenoid is two
     sub-steps with a kick at each midpoint; a dipole uses a kick-drift-kick
     split (also 2nd-order Strang), so its edge focusing need not be
     factored out of the matrix.

@@ -1,6 +1,7 @@
 # linac_gen/tracking/tracker.py
 """Multi-particle Tracker: dispatches elements and records diagnostics."""
 import warnings
+from dataclasses import dataclass
 
 import numpy as np
 from linac_gen.core.track_state import TrackState
@@ -265,10 +266,10 @@ def field_map_step_counts(lattice, element):
     """Canonical sub-step cadence for a field-map element.
 
     Returns ``(n_int, n_sc, ds_mm, sc_every, n_bundles)`` — the SINGLE
-    source of truth shared by the multi-particle tracker, the envelope
-    solver and the backtracker, so all three walk a field map with
-    byte-identical slicing (matrices, SC kick planes and diagnostics
-    then compose consistently across modes).
+    source of truth shared by the multi-particle tracker, both envelope
+    walks (with and without space charge) and the backtracker, so they
+    walk a field map with byte-identical slicing (matrices, SC kick planes
+    and diagnostics then compose consistently across modes).
 
     Rules (in order, each with its physics rationale at the original
     call site in ``Tracker._track_field_map``):
@@ -280,9 +281,10 @@ def field_map_step_counts(lattice, element):
        low β/strong B.  ``n_sc`` deliberately stays at its configured
        cadence (forcing it up collapsed ``sc_every`` to 1 and applied
        ~100× too many PIC kicks).
-    3. ``RfqCell`` honours its own auto-selected ``n_steps`` floor
-       (0.1 mm per substep) — PARTRAN_STEP at 100/m gives 1 substep on
-       a 7 mm cell and a ~5 % synchronous-W shortfall.
+    3. ``RfqCell`` and ``VaneRFQ`` honour their own ``n_steps`` floor
+       (0.1 mm per substep; ~2× the .vane slice resolution) — PARTRAN_STEP
+       at 100/m gives 1 substep on a 7 mm cell and a ~5 % synchronous-W
+       shortfall.  ``NCells`` honours its ~2-per-cell floor (SC cadence).
     4. RF FIELD_MAP cavities (1-D and 3-D) honour the parser-set
        ``n_steps`` (the map's own grid resolution) — undercutting it
        coarsens the transit-time integral (~130 keV bias on SSR1).
@@ -329,6 +331,156 @@ def field_map_step_counts(lattice, element):
     sc_every = max(1, n_int // n_sc)
     n_bundles = n_int // sc_every
     return n_int, n_sc, ds_mm, sc_every, n_bundles
+
+
+def field_map_bundle_sizes(n_int, sc_every, n_bundles):
+    """Integration steps of each space-charge bundle along a field map, in order.
+
+    ``n_bundles`` bundles of ``sc_every`` steps and, when ``n_int`` is not a
+    multiple of ``sc_every``, one short last bundle of the leftover steps with
+    its own space-charge kick over its own length — those steps used to run
+    after the last bundle without any.  Each bundle is walked as half steps,
+    the kick, half steps.  Shared by the tracker, the envelope solver's
+    space-charge path, the backtracker and the time-domain RFQ's reference
+    table.
+    """
+    sizes = [sc_every] * n_bundles
+    leftover = n_int - n_bundles * sc_every
+    if leftover > 0:
+        sizes.append(leftover)
+    return sizes
+
+
+@dataclass(frozen=True)
+class FieldMapStep:
+    """One forward ``track_rk4`` call of a field map, as the tracker
+    schedules it: the call's ``_step_idx``, its per-call ``ds`` (``ds/2``:
+    every call is a half step of a Strang bundle), a COPY of the reference
+    state at the call's entrance, for step 0 only the FREQ-jump rescale
+    ratio the forward pass applied, and the map-local position where the
+    call began (FieldMap / FieldMap3D: the position cursor's value)."""
+    step_idx: int
+    ds: float
+    ref_before: object
+    freq_ratio: float | None = None
+    z_entry: float | None = None
+
+
+def tracks_reference_on_tracker_schedule(element) -> bool:
+    """True for the field maps whose reference the envelope, matrix and
+    backtracking modes advance with :func:`field_map_reference_states`
+    (FieldMap, FieldMap3D and SuperposedFieldMap, not a curved cluster),
+    so their reference energy and phase equal a multiparticle run's.
+    RFQ cells, VaneRFQ and NCells keep their own ``advance_ref``."""
+    from linac_gen.elements.field_map import FieldMap
+    from linac_gen.elements.field_map_3d import FieldMap3D
+    from linac_gen.elements.superposed_field_map import SuperposedFieldMap
+    return (isinstance(element, (FieldMap, FieldMap3D, SuperposedFieldMap))
+            and not getattr(element, "is_curved", False))
+
+
+def field_map_reference_states(lattice, element, ref, *,
+                               reset: bool = True) -> list[FieldMapStep]:
+    """Drive ``ref`` through ``element`` on the LITERAL tracker schedule.
+
+    A zero-particle beam is pushed through the exact per-call sequence of
+    ``Tracker._track_field_map`` (``k`` × ``track_rk4(ds/2)`` twice per
+    bundle, ``k`` from the shared ``field_map_step_counts`` and
+    ``field_map_bundle_sizes``), snapshotting ``ref.copy()`` before each
+    call.  ``track_rk4`` early-outs on the empty alive mask only AFTER
+    the reference advance and the step-0 entry operations (frequency
+    propagation, SET_SYNC_PHASE calibration), so the resulting reference
+    states, ψ calibration and ``_phi_s_at_entrance`` are BIT-IDENTICAL
+    to a forward tracker run — with zero changes to forward code.
+
+    ``ref`` is mutated in place to the element-exit state (like
+    ``advance_ref``); the returned list carries the per-call entry
+    snapshots (``2 * n_int`` of them).  The element's run state is reset
+    first and the calibration is left in place for the caller (the
+    envelope's matrix walk, :meth:`FieldMap.untrack_rk4`) to reuse.
+
+    ``reset=False`` is for a caller that has just reset the element and
+    computed its matrix at this same entry reference (the envelope's and
+    the matrix mode's whole-element step): the walk only restarts the
+    position cursor and reuses the SET_SYNC_PHASE calibration that matrix
+    computed — the same ψ a reset would recompute, at half the cost.
+    """
+    from linac_gen.core.beam import Beam
+
+    # a curved cluster (SUPERPOSE_MAP_OUT): its length — hence the step
+    # counts — is the path it traces for this reference (Tracker order)
+    _prep = getattr(element, "prepare_reference", None)
+    if _prep is not None:
+        _prep(ref)
+    n_int, n_sc, ds, sc_every, n_bundles = field_map_step_counts(
+        lattice, element)
+
+    if reset:
+        element.reset_run_state()
+    else:
+        restart_field_map_walk(element)
+    ghost = Beam(ref=ref, n_particles=1, current=0.0)
+    ghost.lost[:] = True                       # zero alive → ref-only walk
+
+    # The forward step-0 FREQ-jump rescale fires when the cavity's
+    # frequency differs from the INCOMING ref frequency.
+    eff_freq = element.effective_frequency
+    ratio = None
+    if (eff_freq > 0 and eff_freq != ref.frequency
+            and element._has_electric_channel()):
+        ratio = eff_freq / ref.frequency
+
+    steps: list[FieldMapStep] = []
+    from linac_gen.elements.field_map import FieldMap
+    from linac_gen.elements.field_map_3d import FieldMap3D
+    records_z = isinstance(element, (FieldMap, FieldMap3D))
+
+    def _call(ds_call: float) -> None:
+        idx = len(steps)
+        ref_before = ref.copy()
+        element.track_rk4(ghost, ds_call)
+        steps.append(FieldMapStep(
+            step_idx=idx, ds=ds_call, ref_before=ref_before,
+            freq_ratio=(ratio if idx == 0 else None),
+            z_entry=(element._last_z_entry if records_z else None),
+        ))
+
+    # FieldMap3D: interpolate the on-axis field at every position this walk
+    # samples in one call (the cursor gives z_map_start + k*h + h/2 for a
+    # constant half step h; a position computed otherwise is simply not
+    # found and interpolated on its own)
+    _prefill = getattr(element, "prefill_onaxis", None)
+    if _prefill is not None:
+        h = ds / 2
+        _prefill([element._z_map_start + k * h + h / 2.0
+                  for k in range(2 * n_int)])
+
+    for k_steps in field_map_bundle_sizes(n_int, sc_every, n_bundles):
+        for _k in range(2 * k_steps):
+            _call(ds / 2)
+    return steps
+
+
+def load_reference_state(dst, src) -> None:
+    """Make ``dst`` the state ``src`` holds (energy, frequency, phase, s),
+    keeping the ``dst`` object: run-time commands hold it (``TrackState``)."""
+    dst._w_kin = src._w_kin
+    dst._frequency = src._frequency
+    dst.phi_s = src.phi_s
+    dst.s = src.s
+    dst._update_derived()
+
+
+def restart_field_map_walk(element) -> None:
+    """Put a field map's position cursor back at its entrance after
+    :func:`field_map_reference_states`, keeping what the walk set up —
+    the SET_SYNC_PHASE calibration, the entrance phase and, in a
+    SuperposedFieldMap, its children's entrance phases — so the envelope's
+    matrix walk that follows sees the multiparticle run's phases."""
+    element._step_idx = 0
+    if hasattr(element, "_z_history"):           # SuperposedFieldMap
+        element._z_cursor = 0.0
+        element._z_history = []
 
 
 class Tracker:
@@ -1129,15 +1281,16 @@ class Tracker:
             def _record_marker_crossings():
                 return None
 
-        for b in range(n_bundles):
-            # A bundle is 2·sc_every half-steps of ds/2 with the SC kick
-            # between its two halves.  Sub-step rows go after every SECOND
-            # half-step, counted through the kick, so they fall every full
-            # ds over the whole bundle (sc_every rows, the last at the
+        for b, k_steps in enumerate(field_map_bundle_sizes(n_int, sc_every, n_bundles)):
+            # A bundle is 2·k_steps half-steps of ds/2 with the SC kick
+            # between its two halves (k_steps = sc_every, or the leftover
+            # steps in the short last bundle).  Sub-step rows go after every
+            # SECOND half-step, counted through the kick, so they fall every
+            # full ds over the whole bundle (k_steps rows, the last at the
             # bundle exit); a row in the first half shows the beam before
             # this bundle's kick, as the split step has it there.
             n_half = 0
-            for k in range(sc_every):
+            for k in range(k_steps):
                 effective_element.track_rk4(self.beam, ds / 2)
                 if fine_aperture:
                     self._check_aperture(element)
@@ -1146,17 +1299,18 @@ class Tracker:
                 if self._record_substeps and n_half % 2 == 0:
                     self._record_substep(element)
             if scc_active:
-                z_local_mm = (b + 0.5) * sc_every * ds
+                z_local_mm = ((b + 0.5) * sc_every * ds if k_steps == sc_every
+                              else (b * sc_every + 0.5 * k_steps) * ds)
                 scc_z = float(np.interp(
                     z_local_mm, scc_prof[:, 0], scc_prof[:, 1]))
                 local_factor = max(0.0, 1.0 - scc_scale * scc_z)
                 saved = self._sc_factor
                 self._sc_factor = local_factor
-                self._apply_sc_kick(sc_every * ds)
+                self._apply_sc_kick(k_steps * ds)
                 self._sc_factor = saved
             else:
-                self._apply_sc_kick(sc_every * ds)
-            for k in range(sc_every):
+                self._apply_sc_kick(k_steps * ds)
+            for k in range(k_steps):
                 effective_element.track_rk4(self.beam, ds / 2)
                 if fine_aperture:
                     self._check_aperture(element)
@@ -1166,16 +1320,6 @@ class Tracker:
                     self._record_substep(element)
             if not fine_aperture:
                 self._check_aperture(element)
-        # Any trailing sub-steps (n_int not a multiple of sc_every) get RK4 only
-        for _ in range(n_int - n_bundles * sc_every):
-            effective_element.track_rk4(self.beam, ds)
-            if fine_aperture:
-                self._check_aperture(element)
-            _record_marker_crossings()
-            if self._record_substeps:
-                self._record_substep(element)
-        if n_int > n_bundles * sc_every and not fine_aperture:
-            self._check_aperture(element)
 
     def _space_charge_active(self) -> bool:
         """True when ``_apply_sc_kick`` would actually kick — the same gates it
@@ -1307,9 +1451,12 @@ class Tracker:
         Drifts have an exact analytic map, so sub-stepping only matters for
         SC kick placement.  We use a Strang bundle: drift(bundle/2) →
         SC(bundle) → drift(bundle/2) per group of ``sc_every`` sub-steps.
-        When nothing sits between the sub-steps and the step config allows
-        it (``StepConfig.drift_single_push``, see ``_drift_single_push``)
-        the map is applied once.
+        Sub-steps left after the last bundle (``n_int`` not a multiple of
+        ``sc_every``) form a short last bundle with its own kick over its
+        own length, so the kicks cover the whole drift.  When nothing sits
+        between the sub-steps and the step config allows it
+        (``StepConfig.drift_single_push``, see ``_drift_single_push``) the
+        map is applied once.
         """
         if self._drift_single_push(element):
             self._push_drift_once(element)
@@ -1332,7 +1479,14 @@ class Tracker:
                 self._record_substep(element)
         remainder_len = element.length - n_bundles * bundle_len
         if remainder_len > 0:
-            element.track(self.beam, ds=remainder_len)
+            if n_int > n_bundles * sc_every:
+                # leftover sub-steps: a short last bundle with its own kick
+                element.track(self.beam, ds=remainder_len / 2)
+                self._apply_sc_kick(remainder_len)
+                element.track(self.beam, ds=remainder_len / 2)
+            else:
+                # only the rounding of n_bundles * bundle_len (~1e-13 mm)
+                element.track(self.beam, ds=remainder_len)
             self._check_aperture(element)
             if self._record_substeps:
                 self._record_substep(element)

@@ -99,7 +99,10 @@ from linac_gen.elements.base import (
 )
 from linac_gen.elements.lattice_commands import LatticeCommand
 from linac_gen.tracking.tracker import (
-    _is_rf_bunching_element, field_map_step_counts,
+    FieldMapStep, _is_rf_bunching_element, field_map_bundle_sizes,
+    field_map_reference_states, field_map_step_counts,
+    load_reference_state, restart_field_map_walk,
+    tracks_reference_on_tracker_schedule,
 )
 
 __all__ = [
@@ -142,83 +145,16 @@ class BoundaryState:
         return ref
 
 
-@dataclass(frozen=True)
-class _FmStep:
-    """One forward ``track_rk4`` call of a field map, as the tracker
-    schedules it: the call's ``_step_idx``, its per-call ``ds`` (``ds/2``
-    inside Strang bundles, full ``ds`` for trailing sub-steps), a COPY of
-    the reference state at the call's entrance, and — for step 0 only —
-    the FREQ-jump rescale ratio the forward pass applied."""
-    step_idx: int
-    ds: float
-    ref_before: ReferenceParticle
-    freq_ratio: float | None = None
-
-
-def _replay_field_map_ref_states(lattice, element, ref) -> list[_FmStep]:
-    """Drive ``ref`` through ``element`` on the LITERAL tracker schedule.
-
-    A zero-particle beam is pushed through the exact per-call sequence of
-    ``Tracker._track_field_map`` (``sc_every`` × ``track_rk4(ds/2)``,
-    twice per bundle, plus trailing full-``ds`` calls — from the shared
-    ``field_map_step_counts``), snapshotting ``ref.copy()`` before each
-    call.  ``track_rk4`` early-outs on the empty alive mask only AFTER
-    the reference advance and the step-0 entry operations (frequency
-    propagation, SET_SYNC_PHASE calibration), so the resulting reference
-    states, ψ calibration and ``_phi_s_at_entrance`` are BIT-IDENTICAL
-    to a forward tracker run — with zero changes to forward code.
-
-    ``ref`` is mutated to the element-exit state (like ``advance_ref``);
-    the returned list carries the per-call entry snapshots.  The
-    element's run state is reset first and the calibration is left in
-    place for :meth:`FieldMap.untrack_rk4` to reuse.
-    """
-    from linac_gen.core.beam import Beam
-    from linac_gen.tracking.tracker import field_map_step_counts
-
-    # a curved cluster (SUPERPOSE_MAP_OUT): its length — hence the step
-    # counts — is the path it traces for this reference (Tracker order)
-    _prep = getattr(element, "prepare_reference", None)
-    if _prep is not None:
-        _prep(ref)
-    n_int, n_sc, ds, sc_every, n_bundles = field_map_step_counts(
-        lattice, element)
-
-    element.reset_run_state()
-    ghost = Beam(ref=ref, n_particles=1, current=0.0)
-    ghost.lost[:] = True                       # zero alive → ref-only walk
-
-    # The forward step-0 FREQ-jump rescale fires when the cavity's
-    # frequency differs from the INCOMING ref frequency.
-    eff_freq = element.effective_frequency
-    ratio = None
-    if (eff_freq > 0 and eff_freq != ref.frequency
-            and element._has_electric_channel()):
-        ratio = eff_freq / ref.frequency
-
-    steps: list[_FmStep] = []
-
-    def _call(ds_call: float) -> None:
-        idx = len(steps)
-        steps.append(_FmStep(
-            step_idx=idx, ds=ds_call, ref_before=ref.copy(),
-            freq_ratio=(ratio if idx == 0 else None),
-        ))
-        element.track_rk4(ghost, ds_call)
-
-    for _b in range(n_bundles):
-        for _k in range(sc_every):
-            _call(ds / 2)
-        for _k in range(sc_every):
-            _call(ds / 2)
-    for _ in range(n_int - n_bundles * sc_every):
-        _call(ds)
-    return steps
+# One forward ``track_rk4`` call of a field map and the literal-schedule
+# reference walk now live in tracker.py, shared with the envelope and the
+# matrix mode; the old names stay for this module and its tests.
+_FmStep = FieldMapStep
+_replay_field_map_ref_states = field_map_reference_states
 
 
 def build_replay_table(lattice, entrance_ref: ReferenceParticle, *,
                        end: int,
-                       field_map_ref_mode: str = "advance_ref",
+                       field_map_ref_mode: str = "tracker",
                        ) -> list[BoundaryState]:
     """Forward-replay the design reference over ``elements[0..end]``.
 
@@ -235,14 +171,15 @@ def build_replay_table(lattice, entrance_ref: ReferenceParticle, *,
     ``field_map_ref_mode`` selects how FieldMap/FieldMap3D advance the
     replay reference:
 
-    * ``"advance_ref"`` (default, the v1 behaviour) — the element's own
-      full-``ds`` on-axis integrator.  Differs from the tracker's
-      half-step schedule by ~2e-6 relative through strong bunchers.
-    * ``"tracker"`` — the zero-particle literal-schedule replay
-      (:func:`_replay_field_map_ref_states`): boundary states become
-      BIT-IDENTICAL to a forward tracker run.  Used by the exact
-      (``field_map_mode="rk4"``) backward walk, where that 2e-6 would
-      dominate the closure.
+    * ``"tracker"`` (default) — the zero-particle literal-schedule replay
+      (:func:`linac_gen.tracking.tracker.field_map_reference_states`):
+      boundary states are BIT-IDENTICAL to a forward tracker run, and
+      equal to the envelope's and the matrix mode's, which advance the
+      reference the same way.
+    * ``"advance_ref"`` — the element's own full-``ds`` on-axis
+      integrator (the behaviour up to 1.22).  Differs from the tracker's
+      half-step schedule by ~2e-6 relative through strong bunchers and
+      by ~4e-4 through a 650 MHz β = 0.9 cavity.
     """
     elements = lattice.elements
     ref = entrance_ref.copy()
@@ -501,8 +438,9 @@ class _Backtracker:
 
     # ------------------------------------------------------------------
     def _untrack_drift(self, element, entry, species) -> None:
-        """Inverse of Tracker._track_drift: remainder first, then the
-        Strang bundles in reverse — [inv(half), SC⁻, inv(half)].  A drift
+        """Inverse of Tracker._track_drift: remainder first (the short last
+        bundle when sub-steps are left over), then the Strang bundles in
+        reverse — [inv(half), SC⁻, inv(half)].  A drift
         the forward tracker pushed once (no space charge, no aperture) is
         undone with one inverse map, mirroring ``_drift_single_push``."""
         cfg = getattr(self.lattice, "step_config", None)
@@ -526,7 +464,15 @@ class _Backtracker:
             dtype=float), element.name)
 
         remainder_len = element.length - n_bundles * bundle_len
-        if remainder_len > 0:
+        if remainder_len > 0 and n_int > n_bundles * sc_every:
+            # the short last bundle of leftover sub-steps, with its kick
+            M_rem_half_inv = _invert(np.asarray(
+                element.transfer_matrix(ref_entry, ds=remainder_len / 2),
+                dtype=float), element.name)
+            self._apply_matrix(M_rem_half_inv)
+            self._apply_sc_kick_negated(remainder_len)
+            self._apply_matrix(M_rem_half_inv)
+        elif remainder_len > 0:
             M_rem = np.asarray(
                 element.transfer_matrix(ref_entry, ds=remainder_len),
                 dtype=float)
@@ -697,30 +643,39 @@ class _Backtracker:
             self.lattice, element, entry.make_ref(species))
 
         def _undo(st: _FmStep) -> None:
-            element.untrack_rk4(self.beam, st.ds, st.ref_before,
-                                st.step_idx, freq_ratio=st.freq_ratio)
+            if st.z_entry is None:
+                element.untrack_rk4(self.beam, st.ds, st.ref_before,
+                                    st.step_idx, freq_ratio=st.freq_ratio)
+            else:
+                element.untrack_rk4(self.beam, st.ds, st.ref_before,
+                                    st.step_idx, freq_ratio=st.freq_ratio,
+                                    z_entry=st.z_entry)
 
-        # Trailing full-ds calls first (they were forward-last).
-        n_bundle_calls = 2 * sc_every * n_bundles
-        for st in reversed(steps[n_bundle_calls:]):
-            _undo(st)
-        for b in reversed(range(n_bundles)):
-            first = steps[b * 2 * sc_every: b * 2 * sc_every + sc_every]
-            second = steps[b * 2 * sc_every + sc_every:
-                           (b + 1) * 2 * sc_every]
+        # Bundles in reverse (the short last bundle, if any, first): each
+        # was 2·k half-steps with the SC kick in the middle.
+        sizes = field_map_bundle_sizes(n_int, sc_every, n_bundles)
+        starts = [0]
+        for k_steps in sizes:
+            starts.append(starts[-1] + 2 * k_steps)
+        for b in reversed(range(len(sizes))):
+            k_steps = sizes[b]
+            first = steps[starts[b]: starts[b] + k_steps]
+            second = steps[starts[b] + k_steps: starts[b + 1]]
+            kick_len = bundle_len if k_steps == sc_every else k_steps * ds
             for st in reversed(second):
                 _undo(st)
             if scc_active:
-                z_mid = (b + 0.5) * bundle_len
+                z_mid = ((b + 0.5) * bundle_len if k_steps == sc_every
+                         else (b * sc_every + 0.5 * k_steps) * ds)
                 scc_z = float(np.interp(z_mid, scc_prof[:, 0],
                                         scc_prof[:, 1]))
                 local_factor = max(0.0, 1.0 - scc_scale * scc_z)
                 saved = self._sc_factor
                 self._sc_factor = local_factor
-                self._apply_sc_kick_negated(bundle_len)
+                self._apply_sc_kick_negated(kick_len)
                 self._sc_factor = saved
             else:
-                self._apply_sc_kick_negated(bundle_len)
+                self._apply_sc_kick_negated(kick_len)
             for st in reversed(first):
                 _undo(st)
 
@@ -747,29 +702,43 @@ class _Backtracker:
         # ---- forward pass: build the op stream at replay-consistent refs
         element.reset_run_state()
         ref = entry.make_ref(species)
+        # The reference at each half-bundle boundary: the tracker's (as the
+        # envelope takes it), or the element's own sub-range advance.
+        if tracks_reference_on_tracker_schedule(element):
+            walk_ref = ref.copy()
+            states = field_map_reference_states(self.lattice, element, walk_ref)
+            restart_field_map_walk(element)
+        else:
+            states = None
+        n_half = 0
+
+        def _advance(z_from, z_to, k_steps):
+            nonlocal n_half
+            if states is None:
+                element.advance_ref_over(ref, z_from, z_to)
+                return
+            n_half += k_steps
+            load_reference_state(
+                ref, states[n_half].ref_before if n_half < len(states) else walk_ref)
+
         z = 0.0
-        bundle_ops = []                  # (M1, M2, z_mid)
-        for b in range(n_bundles):
-            half = bundle_len / 2
+        bundle_ops = []                  # (M1, M2, z_mid, kick length)
+        for b, k_steps in enumerate(field_map_bundle_sizes(n_int, sc_every, n_bundles)):
+            blen = bundle_len if k_steps == sc_every else k_steps * ds
+            half = blen / 2
             M1 = np.asarray(_fitted_matrix_slice_at(element, ref, half, z),
                             dtype=float)
-            element.advance_ref_over(ref, z, z + half)
+            _advance(z, z + half, k_steps)
             M2 = np.asarray(_fitted_matrix_slice_at(element, ref, half,
                                                     z + half), dtype=float)
-            element.advance_ref_over(ref, z + half, z + bundle_len)
-            bundle_ops.append((M1, M2, (b + 0.5) * bundle_len))
-            z += bundle_len
-        remainder = element.length - n_bundles * bundle_len
-        M_rem = None
-        if remainder > 1e-12:
-            M_rem = np.asarray(_fitted_matrix_slice_at(element, ref,
-                                                       remainder, z),
-                               dtype=float)
+            _advance(z + half, z + blen, k_steps)
+            z_mid = ((b + 0.5) * bundle_len if k_steps == sc_every
+                     else (b * sc_every + 0.5 * k_steps) * ds)
+            bundle_ops.append((M1, M2, z_mid, blen))
+            z += blen
 
         # ---- backward pass
-        if M_rem is not None:
-            self._apply_matrix(_invert(M_rem, element.name))
-        for M1, M2, z_mid in reversed(bundle_ops):
+        for M1, M2, z_mid, blen in reversed(bundle_ops):
             self._apply_matrix(_invert(M2, element.name))
             if scc_active:
                 scc_z = float(np.interp(z_mid, scc_prof[:, 0],
@@ -777,10 +746,10 @@ class _Backtracker:
                 local_factor = max(0.0, 1.0 - scc_scale * scc_z)
                 saved = self._sc_factor
                 self._sc_factor = local_factor
-                self._apply_sc_kick_negated(bundle_len)
+                self._apply_sc_kick_negated(blen)
                 self._sc_factor = saved
             else:
-                self._apply_sc_kick_negated(bundle_len)
+                self._apply_sc_kick_negated(blen)
             self._apply_matrix(_invert(M1, element.name))
 
     # ------------------------------------------------------------------
@@ -987,13 +956,11 @@ def backtrack_distribution(lattice, beam,
             f"lattice of {len(elements)} elements (need "
             "0 <= start <= end < n)")
 
-    # The exact per-step inverse needs boundary refs bit-identical to
-    # the forward tracker; the linear mode keeps the cheaper advance_ref
-    # replay (v1 behaviour, pinned by its own tests).
-    table = build_replay_table(
-        lattice, entrance_ref, end=end,
-        field_map_ref_mode=("tracker" if field_map_mode == "rk4"
-                            else "advance_ref"))
+    # Boundary refs bit-identical to the forward tracker, in both modes:
+    # the exact per-step inverse needs them, and the linear mode's
+    # matrices are the envelope's, which advances the reference the same
+    # way.
+    table = build_replay_table(lattice, entrance_ref, end=end)
 
     # ---- guards ---------------------------------------------------------
     skipped_cmds = [getattr(e, "name", type(e).__name__)

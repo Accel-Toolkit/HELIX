@@ -77,8 +77,8 @@ def dispersion_along_s(lattice, ref, *, eta0=None,
         (entry + every element exit), and ``complete`` (False when an
         unsupported element broke the chain — downstream samples NaN).
     """
-    from linac_gen.analysis.phase_advance import _check_stop
-    from linac_gen.elements.base import FieldMapElement, ThinKickElement
+    from linac_gen.analysis.phase_advance import _advance_ref_like_matrix_walk, _check_stop
+    from linac_gen.elements.base import FieldMapElement
     from linac_gen.tracking.matrix_tracking import get_element_matrix, _with_tilt
 
     n = len(lattice.elements)
@@ -111,6 +111,8 @@ def dispersion_along_s(lattice, ref, *, eta0=None,
     break_idx = n
     for i, el in enumerate(lattice.elements):
         _check_stop(should_stop)
+        if isinstance(el, FieldMapElement):
+            el.reset_run_state()        # clean slate, as compute_transfer_matrix
         try:
             m6 = _with_tilt(el, get_element_matrix(el, rc, cache=cache))
         except Exception:                                 # noqa: BLE001
@@ -120,12 +122,10 @@ def dispersion_along_s(lattice, ref, *, eta0=None,
             break_idx = i
             break
         v = np.asarray(m6, dtype=float) @ v
-        if isinstance(el, FieldMapElement):
-            el.advance_ref(rc)
-        else:
-            rc.s += el.length
-            if isinstance(el, ThinKickElement):
-                el.advance_ref(rc)
+        # the reference as compute_transfer_matrix advances it (tracker-
+        # schedule walk reusing the calibration of the matrix above, φ_s
+        # through drifts)
+        _advance_ref_like_matrix_walk(el, rc, lattice, reset=False)
         s_arr[i + 1] = float(rc.s)
         _emit(i + 1)
 

@@ -32,7 +32,7 @@ source modes:
 | `--to-element` | int | last | range end — the exit the walk starts from |
 | `--write-dst` | path | — | write the reconstructed entrance distribution (mp) |
 | `--fieldmap-inverse` | `rk4` \| `linear` | `rk4` | field-map inverse: `rk4` undoes each forward integration step in closed form (round trips close at float round-off, ~1e-13); `linear` is the v1 inverted fitted-matrix path (~2 % closure through strong bunchers), kept for comparison |
-| `--validate` | flag | off | forward re-track the reconstruction and report exit residuals; exits non-zero if the closure is worse than 5 % (mp) |
+| `--validate` | flag | off | forward re-track the reconstruction and compare it with the supplied exit beam, particle for particle; exits non-zero if more than 5 % of the exit particles are lost in the re-track or a σ of the surviving particles is off by more than 5 % (mp) |
 | `--allow-dc-crossing` | flag | off | assert the beam was DC (continuous) upstream of the first RF bunching element |
 | `--energy-tolerance` | rel. | `1e-3` | warn when the exit beam's energy deviates from the design exit by more |
 | `--energy-hard-limit` | rel. | `5e-2` | refuse above this deviation |
@@ -69,43 +69,58 @@ python -m linac_gen backtrack examples/pipii/mebt/mebt.dat \
     --write-dst /tmp/bt/mebt_entrance.dst --validate --out /tmp/bt
 ```
 
-Typical output of step 2 (426 elements, 4 bunchers):
+Typical output of step 2 with `--fieldmap-inverse linear` added to the
+command (427 elements, 4 bunchers):
 
 ```
 [backtrack] mode=mp  input=examples/pipii/mebt/mebt.dat  source=/tmp/bt/mebt_final.dst
-  range          = [0, 425] (exit → entrance)
+  range          = [0, 426] (exit → entrance)
   entrance s     = 0.000 mm
   entrance W_kin = 2.100000 MeV
-  reconstructed sigma: x=1.0064 mm  y=0.5941 mm  dphi=7.4258 deg  dW=0.008266 MeV
-[validate] forward closure over [0, 425] (999 particles):
-  sigma_x/mm     recovered=1.61566   original=1.61718   rel=9.411e-04
-  sigma_y/mm     recovered=1.57804   original=1.58115   rel=1.972e-03
-  sigma_phi/deg  recovered=6.18469   original=6.06787   rel=1.925e-02
-  sigma_w/MeV    recovered=0.00994   original=0.01011   rel=1.664e-02
-[validate] OK (worst relative sigma residual 1.925e-02)
+  reconstructed sigma: x=0.9745 mm  y=0.5992 mm  dphi=7.2085 deg  dW=0.008582 MeV   (1000 particles)
+[validate] forward closure over [0, 426]: 1000 of 1000 exit particles survive the re-track (field-map inverse: linear)
+  sigma_x/mm     recovered=1.57657  original=1.57847  rel=1.200e-03
+  sigma_y/mm     recovered=1.6284  original=1.6248  rel=2.214e-03
+  sigma_phi/deg  recovered=6.05733  original=5.93285  rel=2.098e-02
+  sigma_w/MeV    recovered=0.0102237  original=0.0104318  rel=1.995e-02
+  per-particle rms residual / sigma: x=1.455e-02  y=1.064e-01  phi=7.230e-02  w=8.605e-02
+  ref W_kin      recovered=2.099994 MeV  original=2.099994 MeV  |dW|=0.000e+00
+[validate] OK (worst relative sigma residual 2.098e-02)
 ```
 
 The sample output above was measured with `--fieldmap-inverse linear`
 (the v1 path): the ~2 % longitudinal residual is the linear-inverse
 fidelity of the four bunchers.  With the default **`rk4` exact
 inverse** the same `.dst` round trip closes at float round-off —
-measured worst relative σ residual **7×10⁻¹⁵** on the MEBT — because
-every forward integration step is undone in closed form.  The
+measured worst relative σ residual **3×10⁻¹⁵** on the MEBT and a
+per-particle rms residual of 1×10⁻¹⁴ σ — because every forward
+integration step is undone in closed form.  The
 `--validate` gate (5 %) is then only ever tripped by genuine input
 problems (heavy losses, wrong energy, unmatched design-mode Twiss).
 
 !!! note "That float-round-off figure is the space-charge-free closure"
-    The 7×10⁻¹⁵ above is the optics + RF closure — the field-map/RF
+    The 3×10⁻¹⁵ above is the optics + RF closure — the field-map/RF
     inverse itself is exact.  Under **strong space charge** the
     reconstruction recovers the beam *envelope* (σ/ε/Twiss close to
     ~0.2–2.4 % over the full MEBT+HWR at 5 mA) but **not** individual
     particle trajectories (~0.14 mm median per-particle error at that
     scale): the PIC field solve is not bit-reversible and the
     collective, effectively-chaotic SC dynamics amplify the seed error
-    through the ~10³ kicks of a full section.  `--validate` reports the
+    through the ~10³ kicks of a full section.  `--validate` gates on the
     **σ** closure, which is the quantity that stays accurate — so it
-    remains a good gate.  Backtrack the *beam*, not per-particle
-    histories, when SC is significant.
+    remains a good gate; the per-particle rms residual line shows the
+    trajectory error for information.  Backtrack the *beam*, not
+    per-particle histories, when SC is significant.
+
+The σ are compared on the same particles: those of the supplied exit
+beam that survive the re-track.  Particles the re-track loses at an
+aperture (the backward walk applies no cuts) are counted on their own
+and fail the check above 5 % of the exit beam.  A beam that lost
+particles upstream in the run that produced it cannot close exactly
+with space charge on: the backward walk puts the run's whole current on
+the surviving particles (a `.dst` holds only those), so its space charge
+upstream of the losses is not the forward run's — expect particles lost
+in the re-track and, with heavy upstream losses, a FAIL.
 
 !!! warning "Use the real machine Twiss"
     Design mode and the `--validate` interpretation both assume the

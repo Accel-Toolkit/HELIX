@@ -12,8 +12,10 @@ by applying the exact algebraic inverse of every forward operation
   and backtracked to find the input that produces it.
 
 ``--validate`` re-tracks the reconstruction FORWARD over the same range
-and reports exit residuals (Δσ, Δε, ΔW) against the original exit
-distribution — the TWICE-style closure check.
+and compares it with the original exit distribution, particle for
+particle (the particles lost in the re-track, the σ of the survivors, a
+per-particle residual, ΔW of the reference) — the TWICE-style closure
+check.
 """
 from __future__ import annotations
 
@@ -204,7 +206,8 @@ def run(args) -> int:
             allow_dc_crossing=args.allow_dc_crossing,
             energy_tolerance=args.energy_tolerance,
             energy_hard_limit=args.energy_hard_limit,
-            field_map_mode=args.field_map_mode)
+            field_map_mode=args.field_map_mode,
+            keep_exit=args.validate)
     except Exception as exc:                                # noqa: BLE001
         print(f"error: backtrack failed: {exc}", file=sys.stderr)
         return 1
@@ -309,28 +312,64 @@ def _validate(args, lattice, beam_cfg, recorder, beam, end) -> int:
             tracker._check_aperture(lattice.elements[i])
 
     alive = vbeam.alive_mask
-    p = vbeam.particles[alive]
-    sig = (p[:, 0].std(), p[:, 2].std(), p[:, 4].std(), p[:, 5].std())
+    cols = (0, 2, 4, 5)
     names = ("sigma_x/mm", "sigma_y/mm", "sigma_phi/deg", "sigma_w/MeV")
-    print(f"[validate] forward closure over [{args.start}, {end}] "
-          f"({int(alive.sum())} particles):")
+    exit_given = getattr(recorder, "backtrack_exit", None)
+    if exit_given is not None:
+        # The same particles on both sides: those of the supplied exit beam
+        # that survive the re-track.  The ones it loses are counted on their
+        # own; left in, they compared the survivors' sigmas with the whole
+        # beam's.  Their dW is moved to the re-track's reference energy (a
+        # .dst carries none: the loader takes the bunch mean, and the
+        # backward walk re-centres dW on the design exit).
+        exit_p, exit_alive, w_given = exit_given
+        same = alive & exit_alive
+        n_exit = int(exit_alive.sum())
+        n_lost = int((exit_alive & ~alive).sum())
+        p, q = vbeam.particles[same], exit_p[same].copy()
+        q[:, 5] += w_given - vbeam.ref.w_kin
+        sig_ref = tuple(q[:, c].std() for c in cols) if len(q) else sig_exit_ref
+        print(f"[validate] forward closure over [{args.start}, {end}]: "
+              f"{n_exit - n_lost} of {n_exit} exit particles survive the "
+              f"re-track (field-map inverse: {args.field_map_mode})")
+    else:
+        p, q = vbeam.particles[alive], None
+        sig_ref, n_exit, n_lost = sig_exit_ref, int(alive.sum()), 0
+        print(f"[validate] forward closure over [{args.start}, {end}] "
+              f"({n_exit} particles):")
+    if not len(p):
+        print("[validate] FAIL: no particle survives the re-track",
+              file=sys.stderr)
+        return 1
     worst = 0.0
-    for name, got, want in zip(names, sig, sig_exit_ref):
+    for name, c, want in zip(names, cols, sig_ref, strict=True):
+        got = p[:, c].std()
         rel = abs(got - want) / max(abs(want), 1e-12)
-        worst = max(worst, rel)
+        worst = max(worst, rel if np.isfinite(rel) else np.inf)
         print(f"  {name:<14} recovered={got:.6g}  original={want:.6g}  "
               f"rel={rel:.3e}")
+    if q is not None:
+        res = (np.sqrt(np.mean((p[:, c] - q[:, c]) ** 2)) / max(s, 1e-12)
+               for c, s in zip(cols, sig_ref, strict=True))
+        print("  per-particle rms residual / sigma: " + "  ".join(
+            f"{n.split('/')[0][6:]}={r:.3e}" for n, r in zip(names, res, strict=True)))
     dw = abs(vbeam.ref.w_kin - w_exit_ref)
     print(f"  ref W_kin      recovered={vbeam.ref.w_kin:.6f} MeV  "
           f"original={w_exit_ref:.6f} MeV  |dW|={dw:.3e}")
     _ = emit_exit_ref   # emittances are in the written results file
+    lost_frac = n_lost / n_exit if n_exit else 0.0
+    why = []
+    if lost_frac > 0.05:
+        why.append(f"{n_lost} of {n_exit} exit particles "
+                   f"({100.0 * lost_frac:.1f} %) are lost in the re-track")
     if worst > 0.05:
-        print("[validate] FAIL: worst relative sigma residual "
-              f"{worst:.3e} > 5e-2 (field-map linear-inverse fidelity "
-              "exceeded — inspect the range for cavities)",
-              file=sys.stderr)
+        why.append(f"worst relative sigma residual {worst:.3e}")
+    if why:
+        print(f"[validate] FAIL (limit 5 %): {'; '.join(why)} "
+              f"(field-map inverse: {args.field_map_mode})", file=sys.stderr)
         return 1
-    print(f"[validate] OK (worst relative sigma residual {worst:.3e})")
+    lost = f"; {n_lost} of {n_exit} lost in the re-track" if n_lost else ""
+    print(f"[validate] OK (worst relative sigma residual {worst:.3e}{lost})")
     return 0
 
 

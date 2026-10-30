@@ -310,12 +310,11 @@ class VaneRFQ(FieldMapElement):
         ds_m = ds * 1e-3
         ds_half_m = 0.5 * ds_m
 
-        z_mid_mm = self._step_idx * ds + ds * 0.5
         # Reset cell-phase tracking on element entry (first substep).
         if self._step_idx == 0:
             self._current_cell_idx = -1
             self._cell_phi_deg = 0.0
-        self._step_idx += 1
+        z_mid_mm = self._advance_z_cursor(ds) + ds * 0.5
 
         cidx = self._cell_index(z_mid_mm)
         if cidx < 0:

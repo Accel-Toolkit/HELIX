@@ -607,8 +607,7 @@ class FieldMap(FieldMapBase, Misalignment, FieldError):
             if self.p_flag == 1 and self._sync_offset_deg is None:
                 self._calibrate_sync_phase(ref)
 
-        z_pos = self._z_map_start + self._step_idx * ds + ds / 2.0
-        self._step_idx += 1
+        z_pos = self._z_map_start + self._advance_z_cursor(ds) + ds / 2.0
 
         ds_m = ds * 1e-3
         mass_MeV = ref.species.mass
@@ -853,7 +852,8 @@ class FieldMap(FieldMapBase, Misalignment, FieldError):
         return dW_ref
 
     def untrack_rk4(self, beam, ds: float, ref_entry, step_idx: int,
-                    *, freq_ratio: float | None = None) -> None:
+                    *, freq_ratio: float | None = None,
+                    z_entry: float | None = None) -> None:
         """Exact algebraic inverse of one ``track_rk4`` slice.
 
         ``track_rk4`` is a first-order kick–drift step whose every
@@ -876,6 +876,9 @@ class FieldMap(FieldMapBase, Misalignment, FieldError):
           the forward pass; the inverse divides it back out.  Pass only
           for step 0 (the backward walker undoes step 0 LAST, mirroring
           the forward "first op" placement).
+        * ``z_entry`` — the map-local position where the forward slice
+          began (the replay records it); without it the position is
+          ``step_idx * ds``, right only when every slice had this ``ds``.
 
         Element state contract: ``_sync_offset_deg`` / ``_phi_s_at_entrance``
         must already hold the forward-run calibration (the replay
@@ -888,7 +891,8 @@ class FieldMap(FieldMapBase, Misalignment, FieldError):
             # the (local) ref BEFORE any phase arithmetic.
             self._propagate_frequency_to_ref(ref0)
 
-        z_pos = self._z_map_start + step_idx * ds + ds / 2.0
+        z_pos = (self._z_map_start + (step_idx * ds if z_entry is None else z_entry)
+                 + ds / 2.0)
         ds_m = ds * 1e-3
         mass_MeV = ref0.species.mass
         charge_num = ref0.species.charge
@@ -1167,11 +1171,11 @@ class FieldMap(FieldMapBase, Misalignment, FieldError):
             ref_copy = ref.copy()
             b = Beam(ref=ref_copy, n_particles=P.shape[0], current=0.0)
             b.particles[:, :] = P
-            saved_idx = self._step_idx
+            saved = self._z_cursor_state()
             self._step_idx = 0
             for _ in range(n):
                 self.track_rk4(b, ds)
-            self._step_idx = saved_idx
+            self._restore_z_cursor_state(saved)
             return b.particles.copy()
 
         ref_state = np.zeros(6)
@@ -1180,12 +1184,12 @@ class FieldMap(FieldMapBase, Misalignment, FieldError):
 
     def fitted_matrix_slice(self, ref, ds_mm: float) -> np.ndarray:
         """Linearised 6×6 map for a *ds_mm* slice starting at the current
-        ``_step_idx``.
+        position (``_step_idx`` and the position cursor).
 
         The twelve probes ride one ``Beam`` on one ``ref.copy()`` (see
-        ``numerical_jacobian_batched``); the z-cursor ``_step_idx`` carries
-        the slice's cumulative RF phase so that the transit-time
-        integration is preserved across chained slices.
+        ``numerical_jacobian_batched``); the position cursor carries the
+        slice's place in the map from one slice to the next, also when
+        successive slices use sub-steps of different lengths.
 
         For magnetic-only 1-D field maps (solenoids) the per-sub-step
         thin-slice error is O((K·ds)²) and becomes significant at strong
@@ -1211,12 +1215,12 @@ class FieldMap(FieldMapBase, Misalignment, FieldError):
 
         sub_ds = ds_mm / n_sub
 
-        saved_idx = self._step_idx
+        saved = self._z_cursor_state()
         # NOTE: the envelope solver now advances ``ref.phi_s`` in step with
         # the bundle loop (via ``advance_ref_over``), so the ref passed in
         # is already at the current slice entrance — we trust its phi_s
-        # directly rather than re-deriving an offset from saved_idx, which
-        # would otherwise double-count the phase advance and blow up σ_φ.
+        # directly rather than re-deriving an offset from the position,
+        # which would otherwise double-count the phase advance and blow up σ_φ.
 
         def _track_batch(P):
             # one ref copy and one beam for all twelve probes — see
@@ -1224,11 +1228,11 @@ class FieldMap(FieldMapBase, Misalignment, FieldError):
             ref_copy = ref.copy()
             b = Beam(ref=ref_copy, n_particles=P.shape[0], current=0.0)
             b.particles[:, :] = P
-            self._step_idx = saved_idx
+            self._restore_z_cursor_state(saved)
             for _ in range(n_sub):
                 self.track_rk4(b, sub_ds)
             return b.particles.copy()
 
         M = numerical_jacobian_batched(_track_batch, np.zeros(6))
-        self._step_idx = saved_idx + n_sub
+        # the cursor stays where the walk ended: _step_idx = saved + n_sub
         return M

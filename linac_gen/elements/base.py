@@ -83,9 +83,57 @@ class ThinKickElement(Element):
 
 class FieldMapElement(Element):
     """Elements tracked via RK4 through imported field data."""
+
+    # Position cursor of the step-by-step walk (see _advance_z_cursor).  Class-level
+    # defaults on purpose: instances only carry these once they have been walked, so
+    # lattices dumped attribute by attribute, deep copies and pickles of elements that
+    # have never been walked are unchanged.
+    _z_sync_idx = -1          # the _step_idx the cursor below is valid for
+    _z_base = 0.0             # map-local position (mm) where the current step length began
+    _z_unit = 0.0             # the current step length (mm)
+    _z_n = 0                  # steps of _z_unit taken since _z_base
+    _last_z_entry = None      # entry position (mm) of the last step (backtrack replay)
+    _Z_REBASE_RTOL = 1e-9     # step lengths closer than this are the same length
+
     @abstractmethod
     def track_rk4(self, beam, ds: float) -> None:
         ...
+
+    def _advance_z_cursor(self, ds: float) -> float:
+        """Map-local position (mm) where this ``ds`` step begins; counts the step.
+
+        The envelope slices a field map with sub-steps of different lengths (a half
+        bundle and the short last bundle rarely share one), so the position cannot be
+        ``_step_idx * ds``.  While the
+        step length stays the same the result is exactly ``_step_idx * ds`` (the
+        operations of the old formula, so constant-step walks keep their bits); when
+        it changes, the position reached so far becomes the new origin.  A
+        ``_step_idx`` set from outside (0 at element entry, a slice restarting its
+        probes, a test) restarts the cursor at ``_step_idx * ds``.  Code that saves
+        and restores the position around a walk of its own must use
+        ``_z_cursor_state`` / ``_restore_z_cursor_state``: restoring ``_step_idx``
+        alone is not seen as a restart when it equals the value the cursor reached.
+        """
+        idx = self._step_idx
+        if idx == 0 or idx != self._z_sync_idx:
+            self._z_base, self._z_unit, self._z_n = 0.0, ds, idx
+        elif (ds != self._z_unit
+              and abs(ds - self._z_unit) > self._Z_REBASE_RTOL * abs(self._z_unit)):
+            self._z_base = self._z_base + self._z_n * self._z_unit
+            self._z_unit, self._z_n = ds, 0
+        z_entry = self._z_n * ds if self._z_base == 0.0 else self._z_base + self._z_n * ds
+        self._z_n += 1
+        self._step_idx = self._z_sync_idx = idx + 1
+        self._last_z_entry = z_entry
+        return z_entry
+
+    def _z_cursor_state(self) -> tuple:
+        return (self._step_idx, self._z_sync_idx, self._z_base, self._z_unit,
+                self._z_n, self._last_z_entry)
+
+    def _restore_z_cursor_state(self, state: tuple) -> None:
+        (self._step_idx, self._z_sync_idx, self._z_base, self._z_unit,
+         self._z_n, self._last_z_entry) = state
 
     def fitted_matrix(self, ref) -> np.ndarray:
         """Linearized 6x6 matrix for envelope mode. Placeholder until Phase 7."""
@@ -93,7 +141,7 @@ class FieldMapElement(Element):
 
     def fitted_matrix_slice(self, ref, ds_mm: float) -> np.ndarray:
         """Linearised 6x6 map for a *ds_mm* slice starting at the element's
-        current ``_step_idx``.
+        current position (``_step_idx`` and the position cursor).
 
         Advances ``_step_idx`` by the number of sub-steps consumed so that
         successive calls in the envelope SC loop cover the full element in

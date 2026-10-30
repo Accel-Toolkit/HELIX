@@ -8,6 +8,7 @@ Provides:
 """
 from __future__ import annotations
 
+import gc
 import os
 import sys
 import tempfile
@@ -210,6 +211,15 @@ def _flush_deferred_deletes():
     not covered by the window's deleteLater; they cost ~0.07 s/window of
     re-polish versus 0.77 s/window when the whole window leaked.  The
     external report's own "flushed" column shows the same residual slope.
+
+    Then one gc.collect(): tabs and popups a test builds parentless and
+    drops sit in reference cycles (an empty ResultsTab, 46 plot views, is
+    freed only by the cyclic collector).  Left to it, a collection could
+    fire inside a later test's processEvents() while Qt walked one of their
+    plot scenes (a queued itemsBoundingRect calls each item's Python
+    boundingRect) and free that scene's items mid-walk — the intermittent
+    full-suite SIGBUS in QGraphicsItem::sceneBoundingRect (2026-10-29).
+    Collected here, they die while Qt is idle.
     """
     yield
     # sendPostedEvents processes the deletions synchronously; loop until no
@@ -224,6 +234,7 @@ def _flush_deferred_deletes():
         # without it).  One pass frees the window trees, which is the
         # entire measured cost.
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        gc.collect()
 
 
 @pytest.fixture(autouse=True)

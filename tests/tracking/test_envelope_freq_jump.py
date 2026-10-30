@@ -217,13 +217,34 @@ def _rf_map_solver(fm, current, **kw):
 
 
 @pytest.mark.parametrize("current,record_substeps",
-                         [(5.0, False), (0.0, True)])
-def test_envelope_warns_frequency_offset_ignored(current, record_substeps):
-    fm = _rf_fieldmap3d()
-    fm.frequency_offset = 1.0
+                         [(5.0, False), (0.0, True), (0.0, False)])
+def test_envelope_carries_frequency_offset(current, record_substeps):
+    """The sub-stepped walks (space charge, sub-step rows) used to carry the
+    map's nominal frequency out and warn that they dropped the offset; the
+    reference now leaves on the tracker's states, at the effective
+    frequency, as a multiparticle run's does — in every regime."""
+    import warnings as _w
+
+    from linac_gen.core.beam import Beam
+    from linac_gen.tracking.tracker import Tracker
+
+    def cavity():
+        fm = _rf_fieldmap3d()
+        fm.frequency = 162.5                  # the fixture leaves it at 0
+        fm.frequency_offset = 1.0
+        return fm
+    fm = cavity()
     solver = _rf_map_solver(fm, current, record_substeps=record_substeps)
-    with pytest.warns(UserWarning, match="frequency_offset"):
+    with _w.catch_warnings(record=True) as rec:
+        _w.simplefilter("always")
         solver.run()
+    assert not [r for r in rec if "frequency_offset" in str(r.message)]
+    lat = Lattice()
+    lat.add(cavity())
+    beam = Beam(ref=ReferenceParticle(species=PROTON, w_kin=3.0, frequency=162.5),
+                n_particles=4, current=0.0)
+    Tracker(lat, beam).run()
+    assert solver._ref.frequency == beam.ref.frequency == fm.effective_frequency == 163.5
 
 
 def test_envelope_no_offset_no_frequency_warning():

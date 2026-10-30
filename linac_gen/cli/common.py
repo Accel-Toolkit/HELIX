@@ -507,7 +507,7 @@ def run_backtrack_sim(lattice, cfg, sc_config, step_config, *,
                       energy_tolerance: float = 1e-3,
                       energy_hard_limit: float = 5e-2,
                       field_map_mode: str = "rk4",
-                      progress_callback=None):
+                      progress_callback=None, keep_exit: bool = False):
     """Backtrack a distribution from the exit of ``elements[end]`` to the
     entrance of ``elements[start]``.
 
@@ -521,7 +521,8 @@ def run_backtrack_sim(lattice, cfg, sc_config, step_config, *,
     Returns ``(recorder, beam)`` — after the walk ``beam.particles``
     holds the reconstructed upstream distribution (usable for ``.dst``
     export) and ``recorder`` is the reversed-to-increasing-s record with
-    ``direction == "backward"``.
+    ``direction == "backward"``.  ``keep_exit`` also keeps a copy of the
+    exit beam as ``recorder.backtrack_exit`` for ``backtrack --validate``.
     """
     import copy
 
@@ -546,6 +547,11 @@ def run_backtrack_sim(lattice, cfg, sc_config, step_config, *,
         cfg_exit.energy = table[-1].w_kin
         cfg_exit.frequency = table[-1].frequency
         beam = create_beam(cfg_exit, seed=seed)
+    # the exit beam as given (dW relative to its own reference energy, which
+    # the backward walk re-centres on the design exit), for ``backtrack
+    # --validate`` to compare its forward re-track with particle by particle
+    exit_given = ((beam.particles.copy(), beam.alive_mask.copy(),
+                   beam.ref.w_kin) if keep_exit else None)
     sim = Simulation(lattice, beam, space_charge=sc_config,
                      progress_callback=progress_callback)
     recorder = sim.run_backtrack(
@@ -555,6 +561,8 @@ def run_backtrack_sim(lattice, cfg, sc_config, step_config, *,
         energy_tolerance=energy_tolerance,
         energy_hard_limit=energy_hard_limit,
         field_map_mode=field_map_mode)
+    if exit_given is not None:
+        recorder.backtrack_exit = exit_given
     return recorder, beam
 
 

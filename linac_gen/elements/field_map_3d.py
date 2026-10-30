@@ -558,6 +558,32 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
             cache[key] = val
         return val
 
+    def prefill_onaxis(self, positions) -> None:
+        """Remember the on-axis Fz of every electric channel at many
+        map-local ``positions`` (mm) at once, for :meth:`_sample_onaxis`.
+
+        A walk of the reference through the map
+        (``tracker.field_map_reference_states``) asks for 2·n_int positions
+        the calibration never probed; on a cold map those single-point
+        interpolations are most of the walk's cost.  One call per channel
+        gives the same values: the linear interpolator evaluates every point
+        with the same operations, whatever the number of points.  Channels
+        interpolated otherwise keep the one-point path."""
+        cache = self.__dict__.setdefault("_onaxis_cache", {})
+        for ch_enum, comp_interps in self._interpolators.items():
+            interp = comp_interps.get("Fz")
+            if (not ch_enum.is_electric or interp is None
+                    or getattr(interp, "method", None) != "linear"):
+                continue
+            todo = [z for z in dict.fromkeys(positions)
+                    if (ch_enum, z) not in cache]
+            if not todo:
+                continue
+            zs = np.asarray(todo, dtype=float)
+            pts = np.column_stack([np.zeros_like(zs), np.zeros_like(zs), zs])
+            for z, val in zip(todo, interp(pts), strict=True):
+                cache[(ch_enum, z)] = float(val)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -630,8 +656,7 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
             if self.p_flag == 1 and self._sync_offset_deg is None:
                 self._calibrate_sync_phase(ref)
 
-        z_pos = self._z_map_start + self._step_idx * ds + ds / 2.0
-        self._step_idx += 1
+        z_pos = self._z_map_start + self._advance_z_cursor(ds) + ds / 2.0
 
         charge = ref.species.charge
         beta   = ref.beta
@@ -837,8 +862,7 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
             if self.p_flag == 1 and self._sync_offset_deg is None:
                 self._calibrate_sync_phase(ref)
 
-        z_pos = self._z_map_start + self._step_idx * ds + ds / 2.0
-        self._step_idx += 1
+        z_pos = self._z_map_start + self._advance_z_cursor(ds) + ds / 2.0
 
         charge = ref.species.charge
         beta = ref.beta
@@ -992,12 +1016,14 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
         return Ex_tot, Ey_tot, Ez_tot, Bx_tot, By_tot, Bz_tot
 
     def untrack_rk4(self, beam, ds: float, ref_entry, step_idx: int,
-                    *, freq_ratio: float | None = None) -> None:
+                    *, freq_ratio: float | None = None,
+                    z_entry: float | None = None) -> None:
         """Exact algebraic inverse of one forward slice.
 
         See :meth:`FieldMap.untrack_rk4` for the full contract (entry
         ref from the replay, ``self._step_idx`` untouched, freq_ratio
-        only for step 0).  The 3-D specifics mirrored here: the forward
+        only for step 0, ``z_entry`` the slice's recorded entry
+        position).  The 3-D specifics mirrored here: the forward
         integrators capture β, γ at slice ENTRY (before the reference
         advance) for damp/slip/Lorentz, and the Lorentz kick reads the
         PRE-damp angles — so the angle undo is one 2×2 solve
@@ -1005,17 +1031,19 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
         """
         if self.integrator_kind == "dkd":
             self._untrack_dkd(beam, ds, ref_entry, step_idx,
-                              freq_ratio=freq_ratio)
+                              freq_ratio=freq_ratio, z_entry=z_entry)
         else:
             self._untrack_kd(beam, ds, ref_entry, step_idx,
-                             freq_ratio=freq_ratio)
+                             freq_ratio=freq_ratio, z_entry=z_entry)
 
-    def _scalars_for_untrack(self, ds: float, ref_entry, step_idx: int):
+    def _scalars_for_untrack(self, ds: float, ref_entry, step_idx: int,
+                             z_entry: float | None = None):
         """Common forward-scalar reconstruction for both inverses."""
         ref0 = ref_entry.copy()
         if step_idx == 0:
             self._propagate_frequency_to_ref(ref0)
-        z_pos = self._z_map_start + step_idx * ds + ds / 2.0
+        z_pos = (self._z_map_start + (step_idx * ds if z_entry is None else z_entry)
+                 + ds / 2.0)
         ds_m = ds * 1e-3
         charge = ref0.species.charge
         beta = ref0.beta            # ENTRY β₀γ₀ — the 3-D convention
@@ -1033,10 +1061,11 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
                 phi_sync_rad, dW_ref)
 
     def _untrack_kd(self, beam, ds: float, ref_entry, step_idx: int,
-                    *, freq_ratio: float | None = None) -> None:
+                    *, freq_ratio: float | None = None,
+                    z_entry: float | None = None) -> None:
         (z_pos, ds_m, charge, beta, gamma, mass_MeV, wavelength,
          phi_sync_rad, dW_ref) = self._scalars_for_untrack(
-            ds, ref_entry, step_idx)
+            ds, ref_entry, step_idx, z_entry)
 
         alive = beam.alive_mask
         if not np.any(alive):
@@ -1086,10 +1115,11 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
             beam.particles[alive, 4] /= freq_ratio
 
     def _untrack_dkd(self, beam, ds: float, ref_entry, step_idx: int,
-                     *, freq_ratio: float | None = None) -> None:
+                     *, freq_ratio: float | None = None,
+                     z_entry: float | None = None) -> None:
         (z_pos, ds_m, charge, beta, gamma, mass_MeV, wavelength,
          phi_sync_rad, dW_ref) = self._scalars_for_untrack(
-            ds, ref_entry, step_idx)
+            ds, ref_entry, step_idx, z_entry)
         ds_half_m = 0.5 * ds_m
 
         alive = beam.alive_mask
@@ -1320,18 +1350,19 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
     # ------------------------------------------------------------------
     def fitted_matrix_slice(self, ref, ds_mm: float) -> np.ndarray:
         """Linearised 6×6 map for a *ds_mm* slice starting at the current
-        ``_step_idx``.
+        position (``_step_idx`` and the position cursor).
 
         Uses a numerical Jacobian over ``n_sub`` calls to ``track_rk4``,
         each of length ``sub_ds = ds_mm / n_sub``.  After the Jacobian is
-        built the counter is advanced by ``n_sub`` so successive calls in
-        the envelope SC loop cover the full element in order.
+        built the cursor stays where the walk ended (``_step_idx`` advanced
+        by ``n_sub``), so successive calls in the envelope SC loop cover the
+        full element in order, also when their sub-step lengths differ.
 
         The caller's ``ref`` is NOT modified: the twelve probes ride one
         ``Beam`` on one ``ref.copy()`` (see ``numerical_jacobian_batched``),
-        and the z-cursor ``_step_idx`` carries the slice's cumulative RF
-        phase — otherwise every slice would think it is at the cavity
-        entrance, destroying the transit-time integration.
+        and the position cursor carries the slice's place in the map —
+        otherwise every slice would think it is at the cavity entrance,
+        destroying the transit-time integration.
         """
         from linac_gen.core.beam import Beam
         from linac_gen.tracking.rk4 import numerical_jacobian_batched
@@ -1352,7 +1383,7 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
 
         sub_ds = ds_mm / n_sub
 
-        saved_idx = self._step_idx
+        saved = self._z_cursor_state()
         # NOTE: the envelope solver now advances ``ref.phi_s`` inline via
         # ``advance_ref_over`` so the incoming ref is already at the slice
         # entrance.  Trust it directly; adding another offset here would
@@ -1364,11 +1395,11 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
             ref_copy = ref.copy()
             b = Beam(ref=ref_copy, n_particles=P.shape[0], current=0.0)
             b.particles[:, :] = P
-            self._step_idx = saved_idx
+            self._restore_z_cursor_state(saved)
             for _ in range(n_sub):
                 self.track_rk4(b, sub_ds)
             return b.particles.copy()
 
         M = numerical_jacobian_batched(_track_batch, np.zeros(6))
-        self._step_idx = saved_idx + n_sub
+        # the cursor stays where the walk ended: _step_idx = saved + n_sub
         return M

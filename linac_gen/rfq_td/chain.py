@@ -384,7 +384,7 @@ class RfqTdDriver:
         of the points where a per-cell run with ``record_substeps`` records
         a row (the last one is the exit): a list of (n, 4) arrays."""
         from linac_gen.core.beam import Beam
-        from linac_gen.tracking.tracker import field_map_step_counts
+        from linac_gen.tracking.tracker import field_map_bundle_sizes, field_map_step_counts
         beam = self.tr.beam
         ref = beam.ref.copy()
         ghost = Beam(ref=ref, n_particles=1, current=0.0)
@@ -401,17 +401,13 @@ class RfqTdDriver:
                 self.tr.lattice, c)
             pts = []
             # the per-cell walk records after every second half-step of a
-            # bundle, counted through the kick, and after each trailing
-            # step (Tracker._track_field_map)
-            for _b in range(n_bundles):
-                for _k in range(2 * sc_every):
+            # bundle, counted through the kick, the short last bundle
+            # included (Tracker._track_field_map)
+            for k_steps in field_map_bundle_sizes(n_int, sc_every, n_bundles):
+                for _k in range(2 * k_steps):
                     c.track_rk4(ghost, ds / 2)
                     if n_sub and _k % 2 == 1:
                         pts.append(point())
-            for _ in range(n_int - n_bundles * sc_every):
-                c.track_rk4(ghost, ds)
-                if n_sub:
-                    pts.append(point())
             c.reset_run_state()
             tab.append(point())
             if n_sub:

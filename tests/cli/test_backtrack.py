@@ -90,3 +90,55 @@ def test_backtrack_missing_dst_exits_2(tmp_path):
                "--dst", str(tmp_path / "nope.dst"),
                "--out", str(tmp_path), "-q"])
     assert rc == 2
+
+
+def _drift_deck_and_exit_dst(tmp_path, n_outside):
+    """A 100 mm drift with a 20 mm aperture and an exit beam of 100
+    particles, ``n_outside`` of them beyond the aperture: the backward walk
+    applies no cuts, the forward re-track loses exactly those."""
+    from linac_gen.core.particle import H_MINUS
+    from linac_gen.io.tracewin_dst import write_dst
+    deck = tmp_path / "drift.dat"
+    deck.write_text("DRIFT 100 20\nEND\n")
+    rng = np.random.default_rng(4)
+    p = rng.normal(size=(100, 6)) * [1.0, 0.5, 1.0, 0.5, 2.0, 1e-3]
+    p[:n_outside, 0] = 30.0 + rng.uniform(0.0, 5.0, n_outside)
+    dst = tmp_path / "exit.dst"
+    write_dst(str(dst), p, current_mA=0.0, frequency_MHz=162.5,
+              mass_MeV=H_MINUS.mass, w_kin_ref=2.1)
+    return deck, dst, p
+
+
+def test_validate_compares_the_same_particles(tmp_path, capsys):
+    """One particle in a hundred is lost in the re-track: the closure is
+    measured on the 99 that survive (round-off for a drift), and the loss
+    is reported, not mixed into the sigmas (sigma_x of the survivors against
+    that of all 100 differed by ~3x)."""
+    deck, dst, p = _drift_deck_and_exit_dst(tmp_path, 1)
+    rc = main(["backtrack", str(deck), "--dst", str(dst), *_TW[:6],
+               "--validate", "--out", str(tmp_path), "-q"])
+    out = capsys.readouterr()
+    assert rc == 0, out.err
+    assert "99 of 100 exit particles survive the re-track" in out.out
+    assert "field-map inverse: rk4" in out.out
+    rels = [float(line.rsplit("rel=", 1)[1]) for line in out.out.splitlines()
+            if "rel=" in line]
+    assert len(rels) == 4 and max(rels) < 1e-9
+    # particle by particle too, dW included: the loader references dW to the
+    # bunch mean, the backward walk to the design exit energy
+    res = next(line for line in out.out.splitlines() if "per-particle" in line)
+    assert [float(v.split("=")[1]) < 1e-9 for v in res.split(":")[1].split()] == [True] * 4
+    assert abs(np.std(p[1:, 0]) - np.std(p[:, 0])) > 1.0       # what the old check compared
+    assert "1 of 100 lost in the re-track" in out.out
+
+
+def test_validate_fails_when_the_re_track_loses_particles(tmp_path, capsys):
+    deck, dst, _ = _drift_deck_and_exit_dst(tmp_path, 10)
+    rc = main(["backtrack", str(deck), "--dst", str(dst), *_TW[:6],
+               "--validate", "--fieldmap-inverse", "linear",
+               "--out", str(tmp_path), "-q"])
+    out = capsys.readouterr()
+    assert rc == 1
+    assert "10 of 100 exit particles (10.0 %) are lost in the re-track" in out.err
+    assert "worst relative sigma residual" not in out.err      # the survivors close
+    assert "field-map inverse: linear" in out.err

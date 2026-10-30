@@ -695,7 +695,7 @@ def prepare_curved_elements(lattice, ref, *, replay: bool = True) -> int:
         r = ref.copy()
         done = 0
         for i in idx:
-            _replay_ref(els[done:i], r)
+            _replay_ref(els[done:i], r, lattice)
             try:
                 els[i].prepare_reference(r.copy())
                 n += 1

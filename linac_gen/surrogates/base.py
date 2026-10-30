@@ -572,17 +572,17 @@ class SurrogateFieldMap(FieldMapElement, nn.Module):
         wrapped = self._wrapped
         # Defensive: the fast path relies on these private helpers.
         # If the wrapped class doesn't expose them, fall back.
-        for attr in ("_z_map_start", "_step_idx", "_phi_sync_rad",
-                     "_phasor", "_sample_onaxis", "_scale_factor",
-                     "field_data"):
+        for attr in ("_z_map_start", "_step_idx", "_advance_z_cursor",
+                     "_phi_sync_rad", "_phasor", "_sample_onaxis",
+                     "_scale_factor", "field_data"):
             if not hasattr(wrapped, attr):
                 self._wrapped.track_rk4(beam, ds)
                 return
 
         # ---- Per-substep ref advance (analytic) -------------------
         ref = beam.ref
-        z_pos = (wrapped._z_map_start + wrapped._step_idx * ds + ds / 2.0)
-        wrapped._step_idx += 1
+        z_snap = wrapped._z_cursor_state()
+        z_pos = wrapped._z_map_start + wrapped._advance_z_cursor(ds) + ds / 2.0
 
         if ref.wavelength > 0:
             dphi_to_mid = 180.0 * ds / (ref.beta * ref.wavelength)
@@ -592,9 +592,9 @@ class SurrogateFieldMap(FieldMapElement, nn.Module):
         try:
             phi_sync_rad = wrapped._phi_sync_rad(ref, phi_s_mid)
         except Exception:
-            # Calibration not ready, etc.  Roll back the _step_idx
-            # bump and fall back.
-            wrapped._step_idx -= 1
+            # Calibration not ready, etc.  Roll back the position
+            # cursor and fall back.
+            wrapped._restore_z_cursor_state(z_snap)
             self._wrapped.track_rk4(beam, ds)
             return
 

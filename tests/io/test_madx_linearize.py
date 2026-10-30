@@ -237,7 +237,8 @@ def test_field_map_accelerating_regime(tmp_path):
     r.phi_s += 360.0 * 100.0 / (r.beta * r.wavelength)
     cav.reset_run_state()
     M = cav.fitted_matrix(r.copy())
-    cav.advance_ref(r)
+    from linac_gen.tracking.tracker import field_map_reference_states
+    field_map_reference_states(lat, cav, r)      # the tracker's reference walk
     dW = r.w_kin - ref.w_kin
     assert dW != 0.0
     assert np.linalg.det(M[:2, :2]) != pytest.approx(1.0, abs=1e-6)   # adiabatic damping

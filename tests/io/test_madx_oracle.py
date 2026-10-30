@@ -257,7 +257,8 @@ def test_linearised_field_map_matches_madx_track(tmp_path, regime):
     r.phi_s += 360.0 * 100.0 / (r.beta * r.wavelength)
     fm.reset_run_state()
     fm.fitted_matrix(r.copy())
-    fm.advance_ref(r)
+    from linac_gen.tracking.tracker import field_map_reference_states
+    field_map_reference_states(lat, fm, r)       # the tracker's reference walk
     dW = r.w_kin - ref.w_kin
     p0c = ref.bg * PROTON.mass
     R_track, pt_origin = _madx_track_columns(out)

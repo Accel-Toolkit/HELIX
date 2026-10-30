@@ -152,8 +152,9 @@ def test_i0_envelope_uses_registered_surrogate_full_matrix(monkeypatch):
     ref_after = _ref()
     ref_after.s += 50.0          # D1: same recipe as
     ref_after.phi_s += 360.0 * 50.0 / (ref_after.beta * ref_after.wavelength)  # EnvelopeSolver._advance_ref
-    cav.reset_run_state()
-    cav.advance_ref(ref_after)
+    # the field map advances the reference on the tracker's schedule
+    from linac_gen.tracking.tracker import field_map_reference_states
+    field_map_reference_states(lat, cav, ref_after)
     d2 = get_element_matrix(lat.elements[2], ref_after)
     Mt = d2 @ M_pin @ d1
     S_end = Mt @ _S0() @ Mt.T

@@ -473,8 +473,9 @@ def _fitted_matrix_slice_at(element, ref, ds_mm: float,
     element-local z; without it every bundle restarts at z=0 and applies
     the first cell's kick over and over (σ blows up by 10⁵³).  Elements
     that don't take the kwarg (FieldMap1D / FieldMap3D) fall back to the
-    unkeyed call, which is correct for them since the field they
-    integrate is z-aware via β/γ/ref.s rather than via this argument.
+    unkeyed call: they carry their own position cursor from slice to
+    slice (``FieldMapElement._advance_z_cursor``), which stays right when
+    successive slices use sub-steps of different lengths.
     """
     # M3 hook: route through a registered surrogate if available.
     # Import lazily to avoid a circular import at module load.
@@ -512,6 +513,73 @@ def _full_matrix_at(element, ref) -> np.ndarray:
             except _OOS:
                 pass   # OOD -> native RK4 below
     return get_element_matrix(element, ref)
+
+
+class _TrackerReference:
+    """The multiparticle tracker's reference states through one field map,
+    for the envelope's sub-stepped walks.
+
+    ``start`` walks a copy of the entry reference on the tracker's own
+    schedule (:func:`~linac_gen.tracking.tracker.field_map_reference_states`)
+    and puts the map's position cursor back at the entrance, keeping the
+    calibration and entrance phases that walk set.  The envelope then loads
+    the state at each of its slice boundaries, counted in tracker half
+    steps, into its own reference object, so energy, phase, ``s`` and
+    frequency equal a multiparticle run's there.  Elements the tracker
+    schedule does not cover (RFQ cells, VaneRFQ, NCells, curved clusters)
+    get ``None`` and keep their own ``advance_ref_over``.
+    """
+
+    def __init__(self, exit_ref, states):
+        self._exit = exit_ref
+        self._states = states
+        self._done = 0
+
+    @classmethod
+    def start(cls, solver, element, n_int):
+        from linac_gen.tracking.tracker import (
+            field_map_reference_states,
+            restart_field_map_walk,
+            tracks_reference_on_tracker_schedule,
+        )
+        if not tracks_reference_on_tracker_schedule(element):
+            return None
+        exit_ref = solver._ref.copy()
+        states = field_map_reference_states(solver.lattice, element, exit_ref)
+        if len(states) != 2 * n_int:
+            raise RuntimeError(
+                f"{getattr(element, 'name', element)}: the tracker walk took "
+                f"{len(states)} half steps, the envelope expects {2 * n_int}")
+        restart_field_map_walk(element)
+        return cls(exit_ref, states)
+
+    def load(self, ref, n_half: int) -> None:
+        """Load into ``ref`` the state ``n_half`` half steps past the last
+        committed boundary."""
+        from linac_gen.tracking.tracker import load_reference_state
+        i = self._done + n_half
+        load_reference_state(
+            ref, self._states[i].ref_before if i < len(self._states) else self._exit)
+
+    def commit(self, n_half: int) -> None:
+        self._done += n_half
+
+
+def _advance_ref_to_marker(element, ref, tracker_ref, z_from: float, z_to: float) -> None:
+    """Reference advance to a SHIFT_IN_FIELD_MAP marker inside a slice.  With
+    tracker states (``tracker_ref``) the marker lies between two of them, so
+    the element's own sub-range integrator bridges the gap, without letting it
+    touch the walk state the tracker walk set up (a SuperposedFieldMap's
+    entrance and child phases); the next slice boundary reloads the exact
+    tracker state."""
+    if tracker_ref is None:
+        element.advance_ref_over(ref, z_from, z_to)
+        return
+    save = getattr(element, "_save_walk_state", None)
+    saved = save() if save is not None else None
+    element.advance_ref_over(ref, z_from, z_to)
+    if saved is not None:
+        element._restore_walk_state(saved)
 
 
 def _rescale_sigma_for_freq_jump(sigma: np.ndarray, ratio: float) -> np.ndarray:
@@ -862,10 +930,25 @@ class EnvelopeSolver:
             results.centroid.append(c.copy())
 
     def _advance_ref(self, element) -> None:
-        """Advance the reference particle past one element."""
+        """Advance the reference particle past one element.
+
+        FieldMap / FieldMap3D / SuperposedFieldMap advance it on the
+        multiparticle tracker's own schedule (half steps), so its energy and
+        phase equal a multiparticle run's; their ``advance_ref`` takes the
+        map's full steps, ~4e-4 low in energy through a 650 MHz cavity."""
         from linac_gen.elements.base import FieldMapElement as FME, ThinKickElement as TKE
+        from linac_gen.tracking.tracker import (
+            field_map_reference_states,
+            tracks_reference_on_tracker_schedule,
+        )
         if isinstance(element, FME):
-            element.advance_ref(self._ref)
+            if tracks_reference_on_tracker_schedule(element):
+                # every caller has just reset the map and built its matrix
+                # at this reference: reuse that calibration
+                field_map_reference_states(self.lattice, element, self._ref,
+                                           reset=False)
+            else:
+                element.advance_ref(self._ref)
         elif isinstance(element, TKE):
             self._ref.s += element.length  # 0 for thin lens
             element.advance_ref(self._ref)
@@ -1224,21 +1307,22 @@ class EnvelopeSolver:
         n_int, n_sc, ds_mm, sc_every, n_bundles = field_map_step_counts(
             self.lattice, element)
         element.reset_run_state()
+        # the multiparticle reference states at the bundle boundaries
+        tracker_ref = _TrackerReference.start(self, element, n_int)
         z_cursor = 0.0
         _interior = sorted(getattr(element, "interior_markers", []) or [],
                            key=lambda t: t[0])
         _mk_i = 0
 
-        def _adv_transport(step):
-            # Advance *step* mm, split at interior markers so each
-            # SHIFT_IN_FIELD_MAP row carries the exact s = s_entry + dz
-            # and the Σ AT that z (matrix composition makes the split
-            # mathematically identical; the no-marker path is one
-            # unsplit advance of exactly *step*, bit-identical to the
-            # pre-marker code).  Pass z_cursor so multi-cell elements
-            # (e.g. VaneRFQ) compute the matrix at the correct
-            # element-local z; without this, every bundle restarts from
-            # z=0 and applies cell[0] kicks repeatedly, blowing σ up
+        def _adv_transport(step, n_half):
+            # Advance *step* mm (*n_half* tracker half steps), split at
+            # interior markers so each SHIFT_IN_FIELD_MAP row carries the
+            # exact s = s_entry + dz and the Σ AT that z (matrix composition
+            # makes the split mathematically identical; the no-marker path
+            # is one unsplit advance of exactly *step*).  Pass z_cursor so
+            # multi-cell elements (e.g. VaneRFQ) compute the matrix at the
+            # correct element-local z; without this, every bundle restarts
+            # from z=0 and applies cell[0] kicks repeatedly, blowing σ up
             # to 10⁵³.
             nonlocal sigma, z_cursor, _mk_i
             remaining = step
@@ -1251,10 +1335,12 @@ class EnvelopeSolver:
                     self._probe_push(M)
                     self._orbit_offset_push(element, piece)
                     sigma = M @ sigma @ M.T
-                    element.advance_ref_over(self._ref, z_cursor,
-                                             z_cursor + piece)
+                    _advance_ref_to_marker(element, self._ref, tracker_ref,
+                                           z_cursor, z_cursor + piece)
                     z_cursor += piece
                     remaining -= piece
+                if tracker_ref is not None and remaining <= 1e-9:
+                    tracker_ref.load(self._ref, n_half)   # marker on the boundary
                 self._record(self._results, sigma, self._ref,
                              element_name=_interior[_mk_i][1].name)
                 _mk_i += 1
@@ -1264,18 +1350,24 @@ class EnvelopeSolver:
                 self._probe_push(M)
                 self._orbit_offset_push(element, remaining)
                 sigma = M @ sigma @ M.T
-                element.advance_ref_over(self._ref, z_cursor,
-                                         z_cursor + remaining)
+                if tracker_ref is None:
+                    element.advance_ref_over(self._ref, z_cursor,
+                                             z_cursor + remaining)
                 z_cursor += remaining
+            if tracker_ref is not None:
+                tracker_ref.load(self._ref, n_half)
+                tracker_ref.commit(n_half)
 
         for _ in range(n_bundles):
-            _adv_transport(sc_every * ds_mm)
+            _adv_transport(sc_every * ds_mm, 2 * sc_every)
             if self._record_substeps:
                 self._record(self._results, sigma, self._ref,
                              element_name=getattr(element, "name", "?"))
         leftover = n_int - n_bundles * sc_every
         if leftover > 0:
-            _adv_transport(leftover * ds_mm)
+            _adv_transport(leftover * ds_mm, 2 * leftover)
+        if tracker_ref is not None:
+            return sigma      # the exit state carries the effective frequency, as MP
         # Same rationale as FieldMap.advance_ref: only RF cavities should
         # carry their frequency over.  Magnetic-only maps (solenoids) hold
         # the parser default frequency as inert metadata; clobbering ref
@@ -1380,50 +1472,20 @@ class EnvelopeSolver:
         elif isinstance(element, FieldMapElement) and total_length > 0:
             # Mirror the TransferMapElement Strang-split but use a numerical
             # Jacobian over a sub-slice of the field map instead of a
-            # closed-form transfer matrix.
-            cfg = getattr(self.lattice, "step_config", None)
-            if cfg is not None:
-                n_int = cfg.integration_steps_for_length_mm(total_length)
-                n_sc  = cfg.sc_steps_for_length_mm(total_length)
-            else:
-                n_int = max(element.n_steps, 1)
-                n_sc  = n_int
-
-            # Auto-refine magnetic-only 1-D field maps (solenoids).  At
-            # strong B + low β the first-order thin-slice integrator used
-            # inside track_rk4 (via fitted_matrix_slice) needs ~5000 steps
-            # per metre to match TraceWin — the default 100/m gives ~10 %
-            # transverse-matrix error that compounds across multiple
-            # cryomodule solenoids to a 10 % σ_x overshoot at HWR exit.
-            # RF cavities (any element with an E channel) don't need this.
-            from linac_gen.tracking.tracker import _is_magnetic_only_1d_fieldmap
-            if _is_magnetic_only_1d_fieldmap(element):
-                min_int = int((5000.0 * total_length * 1e-3) + 0.5)
-                if min_int > n_int:
-                    n_int = min_int
-                    # Leave n_sc at its configured cadence — sc_every grows
-                    # as n_int // n_sc below, which is what we want.  An
-                    # earlier version forced n_sc up to n_int here; that
-                    # collapsed sc_every to 1 and applied ~100× too many SC
-                    # kicks inside each solenoid, blowing up σ and ε with
-                    # SC on even though the no-SC case looked fine.
-            # Cavity floor: parser-assigned n_steps matches the field-map
-            # grid; without this, PARTRAN_STEP=100/m drops cavity transit-
-            # time integrals.  See tracker._track_field_map.
-            from linac_gen.elements.field_map import FieldMap as _FM1D
-            from linac_gen.elements.field_map_3d import FieldMap3D as _FM3D
-            from linac_gen.elements.superposed_field_map import (
-                SuperposedFieldMap as _SFM,
-            )
-            if isinstance(element, (_FM1D, _FM3D, _SFM)) \
-                    and element.n_steps > n_int:
-                n_int = element.n_steps
-
-            ds_mm    = total_length / n_int      # mm per integration sub-step
-            sc_every = max(1, n_int // n_sc)     # integration steps per SC kick
-            n_bundles = n_int // sc_every        # number of full SC bundles
+            # closed-form transfer matrix.  The canonical cadence, shared with
+            # the tracker, the no-SC sub-step walk and the backtracker, so the
+            # SC kicks fall where the multiparticle tracker puts them (for an
+            # RFQ: the per-cell model, rfq_solver="cells") — including the RFQ
+            # cell / VaneRFQ / NCells step floors and the solenoid refinement
+            # (see field_map_step_counts for the rules).
+            from linac_gen.tracking.tracker import field_map_step_counts
+            n_int, n_sc, ds_mm, sc_every, n_bundles = field_map_step_counts(
+                self.lattice, element)
             # Reset per-run integrator state before the clean pass.
             element.reset_run_state()
+            # the multiparticle reference states at the half-bundle
+            # boundaries (the kick sees the β the tracker's kick sees)
+            tracker_ref = _TrackerReference.start(self, element, n_int)
             # z-cursor within the element (0 = entrance, total_length = exit).
             z_cursor = 0.0
 
@@ -1441,17 +1503,16 @@ class EnvelopeSolver:
                                or [], key=lambda t: t[0])
             _mk_i = 0
 
-            def _adv_transport(step):
-                # Pure transport advance of *step* mm, split at interior
-                # markers so each SHIFT_IN_FIELD_MAP row carries the
-                # exact s = s_entry + dz and the Σ AT that z.  The
-                # Strang SC-kick cadence is untouched (matrix
-                # composition makes the split identical); the no-marker
-                # path is one unsplit advance of exactly *step*,
-                # bit-identical to the pre-marker code.  Pass z_cursor
-                # so multi-cell elements (e.g. VaneRFQ) compute the
-                # matrix at the correct element-local z; otherwise every
-                # bundle restarts at z=0.
+            def _adv_transport(step, n_half):
+                # Pure transport advance of *step* mm (*n_half* tracker half
+                # steps), split at interior markers so each
+                # SHIFT_IN_FIELD_MAP row carries the exact s = s_entry + dz
+                # and the Σ AT that z.  The Strang SC-kick cadence is
+                # untouched (matrix composition makes the split identical);
+                # the no-marker path is one unsplit advance of exactly
+                # *step*.  Pass z_cursor so multi-cell elements (e.g.
+                # VaneRFQ) compute the matrix at the correct element-local
+                # z; otherwise every bundle restarts at z=0.
                 nonlocal sigma, z_cursor, _mk_i
                 remaining = step
                 while (_mk_i < len(_interior)
@@ -1464,10 +1525,12 @@ class EnvelopeSolver:
                         self._probe_push(M)
                         self._orbit_offset_push(element, piece)
                         sigma = M @ sigma @ M.T
-                        element.advance_ref_over(self._ref, z_cursor,
-                                                 z_cursor + piece)
+                        _advance_ref_to_marker(element, self._ref, tracker_ref,
+                                               z_cursor, z_cursor + piece)
                         z_cursor += piece
                         remaining -= piece
+                    if tracker_ref is not None and remaining <= 1e-9:
+                        tracker_ref.load(self._ref, n_half)   # marker on the boundary
                     if self._results is not None:
                         self._record(self._results, sigma, self._ref,
                                      element_name=_interior[_mk_i][1].name)
@@ -1478,19 +1541,27 @@ class EnvelopeSolver:
                     self._probe_push(M)
                     self._orbit_offset_push(element, remaining)
                     sigma = M @ sigma @ M.T
-                    element.advance_ref_over(self._ref, z_cursor,
-                                             z_cursor + remaining)
+                    if tracker_ref is None:
+                        element.advance_ref_over(self._ref, z_cursor,
+                                                 z_cursor + remaining)
                     z_cursor += remaining
+                if tracker_ref is not None:
+                    tracker_ref.load(self._ref, n_half)
+                    tracker_ref.commit(n_half)
 
-            for _ in range(n_bundles):
-                bundle_ds = sc_every * ds_mm     # mm covered by this bundle
+            from linac_gen.tracking.tracker import field_map_bundle_sizes
+            for b, k_steps in enumerate(
+                    field_map_bundle_sizes(n_int, sc_every, n_bundles)):
+                # sc_every steps, or the leftover steps in the short last
+                # bundle (with their own SC kick, as in the tracker)
+                bundle_ds = k_steps * ds_mm      # mm covered by this bundle
                 half_ds = bundle_ds / 2.0
                 # First half of the bundle transport (matrix uses ref at
                 # bundle entrance); the ref advances entrance → bundle
                 # midpoint so the SC kick below sees the locally-correct
                 # β, γ for accelerating elements (HWR cavities gain
                 # ~30 % β per 250 mm).
-                _adv_transport(half_ds)
+                _adv_transport(half_ds, k_steps)
                 # SC kick at bundle midpoint (2-D DC or 3-D Ferrario).
                 if scc_active:
                     scc_z = float(np.interp(
@@ -1505,25 +1576,27 @@ class EnvelopeSolver:
                 sigma = M_sc @ sigma @ M_sc.T
                 # Second half of the bundle transport (matrix uses ref at
                 # bundle midpoint — the locally-correct β for this half).
-                _adv_transport(half_ds)
-                # Record σ at bundle exit when substep recording is enabled.
-                if self._record_substeps and self._results is not None:
+                _adv_transport(half_ds, k_steps)
+                # Record σ at bundle exit when substep recording is enabled:
+                # one row per full bundle, the rows the no-SC walk writes;
+                # the short last bundle ends at the exit, which has its row.
+                if (self._record_substeps and self._results is not None
+                        and b < n_bundles):
                     self._record(self._results, sigma, self._ref,
                                  element_name=getattr(element, "name", "?"))
 
-            # Trailing remainder (integration steps not covered by full bundles)
-            leftover_steps = n_int - n_bundles * sc_every
-            if leftover_steps > 0:
-                _adv_transport(leftover_steps * ds_mm)
             # Frequency carry-over (mirrors the last line of advance_ref so
             # downstream ref.phi_s maths stays consistent).  Magnetic-only
             # maps must NOT update ref.frequency (see _has_electric_channel).
-            if getattr(element, "frequency_offset", 0.0):
-                warnings.warn(f"envelope ignores frequency_offset in the exit frequency carry-over at '{getattr(element, 'name', element)}' (carries element.frequency; MP carries the effective frequency)", stacklevel=2)
-            if (getattr(element, "frequency", 0.0) > 0
-                    and element.frequency != self._ref.frequency
-                    and getattr(element, "_has_electric_channel", lambda: True)()):
-                self._ref.frequency = element.frequency
+            # With tracker states the exit state already carries the
+            # effective frequency, as in a multiparticle run.
+            if tracker_ref is None:
+                if getattr(element, "frequency_offset", 0.0):
+                    warnings.warn(f"envelope ignores frequency_offset in the exit frequency carry-over at '{getattr(element, 'name', element)}' (carries element.frequency; MP carries the effective frequency)", stacklevel=2)
+                if (getattr(element, "frequency", 0.0) > 0
+                        and element.frequency != self._ref.frequency
+                        and getattr(element, "_has_electric_channel", lambda: True)()):
+                    self._ref.frequency = element.frequency
 
         else:
             # ThinKick / zero-length / other passive: full map, no SC sub-stepping

@@ -133,6 +133,18 @@ TraceWin ENV+SC export:
 LEBT-only agreement is 0.2 % either way, and the energy ramp is
 identical in both modes (exit 1955.72 vs TW 1955.77 keV).
 
+The bunched envelope through an RFQ also does not converge as the RFQ
+is sliced more finely.  On `examples/lebt_plus_rfq/rfq_only_matched.lgproj`
+(3.9 mA) the exit σW is 3.9, 7.8, 16.1, 0.5, 6.0 and 7.3 keV for a
+space-charge step setting (step2) of 50, 100, 200, 400, 800 and 1600 per
+metre, and σx moves between 0.28 and 0.58 mm.  Space charge is not the
+main cause: at 1e-9 mA the exit σW still goes 1.9, 3.1, 4.4, 5.2, 5.7 and
+5.8 keV over the same settings.  That beam enters with no energy spread
+(`dc_energy_spread_keV = 0`), so the seeded longitudinal ellipse has zero
+area all the way through, and its σφ / σW then follow the slicing of
+the transport rather than any beam quality.  Read RFQ beam quality from
+multiparticle tracking.
+
 ```python
 from linac_gen.tracking.envelope import EnvelopeSolver
 

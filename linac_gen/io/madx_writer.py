@@ -280,9 +280,13 @@ def write_madx(lattice: Lattice, filepath, ref: ReferenceParticle, *,
 
     def _advance(r, e, *, reset: bool = True) -> None:
         if isinstance(e, FieldMapElement):
+            # as compute_transfer_matrix: FieldMap / FieldMap3D /
+            # SuperposedFieldMap on the tracker's schedule (that walk
+            # starts from a clean state of its own)
+            from linac_gen.tracking.matrix_tracking import _advance_field_map_ref
             if reset:
                 e.reset_run_state()
-            e.advance_ref(r)
+            _advance_field_map_ref(lattice, e, r, reset=reset)
         else:
             L = float(getattr(e, "length", 0.0) or 0.0)
             r.s += L

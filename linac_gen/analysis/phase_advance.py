@@ -557,7 +557,7 @@ def coupled_beam_phase_advance_per_cell_via_M(
     # Replay the reference particle to the period entry.
     rc = ref.copy()
     for el in lattice.elements[:period.start]:
-        _advance_ref_like_matrix_walk(el, rc)
+        _advance_ref_like_matrix_walk(el, rc, lattice)
 
     # Cell spans from ``period.spans()`` — explicit per-repeat element
     # ranges built by walking *significant* elements (legacy constant
@@ -580,6 +580,8 @@ def coupled_beam_phase_advance_per_cell_via_M(
             if i >= len(lattice.elements) or sig_row >= len(sm):
                 break
             el = lattice.elements[i]
+            if isinstance(el, FieldMapElement):
+                el.reset_run_state()        # clean slate, as compute_transfer_matrix
             try:
                 M_bare = _with_tilt(el, get_element_matrix(el, rc, cache=cache))
             except Exception:                                 # noqa: BLE001
@@ -622,7 +624,7 @@ def coupled_beam_phase_advance_per_cell_via_M(
             M_step = M_sc @ M_bare
             M_dep = M_step @ M_dep
             # Advance ref through the element (matches matrix_tracking).
-            _advance_ref_like_matrix_walk(el, rc)
+            _advance_ref_like_matrix_walk(el, rc, lattice, reset=False)
 
         # Extract eigenmode tunes from the 4×4 transverse depressed map.
         M4 = M_dep[:4, :4]
@@ -686,7 +688,7 @@ def coupled_phase_advance_along_s(lattice, ref,
     from linac_gen.elements.base import FieldMapElement, ThinKickElement
     rc = ref.copy()
     for el in lattice.elements[:period.start]:
-        _advance_ref_like_matrix_walk(el, rc)
+        _advance_ref_like_matrix_walk(el, rc, lattice)
     s_at_period_start = float(rc.s)
 
     s_cells = np.zeros(n_reps + 1)
@@ -722,7 +724,7 @@ def coupled_phase_advance_along_s(lattice, ref,
         # Advance reference particle through the cell to update s.
         for i in range(span_a, span_b):
             el = lattice.elements[i]
-            _advance_ref_like_matrix_walk(el, rc)
+            _advance_ref_like_matrix_walk(el, rc, lattice)
         s_cells[k + 1] = float(rc.s)
 
     return {
@@ -1410,10 +1412,10 @@ def _energy_change(lattice, ref, start: int, end_incl: int) -> tuple[float, floa
     rc = ref.copy()
     # Replay before the period.
     for el in lattice.elements[:start]:
-        _advance_ref_like_matrix_walk(el, rc)
+        _advance_ref_like_matrix_walk(el, rc, lattice)
     w_in = float(rc.w_kin)
     for el in lattice.elements[start:end_incl + 1]:
-        _advance_ref_like_matrix_walk(el, rc)
+        _advance_ref_like_matrix_walk(el, rc, lattice)
     w_out = float(rc.w_kin)
     return w_in, w_out
 
@@ -1468,19 +1470,26 @@ def _twiss_propagate_2x2(c11, c12, c21, c22, alpha, beta):
 
 
 
-def _advance_ref_like_matrix_walk(el, rc) -> None:
+def _advance_ref_like_matrix_walk(el, rc, lattice=None, *, reset: bool = True) -> None:
     """Advance the reference particle through ``el`` exactly as
     ``compute_transfer_matrix`` does: stateful elements start from a clean
-    slate and advance themselves; everything else advances ``s`` AND the
-    RF phase ``phi_s``.  The analysis walks used to advance only ``s``, so
-    a cavity whose matrix depends on the arrival phase — NCELLS with
-    absolute phases, SET_SYNC_PHASE field maps — was evaluated at a wrong
-    phase and the per-cell σ₀ of the structure walk diverged (fnalscl
-    cell 1 read 135° for an eigenphase of 50.7°; β_x ran to 1e16)."""
+    slate and advance themselves (FieldMap / FieldMap3D / SuperposedFieldMap
+    on the tracker's schedule, with ``lattice``'s step settings);
+    everything else advances ``s`` AND the RF phase ``phi_s``.  The
+    analysis walks used to advance only ``s``, so a cavity whose matrix
+    depends on the arrival phase — NCELLS with absolute phases,
+    SET_SYNC_PHASE field maps — was evaluated at a wrong phase and the
+    per-cell σ₀ of the structure walk diverged (an NCELLS deck's cell 1 read 135°
+    for an eigenphase of 50.7°; β_x ran to 1e16).
+
+    ``reset=False``: the caller reset ``el`` and built its matrix at ``rc``
+    just before (that calibration is reused)."""
     from linac_gen.elements.base import FieldMapElement, ThinKickElement
+    from linac_gen.tracking.matrix_tracking import _advance_field_map_ref
     if isinstance(el, FieldMapElement):
-        el.reset_run_state()
-        el.advance_ref(rc)
+        if reset:
+            el.reset_run_state()
+        _advance_field_map_ref(lattice, el, rc, reset=reset)
     else:
         rc.s += el.length
         if el.length > 0:
@@ -1569,14 +1578,14 @@ def structure_phase_advance_along_s(lattice, ref, period: PeriodicStructure,
     # *from the period entry onward*; before that, leave NaN.
     rc = ref.copy()
     for el in lattice.elements[:period.start]:
-        _advance_ref_like_matrix_walk(el, rc)
+        _advance_ref_like_matrix_walk(el, rc, lattice)
     s_at_period_start = float(rc.s)
 
     # Pre-fill the s grid (always defined regardless of seed availability).
     rc2 = ref.copy()
     s_arr[0] = float(rc2.s)
     for i, el in enumerate(lattice.elements):
-        _advance_ref_like_matrix_walk(el, rc2)
+        _advance_ref_like_matrix_walk(el, rc2, lattice)
         s_arr[i + 1] = float(rc2.s)
 
     # If a plane's seed is missing (coupled, unstable), its curves stay
@@ -1610,7 +1619,7 @@ def structure_phase_advance_along_s(lattice, ref, period: PeriodicStructure,
     rc3 = ref.copy()
     # Replay before the period entry to set energy correctly.
     for el in lattice.elements[:period.start]:
-        _advance_ref_like_matrix_walk(el, rc3)
+        _advance_ref_like_matrix_walk(el, rc3, lattice)
 
     _propagate = _twiss_propagate_2x2
 
@@ -1647,8 +1656,9 @@ def structure_phase_advance_along_s(lattice, ref, period: PeriodicStructure,
             bz[i + 1] = b_z; az[i + 1] = a_z
             mu_z[i + 1] = math.degrees(muz)
 
-        # Advance the reference particle through the element.
-        _advance_ref_like_matrix_walk(el, rc3)
+        # Advance the reference particle through the element (reset and
+        # matrix above, at this reference: their calibration is reused).
+        _advance_ref_like_matrix_walk(el, rc3, lattice, reset=False)
 
     # Clear pre-period samples (Twiss undefined there).
     for j in range(period.start):
