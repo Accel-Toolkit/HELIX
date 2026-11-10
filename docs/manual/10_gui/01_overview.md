@@ -120,6 +120,11 @@ lattice has uncommitted edits, a state pill that flips between
 lattice (element count + total length), the s-cursor position, the
 reference energy, the end-of-run σ_x, and the loss percentage.
 
+Warnings from the engine, such as a loaded `.dst` whose current differs from the
+beam's, also go to the terminal.  In the bar they appear as a **N warnings**
+button that stays until cleared; click it for the list.  A repeat counts once and
+says how often it came, and the list stops at 200.
+
 ## Settings persistence
 
 The GUI uses `QSettings` (organisation `Linac_Gen`, application

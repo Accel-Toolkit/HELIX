@@ -74,3 +74,27 @@ def test_longitudinal_determinant_preserved():
     M = Drift("D", length=100.0).transfer_matrix(ref)
     M_TW = matrix_to_tracewin(M, ref)
     assert np.linalg.det(M_TW) == pytest.approx(np.linalg.det(M), rel=1e-10)
+
+
+def test_a_map_across_a_frequency_card_in_the_tracewin_basis():
+    """z and δ are physical: a card moves neither, so R55 stays 1 and a drift's R56 stays
+    L/γ² on each side, with each side converted on its own clock."""
+    from linac_gen.core.lattice import Lattice
+    from linac_gen.elements.drift import Drift
+    from linac_gen.elements.lattice_commands import Freq
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix, reference_at
+    lat = Lattice()
+    for el in (Drift("D0", 100.0), Freq("F", 325.0), Drift("D1", 150.0)):
+        lat.add(el)
+    ref = ReferenceParticle(species=H_MINUS, w_kin=2.1, frequency=162.5)
+    M = compute_transfer_matrix(lat, ref)
+    tw = matrix_to_tracewin(M, reference_at(lat, ref, 0), reference_at(lat, ref, 3))
+    assert tw[4, 4] == pytest.approx(1.0, rel=1e-13)
+    assert tw[4, 5] == pytest.approx(0.25 / ref.gamma ** 2, rel=1e-12)
+    assert tw[5, 5] == pytest.approx(1.0, rel=1e-13)
+    # one reference: the same as before, with both sides on that clock
+    window = compute_transfer_matrix(lat, ref, start=2)
+    after = reference_at(lat, ref, 2)
+    np.testing.assert_array_equal(matrix_to_tracewin(window, after),
+                                  matrix_to_tracewin(window, after, after))
+    assert matrix_to_tracewin(window, after)[4, 5] == pytest.approx(0.15 / ref.gamma ** 2, rel=1e-12)

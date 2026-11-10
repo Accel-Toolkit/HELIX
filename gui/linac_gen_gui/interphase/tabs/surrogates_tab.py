@@ -63,6 +63,22 @@ def _surrogatable_types():
     return (FieldMap, FieldMap3D)
 
 
+def _compare_seed(cfg, ref) -> dict:
+    """The envelope seed the compare runs both solves from: the project's beam, as every
+    envelope run takes it (input dispersion, a continuous beam, a file's Twiss)."""
+    from linac_gen.cli.common import _envelope_initial
+    return _envelope_initial(cfg, ref)
+
+
+def _element_rows(result, idx: int) -> tuple[int, int]:
+    """The rows of an envelope result at the entrance and the exit of element ``idx``.
+    Not ``idx`` and ``idx + 1``: an interior marker or a sub-step adds rows."""
+    exits = list(getattr(result, "element_exit_idx", None) or [])
+    if idx < len(exits):
+        return (exits[idx - 1] if idx else 0), exits[idx]
+    return idx, min(idx + 1, len(result.ref_w_kin) - 1)
+
+
 def _detect_sweep_params(element) -> list[tuple[str, float, str]]:
     """Return ``[(name, current_value, kind)]`` for every sweepable
     knob the element actually carries with a non-trivial value.
@@ -202,10 +218,9 @@ class _TrainDialog(QDialog):
                     r = EnvelopeSolver(lattice, ref_template,
                                        initial=initial, current=0.0).run()
                 if r is not None:
-                    idx = lattice.elements.index(element)
-                    w_entry = float(r.ref_w_kin[idx])
-                    w_exit  = float(r.ref_w_kin[min(idx + 1,
-                                                    len(r.ref_w_kin) - 1)])
+                    row_in, row_out = _element_rows(r, lattice.elements.index(element))
+                    w_entry = float(r.ref_w_kin[row_in])
+                    w_exit  = float(r.ref_w_kin[row_out])
                     if w_entry > w_exit:
                         w_entry, w_exit = w_exit, w_entry
                     w_lo_default = max(0.001, w_entry * 0.95)
@@ -381,7 +396,9 @@ class _BatchTrainDialog(QDialog):
         sform.addRow("Samples (LHS):", self._samples)
         self._epochs = QSpinBox()
         self._epochs.setRange(5, 5000)
-        self._epochs.setValue(200)
+        # the rate decays over the epochs given (training.epoch_learning_rate): 1000 at
+        # 5000 samples took the example decks' HWR and MEBT maps within the accuracy limits
+        self._epochs.setValue(1000)
         sform.addRow("Epochs:", self._epochs)
         self._hidden = QLineEdit("128,128")
         sform.addRow("Hidden dims:", self._hidden)
@@ -444,6 +461,20 @@ class _BatchTrainDialog(QDialog):
         return selected, shared
 
 
+def _engage_fresh(surr, key) -> None:
+    """An engaged element's tick follows its fresh weights (a retrain, weights opened again):
+    its registration goes, under whatever lattice hash it was made (a Save Lattice that leaves
+    other text in the deck file the tab reads, the file it asks for after an Apply included,
+    changes the hash after it), and the fresh weights take its place.  An element not engaged
+    stays so."""
+    from linac_gen.surrogates import registry as _reg
+    held = [lh for lh, k in _reg.list_registered() if k == key]
+    for lh in held:
+        _reg.unregister(lh, key)
+    if held:
+        _reg.register(surr)
+
+
 class _BatchTrainController:
     """Serialise ``_TrainWorker`` runs across multiple elements.
 
@@ -464,6 +495,7 @@ class _BatchTrainController:
         self._cancelled = False
         self._worker = None
         self._dlg = None
+        self._out_dir = None
 
     def start(self) -> None:
         self._tab._status.setText(
@@ -539,10 +571,9 @@ class _BatchTrainController:
         try:
             r = self._tab._get_or_compute_envelope(self._ref_template)
             if r is not None:
-                idx = self._lattice.elements.index(element)
-                we = float(r.ref_w_kin[idx])
-                wx = float(r.ref_w_kin[min(idx + 1,
-                                           len(r.ref_w_kin) - 1)])
+                row_in, row_out = _element_rows(r, self._lattice.elements.index(element))
+                we = float(r.ref_w_kin[row_in])
+                wx = float(r.ref_w_kin[row_out])
                 if we > wx:
                     we, wx = wx, we
                 w_lo = max(0.001, we * 0.95)
@@ -555,10 +586,13 @@ class _BatchTrainController:
         opts["ref_w_kin_range"] = (w_lo, w_hi)
 
         out_dir = self._tab._weights_dir_for_element(
-            element.name, self._lattice_hash)
+            element.name, self._lattice_hash, self._ref_template.species.name)
+        self._out_dir = out_dir
         self._worker = _TrainWorker(
             element=element,
-            ref_template=self._ref_template,
+            ref_template=self._tab._at_element_phase(
+                self._ref_template, element,
+                self._tab._get_or_compute_envelope(self._ref_template)),
             out_dir=out_dir,
             lattice_hash=self._lattice_hash,
             options=opts,
@@ -605,8 +639,7 @@ class _BatchTrainController:
             from linac_gen.surrogates.base import SurrogateFieldMap
             from linac_gen.surrogates.training import load_surrogate
             element = self._elements[self._idx]
-            out_dir = self._tab._weights_dir_for_element(
-                element.name, self._lattice_hash)
+            out_dir = self._out_dir         # where this element's worker wrote
             mlp, meta_loaded = load_surrogate(out_dir)
             surr = SurrogateFieldMap(element, mlp, meta_loaded)
             surr.weights_dir = str(out_dir)     # provenance: weights hash
@@ -622,9 +655,7 @@ class _BatchTrainController:
             # replace a live registration with the fresh weights, else the
             # registry keeps serving the pre-retrain surrogate behind a
             # ticked Use box.
-            from linac_gen.surrogates import registry as _reg
-            if _reg.get(meta_loaded.lattice_hash, key) is not None:
-                _reg.register(surr)
+            _engage_fresh(surr, key)
             self._tab._refresh_table()
         except Exception as exc:    # noqa: BLE001
             print(f"[batch-train] post-train load failed for "
@@ -737,6 +768,14 @@ def _apply_dark_theme(fig, axes) -> None:
         ax.grid(color=theme.BORDER_0, alpha=0.35, linestyle=":")
 
 
+#: a training of at most this many epochs paints every epoch (its frames are the live
+#: training animation: the smoke cycle's 40 epochs take well under a second)
+EVERY_EPOCH_PAINT_MAX = 200
+#: a longer one paints at most this often (seconds after the end of the last paint), and always
+#: its last epoch
+EPOCH_PAINT_INTERVAL_S = 0.25
+
+
 class _TrainProgressDialog(QDialog):
     """Non-modal live-plot dialog for the training run.
 
@@ -747,9 +786,12 @@ class _TrainProgressDialog(QDialog):
                training panels show "waiting for training" placeholder
                text until the epoch loop kicks in.
       * (0,1)  Training loss vs epoch (log y).
-      * (1,0)  Validation MAPE vs epoch (log y) + running best.
+      * (1,0)  Validation MAPE vs epoch (log y) + that of the epoch
+               kept so far (the lowest validation error, so the line
+               can rise).
       * (1,1)  Per-entry val MAPE heatmap (6x6) -- which matrix
-               entries the MLP struggles with most.
+               entries the MLP struggles with most (0 at the entries
+               the MAPE leaves out: constant up to round-off).
 
     A stage strip at the top shows the overall progress
     (Data-gen -> Training -> Done).  Redraws are throttled to ~10 Hz.
@@ -792,6 +834,13 @@ class _TrainProgressDialog(QDialog):
         # on a full redraw per sample (see on_progress).
         self._last_paint = 0.0
         self._last_stage = None
+        # a long run's epochs paint at most every EPOCH_PAINT_INTERVAL_S after the end of the
+        # last paint; a progress event that arrives while a paint drains the event queue
+        # (the batch trainer's queued connection) is recorded, not painted inside it, and one
+        # that must paint (the last epoch, a stage change) is painted when it returns
+        self._last_epoch_paint = 0.0
+        self._painting = False
+        self._paint_pending = False
 
         v = QVBoxLayout(self)
         v.setContentsMargins(10, 10, 10, 10)
@@ -874,7 +923,7 @@ class _TrainProgressDialog(QDialog):
             [], [], color=theme.PLOT_PALETTE[1], lw=1.5, label="val")
         self._best_line, = self._ax_mape.plot(
             [], [], color=theme.PLOT_PALETTE[2], lw=1.0, linestyle="--",
-            label="best so far")
+            label="kept epoch")
         leg = self._ax_mape.legend(fontsize=8, loc="upper right",
                                     facecolor=theme.BG_1,
                                     edgecolor=theme.BORDER_0,
@@ -994,9 +1043,10 @@ class _TrainProgressDialog(QDialog):
         worker per emit throttles training to the canvas paint cost
         (~30 ms / frame), turning 40 epochs into ~1.2 s of visibly
         animated training -- exactly the live feedback the user
-        wants.  For production cycles (50 000 samples / 300 epochs
-        at ~100 ms / epoch), the per-emit block is invisible
-        overhead.
+        wants.  A run of more than ``EVERY_EPOCH_PAINT_MAX`` epochs
+        paints at most every ``EPOCH_PAINT_INTERVAL_S``: a paint costs
+        about 0.1 s, and painting each of the production cycle's 1000
+        epochs made its training stage 8x as long as the training.
         """
         stage = info.get("stage")
         if stage == "data_gen":
@@ -1033,7 +1083,7 @@ class _TrainProgressDialog(QDialog):
                 f"[train] epoch {ep}/{self._epochs}  "
                 f"train loss {info['train_loss']:.3e}  "
                 f"val MAPE {info['val_mape']:.3e}  "
-                f"(best {info['best_val_mape']:.3e})  "
+                f"(kept epoch {info.get('best_epoch', ep)}: {info['best_val_mape']:.3e})  "
                 f"elapsed {info['elapsed_s']:.1f} s")
             self._set_stage("train" if ep < self._epochs else "done")
 
@@ -1090,13 +1140,35 @@ class _TrainProgressDialog(QDialog):
         terminal = (done is not None and total is not None and done >= total)
         stage_changed = (stage != self._last_stage)
         self._last_stage = stage
-        paint = (stage == "epoch" or terminal or stage_changed
-                 or (now - self._last_paint) >= 0.04)
-        if paint:
-            self._canvas.draw()
-            self._canvas.repaint()
-            QApplication.processEvents()
-            self._last_paint = now
+        if stage == "epoch":
+            last_epoch = int(info.get("epoch", 0)) >= int(info.get("total", self._epochs))
+            paint = (self._epochs <= EVERY_EPOCH_PAINT_MAX or last_epoch or stage_changed
+                     or (now - self._last_epoch_paint) >= EPOCH_PAINT_INTERVAL_S)
+            must = last_epoch or stage_changed
+        else:
+            paint = terminal or stage_changed or (now - self._last_paint) >= 0.04
+            must = terminal or stage_changed
+        if not paint:
+            return
+        if self._painting:
+            # inside this slot's own processEvents (a queued event): no paint within a paint,
+            # which nested one slot call per event waiting and ran out of stack
+            self._paint_pending = self._paint_pending or must
+            return
+        self._painting = True
+        try:
+            while True:
+                self._paint_pending = False
+                self._canvas.draw()
+                self._canvas.repaint()
+                QApplication.processEvents()
+                if not self._paint_pending:
+                    break
+        finally:
+            self._painting = False
+        self._last_paint = now
+        if stage == "epoch":
+            self._last_epoch_paint = time.monotonic()
 
 
 # ---------------------------------------------------------------------------
@@ -1116,7 +1188,13 @@ class SurrogatesTab(QWidget):
         # opens reuse the cached `EnvelopeResults` and the dialog
         # constructs instantly.  Invalidated on every
         # `lattice_changed` signal.
-        self._envelope_cache: dict[str, object] = {}
+        self._envelope_cache: dict[tuple, object] = {}
+        self._discovered_species: str | None = None     # whose folder the rows came from
+        self._rows_lattice = None                       # the lattice the rows are bound to
+        # (lattice, folder) of the last discovery: a start-over on the same lattice and
+        # folder (a beam species set where none was, which reads the same plain folder) has
+        # had its files' notices already
+        self._discovered_from: tuple | None = None
 
         v = QVBoxLayout(self)
         v.setContentsMargins(16, 16, 16, 16)
@@ -1212,15 +1290,16 @@ class SurrogatesTab(QWidget):
         bulk_row.addStretch(1)
         v.addLayout(bulk_row)
 
-        self._table = QTableWidget(0, 5)
+        self._table = QTableWidget(0, 6)
         self._table.setHorizontalHeaderLabels(
-            ["Element", "Val MAPE", "Scope", "Use", "Action"])
+            ["Element", "Val MAPE", "Scope", "Use", "Action", "Accuracy check"])
         hh = self._table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         self._table.verticalHeader().setVisible(False)
         self._table.setMinimumHeight(160)
         # No more stretch=1 -- the new collapsible MP section below
@@ -1242,6 +1321,9 @@ class SurrogatesTab(QWidget):
         v.addWidget(self._status)
 
         state.lattice_changed.connect(self._on_lattice_changed)
+        state.beam_config_changed.connect(self._on_beam_changed)
+        # a run may have checked the accuracy of a row's weights (their first use)
+        state.running_changed.connect(self._on_running_changed)
         # Populate now in case a lattice is already loaded.
         self._on_lattice_changed(state.lattice)
 
@@ -1262,15 +1344,17 @@ class SurrogatesTab(QWidget):
         except Exception:
             return "unknown"
 
-    def _weights_root(self, lattice_hash: str | None = None) -> Path:
-        """Per-lattice weights directory (created on demand by training)."""
+    def _weights_root(self, lattice_hash: str | None = None,
+                      species: str | None = None) -> Path:
+        """Weights directory of a lattice and a species (created on demand by training):
+        ``species`` is the one trained, or by default the beam's."""
+        from linac_gen.surrogates.training import weights_folder
         lh = lattice_hash if lattice_hash is not None else self._lattice_hash()
-        return (Path("linac_gen/surrogates/weights")
-                / (lh[:16] if lh != "unknown" else "unknown"))
+        return weights_folder(lh, self._beam_species() if species is None else species)
 
-    def _weights_dir_for_element(self, element_name: str,
-                                  lattice_hash: str | None = None) -> Path:
-        return self._weights_root(lattice_hash) / element_name
+    def _weights_dir_for_element(self, element_name: str, lattice_hash: str | None = None,
+                                  species: str | None = None) -> Path:
+        return self._weights_root(lattice_hash, species) / element_name
 
     def _get_or_compute_envelope(self, ref_template):
         """Return cached or freshly-computed envelope result for the
@@ -1279,7 +1363,8 @@ class SurrogatesTab(QWidget):
         Used by both the per-element train flow and the batch trainer
         to feed `w_kin` auto-detection in the train dialog.  Computing
         is expensive (~22 s on mebt+hwr.dat with all 20 field maps),
-        so we cache by lattice hash.  ``_on_lattice_changed`` clears
+        so the last one is kept, keyed by the lattice and the beam's
+        species, energy and clock.  ``_on_lattice_changed`` clears
         the cache so a freshly-loaded lattice is re-computed.
 
         Returns ``None`` on any failure (no lattice loaded, envelope
@@ -1289,7 +1374,8 @@ class SurrogatesTab(QWidget):
         lat = self.state.lattice
         if lat is None or ref_template is None:
             return None
-        key = self._lattice_hash()
+        key = (self._lattice_hash(), getattr(ref_template.species, "name", ""),
+               float(ref_template.w_kin), float(ref_template.frequency))
         cached = self._envelope_cache.get(key)
         if cached is not None:
             return cached
@@ -1302,13 +1388,140 @@ class SurrogatesTab(QWidget):
             )
             r = EnvelopeSolver(lat, ref_template,
                                initial=initial, current=0.0).run()
+            self._envelope_cache.clear()        # one beam at a time
             self._envelope_cache[key] = r
             return r
         except Exception:    # noqa: BLE001
             return None
 
     # ----------------------------------------------------------------
+    def _beam_species(self) -> str | None:
+        """The species of the project's beam, by the name a run gives it."""
+        cfg = self.state.beam_config
+        if cfg is None:
+            return None
+        from linac_gen.distributions.factory import SPECIES_MAP
+        sp = SPECIES_MAP.get(getattr(cfg, "species", None))
+        return sp.name if sp is not None else getattr(cfg, "species", None)
+
+    def _ref_template(self):
+        """The reference training starts from: the project's species, energy and clock,
+        and for a ``.dst`` source those of the file, as a multiparticle run takes them.
+        No particles are made, and the beam is left as it is.  None, with a message, for
+        a beam that cannot be built.  With no beam at all, H⁻ at 2.12 MeV and 162.5 MHz."""
+        from linac_gen.core.reference import ReferenceParticle
+        cfg = self.state.beam_config
+        if cfg is None:
+            from linac_gen.core.particle import H_MINUS
+            self._status.setText("no beam set: training as H⁻ at 2.12 MeV, 162.5 MHz")
+            return ReferenceParticle(species=H_MINUS, w_kin=2.12, frequency=162.5)
+        try:
+            from linac_gen.distributions.factory import SPECIES_MAP, reference_config
+            if cfg.species not in SPECIES_MAP:
+                raise ValueError(f"unknown species {cfg.species!r}")
+            if (getattr(cfg, "source", "") == "file"
+                    and not str(getattr(cfg, "distribution_file", "") or "")):
+                raise ValueError("a beam from a file names no file")
+            start = reference_config(cfg)
+            return ReferenceParticle(species=SPECIES_MAP[cfg.species], w_kin=start.energy,
+                                     frequency=start.frequency)
+        except Exception as exc:    # noqa: BLE001
+            self._status.setText(f"beam not usable for training: {exc}")
+            return None
+
+    def _at_element_phase(self, ref, element, result):
+        """A copy of ``ref`` at the reference phase ``element`` is entered at, so that a
+        cavity whose field follows that phase is trained about its working point.  The
+        phase is read on the envelope's clock there, which the copy takes with it: the
+        training moves both to the cavity's clock together."""
+        r = ref.copy()
+        try:
+            row_in, _ = _element_rows(result, self.state.lattice.elements.index(element))
+            phi, clock = float(result.ref_phi_s[row_in]), float(result.ref_frequency[row_in])
+            r.frequency = clock
+            r.phi_s = phi
+        except (AttributeError, IndexError, ValueError, TypeError):
+            # no result: the template's own, which matters only where the field follows it
+            if (getattr(element, "p_flag", 1) != 1
+                    and getattr(element, "_has_electric_channel", lambda: False)()):
+                self._status.setText(f"phase at the entrance of {element.name} not found: "
+                                     "training at the template's")
+        return r
+
+    def _on_beam_changed(self, _cfg) -> None:
+        # Another species reads another folder: load the rows again, as a new lattice does.
+        if self.state.lattice is not None and self._beam_species() != self._discovered_species:
+            self._on_lattice_changed(self.state.lattice)
+        elif self._trained:
+            self._refresh_table()
+
+    @staticmethod
+    def _accuracy_cell(meta) -> tuple[str, str]:
+        """(text, tooltip) of a row's accuracy check (``SurrogateFieldMap._accuracy_refusal``):
+        weights from a file are checked against their native element at their first use."""
+        if not getattr(meta, "accuracy_due", False):
+            return "—", "weights built in memory, not from a file: not checked"
+        from linac_gen.surrogates import base
+        limits = (f"largest 2x2-block error / determinant error against the native element; "
+                  f"limits {base.SurrogateFieldMap.ACCURACY_TOLERANCE:g} / "
+                  f"{base.SurrogateFieldMap.ACCURACY_DET_TOLERANCE:g}")
+        verdict = getattr(meta, "accuracy_check", None)
+        if verdict is None:
+            return "not checked yet", (
+                "checked against the native element by the first run that asks these weights "
+                "for their map inside their range (weights refused before that, outside their "
+                "range or for another species or clock, are not checked); " + limits)
+        errors = f"{meta.accuracy_block:.1e} / {meta.accuracy_det:.1e}"
+        if verdict == "":
+            return f"within limits ({errors})", limits
+        return f"refused ({errors})", verdict
+
+    def _set_accuracy_cell(self, row: int, meta) -> None:
+        text, tip = self._accuracy_cell(meta)
+        item = QTableWidgetItem(text)
+        item.setToolTip(tip)
+        self._table.setItem(row, 5, item)
+
+    def _refresh_accuracy_cells(self) -> None:
+        """The rows' verdicts as they stand: a run, or a study of another tab, may have
+        checked their weights (at their first use)."""
+        try:
+            for row, (_surr, _dir, meta) in enumerate(self._trained.values()):
+                if row < self._table.rowCount():
+                    self._set_accuracy_cell(row, meta)
+        except RuntimeError:            # the table is already gone (shutdown)
+            pass
+
+    def _on_running_changed(self, running: bool) -> None:
+        if not running:
+            self._refresh_accuracy_cells()
+
+    def showEvent(self, event) -> None:     # noqa: N802 (Qt)
+        # a study of another tab does not go through the running flag
+        self._refresh_accuracy_cells()
+        super().showEvent(event)
+
+    def _row_problem(self, meta) -> str | None:
+        """Why a row must not be used, for the table."""
+        if getattr(meta, "stale_factor", None) is not None:
+            return "stale, retrain"
+        species = self._beam_species()
+        trained = getattr(meta, "trained_species", "") or getattr(meta, "species_name", "")
+        if trained and species and trained != species:
+            return f"trained for {trained}"
+        return None
+
+    # ----------------------------------------------------------------
     def _on_lattice_changed(self, lattice) -> None:
+        # an edit of the lattice the rows are bound to (the inspector, a Matching Apply and an
+        # undo re-broadcast it) keeps the rows and their ticks; another lattice (a load), or
+        # another species' weights folder, starts over
+        if (lattice is not None and lattice is self._rows_lattice
+                and self._beam_species() == self._discovered_species):
+            self._on_lattice_edited(lattice)
+            return
+        self._rows_lattice = lattice
+        self._discovered_species = self._beam_species()
         self._elem_combo.clear()
         # Drop any rows bound to the previous lattice; their Element
         # references are stale and the user shouldn't operate on them.
@@ -1332,16 +1545,59 @@ class SurrogatesTab(QWidget):
         _surr_reg.clear()
         self._refresh_table()
         if lattice is None:
+            self._discovered_from = None        # nothing to keep alive
             return
+        self._fill_element_combo(lattice)
+        # Re-populate the table from any cached weights on disk that
+        # match elements present in the new lattice.
+        self._discover_cached_for_lattice(lattice)
+
+    def _fill_element_combo(self, lattice) -> None:
+        self._elem_combo.clear()
         types = _surrogatable_types()
         for i, elem in enumerate(lattice.elements):
             if isinstance(elem, types):
                 kind = type(elem).__name__
                 self._elem_combo.addItem(
                     f"{i:>3d}: {elem.name}  [{kind}, {elem.length:.0f} mm]", i)
-        # Re-populate the table from any cached weights on disk that
-        # match elements present in the new lattice.
-        self._discover_cached_for_lattice(lattice)
+
+    def _on_lattice_edited(self, lattice) -> None:
+        """The lattice the rows are bound to, edited in place: the rows, their Use ticks and
+        the registry stay, as the weights check how their element is set each time they are
+        asked (a setting they hold, changed, has the native element answer).  A row whose
+        element left the lattice (deleted, replaced), was renamed (the registry finds an
+        element by its name) or changed its structure (its length, steps, ``p_flag``, …)
+        goes, with whatever is registered for it, and the status line says so: that element
+        runs native.  The weights folder is not scanned again, so an old file's held settings
+        stay those of the element as it was loaded."""
+        from linac_gen.surrogates import registry as _reg
+        self._envelope_cache.clear()
+        present = {id(e) for e in lattice.elements}
+        dropped = []
+        for name, (surr, _dir, meta) in list(self._trained.items()):
+            element = getattr(surr, "_wrapped", None)
+            if element is None or id(element) not in present:
+                why = "its element left the lattice"
+            elif getattr(element, "name", None) != name:
+                why = "its element was renamed"
+            else:
+                reason = surr._structure_reason()
+                if reason is None:
+                    continue
+                why = reason[0]
+            del self._trained[name]
+            if _reg.get(meta.lattice_hash, name) is surr:
+                _reg.unregister(meta.lattice_hash, name)
+            dropped.append(f"{name} ({why})")
+        self._fill_element_combo(lattice)
+        self._refresh_table()
+        if dropped:
+            self._status.setText(
+                "dropped the surrogate of " + "; ".join(dropped)
+                + " — the element runs native until it is trained again (to load its weights "
+                "again, undo the edit and use Train surrogate → Open, or re-open the project; "
+                "both work only while the deck file holds the text it had at training, which "
+                "File > Save Lattice can change)")
 
     def _discover_cached_for_lattice(self, lattice) -> None:
         """Scan the per-lattice weights dir and add a row per match."""
@@ -1352,16 +1608,21 @@ class SurrogatesTab(QWidget):
         fm_by_name: dict[str, object] = {
             e.name: e for e in lattice.elements
             if isinstance(e, types)}
+        root = self._weights_root()
+        prev, self._discovered_from = self._discovered_from, (lattice, root)
         if not fm_by_name:
             return
-        root = self._weights_root()
+        # a loaded project, or another species' folder, says what is wrong with its files;
+        # the same lattice and folder again (a species set where none was) reloads them quietly
+        again = prev is not None and prev[0] is lattice and prev[1] == root
         try:
             cached = discover_cached_surrogates(
-                root, element_names=list(fm_by_name.keys()))
+                root, element_names=list(fm_by_name.keys()), notices=not again)
         except Exception as exc:                          # noqa: BLE001
             self._status.setText(f"cache scan failed: {exc!r}")
             return
         if not cached:
+            self._status.setText(f"no cached surrogates in {root}")
             return
         for key, (mlp, meta, dir_path) in cached.items():
             element = fm_by_name.get(key)
@@ -1371,8 +1632,12 @@ class SurrogatesTab(QWidget):
             surr.weights_dir = str(dir_path)    # provenance: weights hash
             self._trained[key] = (surr, dir_path, meta)
         self._refresh_table()
+        from collections import Counter
+        problems = Counter(self._row_problem(meta) for _mlp, meta, _dir in cached.values())
+        problems.pop(None, None)
         self._status.setText(
-            f"auto-loaded {len(cached)} cached surrogate(s) from {root}")
+            f"auto-loaded {len(cached)} cached surrogate(s) from {root}"
+            + "".join(f"; {n} {p}" for p, n in problems.items()))
 
     # ----------------------------------------------------------------
     def _on_batch_train_clicked(self) -> None:
@@ -1415,10 +1680,10 @@ class SurrogatesTab(QWidget):
         if not selected:
             return
 
-        from linac_gen.core.particle import H_MINUS
-        from linac_gen.core.reference import ReferenceParticle
-        ref_template = ReferenceParticle(
-            species=H_MINUS, w_kin=2.12, frequency=162.5)
+        ref_template = self._ref_template()
+        if ref_template is None:
+            QMessageBox.warning(self, "Beam not usable", self._status.text())
+            return
 
         # Build the controller; it manages a worker per element in
         # sequence and reports progress back to this tab.
@@ -1451,10 +1716,17 @@ class SurrogatesTab(QWidget):
         elem_idx = self._elem_combo.currentData()
         element = self.state.lattice.elements[elem_idx]
 
+        # The template first: the dialog's w_kin / ADJUST auto-detect pass uses it, the
+        # worker trains on it (single source of truth), and its species names the folder.
+        ref_template = self._ref_template()
+        if ref_template is None:
+            QMessageBox.warning(self, "Beam not usable", self._status.text())
+            return
+
         # ---- Cache check ------------------------------------------
         from linac_gen.surrogates.training import find_cached_surrogate
         lh = self._lattice_hash()
-        out_dir = self._weights_dir_for_element(element.name, lh)
+        out_dir = self._weights_dir_for_element(element.name, lh, ref_template.species.name)
         cached = find_cached_surrogate(out_dir)
         if cached is not None:
             mlp_c, meta_c = cached
@@ -1476,14 +1748,6 @@ class SurrogatesTab(QWidget):
                 self._load_cached_into_table(element, mlp_c, meta_c, out_dir)
                 return
             # else: Retry => fall through to the normal training path.
-
-        # Build the ref template up front so the dialog can use it for
-        # the w_kin / ADJUST auto-detect pass.  Same construction as
-        # the worker uses below (single source of truth).
-        from linac_gen.core.particle import H_MINUS
-        from linac_gen.core.reference import ReferenceParticle
-        ref_template = ReferenceParticle(
-            species=H_MINUS, w_kin=2.12, frequency=162.5)
 
         # Look up (or build) the cached envelope forward pass for this
         # lattice.  First click on a fresh lattice pays the full ~22 s
@@ -1529,7 +1793,7 @@ class SurrogatesTab(QWidget):
 
         self._worker = _TrainWorker(
             element=element,
-            ref_template=ref_template,
+            ref_template=self._at_element_phase(ref_template, element, envelope_result),
             out_dir=out_dir,
             lattice_hash=lh,
             options=opts,
@@ -1629,10 +1893,13 @@ class SurrogatesTab(QWidget):
         surr = SurrogateFieldMap(element, mlp, meta)
         surr.weights_dir = str(dir_path)        # provenance: weights hash
         self._trained[meta.element_key] = (surr, Path(dir_path), meta)
+        # an engaged element's tick points at the weights of its row, as after a retrain
+        _engage_fresh(surr, meta.element_key)
         self._refresh_table()
         self._status.setText(
             f"loaded cached surrogate '{meta.element_key}' "
-            f"(val MAPE {meta.val_mape:.3e}) from {dir_path}")
+            f"(val MAPE {meta.val_mape:.3e}) from {dir_path}"
+            + (f"; {self._row_problem(meta)}" if self._row_problem(meta) else ""))
 
     def _on_finished(self, meta) -> None:
         self._train_btn.setEnabled(True)
@@ -1650,7 +1917,9 @@ class SurrogatesTab(QWidget):
         from linac_gen.surrogates.base import SurrogateFieldMap
         from linac_gen.surrogates.training import load_surrogate
         out_dir = self._worker.out_dir
-        mlp, _ = load_surrogate(out_dir)
+        # the file's metadata, as the batch path takes it: its weights are checked against
+        # the native element at their first use (accuracy_due), and carry their hash
+        mlp, meta = load_surrogate(out_dir)
         element = next(
             (e for e in self.state.lattice.elements
              if e.name == meta.element_key), None)
@@ -1668,9 +1937,7 @@ class SurrogatesTab(QWidget):
         # table shows a ticked Use box (the registry probe finds the OLD
         # registration under the same key) but no stateChanged fires, so the
         # envelope/MP hook would keep serving the pre-retrain surrogate.
-        from linac_gen.surrogates import registry as _reg
-        if _reg.get(meta.lattice_hash, meta.element_key) is not None:
-            _reg.register(surr)
+        _engage_fresh(surr, meta.element_key)
         self._refresh_table()
         self._status.setText(
             f"trained {meta.element_key}: val MAPE {meta.val_mape:.3e}, "
@@ -1706,8 +1973,11 @@ class SurrogatesTab(QWidget):
         for row, (name, (surr, out_dir, meta)) in enumerate(
                 self._trained.items()):
             self._table.setItem(row, 0, QTableWidgetItem(name))
+            problem = self._row_problem(meta)
+            if problem and _reg.get(meta.lattice_hash, name) is not None:
+                _reg.unregister(meta.lattice_hash, name)    # one that must not be used is not in use
             self._table.setItem(row, 1, QTableWidgetItem(
-                f"{meta.val_mape:.2e}"))
+                problem or f"{meta.val_mape:.2e}"))
             scope = "  ".join(
                 f"{n}∈[{lo:.3g},{hi:.3g}]"
                 for n, lo, hi in zip(meta.scope.input_names,
@@ -1723,6 +1993,9 @@ class SurrogatesTab(QWidget):
             # "Deselect all" could not clear it (setChecked(False) on an
             # already-unchecked box emits no stateChanged → no unregister).
             use_cb.setChecked(_reg.get(meta.lattice_hash, name) is not None)
+            if problem:
+                use_cb.setEnabled(False)
+                use_cb.setToolTip(problem)
             use_cb.stateChanged.connect(
                 lambda s, n=name: self._on_use_toggled(
                     n, s == int(Qt.CheckState.Checked.value)))
@@ -1731,12 +2004,18 @@ class SurrogatesTab(QWidget):
             cmp_btn.clicked.connect(
                 lambda _=False, n=name: self._on_compare_clicked(n))
             self._table.setCellWidget(row, 4, cmp_btn)
+            self._set_accuracy_cell(row, meta)
 
     def _on_use_toggled(self, name: str, checked: bool) -> None:
         from linac_gen.surrogates import registry as _reg
         surr, _, meta = self._trained[name]
         if checked:
             _reg.register(surr)
+            if getattr(meta, "accuracy_check", None):
+                self._status.setText(
+                    f"registered surrogate '{name}', which its accuracy check refused: the "
+                    f"native element tracks in every run (Compare at 0 mA still runs it)")
+                return
             self._status.setText(
                 f"registered surrogate '{name}' — engages the "
                 f"full-element matrix in envelope runs at 0 mA (SC runs "
@@ -1762,16 +2041,21 @@ class SurrogatesTab(QWidget):
         if not self._trained:
             self._status.setText("(no trained surrogates to select)")
             return
+        n = 0
         for row in range(self._table.rowCount()):
             cb = self._table.cellWidget(row, 3)   # column 3 == "Use"
-            if cb is not None:
+            if cb is not None and cb.isEnabled():
                 cb.setChecked(bool(checked))
-        n = len(self._trained)
+                n += 1
         action = "registered" if checked else "unregistered"
         self._status.setText(
             f"{action} all {n} surrogate(s)")
 
     def _on_compare_clicked(self, name: str) -> None:
+        problem = self._row_problem(self._trained[name][2])
+        if problem:
+            self._status.setText(f"'{name}' cannot be compared: {problem}")
+            return
         if self.state.lattice is None or self.state.beam_config is None:
             QMessageBox.warning(
                 self, "Need lattice + beam",
@@ -1792,13 +2076,7 @@ class SurrogatesTab(QWidget):
             QMessageBox.critical(self, "Beam config error", str(exc))
             return
         ref = beam.ref
-        from linac_gen.distributions.factory import geometric_emittances
-        _ex, _ey, _ez = geometric_emittances(cfg, max(float(ref.bg), 1e-9))
-        twiss = dict(
-            alpha_x=cfg.alpha_x, beta_x=cfg.beta_x, emit_x=_ex,
-            alpha_y=cfg.alpha_y, beta_y=cfg.beta_y, emit_y=_ey,
-            alpha_z=cfg.alpha_z, beta_z=cfg.beta_z, emit_z=_ez,
-        )
+        twiss = _compare_seed(cfg, ref)
         # Run the two envelope solves in a worker — inline this froze
         # the GUI for the full ~20 s compare.  The running flag excludes
         # toolbar solves while the registry is swapped (and vice versa).
@@ -1819,6 +2097,7 @@ class SurrogatesTab(QWidget):
         self._env_compare_worker.cancelled.connect(
             self._on_env_compare_cancelled)
         self._env_compare_worker.start()
+        self.state.add_run_worker(self._env_compare_worker)
 
     def _restore_after_env_compare(self) -> None:
         self.state.set_running(False)
@@ -2070,7 +2349,10 @@ class SurrogatesTab(QWidget):
                 "surrogate registry and cannot overlap a solve.")
             return
 
-        surrogates = [t[0] for t in self._trained.values()]
+        surrogates = [t[0] for t in self._trained.values() if not self._row_problem(t[2])]
+        if not surrogates:
+            self._status.setText("no surrogate here can be used, so there is nothing to compare")
+            return
         residual_n_steps = int(self._mp_substeps.value())
 
         # Exclude toolbar solves while the registry is swapped (the
@@ -2104,6 +2386,7 @@ class SurrogatesTab(QWidget):
             self._on_mp_compare_finished)
         self._mp_compare_worker.failed.connect(self._on_mp_compare_failed)
         self._mp_compare_worker.start()
+        self.state.add_run_worker(self._mp_compare_worker)
 
     def _restore_compare_btn_idle(self) -> None:
         """Reset Compare-MP button label + style + progress bar

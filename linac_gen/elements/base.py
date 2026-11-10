@@ -38,6 +38,56 @@ class Element(ABC):
         # (orbit-response calibration maps device names to labels).
         self.label: str | None = None
 
+
+_UNSET = object()
+
+
+class DerivedGeometry:
+    """Mixin for an element whose geometry is derived from some of its parameters.
+
+    Writing one of ``_GEOMETRY_ATTRS`` once the element is built (``_geometry_ready``)
+    derives the geometry again with the code its ``__init__`` runs (``_derive_geometry``),
+    so an edited element is the element built with the new value.  ``_coerce`` checks or
+    converts a value before it is stored.  The attributes in ``_DERIVED_ATTRS`` follow from
+    the others: writing one from outside raises, and the element's own code writes them
+    through ``_set_derived``.  Deep copies and pickles restore ``__dict__`` directly and stay
+    consistent.  It goes first among the bases, so that its ``__setattr__`` runs.
+    """
+    _GEOMETRY_ATTRS: frozenset = frozenset()
+    _DERIVED_ATTRS: frozenset = frozenset()
+    #: what each derived attribute follows from, for the message an edit of it gets
+    _DERIVED_FROM: dict = {}
+
+    def __setattr__(self, name, value):
+        ready = self.__dict__.get("_geometry_ready", False)
+        if ready:
+            if name in self._DERIVED_ATTRS:
+                raise AttributeError(
+                    f"{type(self).__name__}.{name} follows from "
+                    f"{self._DERIVED_FROM.get(name, 'the element parameters')}: edit those instead")
+            if name in self._GEOMETRY_ATTRS:
+                value = self._coerce(name, value)
+                old = self.__dict__.get(name, _UNSET)
+                super().__setattr__(name, value)
+                self._derive_geometry(name, old)
+                return
+        super().__setattr__(name, value)
+
+    def _is_derived(self, name: str) -> bool:
+        """Whether ``name`` follows from the other parameters now (an editor shows it read-only)."""
+        return name in self._DERIVED_ATTRS
+
+    def _coerce(self, name: str, value):
+        return value
+
+    def _derive_geometry(self, changed: str, old) -> None:
+        """Derive the geometry again after ``changed`` was written; ``old`` is its previous value."""
+        raise NotImplementedError
+
+    def _set_derived(self, name: str, value) -> None:
+        object.__setattr__(self, name, value)
+
+
 class TransferMapElement(Element):
     """Elements with a linear 6x6 transfer matrix (drift, quad, solenoid, dipole)."""
     @abstractmethod

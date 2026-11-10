@@ -162,16 +162,6 @@ class LatticeTab(QWidget):
         self._btn_bpm_targets.clicked.connect(self._on_load_bpm_targets)
         bl.addWidget(self._btn_bpm_targets)
 
-        self._btn_to_vane = QPushButton("RfqCell → VaneRFQ")
-        self._btn_to_vane.setToolTip(
-            "Pick a .vane file and replace this lattice's RfqCell chain "
-            "with one VaneRFQ element (Toutatis-equivalent path).  Use "
-            "the inspector field_model dropdown to choose 2term / 8term "
-            "/ laplace2d after the swap."
-        )
-        self._btn_to_vane.clicked.connect(self._on_replace_with_vane_rfq)
-        bl.addWidget(self._btn_to_vane)
-
         bl.addSpacing(12)
         self._summary = QLabel("no lattice loaded")
         self._summary.setStyleSheet(
@@ -737,46 +727,6 @@ class LatticeTab(QWidget):
         self._restore_correct_btn()
         self.state.status_message.emit(
             "orbit correction cancelled — no kicks applied")
-
-    def _on_replace_with_vane_rfq(self) -> None:
-        """Replace the lattice's RfqCell chain with one VaneRFQ element."""
-        if self.state.lattice is None:
-            QMessageBox.warning(self, "No lattice", "Load a lattice first.")
-            return
-        from linac_gen.elements.rfq_cell import RfqCell
-        n_cells = sum(1 for e in self.state.lattice.elements
-                      if isinstance(e, RfqCell))
-        if n_cells == 0:
-            QMessageBox.information(
-                self, "No RfqCells",
-                "This lattice has no RfqCell elements to consolidate. "
-                "Open a TraceWin lattice with RFQ_CELL cards first.")
-            return
-        from PyQt6.QtWidgets import QFileDialog, QInputDialog
-        fname, _ = QFileDialog.getOpenFileName(
-            self, "Select .vane file", "",
-            "Vane geometry (*.vane);;All files (*.*)")
-        if not fname:
-            return
-        models = ["2term", "8term", "8term_full", "laplace2d", "laplace3d"]
-        model, ok = QInputDialog.getItem(
-            self, "Field model", "field_model:", models, 0, editable=False)
-        if not ok:
-            return
-        try:
-            from linac_gen.io.vane_rfq_helper import replace_rfq_cells_with_vane
-            replace_rfq_cells_with_vane(self.state.lattice, fname,
-                                        field_model=model)
-        except Exception as exc:
-            QMessageBox.critical(self, "VaneRFQ swap failed", str(exc))
-            return
-        # Wholesale element replacement — flag divergence from the .dat.
-        if hasattr(self.state, "bus"):
-            self.state.bus.mark_dirty()
-        self.state.lattice_changed.emit(self.state.lattice)
-        self.state.status_message.emit(
-            f"replaced {n_cells} RfqCells with VaneRFQ ({model})"
-        )
 
     def _on_lattice(self, lattice) -> None:
         self._ring_banner.on_lattice(lattice)

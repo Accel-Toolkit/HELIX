@@ -108,13 +108,29 @@ class RFGap(ThinKickElement, Misalignment, FieldError):
         and the pin are in degrees at the reference frequency; a gap whose
         frequency differs from the reference clock's at its entrance is
         refused by the pin harvest (``linac_gen.reliability.pins``), so no
-        scaling is applied here — the two engines switch the reference
-        frequency at different points of a per-element jump."""
+        scaling is applied to them here — the two engines switch the reference
+        frequency at different points of a per-element jump.  (A
+        SET_BEAM_PHASE_ERROR shift is put on the gap's clock by
+        :meth:`rf_shift_deg`.)"""
+        # SET_BEAM_PHASE_ERROR: its RF shift moves the phase every gap's beam
+        # sees; its correction moves the clock, which only a pinned gap reads
+        shift = self.rf_shift_deg(ref)
         pin = self.sync_phase_pin
         if pin is None:
-            return self.effective_phase
-        slip = float(ref.phi_s) - float(pin)
-        return self.effective_phase + ((slip + 180.0) % 360.0 - 180.0)
+            return self.effective_phase + shift
+        slip = float(ref.phi_s) + float(getattr(ref, "rf_rephase", 0.0)) - float(pin)
+        return self.effective_phase + shift + ((slip + 180.0) % 360.0 - 180.0)
+
+    def rf_shift_deg(self, ref) -> float:
+        """SET_BEAM_PHASE_ERROR's RF shift in force at this gap, in degrees of
+        the clock the gap runs on.  The shift is a time: a gap with a clock of
+        its own reads it before its jump in the tracker and the matrix walks
+        and after it in the envelope, so it is put on the gap's clock here."""
+        shift = float(getattr(ref, "rf_shift", 0.0))
+        f_eff = self.effective_frequency
+        if shift and f_eff > 0 and f_eff != ref.frequency and hasattr(ref, "clock_scale"):
+            shift *= ref.clock_scale(self.frequency if self.frequency > 0 else f_eff, f_eff)
+        return shift
 
     def apply_kick(self, beam) -> None:
         """Apply energy kick, adiabatic damping, and RF defocusing to beam."""
@@ -138,13 +154,11 @@ class RFGap(ThinKickElement, Misalignment, FieldError):
 
         # Update reference particle energy and frequency
         ref.w_kin += dW_sync
-        # FREQ-jump rescale: beam.particles[:,4] is in deg-at-ref.frequency, so
-        # multiply by f_new/f_old BEFORE updating ref.frequency to preserve the
-        # physical phase deviation (Liouville).  Mirrors field_map_3d._track_kd.
+        # A clock change of its own, as a FREQ card makes it: beam.particles[:,4]
+        # and ref.phi_s are in degrees of the clock, so both scale by f_new/f_old.
         if eff_freq > 0 and eff_freq != ref.frequency:
-            ratio = eff_freq / ref.frequency
-            beam.particles[beam.alive_mask, 4] *= ratio
-            ref.frequency = eff_freq
+            beam.particles[beam.alive_mask, 4] *= ref.switch_clock(
+                self.frequency if self.frequency > 0 else eff_freq, eff_freq)
         bg_new = ref.bg
 
         # --- Particle kicks (alive particles only) ---
@@ -264,7 +278,8 @@ class RFGap(ThinKickElement, Misalignment, FieldError):
         dW_sync = charge * self.effective_voltage * self.ttf * np.cos(phi_s_rad)
         ref.w_kin += dW_sync
         if self.effective_frequency != ref.frequency and not keep_clock:
-            ref.frequency = self.effective_frequency
+            ref.switch_clock(self.frequency if self.frequency > 0 else self.effective_frequency,
+                             self.effective_frequency)
 
     def kick_matrix(self, ref) -> np.ndarray:
         """Linearized 6x6 matrix for envelope mode.

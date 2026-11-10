@@ -26,11 +26,11 @@ from linac_gen.elements.superposed_field_map import SuperposedFieldMap
 from linac_gen.core.particle import H_MINUS
 from tests.elements.regen_fieldmap_matrix_baseline import REFS as _REFS, elements
 
-#: The fixture's references sit at the maps' own 352.21 MHz, so the step-0
-#: FREQ rescale of the probe beam (field_map_3d.py:565, field_map.py:563,
-#: superposed_field_map.py:222) never fires there; a 162.5 MHz reference
-#: (ratio 2.167) makes it fire once per batch, where it used to fire once
-#: per probe.
+#: The fixture's references sit at the maps' own 352.21 MHz.  At a 162.5 MHz
+#: reference (ratio 2.167) ``fitted_matrix`` puts the reference on the map's
+#: own clock before the probes and applies the jump's factor to the Δφ column
+#: after them (the probes would otherwise take their Δφ step in the old clock's
+#: degrees); the one-probe construction below does the same.
 REFS = dict(_REFS, h10_162=dict(species=H_MINUS, w_kin=10.0, frequency=162.5))
 
 DELTAS_3D = [1e-3, 1e-3, 1e-3, 1e-3, 1e-2, 1e-4]     # field_map_3d.fitted_matrix's own
@@ -145,6 +145,9 @@ def test_fitted_matrix_batched_equals_single(ename, rn, integ, fused, _numerics)
 
     ds = el.length / n
     el_s = make(); el_s.reset_run_state()
+    ref_s = ref.copy()
+    el_s._propagate_frequency_to_ref(ref_s)
+    jump = ref_s.frequency / ref.frequency if ref_s.frequency != ref.frequency else 1.0
     if is_3d:
         # original: 13 single tracks (origin first, unused), _step_idx = 0
         # before each and again after the loop
@@ -153,7 +156,7 @@ def test_fitted_matrix_batched_equals_single(ename, rn, integ, fused, _numerics)
             p = np.zeros(6); m = np.zeros(6); p[j] = +dj; m[j] = -dj
             probes += [p, m]
         setup = lambda e: setattr(e, "_step_idx", 0)
-        el_s, Y = _single_full(el_s, ref, n, ds, probes, setup)
+        el_s, Y = _single_full(el_s, ref_s, n, ds, probes, setup)
         el_s._step_idx = 0
         M_single = np.eye(6)
         M_single[:, :] = _matrix_from_rows(Y, DELTAS_3D, 1)
@@ -163,7 +166,7 @@ def test_fitted_matrix_batched_equals_single(ename, rn, integ, fused, _numerics)
         saved = el_s._save_walk_state()
         def setup(e):
             e._step_idx = 0; e._z_cursor = 0.0
-        el_s, Y = _single_full(el_s, ref, n, ds, _probes_default(), setup)
+        el_s, Y = _single_full(el_s, ref_s, n, ds, _probes_default(), setup)
         el_s._restore_walk_state(saved)
         M_single = _matrix_from_rows(Y, EPS_DEFAULT, 0)
     else:
@@ -172,8 +175,10 @@ def test_fitted_matrix_batched_equals_single(ename, rn, integ, fused, _numerics)
             e._saved = e._step_idx; e._step_idx = 0
         def teardown(e):
             e._step_idx = e._saved
-        el_s, Y = _single_full(el_s, ref, n, ds, _probes_default(), setup, teardown)
+        el_s, Y = _single_full(el_s, ref_s, n, ds, _probes_default(), setup, teardown)
         M_single = _matrix_from_rows(Y, EPS_DEFAULT, 0)
+    if jump != 1.0:
+        M_single[:, 4] *= jump
 
     np.testing.assert_array_equal(M_batched, M_single)
     np.testing.assert_array_equal(state_batched, _state(el_s))

@@ -83,10 +83,10 @@ class DifferentiableLattice:
 
         ``specs`` is an iterable of ``(element_or_name, attr)``.  Valid
         attrs: ``'gradient'`` (Quadrupole), ``'field'`` (Solenoid),
-        ``'angle'`` (Dipole — the FIELD of a magnet of fixed length: the
-        bending radius scales inversely, so the arc length, the vertical
-        drift and the phase slip do not depend on the knob).  Returns the
-        list of :class:`TunableParam`;
+        ``'angle'`` (Dipole — the bend's angle at its radius, as an ADJUST
+        of the angle or an edit is: the arc |ρ|·|θ| follows, and with it the
+        vertical drift and the phase slip; a field change at fixed length is
+        ``field_rel``).  Returns the list of :class:`TunableParam`;
         replaces any previously-declared tunables.
         """
         self._tunables = []

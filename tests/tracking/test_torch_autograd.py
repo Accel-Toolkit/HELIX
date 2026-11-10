@@ -100,17 +100,10 @@ def test_autograd_dipole_angle_vs_fd():
     dl = DifferentiableLattice(lat, ref)
     p = dl.set_tunables([("B", "angle")])[0]
     dl.transfer_matrix()[0, 5].backward()
-    # The tunable angle is the FIELD of a magnet of fixed length (the
-    # bending radius scales inversely, 2026-09-06); its numpy equivalent is
-    # a field error field_rel = h/angle, not a change of the card angle
-    # (which would also stretch the magnet).
-    h = 1e-6 * 20.0
-    dip.field_rel = h / 20.0
-    fp = compute_transfer_matrix(lat, ref)[0, 5]
-    dip.field_rel = -h / 20.0
-    fm = compute_transfer_matrix(lat, ref)[0, 5]
-    dip.field_rel = 0.0
-    g_fd = (fp - fm) / (2.0 * h)
+    # The tunable angle is the bend's angle at its radius, as an ADJUST of
+    # the angle or an edit is: the arc follows (until 2026-11 it was the
+    # field of a magnet of fixed length, whose numpy twin was field_rel).
+    g_fd = _fd_grad(lat, ref, dip, "angle", 20.0, lambda M: M[0, 5])
     _assert_close(float(p.tensor.grad), g_fd)
 
 

@@ -107,7 +107,11 @@ separate source path selected by `source="file"` (the
 
 * `.dst` — TraceWin binary format.  Header carries energy,
   frequency, ε, Twiss, current — these *override* the BeamConfig
-  fields when `source="file"`.
+  fields when `source="file"`, in every mode: the envelope and
+  matrix runs, the exports and the CLI's other modes start from them
+  as a multiparticle run does (`factory.reference_config`), with the
+  file's particle centroid plus the configured offsets and no mismatch,
+  and the project's own values are left as they are.
 * anything else — ASCII text: six whitespace-separated columns
   `x(mm) xp(mrad) y(mm) yp(mrad) phi_abs(deg) W_abs(MeV)`, with
   optional `# w_kin_ref:` / `# phi_ref:` header lines.  (There is

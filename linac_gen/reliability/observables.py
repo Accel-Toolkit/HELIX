@@ -13,7 +13,8 @@ EXTRA_KEYS = ("w_kin_end", "ref_phi_s_end", "treaty_w_kin", "treaty_phi_deg",
               "treaty_alpha_y", "treaty_beta_y", "loss_w_total", "loss_w_per_m_peak",
               "loss_w_per_m_peak_s_m", "n_lost", "n_macro", "foil_sigma_x_mm",
               "foil_sigma_y_mm", "foil_w_cm2_peak", "strip_eff", "h0_frac",
-              "missed_frac", "n_at_foil")
+              "missed_frac", "n_at_foil", "edge_over_aperture", "edge_element",
+              "edge_by_element")
 
 
 def _row_at(res: dict, key: str, idx):
@@ -39,11 +40,13 @@ def _last(res: dict, key: str):
 
 def evaluate_run(results_h5: str, *, element_index: dict, landmarks: dict,
                  sections, current_mA: float, duty_pct: float,
-                 hits_per_particle: float = 1.0) -> dict:
+                 hits_per_particle: float = 1.0, apertures: dict | None = None) -> dict:
     """``{EXTRA_KEYS...}`` for one run.  ``element_index`` maps element
     name → 0-based lattice index; ``landmarks`` = {treaty_element,
     foil_element}; ``sections`` = [(name, s_start_m, s_end_m)] (loss power
-    per section lands under ``loss_w_per_m_peak_<section>``)."""
+    per section lands under ``loss_w_per_m_peak_<section>``); ``apertures``
+    maps an element's index to its half-apertures ``(x, y)`` in mm, for the
+    beam edge over the aperture."""
     from linac_gen.io.hdf5_output import load_results_hdf5
     res = load_results_hdf5(str(results_h5))
     out: dict = {k: None for k in EXTRA_KEYS}
@@ -51,6 +54,10 @@ def evaluate_run(results_h5: str, *, element_index: dict, landmarks: dict,
     out["ref_phi_s_end"] = _last(res, "ref_phi_s")
     exit_idx = res.get("element_exit_idx")
     exit_idx = np.asarray(exit_idx, dtype=int) if exit_idx is not None else None
+    from linac_gen.analysis.aperture_edge import edge_over_aperture
+    out["edge_over_aperture"], out["edge_element"], out["edge_by_element"] = edge_over_aperture(
+        res.get("centroid"), res.get("sigma_x"), res.get("sigma_y"), exit_idx,
+        {i: n for n, i in element_index.items()}, apertures or {})
 
     def _exit_row(name):
         i = element_index.get(name)
@@ -182,7 +189,13 @@ def criticality_rule(baseline: dict, row: dict, rule: dict,
     deviation > ``energy_pct``, or a section's peak loss density above
     its ``w_per_m`` limit.  A threshold set to ``None`` switches its term
     off (the growth / deviation is still reported in ``terms``); a run
-    whose exit energy is unknown stays critical whatever the rule.
+    whose exit energy is unknown stays critical whatever the rule.  The beam
+    edge over the aperture (|centroid| + 3 sigma over an element's
+    half-aperture) is critical where it passes ``aperture_edge`` (1.0) and,
+    element by element, the baseline's own ratio there (a scraper the beam
+    already fills does not mask the rest of the line): envelope mode loses no
+    particle, so a fault that steers the beam into the wall scored nothing
+    before.  Rows from before the per-element record compare the largest.
     Returns ``(critical, terms)``."""
     terms: dict = {}
     crit = False
@@ -211,6 +224,18 @@ def criticality_rule(baseline: dict, row: dict, rule: dict,
     elif e0 and e is None:
         terms["energy_dev_pct"] = None
         crit = True
+    edge, edge0 = row.get("edge_over_aperture"), baseline.get("edge_over_aperture")
+    by, by0 = row.get("edge_by_element"), baseline.get("edge_by_element")
+    if edge is not None:
+        terms["edge_over_aperture"] = float(edge)
+        lim = _threshold(rule, "aperture_edge", 1.0)
+        if lim is not None and isinstance(by, dict) and isinstance(by0, dict):
+            out = {n: float(r) for n, r in by.items() if float(r) > max(lim, float(by0.get(n, 0.0)))}
+            if out:
+                terms["edge_out_element"] = max(out, key=out.get)
+                crit = True
+        elif lim is not None:
+            crit |= float(edge) > max(lim, float(edge0) if edge0 is not None else 0.0)
     limits = rule.get("w_per_m") or {}
     for name, _s0, _s1 in sections:
         v = row.get(f"loss_w_per_m_peak_{name}")

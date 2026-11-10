@@ -192,6 +192,13 @@ class FrozenGaussianKicker:
         beam.particles[alive_idx, 3] += (pre * Ey) * 1e3
 
 
+#: a one-plane ray's shadow starts with this angle, in units of the matched rms divergence,
+#: in the other plane; its tune there counts while its normalized amplitude grows by at most
+#: _SHADOW_MAX_GROWTH over the run (an unstable centre grows it by orders of magnitude more)
+_SHADOW_ANGLE = 1e-6
+_SHADOW_MAX_GROWTH = 100.0
+
+
 class _NullRecorder:
     """Minimal recorder satisfying the Tracker interface with no work.
 
@@ -296,8 +303,13 @@ def tune_footprint(lattice, ref, period: PeriodicStructure,
     -------
     dict
         ``qx``, ``qy`` — per-particle tunes (fraction of a cell, i.e.
-        μ/360; NaN for lost particles and for identically-zero signals
-        such as the x-tune of a pure y-ray); ``ax_sigma``, ``ay_sigma``
+        μ/360; NaN for lost particles).  A ray launched in one plane stays in
+        it; its tune in the other plane is that of a shadow copy started with
+        an angle of 1e-6 of the matched rms divergence there, its small-
+        amplitude tune, and NaN where that small motion grows without bound
+        (where the frozen field's centre is unstable in that plane:
+        ``n_unstable_other_plane`` counts them, and the model line says so);
+        ``ax_sigma``, ``ay_sigma``
         — launch amplitudes in units of σ; ``qx_core``, ``qy_core`` —
         small-amplitude (core) tunes (median below 0.3 σ);
         ``mu_x_core_deg``, ``mu_y_core_deg`` — the same in degrees;
@@ -308,7 +320,7 @@ def tune_footprint(lattice, ref, period: PeriodicStructure,
     """
     from linac_gen.core.beam import Beam
     from linac_gen.core.lattice import Lattice
-    from linac_gen.elements.lattice_commands import LatticeCommand
+    from linac_gen.elements.lattice_commands import REFERENCE_COMMANDS, LatticeCommand
     from linac_gen.matching.periodic import find_matched_period_sigma
     from linac_gen.tracking.tracker import Tracker
 
@@ -324,8 +336,9 @@ def tune_footprint(lattice, ref, period: PeriodicStructure,
     step_cfg = getattr(lattice, "step_config", None)
     if step_cfg is not None:
         cell.step_config = step_cfg
+    # (the reference at the entry already holds the cards that set it)
     prefix_cmds = [e for e in lattice.elements[:a0]
-                   if isinstance(e, LatticeCommand)]
+                   if isinstance(e, LatticeCommand) and not isinstance(e, REFERENCE_COMMANDS)]
 
     # Matched projected Twiss for launching and normalization.
     def _twiss(i, j):
@@ -388,15 +401,27 @@ def tune_footprint(lattice, ref, period: PeriodicStructure,
                 pass
         ftr.run()
 
-    beam = Beam(ref_entry.copy(), n_particles=n_p, current=current)
+    # A ray launched in one plane stays exactly in it (the field across an axis is exactly zero),
+    # so it has no tune of its own in the other plane.  A shadow copy, started with an angle of
+    # _SHADOW_ANGLE times the matched rms divergence in that plane, gives its small-amplitude
+    # tune there.  The ray itself stays in its plane: a seed on it would grow wherever the frozen
+    # field's centre is unstable in that plane, and pull the ray's own tune with it.  The frozen
+    # field does not depend on the test particles, so the shadows leave the rays as they are.
+    shadows = [(i, 1 if x0 == 0.0 else 3) for i, (x0, y0) in enumerate(launch)
+               if (x0 == 0.0) != (y0 == 0.0)]
+    n_track = n_p + len(shadows)
+    beam = Beam(ref_entry.copy(), n_particles=n_track, current=current)
     for i, (x0, y0) in enumerate(launch):
         beam.particles[i, 0] = x0
         beam.particles[i, 2] = y0
+    for k, (i, col) in enumerate(shadows):
+        beam.particles[n_p + k, 0], beam.particles[n_p + k, 2] = launch[i]
+        beam.particles[n_p + k, col] = _SHADOW_ANGLE * math.sqrt(Sigma[col, col])
 
-    xs = np.empty((n_turns, n_p))
-    xps = np.empty((n_turns, n_p))
-    ys = np.empty((n_turns, n_p))
-    yps = np.empty((n_turns, n_p))
+    xs = np.empty((n_turns, n_track))
+    xps = np.empty((n_turns, n_track))
+    ys = np.empty((n_turns, n_track))
+    yps = np.empty((n_turns, n_track))
 
     if progress is not None:
         progress(0, n_turns)          # matched solve + record pass done
@@ -419,6 +444,11 @@ def tune_footprint(lattice, ref, period: PeriodicStructure,
             except Exception:                            # noqa: BLE001
                 pass
         tracker.run()
+        # a cell that holds a change of clock hands the particles on another clock: back on
+        # the entrance's, where the next turn starts
+        f_in, f_out = float(entry_state.frequency), float(beam.ref.frequency)
+        if f_in > 0.0 and f_out > 0.0 and f_out != f_in:
+            beam.particles[beam.alive_mask, 4] *= f_in / f_out
         xs[turn] = beam.particles[:, 0]
         xps[turn] = beam.particles[:, 1]
         ys[turn] = beam.particles[:, 2]
@@ -432,14 +462,32 @@ def tune_footprint(lattice, ref, period: PeriodicStructure,
              - 1j * (alpha * pos + beta_t * ang) / math.sqrt(beta_t))
         return np.array([_fft_tune(u[:, i]) for i in range(u.shape[1])])
 
-    qx = _tunes(xs, xps, ax_t, bx_t)
-    qy = _tunes(ys, yps, ay_t, by_t)
+    qx_all = _tunes(xs, xps, ax_t, bx_t)
+    qy_all = _tunes(ys, yps, ay_t, by_t)
 
     # Particles that became lost (aperture or runaway) never completed a
     # clean quasi-periodic signal — their tune is meaningless.
     lost = np.asarray(beam.lost, dtype=bool)
-    qx[lost] = float("nan")
-    qy[lost] = float("nan")
+    qx_all[lost] = float("nan")
+    qy_all[lost] = float("nan")
+    qx, qy = qx_all[:n_p].copy(), qy_all[:n_p].copy()
+
+    # A one-plane ray's tune in its other plane: its shadow's, where that small motion stays
+    # small (its normalized amplitude grows by at most _SHADOW_MAX_GROWTH over the run).
+    n_unstable = 0
+    for k, (i, col) in enumerate(shadows):
+        j = n_p + k
+        pos, ang, alpha, beta_t, q, target = ((xs, xps, ax_t, bx_t, qx_all, qx) if col == 1
+                                              else (ys, yps, ay_t, by_t, qy_all, qy))
+        amp = np.abs(pos[:, j] / math.sqrt(beta_t)
+                     - 1j * (alpha * pos[:, j] + beta_t * ang[:, j]) / math.sqrt(beta_t))
+        amp0 = math.sqrt(beta_t) * _SHADOW_ANGLE * math.sqrt(Sigma[col, col])
+        if (np.isfinite(q[j]) and np.all(np.isfinite(amp))
+                and amp.max() <= _SHADOW_MAX_GROWTH * amp0):
+            target[i] = q[j]
+        else:
+            target[i] = float("nan")
+            n_unstable += 1
 
     amp_x_sigma = np.array([x0 / sx if sx > 0 else 0.0
                             for (x0, _y0) in launch])
@@ -490,12 +538,19 @@ def tune_footprint(lattice, ref, period: PeriodicStructure,
         "mu_y_core_deg": qy_core * 360.0,
         "mu_x_spread_pp_deg": dx_pp, "mu_y_spread_pp_deg": dy_pp,
         "mu_x_spread_rms_deg": dx_rms, "mu_y_spread_rms_deg": dy_rms,
-        "n_turns": n_turns, "n_particles": n_p,
+        "n_turns": n_turns, "n_particles": n_p, "n_unstable_other_plane": n_unstable,
         "model": ("frozen 2-D Gaussian-equivalent SC (transverse, "
                   + ("DC λ=I/βc" if continuous
                      else "bunch-center slice λ=Q/√2π·σ_z")
-                  + "); frozen-energy per turn"),
+                  + "); frozen-energy per turn"
+                  + ("; bunch length and energy spread held (no RF in the cell)"
+                     if ms.get("longitudinal_held") else "")
+                  + ("" if ms["converged"] else "; matched Σ NOT converged")
+                  + (f"; {n_unstable} one-plane rays unstable in their other plane (no tune "
+                     "there)" if n_unstable else "")),
         "matched_state": {
             "converged": ms["converged"], "residual": ms["residual"],
+            "sigma_model_approx": ms.get("sigma_model_approx"),
+            "longitudinal_held": ms.get("longitudinal_held"),
         },
     }

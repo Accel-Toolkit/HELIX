@@ -295,64 +295,116 @@ def kick_continuous_2d(beam, ds_mm: float) -> None:
 # Bassetti-Erskine 2-D Gaussian DC SC kick.  Bassetti & Erskine, CERN-ISR-
 # TH/80-06 (1980).  For a Gaussian charge density of σ_x, σ_y the transverse
 # E-field has a closed form involving the Faddeeva function w(z) = exp(-z²)
-# erfc(-iz).  For σ_x ≈ σ_y the formula degenerates; we fall back to the
-# round-beam limit (1 − exp(−r²/2σ²))/r² in that branch.
+# erfc(-iz).  It is evaluated in the first quadrant, where its two terms do not
+# cancel catastrophically, and the signs are restored by symmetry (just past the
+# switch below, near the centre of a nearly round beam, they still cancel in part:
+# 2-3e-10 of the field where it is 1e-3 of its peak).  Below 1e-4 asymmetry, where
+# the closed form degenerates, the exact field is expanded about the round beam.
 # ---------------------------------------------------------------------------
+_NEAR_ROUND_ASYM = 1.0e-4
+
+
+def _h_moments(kappa, mmax: int):
+    """h_m(κ) = ∫_0^1 v^m e^(−κv) dv for m = 0..mmax, κ >= 0: a positive series for κ <= 1
+    (each term at most 1/(j+1)! of the first), the incomplete gamma function above."""
+    import math
+
+    from scipy.special import gammainc
+    kappa = np.asarray(kappa, dtype=float)
+    shape = kappa.shape
+    kappa = kappa.reshape(-1)               # a scalar too
+    out = np.empty((mmax + 1, kappa.size))
+    small = kappa <= 1.0
+    if small.any():
+        k = kappa[small]
+        ek = np.exp(-k)
+        for m in range(mmax + 1):
+            term = np.full(k.shape, 1.0 / (m + 1))
+            acc = term.copy()
+            for j in range(1, 22):
+                term = term * k / (m + j + 1)
+                acc += term
+            out[m, small] = ek * acc
+    big = ~small
+    if big.any():
+        k = kappa[big]
+        for m in range(mmax + 1):
+            out[m, big] = gammainc(m + 1, k) * math.factorial(m) / k ** (m + 1)
+    return out.reshape((mmax + 1,) + shape)
+
+
+def _gauss_field_near_round(xs_m, ys_m, sigma_x_m: float, sigma_y_m: float, lam: float):
+    """The exact field to second order in d = σx² − σy² about the round beam of
+    s² = (σx² + σy²)/2 (truncation 0.44·asym³, 4e-13 at the 1e-4 switch):
+
+        E_x = P x [J0 − d(J1 + w J2) + d²(3/2 J2 − 2x² J3 + 1/2 w² J4)]
+        E_y = P y [J0 + d(J1 − w J2) + d²(3/2 J2 − 2y² J3 + 1/2 w² J4)]
+
+    with P = λ/(2πε0), w = y² − x², J_m = ∫_0^U u^m e^(−r²u) du = U^(m+1) h_m(r²U),
+    U = 1/(2s²)."""
+    EPS0 = 8.8541878128e-12
+    x = np.asarray(xs_m, dtype=float)
+    y = np.asarray(ys_m, dtype=float)
+    s2 = 0.5 * (sigma_x_m * sigma_x_m + sigma_y_m * sigma_y_m)
+    d = sigma_x_m * sigma_x_m - sigma_y_m * sigma_y_m
+    U = 1.0 / (2.0 * s2)
+    h = _h_moments((x * x + y * y) * U, 4)
+    J0, J1, J2, J3, J4 = (U ** (m + 1) * h[m] for m in range(5))
+    w = y * y - x * x
+    P = lam / (2.0 * np.pi * EPS0)
+    bx = J0 - d * (J1 + w * J2) + d * d * (1.5 * J2 - 2.0 * x * x * J3 + 0.5 * w * w * J4)
+    by = J0 + d * (J1 - w * J2) + d * d * (1.5 * J2 - 2.0 * y * y * J3 + 0.5 * w * w * J4)
+    return P * x * bx, P * y * by
+
+
 def _gauss_field_2d(xs_m, ys_m, sigma_x_m: float, sigma_y_m: float,
                     lam: float):
     """(E_x, E_y) [V/m] of a 2-D Gaussian line-charge distribution.
 
-    Round-beam analytic limit below 5 % asymmetry, Bassetti-Erskine
-    otherwise — factored out of :func:`kick_continuous_2d_gauss` so the
-    frozen-field tune-footprint kicker replays EXACTLY the same field
-    formula with taped σ values.
+    Bassetti-Erskine at (|x|, |y|), every Faddeeva argument in the closed
+    upper half plane, with E_x odd in x and E_y odd in y restored; below
+    1e-4 asymmetry the exact second-order expansion about the round beam.
+    Within 1e-10 of the field wherever it is above 1e-2 of its peak (5e-10
+    above 1e-3, where the closed form still loses a little near the centre of
+    a beam just past the switch), and 1e-12 of the peak everywhere; a scalar
+    position gives a scalar field — factored out of
+    :func:`kick_continuous_2d_gauss` so the frozen-field tune-footprint
+    kicker replays EXACTLY the same field formula with taped σ values.
     """
     from scipy.special import wofz
     EPS0 = 8.8541878128e-12
 
-    # Asymmetry threshold: relative |σ_x − σ_y| / max(σ) < 0.05 → round beam.
-    # Tighter than 5 % triggers Bassetti-Erskine numerical instability where
-    # the (w(z1) − decay·w(z2)) cancellation loses precision.  5 % is well
-    # within accuracy of the round-beam approximation for our purposes.
-    if abs(sigma_x_m - sigma_y_m) / max(sigma_x_m, sigma_y_m) < 0.05:
-        sigma2 = 0.5 * (sigma_x_m**2 + sigma_y_m**2)
-        r2 = xs_m * xs_m + ys_m * ys_m
-        # (1 - exp(-r²/2σ²))/r² with limit 1/(2σ²) at r→0.
-        with np.errstate(invalid="ignore", divide="ignore"):
-            ratio = np.where(
-                r2 > 1e-30,
-                (1.0 - np.exp(-r2 / (2.0 * sigma2))) / r2,
-                1.0 / (2.0 * sigma2),
-            )
-        Ex = (lam / (2.0 * np.pi * EPS0)) * ratio * xs_m
-        Ey = (lam / (2.0 * np.pi * EPS0)) * ratio * ys_m
+    if abs(sigma_x_m - sigma_y_m) / max(sigma_x_m, sigma_y_m) < _NEAR_ROUND_ASYM:
+        return _gauss_field_near_round(xs_m, ys_m, sigma_x_m, sigma_y_m, lam)
+    xs_m = np.asarray(xs_m, dtype=float)
+    ys_m = np.asarray(ys_m, dtype=float)
+    # Convention: σ_x > σ_y; if not, swap the axes.
+    if sigma_y_m > sigma_x_m:
+        sx, sy = sigma_y_m, sigma_x_m
+        x_eff, y_eff = ys_m, xs_m
+        swap = True
     else:
-        # Bassetti-Erskine.  Convention: assume σ_x > σ_y; if not, swap.
-        if sigma_y_m > sigma_x_m:
-            sx, sy = sigma_y_m, sigma_x_m
-            x_eff, y_eff = ys_m, xs_m
-            swap = True
-        else:
-            sx, sy = sigma_x_m, sigma_y_m
-            x_eff, y_eff = xs_m, ys_m
-            swap = False
-        K = 2.0 * (sx * sx - sy * sy)
-        sqrtK = np.sqrt(K)
-        z1 = (x_eff + 1j * y_eff) / sqrtK
-        z2 = ((sy / sx) * x_eff + 1j * (sx / sy) * y_eff) / sqrtK
-        decay = np.exp(-x_eff * x_eff / (2.0 * sx * sx)
-                       - y_eff * y_eff / (2.0 * sy * sy))
-        # Bassetti & Erskine: E_y + i·E_x = (λ/2ε₀√(πK)) [w(z1) − decay·w(z2)]
-        psi = (lam / (2.0 * EPS0 * np.sqrt(np.pi * K))) * (
-            wofz(z1) - decay * wofz(z2)
-        )
-        Ey_eff = psi.real
-        Ex_eff = psi.imag
-        if swap:
-            Ex, Ey = Ey_eff, Ex_eff
-        else:
-            Ex, Ey = Ex_eff, Ey_eff
-    return Ex, Ey
+        sx, sy = sigma_x_m, sigma_y_m
+        x_eff, y_eff = xs_m, ys_m
+        swap = False
+    # With Im z < 0 the two terms below cancel to round-off times
+    # exp((y² − x²)/K) (×1e118 at 5 % asymmetry): evaluate in the first quadrant.
+    ax = np.abs(x_eff)
+    ay = np.abs(y_eff)
+    K = 2.0 * (sx * sx - sy * sy)
+    sqrtK = np.sqrt(K)
+    z1 = (ax + 1j * ay) / sqrtK
+    z2 = ((sy / sx) * ax + 1j * (sx / sy) * ay) / sqrtK
+    decay = np.exp(-ax * ax / (2.0 * sx * sx) - ay * ay / (2.0 * sy * sy))
+    # Bassetti & Erskine: E_y + i·E_x = (λ/2ε₀√(πK)) [w(z1) − decay·w(z2)]
+    psi = (lam / (2.0 * EPS0 * np.sqrt(np.pi * K))) * (
+        wofz(z1) - decay * wofz(z2)
+    )
+    Ey_eff = psi.real * np.sign(y_eff)          # exactly zero across the axis
+    Ex_eff = psi.imag * np.sign(x_eff)
+    if swap:
+        return Ey_eff, Ex_eff
+    return Ex_eff, Ey_eff
 
 
 def _kick_continuous_2d_tilted(beam, ds_mm: float, xs, ys,

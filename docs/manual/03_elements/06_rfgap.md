@@ -139,7 +139,7 @@ linac_gen.elements.rf_gap.RFGap(
 | `ttf` | 1.0 | — | transit-time factor |
 | `voltage_rel` | 0.0 | — | LLRF amplitude error (gaussian σ for tolerance studies) |
 | `phase_offset` | 0.0 | deg | LLRF phase error |
-| `frequency_offset` | 0.0 | MHz | LLRF frequency error |
+| `frequency_offset` | 0.0 | MHz | LLRF frequency error: the cavity beats against the clock from its own entrance; the reference phase does not move |
 
 ### Properties
 

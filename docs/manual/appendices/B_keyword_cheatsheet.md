@@ -28,7 +28,7 @@ mapped to its HELIX class.
 | `SUPERPOSE_MAP Z0 [X0 Y0 θz θx θy]` before each `FIELD_MAP` of a cluster | [SuperposedFieldMap](../03_elements/19_superposedfieldmap.md) — overlapping maps summed per slice; X/Y/θ ignored (as TraceWin does without `SUPERPOSE_MAP_OUT`) |
 | `SUPERPOSE_MAP_OUT Z X Y θz θx θy` before a cluster | [curved cluster](../03_elements/19_superposedfieldmap.md#curved-clusters-superpose_map_out) — the maps bend the reference (static magnetic 3-D maps); exit point and direction; every `SUPERPOSE_MAP` operand places its map |
 | `SHIFT_IN_FIELD_MAP dz` before diagnostics | interior diagnostic dz mm inside the next map/cluster (recorder row at s_entry + dz) |
-| `RFQ_CELL` (Toutatis format) | RfqCell / VaneRFQ |
+| `RFQ_CELL` (Toutatis format) | RfqCell |
 | `THIN_STEERING bx_l by_l aper [elec]` | Steerer |
 | `STEERER` | Steerer |
 | `APERTURE dx dy ap_type` | Aperture |
@@ -74,9 +74,9 @@ coupled semantics are not simulated.
 | `SET_SIZE_MAX k N x y φ/z k2` | σ upper bound over N elements (same 4th-slot sign rule) |
 | `SET_SIZE_MIN k N x y φ/z k2` | σ lower bound over N elements (same 4th-slot sign rule) |
 | `SET_ACHROMAT k f1 f2 plane` | dispersion = 0 |
-| `SET_BEAM_PHASE_ERROR dφ random_flag` | beam phase-error target |
-| `SET_BEAM_E0_P0 k dE dφ ke kp` | energy / phase offset target |
-| `SET_BEAM_ENERGY k E_MeV` | beam-energy target |
+| `SET_BEAM_PHASE_ERROR dφ random_flag` | shifts the RF phase every following cavity's beam sees by dφ (with `random_flag`, a draw within ±dφ per error-study seed); dφ = 0 starts the following cavities afresh: it ends the shifts before it and, in an error study, cancels the phase error the seed's errors gave the beam |
+| `SET_BEAM_E0_P0 k dE dφ ke kp` | matching criterion: the beam's energy and phase offset from the reference particle (the bunch centroid's) against dE and dφ, `ke` / `kp` switching the terms; changes nothing in tracking |
+| `SET_BEAM_ENERGY k E_MeV` | matching criterion: the beam's energy at the card against E; changes nothing in tracking |
 | `SET_GAUSSIAN_CUT_OFF σ` | Gaussian truncation for matching |
 | `SET_BEAM_PHASE_ADV k N μx μy μz` | phase-advance target |
 | `SET_SEPARATION k sx sy` | beam-separation target |
@@ -153,6 +153,7 @@ RFQ_GEOM  RFQ_GAP_RMS_FFS
 | `;@LG integrator_kind=dkd` | RK4 family |
 | `; HELIX_FOIL name material thickness_ug_cm2` | scattering / stripper Foil element |
 | `; HELIX_SC_GRID extent_sigma` | 3-D PIC grid extent (σ) from here on (MP bunched only) |
+| `; HELIX_SET_ENERGY E` / `; HELIX_SHIFT_ENERGY dE` | sets / shifts the reference energy here, in every linac mode (ring mode skips it) |
 
 `;@LG` values are parsed and stored on `lattice.lg_options` for
 tooling and round-trip, but are not currently wired into the runtime

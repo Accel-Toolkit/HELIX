@@ -27,11 +27,14 @@ import pytest
 from linac_gen.cli.common import build_ref
 from linac_gen.core.config import BeamConfig
 from linac_gen.core.lattice import Lattice
+from linac_gen.core.particle import PROTON
+from linac_gen.core.reference import ReferenceParticle
 from linac_gen.elements.aperture import Aperture
 from linac_gen.elements.dipole import Dipole
 from linac_gen.elements.drift import Drift
 from linac_gen.elements.edge import Edge
-from linac_gen.elements.lattice_commands import LatticeCommand
+from linac_gen.elements.lattice_commands import (Freq, LatticeCommand, SetBeamE0P0, SetBeamEnergy,
+                                                 SetReferenceEnergy)
 from linac_gen.elements.marker import Marker
 from linac_gen.elements.matrix_element import MatrixElement
 from linac_gen.elements.multipole import Multipole
@@ -203,7 +206,14 @@ def test_public_deck_round_trip_matrix_parity(tmp_path, deck, species_list):
         La = sum(float(getattr(e, "length", 0.0) or 0.0) for e in a)
         Lb = sum(float(getattr(e, "length", 0.0) or 0.0) for e in b)
         assert La == pytest.approx(Lb, rel=1e-13)
-        M1, M2 = _matrix(lat, ref), _matrix(lat2, ref)
+        # MAD-X cannot hold a FREQ card, which becomes a comment: compare on the
+        # deck's own clock, where its card changes nothing.
+        clock = ref.copy()
+        for e in lat.elements:
+            if isinstance(e, Freq):
+                clock.frequency = e.frequency_mhz
+                break
+        M1, M2 = _matrix(lat, clock), _matrix(lat2, clock)
         scale = max(np.abs(M1).max(), 1.0)
         np.testing.assert_allclose(M1, M2, rtol=1e-12, atol=1e-12 * scale)
         # nothing is silently dropped: every command card became a comment
@@ -630,6 +640,28 @@ def test_species_that_dies_in_the_deck_rf_still_exports(tmp_path):
     assert any("reference particle lost" in w for w in warnings2)
 
 
+def test_linearised_maps_are_evaluated_where_matrix_mode_evaluates_them(tmp_path):
+    """The writer's replay follows the matrix walks, FREQ cards included: an NCELLS,
+    whose gain depends on the clock it meets, is written at the same energy."""
+    import re
+
+    from linac_gen.elements.ncells import NCells
+    from linac_gen.tracking.matrix_tracking import reference_at
+
+    def cell(name):
+        return NCells(name, mode=1, n_cells=6, beta_g=0.2, eot_v_per_m=2.0e6, theta_s_deg=-30.0,
+                      aperture_mm=15.0, p_flag=1, frequency_mhz=325.0)
+    lat = Lattice()
+    for el in (Drift("D0", 100.0), Freq("F", 325.0), Drift("D1", 150.0), cell("NC1"),
+               Drift("D2", 100.0), cell("NC2")):
+        lat.add(el)
+    ref = build_ref(BeamConfig(species="proton", energy=2.1, frequency=162.5))
+    warnings = write_madx(lat, tmp_path / "lin.madx", ref, linearize=True)
+    got = next(w for w in warnings if w.startswith("'NC2'") and "W_in=" in w)
+    w_in = float(re.search(r"W_in=([0-9.eE+-]+)", got).group(1))
+    assert w_in == pytest.approx(reference_at(lat, ref, 5).w_kin, rel=1e-5)
+
+
 def test_error_study_definitions_are_reported_not_dropped_silently(tmp_path):
     """ERROR_* cards attach an error study to the lattice; like
     write_tracewin, the MAD-X writer does not serialise them but says so
@@ -647,3 +679,95 @@ def test_error_study_definitions_are_reported_not_dropped_silently(tmp_path):
     assert any("ERROR_*" in w and "EALIGN" in w for w in warnings)
     n = len(lat.errors)                       # one ErrorDef per non-zero slot
     assert f"! HELIX: {n} ERROR_* element + 0 beam error definitions" in out.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("make", [
+    lambda: SetReferenceEnergy("E", energy_MeV=120.0),
+    lambda: SetReferenceEnergy("E", energy_MeV=20.0, shift=True),
+], ids=["HELIX_SET_ENERGY", "HELIX_SHIFT_ENERGY"])
+def test_an_energy_card_stays_a_comment_and_the_export_says_what_that_means(tmp_path, make):
+    """MAD-X holds one reference energy: the text is the one a line with no card gives,
+    apart from the comment, and a map after the card is at the energy before it."""
+    ref = build_ref(BeamConfig(species="proton", energy=100.0, frequency=352.21))
+
+    def line(*card):
+        lat = Lattice()
+        lat.add(Drift("D0", length=300.0))
+        for c in card:
+            lat.add(c)
+        lat.add(MatrixElement("MX", np.eye(6), length=100.0))
+        lat.add(Drift("D1", length=300.0))
+        return lat
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    with_card = write_madx(line(make()), tmp_path / "a" / "l.madx", ref, linearize=True)
+    plain = write_madx(line(), tmp_path / "b" / "l.madx", ref, linearize=True)
+    assert len([w for w in with_card if "one reference energy" in w]) == 1
+    assert not [w for w in plain if "one reference energy" in w]
+    a = [ln for ln in (tmp_path / "a" / "l.madx").read_text(encoding="utf-8").splitlines()
+         if "! HELIX: HELIX_" not in ln]
+    b = (tmp_path / "b" / "l.madx").read_text(encoding="utf-8").splitlines()
+    assert a == b
+
+
+def test_e0_p0_without_its_energy_flag_gets_no_warning(tmp_path):
+    lat = Lattice()
+    lat.add(Drift("D0", length=300.0))
+    lat.add(SetBeamE0P0("E", dE_MeV=20.0, ke=0))
+    warnings = write_madx(lat, tmp_path / "a.madx", build_ref(BeamConfig(species="proton", energy=100.0)))
+    assert not [w for w in warnings if "one reference energy" in w]
+
+
+def _card_line(card):
+    lat = Lattice()
+    lat.add(Drift("D1", length=100.0))
+    lat.add(card)
+    lat.add(Quadrupole(name="Q", length=100.0, gradient=5.0))
+    return lat
+
+
+@pytest.mark.parametrize("make", [lambda: SetReferenceEnergy("E", energy_MeV=120.0),
+                                  lambda: SetReferenceEnergy("E", energy_MeV=20.0, shift=True)],
+                         ids=["HELIX_SET_ENERGY", "HELIX_SHIFT_ENERGY"])
+def test_strict_refuses_a_card_that_would_move_the_energy(tmp_path, make):
+    ref = ReferenceParticle(species=PROTON, w_kin=100.0, frequency=352.21)
+    with pytest.raises(ValueError, match="MAD-X export refused: 'E'"):
+        write_madx(_card_line(make()), tmp_path / "x.madx", ref, on_unsupported="error")
+
+
+@pytest.mark.parametrize("make", [lambda: SetReferenceEnergy("E", energy_MeV=100.0),
+                                  lambda: SetReferenceEnergy("E", energy_MeV=0.0, shift=True),
+                                  lambda: SetBeamEnergy("E", energy_MeV=120.0),
+                                  lambda: SetBeamE0P0("E", dE_MeV=20.0, ke=1)],
+                         ids=["same energy", "no shift", "SET_BEAM_ENERGY, a criterion",
+                              "SET_BEAM_E0_P0, a criterion"])
+def test_a_card_that_moves_nothing_is_not_called_a_problem(tmp_path, make):
+    """The exported line is exact for these, so it says nothing, and strict passes."""
+    ref = ReferenceParticle(species=PROTON, w_kin=100.0, frequency=352.21)
+    assert not [w for w in write_madx(_card_line(make()), tmp_path / "x.madx", ref)
+                if "one reference energy" in w]
+    write_madx(_card_line(make()), tmp_path / "y.madx", ref, on_unsupported="error")
+
+
+def test_a_card_in_a_bend_group_is_judged_too(tmp_path):
+    ref = ReferenceParticle(species=PROTON, w_kin=100.0, frequency=352.21)
+    lat = Lattice()
+    lat.add(Edge(name="E1", pole_rotation=0.0, rho=5000.0))
+    lat.add(Dipole(name="B1", angle=5.0, rho=5000.0))
+    lat.add(SetReferenceEnergy("E", energy_MeV=120.0))
+    lat.add(Dipole(name="B2", angle=5.0, rho=5000.0))
+    lat.add(Edge(name="E2", pole_rotation=0.0, rho=5000.0))
+    assert [w for w in write_madx(lat, tmp_path / "x.madx", ref) if "one reference energy" in w]
+
+
+def test_a_gap_with_no_frequency_reads_the_clock_a_map_jumped_to(tmp_path):
+    """A map that makes its own jump moves the clock, and the tracker's gap runs on it."""
+    from tests.tracking.test_envelope_reference_matches_tracker import _ncells
+    ref = ReferenceParticle(species=PROTON, w_kin=20.0, frequency=162.5)
+    lat = Lattice()
+    lat.add(_ncells(frequency=325.0))
+    lat.add(RFGap(name="G", voltage=0.5, phase=-60.0, frequency=0.0, ttf=1.0))
+    out = tmp_path / "x.madx"
+    write_madx(lat, out, ref, linearize=True)
+    line = next(ln for ln in out.read_text(encoding="utf-8").splitlines() if ln.lower().startswith("g:"))
+    assert "freq=325" in line

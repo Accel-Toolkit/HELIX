@@ -55,7 +55,15 @@ The **Import .dst…** button reads a TraceWin `.dst` particle file
 file's header auto-populates the form: energy, frequency, current,
 particle count, and the calculated ε / Twiss per plane.  The
 simulation then reads the *actual particles* from the file
-(`source="file"`) instead of regenerating from Twiss.  A file chip
+(`source="file"`) instead of regenerating from Twiss.  TraceWin (seen from
+2.27) also writes files that keep lost particles, flagged: only the particles
+still in the beam are read, and the current becomes theirs, I × N_alive /
+N_file.  A project that reads a `.dst` keeps its own current, and the status
+bar's warnings list says if that differs.  A file whose phases span the RF period (rms
+above 90°: an RFQ entrance) ticks **Continuous beam**, so that the run uses DC
+space charge.  An RFQ-exit file keeps the particles the RFQ did not accelerate:
+they stay in the beam and dominate its σ_W and ε_z.  The status line under the
+form reports each of these.  A file chip
 appears next to the button naming the active `.dst`, with a
 **clear** link that reverts to generate-from-Twiss mode.
 

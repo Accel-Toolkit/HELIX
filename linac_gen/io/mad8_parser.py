@@ -1739,7 +1739,8 @@ def parse_mad8(filepath: str, strict: bool = False, brho=None,
             f"MAD8: {len(gaps)} RFCAVITY element(s) set by HARMON — frequency "
             f"= HARMON·βc/C with C = {circ_m:.6g} m (the used line)")
     if any(hasattr(el, "_madx_raw") for el in elements):
-        _convert_raw_matrices(elements_as_lattice(elements), ref, warnings)
+        # MAD-8's reference follows its LCAVITYs: its maps are about it
+        _convert_raw_matrices(elements_as_lattice(elements), ref, warnings, orbit=False)
 
     periods: list[dict] = []
     if auto_periods and cells:

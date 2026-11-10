@@ -79,6 +79,31 @@ def test_emittance_growth_kpi_is_the_normalised_growth(qapp):
     assert _kpi_val(tab._k_ex).startswith("0.14")       # 2.405 / 17.14
 
 
+def test_emittance_growth_kpi_is_normalised_on_an_envelope_run(qapp):
+    """An envelope run records only the geometric emittance: the tile derives
+    the normalised one from βγ, as the Normalised-emittance tile does.  Through
+    an RFQ this read 0.24x (geometric) while the normalised growth was 2.03x."""
+    import numpy as np
+    from linac_gen_gui.interphase.state import AppState
+    from linac_gen_gui.interphase.tabs.results_tab import ResultsTab
+
+    from linac_gen.tracking.envelope import EnvelopeResults
+
+    gamma = 1.0 + np.array([0.03, 2.10399]) / 939.294
+    beta = np.sqrt(1.0 - 1.0 / gamma ** 2)
+    res = EnvelopeResults(
+        s=[0.0, 6423.4], sigma_x=[6.0, 1.1], sigma_y=[6.0, 1.0],
+        emit_x=[17.5166, 4.2392], ref_beta=list(beta), ref_gamma=list(gamma))
+    assert not hasattr(res, "emit_nx")          # why the tile has to derive it
+
+    def _noop(*a, **k):
+        return None
+
+    tab = ResultsTab(AppState(), _noop, _noop, _noop)
+    tab._refresh(res)
+    assert _kpi_val(tab._k_ex).startswith("2.03")
+
+
 def test_refresh_via_set_results_signal_ndarray(qapp):
     """The real dispatch path the assistant uses: AppState.set_results ->
     results_changed -> ResultsTab._refresh, with ndarray-valued results."""

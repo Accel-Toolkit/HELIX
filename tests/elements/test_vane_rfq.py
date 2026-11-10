@@ -1,4 +1,4 @@
-"""Unit tests for the VaneRFQ Toutatis-equivalent RFQ tracker.
+"""Unit tests for the retired VaneRFQ whole-RFQ element.
 
 VaneRFQ wraps the entire RFQ as one FieldMapElement and uses the .vane
 geometry to drive per-z r₀(z) and V(z) inside the existing 2-term
@@ -14,6 +14,9 @@ Crandall physics borrowed from RfqCell.  These tests cover:
 """
 from __future__ import annotations
 
+import copy
+import warnings
+
 import numpy as np
 import pytest
 
@@ -23,12 +26,17 @@ from linac_gen.core.beam import Beam
 from linac_gen.core.lattice import Lattice
 from linac_gen.elements.drift import Drift
 from linac_gen.elements.rfq_cell import RfqCell
-from linac_gen.elements.vane_rfq import CellSpan, VaneRFQ
+from linac_gen.elements.vane_rfq import CellSpan, VaneRFQ, VaneRFQRetiredWarning
 from linac_gen.io.tracewin_vane import VaneGeometry
 from linac_gen.io.vane_rfq_helper import (
     cell_spans_from_rfq_chain,
     replace_rfq_cells_with_vane,
 )
+
+# retired element (VaneRFQRetiredWarning on every construction); the warning
+# itself is tested at the end of this file
+pytestmark = pytest.mark.filterwarnings(
+    "ignore::linac_gen.elements.vane_rfq.VaneRFQRetiredWarning")
 
 
 # ---------------------------------------------------------------------------
@@ -275,3 +283,17 @@ def test_cell_spans_from_rfq_chain_contiguous():
     assert spans[1].z_end_mm == 2 * L
     assert spans[2].z_start_mm == 2 * L
     assert spans[2].z_end_mm == 3 * L
+
+
+def test_constructing_a_vanerfq_warns_that_it_is_retired():
+    """Retired: no phase slip in its push, entry velocity held in its
+    envelope matrix.  Every construction warns; a copy (the GUI's run
+    workers deep-copy the lattice) is not a construction and stays quiet."""
+    with pytest.warns(VaneRFQRetiredWarning, match="retired") as rec:
+        elem = VaneRFQ(name="R", vane=_flat_vane(40.0),
+                       cells=_two_cell_spans())
+    assert len(rec) == 1 and "RfqCell chain" in str(rec[0].message)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", VaneRFQRetiredWarning)
+        clone = copy.deepcopy(elem)
+    assert isinstance(clone, VaneRFQ) and clone is not elem

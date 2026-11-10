@@ -19,7 +19,7 @@ element.
 | Cavity from a 1-D / 2-D field map | [FieldMap](07_fieldmap.md) |
 | Cavity from a 3-D Cartesian field map | [FieldMap3D](08_fieldmap3d.md) |
 | One RFQ cell (Crandall 2-term) | [RfqCell](09_rfqcell.md) |
-| Whole RFQ from a `.vane` file | [VaneRFQ](10_vanerfq.md) |
+| Whole RFQ from a `.vane` file (retired: track the RfqCell chain) | [VaneRFQ](10_vanerfq.md) |
 | Sextupole / octupole / higher-pole | [Multipole](11_multipole.md) |
 | Aperture mask (loss collimator) | [Aperture](12_aperture.md) |
 | Named s-position (snapshot trigger) | [Marker](13_marker.md) |
@@ -58,15 +58,16 @@ MatrixElement           ThinLens                 NCells                ScGridDir
 
 * **TransferMapElement** — linear elements with a closed-form 6×6
   matrix.  Drift, hard-edge quad, hard-edge solenoid, sector/rect
-  dipole, and MatrixElement (an explicit 6×6 map applied verbatim —
-  the Elegant `EMATRIX` import target; energy-agnostic and not
-  sub-sliceable).
+  dipole, and MatrixElement (an explicit 6×6 map — the Elegant `EMATRIX`
+  and MAD-X `MATRIX` import target; energy-agnostic and not
+  sub-sliceable; a map that records the clock of its phase units,
+  `clock_mhz`, follows the run's clock).
 * **ThinKickElement** — zero-length kick.  RFGap (TraceWin's GAP
   card), Steerer, thin Multipole, Foil, ThinLens.
 * **FieldMapElement** — integrated substep-by-substep through a
   tabulated field (first-order midpoint kick-drift for 1-D/2-D
   maps; KD/DKD for 3-D).  Cavities, real solenoids, RFQ cells,
-  whole-RFQ `VaneRFQ` (its five field models are `field_model`
+  the retired whole-RFQ `VaneRFQ` (its five field models are `field_model`
   options on the one class, not separate classes).
 * **PassiveElement** — zero-length (or matrix-thin), no tracked
   dynamics of their own.  Markers, aperture cuts,

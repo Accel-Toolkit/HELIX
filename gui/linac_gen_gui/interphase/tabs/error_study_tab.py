@@ -80,6 +80,7 @@ class _StudyWorker(QThread):
 
     def run(self) -> None:
         try:
+            # the study says what it did with the registered surrogates (ErrorStudy.run)
             self._study.n_seeds = self._n
             self._study.base_seed = self._base_seed
             results = self._study.run(
@@ -89,6 +90,39 @@ class _StudyWorker(QThread):
             self.done.emit(results, self._stopping())
         except Exception as exc:                                # pragma: no cover
             self.failed.emit(str(exc))
+
+
+def surrogates_line(results) -> str:
+    """What a study's status says of the registered surrogates: the design check's line, and
+    for an envelope study that used them the answers per seed, the traversals left native
+    over all its seeds and why, the seeds where many fell outside the trained range, and the
+    largest exit difference of its seeds run again natively."""
+    from linac_gen.errors.error_model import OUT_OF_RANGE_WARN
+    from linac_gen.surrogates.study_check import refusal_text
+    check = getattr(results, "surrogates", None)
+    note = getattr(check, "note", "") or ""
+    calls = getattr(results, "surrogate_calls", None) or []
+    if not (getattr(check, "use", False) and calls):
+        return note
+    n = len(calls)
+    parts = [note, f"{min(calls)}–{max(calls)} network answers per seed" if min(calls) != max(calls)
+             else f"{calls[0]} network answers per seed"]
+    native = {}
+    for refused in getattr(results, "native_traversals", None) or []:
+        for reason, k in refused.items():
+            native[reason] = native.get(reason, 0) + k
+    if native:
+        parts.append(f"left native over the {n} seeds: {refusal_text(native)}")
+    flagged = [f for f in (getattr(results, "outside_range", None) or []) if f > OUT_OF_RANGE_WARN]
+    if flagged:
+        parts.append(f"outside the trained range in {len(flagged)} of {n} seeds (up to "
+                     f"{100 * max(flagged):.0f} %)")
+    nc = getattr(results, "native_check", None)
+    if nc and nc.get("seeds"):
+        where = f" ({nc['key']}, seed {nc['seed']})" if nc.get("key") is not None else ""
+        parts.append(f"{len(nc['seeds'])} seeds run again natively: largest exit difference "
+                     f"{nc['largest']:.2g}{where}")
+    return "; ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +238,13 @@ class ErrorStudyTab(QWidget):
         # ---- run controls -------------------------------------------
         run_box = QGroupBox("Run")
         run_box.setStyleSheet(_group_qss())
-        rv = QHBoxLayout(run_box); rv.setContentsMargins(8, 8, 8, 8); rv.setSpacing(10)
+        # the controls in a row, the status below them across the box's width (it can be long)
+        run_v = QVBoxLayout(run_box)
+        run_v.setContentsMargins(8, 8, 8, 8)
+        run_v.setSpacing(6)
+        rv = QHBoxLayout()
+        rv.setSpacing(10)
+        run_v.addLayout(rv)
         self._n_seeds = QSpinBox(); self._n_seeds.setRange(2, 10_000)
         self._n_seeds.setValue(50)
         rv.addWidget(QLabel("n_seeds")); rv.addWidget(self._n_seeds)
@@ -218,6 +258,15 @@ class ErrorStudyTab(QWidget):
             "existing 50-seed study to seeds [1000-1049]."
         )
         rv.addWidget(QLabel("base seed")); rv.addWidget(self._base_seed)
+        self._forward = QComboBox()
+        self._forward.addItems(["multiparticle", "envelope"])
+        self._forward.setToolTip(
+            "The forward model of every seed, from the same error draws: multiparticle "
+            "tracks a beam (space charge from the Numerics tab); envelope runs the rms "
+            "envelope (no particle losses), and uses the surrogates ticked in the "
+            "Surrogates tab when the design lattice with them agrees with the native run.")
+        rv.addWidget(QLabel("forward"))
+        rv.addWidget(self._forward)
         self._run_btn = QPushButton("Run study")
         self._run_btn.clicked.connect(self._on_run)
         rv.addWidget(self._run_btn)
@@ -233,8 +282,9 @@ class ErrorStudyTab(QWidget):
         self._progress.setValue(0)
         rv.addWidget(self._progress, stretch=1)
         self._status = QLabel("")
+        self._status.setWordWrap(True)
         self._status.setStyleSheet(f"color:{theme.TEXT_2}; font-size:11px;")
-        rv.addWidget(self._status)
+        run_v.addWidget(self._status)
         v.addWidget(run_box)
 
     # ------------------------------------------------------------------
@@ -432,6 +482,7 @@ class ErrorStudyTab(QWidget):
             n_seeds=self._n_seeds.value(),
             sc_config=sc_cfg,
             base_seed=self._base_seed.value(),
+            mode="envelope" if self._forward.currentText() == "envelope" else "mp",
         )
         for s in self._element_errors:
             study.add_error(
@@ -515,7 +566,7 @@ class ErrorStudyTab(QWidget):
         if n_lost:
             suffix = (f" — orbit correction lost the beam in "
                       f"{n_lost} seed(s)")
-        if stopped:
+        if stopped and n < n_req:      # a stop that came after the last seed changed nothing
             if n == 0:
                 self._status.setText(
                     "stopped before the first seed completed — nothing stored")
@@ -527,8 +578,10 @@ class ErrorStudyTab(QWidget):
                     f"error study stopped: {n}/{n_req} seeds — "
                     f"open the Results tab.{suffix}")
             return
+        note = surrogates_line(results)
         self._status.setText(
-            f"done — {n} seeds, results stored on app state{suffix}")
+            f"done — {n} seeds, results stored on app state{suffix}"
+            + (f"; {note}" if note else ""))
         self._progress.setValue(100)
         self.state.status_message.emit(
             f"error study finished: {n} seeds — open the Results tab.{suffix}"

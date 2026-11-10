@@ -22,6 +22,9 @@ from PyQt6.QtWidgets import (
 )
 
 from linac_gen_gui.interphase import theme
+from linac_gen_gui.interphase.commands import (
+    BeamConfigCommand, MacroCommand, ParamChangeCommand,
+)
 from linac_gen_gui.interphase.icons import icon
 from linac_gen_gui.interphase.state import AppState
 from linac_gen_gui.interphase.panels import kpi_card, kpi_set as _kset
@@ -124,6 +127,8 @@ class MatchingTab(QWidget):
         # Lattice mutations (inspector edits, drag-drop reorder, Open) invalidate
         # any cached match result — Apply/Save would push outdated data.
         state.lattice_changed.connect(self._invalidate_match_cache)
+        # so does a change of the session beam (the Beam tab's Apply, say)
+        state.beam_config_changed.connect(self._on_beam_config_changed)
         # initial populate
         self._refresh_kpis(state.beam_config)
         if state.lattice is not None:
@@ -323,8 +328,10 @@ class MatchingTab(QWidget):
                 from linac_gen.core.reference import ReferenceParticle
                 sp_map = {"proton": PROTON, "deuteron": DEUTERON, "H-": H_MINUS}
                 sp = sp_map.get(cfg.species, PROTON)
-                ref = ReferenceParticle(species=sp, w_kin=cfg.energy,
-                                        frequency=cfg.frequency)
+                from linac_gen.distributions.factory import reference_config
+                start = reference_config(cfg)   # a .dst beam: the file's energy and clock
+                ref = ReferenceParticle(species=sp, w_kin=start.energy,
+                                        frequency=start.frequency)
                 from linac_gen.analysis.phase_advance import (
                     structure_phase_advance,
                 )
@@ -810,6 +817,14 @@ class MatchingTab(QWidget):
 
         # Holds the most recent MatchResult between Run and Apply/Save.
         self._aa_result = None
+        # The lattice in hand when the running (or last) match started: Apply
+        # writes its values into that lattice only.
+        self._aa_source = None
+        # The session beam that match started from, and what changed after its
+        # Match click other than by Apply ("lattice", "beam"): its result no
+        # longer holds, and Apply refuses it.
+        self._aa_beam = None
+        self._aa_changed: set = set()
         self._aa_worker = None
         # Live convergence-plot dialog (created lazily on first Match
         # click).  Persists across matches so the user can review the
@@ -982,6 +997,9 @@ class MatchingTab(QWidget):
                     lambda w=prev: (self._zombie_workers.remove(w)
                                     if w in self._zombie_workers else None))
 
+        self._aa_source = self.state.lattice
+        self._aa_beam = copy.deepcopy(cfg)
+        self._aa_changed = set()
         self._aa_worker = _MatchWorker(
             lattice_copy, beam_copy,
             space_charge=self._aa_sc.isChecked(),
@@ -1196,11 +1214,22 @@ class MatchingTab(QWidget):
             cost_str = f"cost {baseline:.4e} → {result.cost:.4e}"
         else:
             cost_str = f"cost {result.cost:.4e}"
-        self._aa_status.setText(
-            f"{status_prefix} — "
-            f"{result.n_iter} iters, {cost_str}, "
-            f"{result.elapsed_s:.2f}s"
-        )
+        text = (f"{status_prefix} — "
+                f"{result.n_iter} iters, {cost_str}, "
+                f"{result.elapsed_s:.2f}s")
+        changed = self._what_changed()
+        if changed:
+            # edited while the match ran: the match evaluated another lattice
+            # or beam than the one in hand (Apply refuses it)
+            text += (f".  It no longer holds: {changed} changed after Match "
+                     "was clicked — click Match again.")
+        self._aa_status.setText(text)
+
+    def _what_changed(self) -> str:
+        """What changed after the running (or last) Match click other than by
+        Apply: "the lattice", "the beam", both, or "" (nothing)."""
+        return " and ".join(f"the {what}" for what in ("lattice", "beam")
+                            if what in self._aa_changed)
 
     def _invalidate_match_cache(self, *_args) -> None:
         """Drop any stale ``MatchResult`` and reset Apply/Save state.
@@ -1209,21 +1238,47 @@ class MatchingTab(QWidget):
         via the inspector or reordering elements clears the previous
         result.  Without this, the Variable/Constraint tables and the
         Apply button would point at a deep-copy taken before the edit.
+        Any later edit clears it, an Undo of the Apply among them.  Each edit
+        is also recorded, so the result of a match that was running then is
+        refused when it arrives.
         """
         if getattr(self, "_applying_match", False):
-            # Apply is installing the matched lattice itself — keep the result
+            # Apply's own edit (the bus re-broadcasts it): keep the result
             # valid so Save still works afterwards (see _on_match_apply).
             return
+        self._aa_changed.add("lattice")
         if self._aa_result is None:
             return
+        self._drop_match_result(
+            "Lattice changed since last match — click Match again.")
+
+    def _on_beam_config_changed(self, cfg) -> None:
+        """A session beam set other than by Apply (the Beam tab's Apply, a
+        project): unless it is the beam the match started from or the matched
+        one, the match no longer holds.  As for a lattice edit, a result in
+        hand is dropped, and one still to arrive is refused."""
+        if getattr(self, "_applying_match", False):
+            return
+        held = [self._aa_beam]
+        if self._aa_result is not None:
+            held.append(self._aa_result[1])
+        if any(b is not None and cfg == b for b in held):
+            return
+        self._aa_changed.add("beam")
+        if self._aa_result is None:
+            return
+        self._drop_match_result(
+            "Beam changed since last match — click Match again.")
+
+    def _drop_match_result(self, why: str) -> None:
+        """Forget the result: Apply and Save off, the tables emptied, ``why``
+        on the status line."""
         self._aa_result = None
         self._aa_apply.setEnabled(False)
         self._aa_save.setEnabled(False)
         self._aa_var_table.setRowCount(0)
         self._aa_con_table.setRowCount(0)
-        self._aa_status.setText(
-            "Lattice changed since last match — click Match again."
-        )
+        self._aa_status.setText(why)
 
     def _emit_match_ended(self, *_args) -> None:
         """Relay any match termination (finished/failed/stopped) as the
@@ -1250,48 +1305,128 @@ class MatchingTab(QWidget):
         if not cancelled:
             QMessageBox.critical(self, "Matching error", message)
 
+    def _matched_edit(self, lattice_after, beam_after, result):
+        """The edit that writes what the match wrote into its copies into the
+        lattice and the beam in hand, as ONE step of the command bus: a
+        ``ParamChangeCommand`` per setting its variables varied (on the element
+        at the same place, of the same class and name), then a
+        ``BeamConfigCommand`` for the beam fields its ``ADJUST_BEAM_*``
+        variables varied.  Nothing else changes: the match writes nothing but
+        its variables into the copies (its forward passes leave run state
+        only, which every run sets again).  None when the lattice and the beam
+        hold those values already; ValueError when the lattice in hand is not
+        the one the match ran on: another lattice since, or one edited while
+        the match ran (an element added, removed, moved, renamed or
+        replaced), or when the lattice or the session beam changed after
+        Match was clicked (a value edit, the Beam tab's Apply)."""
+        from linac_gen.core.config import BeamConfig
+        live = self.state.lattice
+        if live is None:
+            raise ValueError("no lattice is loaded")
+        source = self._aa_source
+        if source is not None and live is not source:
+            raise ValueError("another lattice was loaded after the match "
+                             "started")
+        copied = list(lattice_after.elements)
+        if len(live.elements) != len(copied) or any(
+                type(a) is not type(b)
+                or getattr(a, "name", None) != getattr(b, "name", None)
+                for a, b in zip(live.elements, copied, strict=True)):
+            raise ValueError(
+                "the lattice was edited while the match ran (an element "
+                "added, removed, moved, renamed or replaced)")
+        changed = self._what_changed()
+        if changed:
+            raise ValueError(f"{changed} changed after Match was clicked")
+        place = {id(e): i for i, e in enumerate(copied)}
+        settings: dict = {}             # (place, attr) → matched value, in card order
+        beam: dict = {}
+        for var in getattr(result, "variables", None) or ():
+            target = var.target
+            if target is beam_after or isinstance(target, BeamConfig):
+                beam[var.attr] = getattr(target, var.attr)
+                continue
+            i = place.get(id(target))
+            if i is None:
+                raise ValueError(
+                    f"the match varied {var.label or var.attr}, which is not "
+                    "an element of the lattice it matched")
+            settings[(i, var.attr)] = getattr(target, var.attr)
+        cmds = []
+        for (i, attr), value in settings.items():
+            element = live.elements[i]
+            old = getattr(element, attr)
+            if old != value:
+                cmds.append(ParamChangeCommand(element, attr, old, value))
+        cfg = self.state.beam_config
+        if cfg is not None:
+            beam = {k: v for k, v in beam.items() if getattr(cfg, k) != v}
+            if beam:
+                cmds.append(BeamConfigCommand(
+                    self.state, beam, label="Matched beam",
+                    show=getattr(self._beam_tab, "show_beam_fields", None)))
+        if not cmds:
+            return None
+        return MacroCommand(cmds, label="Matching Apply", refusal=self._run_refusal)
+
+    def _run_refusal(self) -> str | None:
+        """Why the Apply's step must not be undone or redone now, or None: the
+        bus asks before it does either.  While a run is going its values stay,
+        as the Apply itself is refused (see ``_on_match_apply``)."""
+        if self.state.run_going:
+            return "a run is going.  Try again when the run has ended."
+        return None
+
     def _on_match_apply(self) -> None:
+        """Write the matched values into the lattice in hand (and the matched
+        beam into the Beam tab): one edit of the command bus, which one Undo
+        reverts — the lattice object, its file path and the Surrogates tab's
+        rows and Use ticks stay.  The matched copy stays the result, so Save
+        matched .dat still writes it.  Refused while a run is going, the result
+        kept; so are its Undo and its Redo (``_run_refusal``)."""
         if not self._aa_result:
             return
-        lattice_after, beam_after, _ = self._aa_result
-        # Mutating state.lattice in place isn't safe (other panels hold
-        # references); push the matched copy via the state setter.
+        if self.state.run_going:
+            # a run walks the elements of the lattice in hand, after a Stop too
+            # until its worker has ended: values written now would reach the
+            # ones it has not passed
+            self._aa_status.setText("Not applied — a run is going.  The result is "
+                                    "kept: click Apply when the run has ended.")
+            return
+        lattice_after, beam_after, result = self._aa_result
         try:
-            # Keep the on-disk path: the matched lattice is the SAME file,
-            # just with new parameter values.  Dropping it turned Save
-            # into Save-As and the titlebar into "(no lattice loaded)".
-            path = self.state.lattice_path
-            # Suppress _invalidate_match_cache for THIS lattice change — the
-            # matched lattice is exactly what Apply is installing, so the
-            # result must stay valid so the user can still Save it afterwards.
-            # (Without this, set_lattice()'s lattice_changed cleared
-            # self._aa_result and disabled Save the instant Apply ran.)
-            self._applying_match = True
-            try:
-                self.state.set_lattice(lattice_after, path)
-            finally:
-                self._applying_match = False
-            self.state.set_beam_config(beam_after)
-            # Push back into the BeamTab form so the user sees the values.
-            if hasattr(self._beam_tab, "set_beam_config"):
-                self._beam_tab.set_beam_config(beam_after)
-            # set_lattice() reset() the undo stack and cleared bus.dirty,
-            # but the matched lattice DOES differ from the on-disk .dat,
-            # so re-flag it as dirty so the user gets prompted to save
-            # before quitting / loading another lattice.  Same for the
-            # project: beam config + matched lattice changed.
-            if hasattr(self.state, "bus"):
-                self.state.bus.mark_dirty()
-            self.state.mark_project_dirty()
-            # The lattice now carries FITTED values the source file does
-            # not — plain Save must reroute to Save-As (set AFTER
-            # set_lattice, which resets the flag).
-            self.state.lattice_fitted = True
+            edit = self._matched_edit(lattice_after, beam_after, result)
+        except ValueError as exc:
+            self._aa_status.setText(f"Not applied — {exc}: click Match again.")
+            QMessageBox.warning(self, "Apply",
+                                f"Not applied: {exc}.  Click Match again.")
+            return
+        if edit is None:
+            self._aa_status.setText("Nothing to apply — the lattice and beam "
+                                    "already hold the matched values.")
+            return
+        # The bus re-broadcasts the edit (lattice_changed): suppress
+        # _invalidate_match_cache for it, so the result stays valid and Save
+        # still writes the matched lattice afterwards.
+        self._applying_match = True
+        try:
+            self.state.bus.do(edit)
         except Exception as exc:                          # noqa: BLE001
+            # an element refused a value: the step undid the rest
+            self._aa_status.setText(f"Not applied — {exc}")
             QMessageBox.critical(self, "Apply error", str(exc))
             return
+        finally:
+            self._applying_match = False
+        # The bus flags the lattice dirty (the .dat on disk differs); the
+        # project too: the matched beam and lattice belong to it.
+        self.state.mark_project_dirty()
+        # The lattice now carries FITTED values the source file does not —
+        # plain Save must reroute to Save-As.
+        self.state.lattice_fitted = True
         self._aa_status.setText("Applied — lattice + beam updated. "
-                                "Save the .dat / project to persist.")
+                                "Save the .dat / project to persist. "
+                                "Undo reverts it.")
 
     def _on_match_save(self) -> None:
         if not self._aa_result:

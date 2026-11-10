@@ -1,4 +1,5 @@
-"""Helpers for opting into the :class:`VaneRFQ` Toutatis-equivalent path.
+"""Helpers that swap a parsed RfqCell chain for one :class:`VaneRFQ` (retired:
+constructing one warns, see :mod:`linac_gen.elements.vane_rfq`).
 
 Workflow:
 

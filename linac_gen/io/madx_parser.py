@@ -1173,6 +1173,9 @@ def _build_element(name: str, etype: str, attrs: dict, brho: float,
                 k2_sink.append(name)
         edge_out = Edge(name=f"{name}_e2", pole_rotation=beta2 * _RAD_TO_DEG,
                         rho=rho_mm, aperture=aperture_mm, hv=hv, **edge_kw_out)
+        # the faces that act, so that an edit of the bend can say they stay
+        body._edge_names = tuple(e.name for e in (edge_in, edge_out)
+                                 if e.pole_rotation or (e.gap and e.k1))
         # Edges are zero-length; the Dipole carries the full arc length.
         return [edge_in, body, edge_out], body.length
 
@@ -2079,7 +2082,7 @@ def parse_madx(filepath: str) -> tuple[Lattice, dict]:
             break
     freq_placeholder = freq_MHz <= 0
     if freq_placeholder:
-        freq_MHz = 352.21        # benign placeholder; no RF ⇒ unused
+        freq_MHz = 352.21        # placeholder: a MATRIX converted on it records it (clock_mhz)
     reference = _reference_from_beam(beam_attrs, freq_MHz, warnings)
     # (a BEAM with only a particle, or no BEAM, leaves the energy a default)
     reference_declared = any(k in beam_attrs for k in _BEAM_ENERGY_KEYS)
@@ -2490,22 +2493,47 @@ def _finish_rf_and_k2(lattice, reference, rf_built, k2_bends, freq_placeholder, 
             "the bend for ring mode; linac tracking ignores it")
 
 
-def _convert_raw_matrices(lattice, reference, warnings) -> None:
+def _convert_raw_matrices(lattice, reference, warnings, *, orbit: bool = True) -> None:
     """Turn the raw MAD-X ``MATRIX`` data into HELIX-basis maps.
 
-    MAD-X keeps one reference momentum p₀ for the whole sequence; a map
-    that changes the energy is written about p₀ with the exit angles
-    rescaled by p₀/p_out and the gain as ``kick6`` (pt).  The local
-    energy at each placement is replayed exactly as the exporter does:
-    RFCAVITY design gains (q·V·sin 2π·lag — the ``RFGap`` reference
-    advance) and earlier ``MATRIX`` kick6 terms.
+    MAD-X keeps one reference momentum p₀ for the whole sequence, while
+    HELIX's reference follows the line's energy.  In MAD-X's coordinates
+    HELIX's reference is an orbit (t, pt): pt = (W − W₀)/(p₀c), and t, reset
+    to 0 at each ``MATRIX`` exit, grows by L·(1/β₀ − 1/β) over the length
+    between.  A map acts on the deviations about that orbit (its basis at the
+    local energy and clock: exit angles rescaled by p₀/p_out); what it does
+    to the orbit itself is HELIX's reference gain (pt at the exit,
+    ``MatrixElement.ref_gain``) and, for the rest, an offset of every
+    particle.  The local energy is replayed as the exporter writes it:
+    RFCAVITY design gains (q·V·sin 2π·lag — the ``RFGap`` reference advance)
+    and the gains of the maps before.  ``t`` holds no clock, so the Δφ of a
+    map is in degrees of the clock at its point (with no cavity to give one,
+    the placeholder's), which the element records.
+
+    ``orbit=False`` is for a deck whose own reference follows the energy (MAD-8,
+    whose LCAVITY moves it): the maps are about that reference, so a ``kick6``
+    stays an energy offset of every particle, as it was read before the orbit.
     """
     from linac_gen.tracking.longitudinal_coords import (
         matrix_from_madx, vector_from_madx)
+
+    def about_the_beam_energy(e, R, kick) -> None:
+        """No local energy any more (a warning below says so), but the clock is known."""
+        r = reference.copy()
+        r.frequency = ref_local.frequency
+        e.matrix = matrix_from_madx(R, reference, r, r)
+        off = vector_from_madx(kick, reference, r)
+        e.offset = off if np.any(off) else None
+        e.clock_mhz = float(r.frequency)
+
     ref_local = reference.copy()
     p0c = reference.bg * reference.species.mass
+    inv_beta0 = 1.0 / reference.beta
+    t_orbit = 0.0                     # m: the reference orbit's t since the last MATRIX exit
     n_gain = 0
+    n_kick6 = 0                       # (orbit=False) maps whose kick6 offsets every particle
     lost_at = None
+    lost_by_kick = False
     no_freq_at = False
     n_after = 0                       # MATRIX elements converted about the BEAM energy
     for e in lattice.elements:
@@ -2514,43 +2542,72 @@ def _convert_raw_matrices(lattice, reference, warnings) -> None:
             R, kick = raw
             del e._madx_raw
             if lost_at is not None:
-                # No local energy any more: keep the map about the BEAM
-                # reference (a warning below says so).
-                e.matrix = matrix_from_madx(R, reference)
-                off = vector_from_madx(kick, reference)
-                e.offset = off if np.any(off) else None
+                about_the_beam_energy(e, R, kick)
                 n_after += 1
                 continue
             r_in = ref_local.copy()
-            dW = float(kick[5]) * p0c
-            r_out = r_in.copy()
-            try:
-                r_out.w_kin = r_in.w_kin + dW
-            except (ValueError, ZeroDivisionError, OverflowError):
-                lost_at = e.name
-                e.matrix = matrix_from_madx(R, reference)
-                off = vector_from_madx(kick, reference)
+            if not orbit:
+                dW = float(kick[5]) * p0c
+                r_out = r_in.copy()
+                try:
+                    r_out.w_kin = r_in.w_kin + dW
+                except (ValueError, ZeroDivisionError, OverflowError):
+                    lost_at, lost_by_kick = e.name, True
+                    about_the_beam_energy(e, R, kick)
+                    n_after += 1
+                    continue
+                e.matrix = matrix_from_madx(R, reference, r_in, r_out)
+                off = vector_from_madx(kick, reference, r_out)
                 e.offset = off if np.any(off) else None
-                n_after += 1
+                e.clock_mhz = float(r_in.frequency)
+                ref_local.w_kin = r_out.w_kin
+                n_kick6 += dW != 0.0
                 continue
+            z_in = np.zeros(6)
+            z_in[4] = t_orbit
+            z_in[5] = (r_in.w_kin - reference.w_kin) / p0c
+            moved = R @ z_in
+            y = moved + kick                       # where the map takes the orbit
+            r_out = r_in.copy()
+            # (a map that gains nothing cancels the orbit's pt to round-off: no gain)
+            if abs(y[5] - z_in[5]) > 1e-9 * (abs(moved[5]) + abs(kick[5]) + abs(z_in[5])):
+                try:
+                    r_out.w_kin = reference.w_kin + float(y[5]) * p0c
+                except (ValueError, ZeroDivisionError, OverflowError):
+                    lost_at, lost_by_kick = e.name, True
+                    about_the_beam_energy(e, R, kick)
+                    n_after += 1
+                    continue
             e.matrix = matrix_from_madx(R, reference, r_in, r_out)
-            off = vector_from_madx(kick, reference, r_out)
+            rest = y.copy()
+            rest[5] = 0.0                          # the pt is the reference's
+            # a map written about this orbit cancels it to round-off
+            rest[np.abs(rest) <= 1e-9 * (np.abs(moved) + np.abs(kick))] = 0.0
+            off = vector_from_madx(rest, reference, r_out)
             e.offset = off if np.any(off) else None
+            e.clock_mhz = float(r_in.frequency)         # its dphi's degrees: the clock here
+            e.ref_gain = r_out.w_kin - r_in.w_kin
             ref_local.w_kin = r_out.w_kin
-            if dW != 0.0:
+            t_orbit = 0.0
+            if e.ref_gain != 0.0:
                 n_gain += 1
-        elif isinstance(e, RFGap) and lost_at is None:
+            continue
+        if isinstance(e, RFGap) and lost_at is None:
             try:
                 e.advance_ref(ref_local)
             except RFFrequencyError:
                 lost_at, no_freq_at = e.name, True
             except (ValueError, ZeroDivisionError, OverflowError):
                 lost_at = e.name
+        length_m = float(getattr(e, "length", 0.0) or 0.0) / 1000.0
+        if length_m and lost_at is None:
+            t_orbit += length_m * (inv_beta0 - 1.0 / ref_local.beta)
     if lost_at is not None and (n_after or not no_freq_at):
         # (a cavity with no frequency matters here only for a MATRIX after it;
         # _finish_rf_and_k2 reports the cavity itself)
         why = ("the cavity has a voltage but no frequency, so the energy after it is unknown"
                if no_freq_at else
+               "its kick6 takes the reference below zero energy" if lost_by_kick else
                "the BEAM species decelerates below zero energy in this sequence's RF")
         warnings.append(
             f"reference particle lost at {lost_at!r}: {why}; any "
@@ -2558,9 +2615,14 @@ def _convert_raw_matrices(lattice, reference, warnings) -> None:
             "energy instead of the local one")
     if n_gain:
         warnings.append(
-            f"{n_gain} MATRIX element(s) carry an energy kick (kick6): "
-            "imported as a ΔW offset on every particle — HELIX's "
-            "reference energy stays at the BEAM value through them")
+            f"{n_gain} MATRIX element(s) change the energy (kick6): HELIX's reference "
+            "follows it (MatrixElement.ref_gain), and each map takes the particles "
+            "about it, as a cavity's does")
+    if n_kick6:
+        warnings.append(
+            f"{n_kick6} MATRIX element(s) carry an energy kick (kick6): imported as a ΔW "
+            "offset on every particle — HELIX's reference energy stays where it was through "
+            "them")
 
 
 __all__ = ["parse_madx"]

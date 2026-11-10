@@ -508,6 +508,39 @@ class BeamTab(QWidget):
         # True) deliberately skips it, so regenerate it explicitly here.
         self._regen_preview()
 
+    def show_beam_fields(self, values: dict) -> None:
+        """Put ``values`` (``BeamConfig`` field → value) in the boxes of those
+        fields and redraw the preview (the Matching tab's Apply, its Undo and
+        its Redo).  Every other box keeps what it shows, a value typed there
+        and not applied among them, and the form is not applied: the caller
+        has set the session beam.  A field without a box (species, the
+        distribution, a flag) is refused before any box changes."""
+        boxes = {
+            "energy": self._energy, "frequency": self._freq,
+            "current": self._current, "duty_cycle": self._duty,
+            "n_particles": self._npart, "cutoff": self._cutoff,
+            "emit_nx": self._emit_nx, "alpha_x": self._alpha_x,
+            "beta_x": self._beta_x, "emit_ny": self._emit_ny,
+            "alpha_y": self._alpha_y, "beta_y": self._beta_y,
+            "emit_z": self._emit_z, "alpha_z": self._alpha_z,
+            "beta_z": self._beta_z,
+            "centroid_x": self._cx, "centroid_xp": self._cxp,
+            "centroid_y": self._cy, "centroid_yp": self._cyp,
+            "centroid_dphi": self._cphi, "centroid_dw": self._cdw,
+            "disp_x": self._disp_x, "disp_xp": self._disp_xp,
+            "disp_y": self._disp_y, "disp_yp": self._disp_yp,
+            "mismatch_x": self._mx, "mismatch_y": self._my,
+            "mismatch_z": self._mz,
+            "dc_energy_spread_keV": self._dc_dw,
+            "halo_fraction": self._halo_frac, "halo_ratio": self._halo_ratio,
+        }
+        missing = [k for k in values if k not in boxes]
+        if missing:
+            raise ValueError(f"the Beam tab form has no box for {', '.join(missing)}")
+        for k, v in values.items():
+            boxes[k].setValue(int(v) if k == "n_particles" else float(v))
+        self._regen_preview()
+
     def _refresh_file_chip(self) -> None:
         if self._source == "file" and self._distribution_file:
             from os.path import basename
@@ -598,12 +631,13 @@ class BeamTab(QWidget):
         self._alpha_z.setValue(float(header.get("alpha_z", self._alpha_z.value())))
         self._beta_z.setValue(float(header.get("beta_z",  self._beta_z.value())))
 
-        # A .dst stores absolute phi/W per particle, so the loaded beam is
-        # always bunched.  Clear the continuous toggle to avoid the factory
-        # silently overwriting the longitudinal columns with uniform-phase
-        # synthetic values.
-        self._continuous.setChecked(False)
-        self._on_continuous_toggled(False)
+        # A .dst stores absolute phi/W per particle, and the factory reads
+        # them whatever this toggle says; it selects the space-charge model.
+        # A file whose phases span the RF period holds a DC beam (an RFQ
+        # entrance).  The toggle stays the user's to change.
+        dc = bool(header.get("dc_like", False))
+        self._continuous.setChecked(dc)
+        self._on_continuous_toggled(dc)
 
         self._source = "file"
         self._distribution_file = fp
@@ -614,10 +648,20 @@ class BeamTab(QWidget):
         # phase-space preview from the actual file particles.
         self._apply(quiet=True)
         self._regen_preview()
+        notes = []
+        if header.get("n_lost"):
+            notes.append(f"{header['n_lost']} of {header['n_in_file']} flagged "
+                         f"lost, current scaled to {header['current_mA']:.4g} mA")
+        if dc:
+            notes.append("phases span the RF period: Continuous ticked")
+        if header.get("n_off_energy"):
+            notes.append(f"{header['n_off_energy']} particles far from the "
+                         "median energy dominate σ_W and ε_z")
         self._status.setText(
             f"loaded {basename(fp)} — N={header.get('n_particles')}, "
             f"W={header.get('w_kin_ref'):.4f} MeV, "
             f"εnx={header.get('emit_nx'):.4f}, εny={header.get('emit_ny'):.4f}"
+            + ("  ·  " + "; ".join(notes) if notes else "")
         )
         self.state.status_message.emit(f"beam source: {basename(fp)}")
 

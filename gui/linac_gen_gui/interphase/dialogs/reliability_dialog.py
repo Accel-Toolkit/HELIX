@@ -148,9 +148,15 @@ class _CampaignWorker(QThread):
                     c = ReliabilityCampaign.create(d, self._spec)
                     plan = c.plan()
                     self.log.emit(f"created {d}: " + ", ".join(f"{k} {len(v)}" for k, v in plan.items()))
-                out = c.run(self._legs, max_workers=self._max_workers,
-                            serial=self._max_workers <= 1,
-                            progress_cb=self.progress.emit, should_stop=self._stopping)
+                # no design check of the surrogates here yet: the campaign runs native
+                from linac_gen.surrogates.study_check import runs_native, study_surrogates
+                surrogates = runs_native("a reliability campaign runs native")
+                if surrogates.note:
+                    self.log.emit(surrogates.note)
+                with study_surrogates(surrogates):
+                    out = c.run(self._legs, max_workers=self._max_workers,
+                                serial=self._max_workers <= 1,
+                                progress_cb=self.progress.emit, should_stop=self._stopping)
             except (ValueError, RuntimeError, FileExistsError, FileNotFoundError,
                     NotImplementedError) as exc:                   # the refusal idiom
                 self.failed.emit(str(exc))
@@ -1123,6 +1129,12 @@ class ReliabilityStudyDialog(QDialog):
             el = by_name.get(name)
             if el is None or not hasattr(el, attr):
                 QMessageBox.warning(self, _TITLE, f"{key}: no such element/attribute in the session lattice"); return
+            if type(el).__name__ == "Dipole":
+                # an older campaign re-tuned bend angles, which moves the reference path
+                QMessageBox.warning(self, _TITLE, f"{key}: '{name}' is a bend, and a bend is never a "
+                                                  "compensator (its angle moves the reference path) — "
+                                                  "rerun the campaign")
+                return
             old = getattr(el, attr)
             if old != new:
                 cmds.append(ParamChangeCommand(el, attr, old, float(new)))

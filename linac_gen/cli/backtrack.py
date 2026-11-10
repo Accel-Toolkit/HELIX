@@ -73,9 +73,8 @@ def add_arguments(p) -> None:
                         "trips close at float round-off (~1e-13); "
                         "'linear' is the v1 inverted fitted-matrix path "
                         "(~2%% closure through strong bunchers), kept "
-                        "for comparison and for elements without an "
-                        "exact inverse (RFQ cells, surrogates fall back "
-                        "to it automatically)")
+                        "for comparison; RFQ cells and NCELLS cavities, "
+                        "which have no exact inverse, always use it")
     p.add_argument("--energy-tolerance", type=float, default=1e-3,
                    dest="energy_tolerance", metavar="REL",
                    help="relative |ΔW|/W above which the exit-energy "

@@ -118,9 +118,12 @@ The dispersion entries couple to ΔW (MeV) directly, via
     coordinates.
 
     Reading the results: through a dispersive line the **projected**
-    longitudinal emittance grows — on `examples/bend_line.dat` by ×93 in
-    envelope mode and ×53 with macroparticles — because the beam acquires
-    a genuine position–energy correlation.  That is a projection, not
+    longitudinal emittance grows, because the beam acquires a genuine
+    position–energy correlation.  On `examples/bend_line.dat` it grows by
+    ×10.7 in envelope mode and with macroparticles (±0.1 from seed to seed
+    at 10 000), for a 100 MeV proton with no current and the `BeamConfig`
+    defaults for the rest; the factor depends on the input beam.  That is a
+    projection, not
     emittance growth: the map is symplectic and the six-dimensional
     phase-space volume is conserved, which
     `tests/tracking/test_path_length_row.py` checks directly.
@@ -198,7 +201,17 @@ linac_gen.elements.dipole.Dipole(
 
 ### Properties
 
-* `length` — derived from `angle` and `rho`: L = ρ·|angle|·π/180.
+* `length` — derived from `angle` and `rho`: L = ρ·|angle|·π/180, also
+  after an edit of either (in the inspector, a Parameter Scan, `ADJUST`,
+  the assistant or Python).  While the bend has an angle its length
+  cannot be written: an `AttributeError` says to edit the angle or the
+  radius.  Set to angle 0 the bend has no arc and so no length.  A bend
+  with no angle can be given a length and is then a field-free pipe of
+  it, which it keeps through rewrites of its radius and gets back when
+  an angle given to it is taken away.  To switch a magnet off at its
+  length, set `field_rel = -1`.  Pole faces that an importer made
+  separate `Edge` elements keep their own radius and angles when the
+  bend is edited; the first edit says so in a warning.
 * `effective_angle` — `angle * (1 + field_rel)`; the per-seed
   magnet-strength error folded into the bend angle (arc length is
   fixed by geometry).

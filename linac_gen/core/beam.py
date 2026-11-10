@@ -96,6 +96,17 @@ class Beam:
         return self.current * self.duty_cycle / 100.0
 
     @property
+    def alive_current(self) -> float:
+        """Peak current (mA) of the particles still in the beam.  A lost particle
+        takes its charge with it (``pic/macrocharge.py``), so a file holding only the
+        alive ones needs this current to keep each particle's charge."""
+        if self.n_particles == 0:
+            return 0.0
+        if self.n_alive == self.n_particles:
+            return self.current
+        return self.current * self.n_alive / self.n_particles
+
+    @property
     def n_particles(self) -> int:
         return self.particles.shape[0]
 

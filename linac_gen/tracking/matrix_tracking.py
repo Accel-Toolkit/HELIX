@@ -3,9 +3,11 @@ import numpy as np
 import math
 from linac_gen.core.lattice import Lattice
 from linac_gen.core.reference import ReferenceParticle
+from linac_gen.core.track_state import TrackState
 from linac_gen.elements.base import (
     TransferMapElement, ThinKickElement, PassiveElement, FieldMapElement,
 )
+from linac_gen.elements.lattice_commands import REFERENCE_COMMANDS
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +41,8 @@ def _ref_fingerprint(ref: ReferenceParticle) -> tuple:
         round(float(ref.w_kin), 12),
         round(float(ref.frequency), 12),
         round(float(ref.phi_s), 9),
+        round(float(getattr(ref, "rf_shift", 0.0)), 9),        # SET_BEAM_PHASE_ERROR
+        round(float(getattr(ref, "rf_rephase", 0.0)), 9),
     )
 
 
@@ -95,8 +99,8 @@ def _compute_element_matrix(element, ref_copy: ReferenceParticle) -> np.ndarray:
                     return wrapped.fitted_matrix(ref_copy)
             raise
     elif isinstance(element, PassiveElement):
-        # Edge is the lone PassiveElement with a real linear matrix
-        # (zero-length pole-face rotation): defer to its transfer_matrix.
+        # Edge (a zero-length pole-face rotation) and Freq (a change of the
+        # phase coordinate) carry a real linear matrix.
         if hasattr(element, "transfer_matrix"):
             return element.transfer_matrix(ref_copy)
         return np.eye(6)
@@ -175,6 +179,23 @@ def _advance_field_map_ref(lattice, element, ref_copy: ReferenceParticle, *,
         element.advance_ref(ref_copy)
 
 
+def _advance_ref_past(element, ref_copy: ReferenceParticle) -> None:
+    """Advance ``ref_copy`` past one element that is not a field map.  A card that
+    changes the reference does it at the card, as in every other mode; the map of a
+    FREQ card is what ``Freq.transfer_matrix`` gives before this call."""
+    if isinstance(element, REFERENCE_COMMANDS):
+        element.apply_command(TrackState(ref=ref_copy))
+        return
+    ref_copy.s += element.length
+    if element.length != 0:             # (a negative drift steps it back)
+        ref_copy.phi_s += 360.0 * element.length / (ref_copy.beta * ref_copy.wavelength)
+    if isinstance(element, ThinKickElement):
+        element.advance_ref(ref_copy)
+    gain = getattr(element, "ref_gain", 0.0)     # a matrix element that moves the reference
+    if gain:
+        ref_copy.w_kin = ref_copy.w_kin + gain
+
+
 def _replay_ref(elements, ref_copy: ReferenceParticle, lattice=None) -> None:
     """Advance ``ref_copy`` in place through ``elements`` (reference only).
 
@@ -191,13 +212,7 @@ def _replay_ref(elements, ref_copy: ReferenceParticle, lattice=None) -> None:
             element.reset_run_state()
             _advance_field_map_ref(lattice, element, ref_copy)
         else:
-            ref_copy.s += element.length
-            if element.length > 0:
-                ref_copy.phi_s += (
-                    360.0 * element.length / (ref_copy.beta * ref_copy.wavelength)
-                )
-            if isinstance(element, ThinKickElement):
-                element.advance_ref(ref_copy)
+            _advance_ref_past(element, ref_copy)
 
 
 def reference_at(lattice: Lattice, ref: ReferenceParticle,
@@ -246,11 +261,7 @@ def compute_transfer_matrix(lattice: Lattice, ref: ReferenceParticle,
         if isinstance(element, FieldMapElement):
             _advance_field_map_ref(lattice, element, ref_copy, reset=False)
         else:
-            ref_copy.s += element.length
-            if element.length > 0:
-                ref_copy.phi_s += 360.0 * element.length / (ref_copy.beta * ref_copy.wavelength)
-            if isinstance(element, ThinKickElement):
-                element.advance_ref(ref_copy)
+            _advance_ref_past(element, ref_copy)
     return M
 
 
@@ -279,9 +290,10 @@ def compute_twiss(
     — the raw ``acos(tr/2)`` is biased for every accelerating cell
     (≈0.863 determinant per PIP-II HWR cavity).  The longitudinal
     (Δφ, ΔW) pair is canonical up to a fixed scale, so det = 1 through
-    fixed-frequency acceleration; across a phase-coordinate FREQUENCY
-    jump it equals f_out/f_in (see ``RFGap.kick_matrix``) and the same
-    normalization applies.  Magnetostatic lattices take the historical
+    fixed-frequency acceleration.  Across a phase-coordinate FREQUENCY
+    jump it equals f_out/f_in, but that scales Δφ alone, which this
+    normalization does not undo: bring both sides to one clock first, as
+    ``structure_phase_advance`` does.  Magnetostatic lattices take the historical
     code path bit-for-bit (``|det − 1| ≤ 1e-9`` fast path).
 
     Note an accelerating "cell" is not genuinely periodic: the

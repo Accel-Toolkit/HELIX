@@ -179,6 +179,42 @@ def test_elements_ring_mode_cannot_track_are_refused(element, match):
         compile_ring(_lat(Drift("d", 1000.0), element), _ref())
 
 
+@pytest.mark.parametrize("f1, f2", [(352.21, 800.0), (500.0, 1497.0), (1300.0, 2856.0),
+                                    (37.77, 100.0), (37.77, 176.1), (37.77, 750.0),
+                                    (200.0, 352.21), (800.0, 352.21)])
+def test_a_transverse_matrix_compiles_whatever_clock_it_sits_on(tmp_path, f1, f2):
+    """Its z diagonal goes through the Δφ degrees of the local clock and back, which at
+    these clocks leaves 0.9999999999999999.  That is not coupling."""
+    w = 400.0
+    deck = tmp_path / "r.madx"
+    deck.write_text(f"""beam, particle=proton, energy={(w + 938.27208816) / 1000.0!r};
+c1: rfcavity, l=0, volt=0.1, lag=0, freq={f1!r};
+c2: rfcavity, l=0, volt=0.1, lag=0, freq={f2!r};
+mx: matrix, l=1.0, rm11=1, rm22=1, rm33=1, rm44=1, rm55=1, rm66=1;
+d: drift, l=10.0;
+s: sequence, refer=entry, l=33.0;
+ d1: d, at=0;
+ c1, at=10;
+ d2: d, at=10;
+ c2, at=20;
+ mx, at=20;
+ d3: d, at=21;
+ d4: drift, l=2.0, at=31;
+endsequence;
+use, sequence=s;
+""")
+    lat, _meta = parse_madx(str(deck))
+    compile_ring(lat, RingReference.from_kinetic("proton", w), lattice_energy=w)
+
+
+@pytest.mark.parametrize("m55", [1.0 + 1e-9, 1.0 - 1e-9, 1.1])
+def test_a_z_diagonal_that_is_not_one_is_still_refused(m55):
+    M = np.eye(6)
+    M[4, 4] = m55
+    with pytest.raises(RingCompileError, match="longitudinal plane"):
+        compile_ring(_lat(Drift("d", 1000.0), MatrixElement(name="m", matrix=M)), _ref())
+
+
 def test_a_foil_is_a_marker_where_the_foil_acts():
     # (the foil itself acts on the host: linac_gen.ring.injection)
     rl = compile_ring(_lat(Drift("d", 1000.0), Foil(name="foil")), _ref())

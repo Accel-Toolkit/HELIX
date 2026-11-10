@@ -476,7 +476,7 @@ def test_harmon_overrides_freq_as_in_madx_track(tmp_path):
     both = "cav: rfcavity, l=0, volt=10, lag=0, freq=52.8, harmon=84;"
 
     def kick(cav: str) -> float:
-        m = cpymad.Madx(stdout=False)
+        m = cpymad.Madx(stdout=False, cwd=str(tmp_path))   # TRACK writes checkpoint_restart.dat there
         try:
             m.input(BEAM + cav + "\nd: drift, l=474.2;\nr: line=(cav, d);\nuse, period=r;\n"
                     "track, onepass, onetable, dump=false;\nstart, t=0.5;\nrun, turns=1;\n"

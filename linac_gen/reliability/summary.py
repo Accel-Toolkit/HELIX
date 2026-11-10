@@ -17,8 +17,9 @@ FAULT_COLS = ("id", "case_id", "class", "label", "elements", "bracket", "mode", 
               "emit_nx", "emit_ny", "emit_nz", "emit_nx_growth_pct", "emit_ny_growth_pct",
               "emit_nz_growth_pct", "loss_frac", "loss_w_total", "loss_w_per_m_peak",
               "loss_w_per_m_peak_s_m", "treaty_w_kin", "treaty_phi_deg", "treaty_sigma_x",
-              "treaty_sigma_y", "foil_sigma_x_mm", "foil_sigma_y_mm", "criticality", "critical",
-              "beam_lost", "recovered_by", "error", "results_path")
+              "treaty_sigma_y", "foil_sigma_x_mm", "foil_sigma_y_mm", "edge_over_aperture",
+              "edge_element", "edge_out_element", "criticality", "critical", "beam_lost",
+              "recovered_by", "error", "results_path")
 COMP_COLS = ("case_id", "class", "label", "bracket", "strategy", "recovered_by_rule", "recovered",
              "after_critical", "match_success", "compensators", "n_knobs", "ref_w_kin_after",
              "transmission_after", "emit_nx_after", "emit_ny_after", "emit_nz_after", "residual_cost",
@@ -84,7 +85,8 @@ def fault_table(campaign) -> list[dict]:
                "results_path": str(campaign.item_dir(it) / "results.h5")}
         for k in ("transmission", "ref_w_kin", "emit_nx", "emit_ny", "emit_nz", "loss_w_total",
                   "loss_w_per_m_peak", "loss_w_per_m_peak_s_m", "treaty_w_kin", "treaty_phi_deg",
-                  "treaty_sigma_x", "treaty_sigma_y", "foil_sigma_x_mm", "foil_sigma_y_mm"):
+                  "treaty_sigma_x", "treaty_sigma_y", "foil_sigma_x_mm", "foil_sigma_y_mm",
+                  "edge_over_aperture", "edge_element"):
             rec[k] = m.get(k)
         for k in m:
             if k.startswith("loss_w_per_m_peak_"):
@@ -117,6 +119,11 @@ def _recovered_by(crit: dict, comps) -> str:
     return "not_compensated"
 
 
+def _n_knobs(settings: dict) -> int:
+    """The optimiser columns of a compensation's settings: a cavity map's ke and kb share one."""
+    return sum(1 for k in settings if not (k.endswith(".kb") and k[:-3] + ".ke" in settings))
+
+
 def compensation_table(campaign) -> list[dict]:
     out = []
     for c in campaign.compensation_rows():
@@ -128,7 +135,7 @@ def compensation_table(campaign) -> list[dict]:
                     "recovered": res.get("recovered"), "after_critical": res.get("after_critical"),
                     "match_success": res.get("match_success"),
                     "compensators": res.get("compensator_names") or [],
-                    "n_knobs": len(res.get("settings") or {}),
+                    "n_knobs": _n_knobs(res.get("settings") or {}),
                     "ref_w_kin_after": after.get("ref_w_kin"),
                     "transmission_after": after.get("transmission"),
                     "emit_nx_after": after.get("emit_nx"), "emit_ny_after": after.get("emit_ny"),
@@ -356,6 +363,13 @@ def write_summary(campaign) -> Path:
         "availability_error": _availability_error(campaign),
         "class_split_applied": (avail or {}).get("class_split_applied"),
     }
+    # what the reliability CLI's --surrogates made the envelope runs (surrogates.json)
+    recorded = d / "surrogates.json"
+    if recorded.exists():
+        try:
+            summary["surrogates"] = json.loads(recorded.read_text(encoding="utf-8")).get("note")
+        except (OSError, json.JSONDecodeError):
+            summary["surrogates"] = "unreadable surrogates.json"
     (d / "summary.json").write_text(json.dumps(summary, indent=1, default=str) + "\n", encoding="utf-8")
     try:
         from linac_gen.reliability import plots

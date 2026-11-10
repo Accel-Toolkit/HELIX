@@ -28,6 +28,17 @@ from linac_gen.distributions.thermal import generate_thermal
 
 _log = logging.getLogger(__name__)
 
+#: notes already given about a loaded file: a match builds its beam at every evaluation
+_DST_NOTES: set = set()
+
+
+def _dst_note(path, message: str, *args) -> None:
+    """Warn about a loaded ``.dst``, once for the process."""
+    key = (str(path), message % args)
+    if key not in _DST_NOTES:
+        _DST_NOTES.add(key)
+        _log.warning(message, *args)
+
 SPECIES_MAP = {
     "proton": PROTON,
     "deuteron": DEUTERON,
@@ -63,6 +74,32 @@ def geometric_emittances(config, bg: float) -> tuple:
             config.emit_z * sz)   # longitudinal is already geometric
 
 
+_DISPERSION_KEYS = ("disp_x", "disp_xp", "disp_y", "disp_yp")
+
+
+def input_dispersion(config) -> dict:
+    """The input dispersion a beam from ``config`` starts with, keyed as the envelope
+    solver reads it (``disp_x`` and ``disp_y`` in mm/MeV, ``disp_xp`` and ``disp_yp`` in
+    mrad/MeV): the config's values, by which :func:`create_beam` shears the particles it
+    generates, or zeros for a beam read from a file, whose particles are taken as they are.
+    Every envelope seed takes it from here, so the envelope of a bunched beam starts from the
+    beam a multiparticle run generates.  A continuous beam gets zeros too, with a warning: its
+    envelope holds no energy spread before the first RF element, so a dispersion cannot enter
+    it, while create_beam shears such a beam by its DC energy spread."""
+    if getattr(config, "source", None) == "file":
+        return dict.fromkeys(_DISPERSION_KEYS, 0.0)
+    disp = {k: float(getattr(config, k, 0.0) or 0.0) for k in _DISPERSION_KEYS}
+    if bool(getattr(config, "continuous", False)):
+        if any(disp.values()):
+            import warnings
+            warnings.warn("a continuous beam: the envelope holds no energy spread before the "
+                          "first RF element, so the input dispersion does not enter it (a "
+                          "multiparticle run shears the beam by its DC energy spread)",
+                          UserWarning, stacklevel=2)
+        return dict.fromkeys(_DISPERSION_KEYS, 0.0)
+    return disp
+
+
 def reshape_to_twiss(particles, alpha_x: float, beta_x: float,
                      alpha_y: float, beta_y: float):
     """Particles re-shaped onto the given transverse rms Twiss.
@@ -95,6 +132,82 @@ def reshape_to_twiss(particles, alpha_x: float, beta_x: float,
         new = T @ (np.vstack([u, up]) - mu[:, None]) + mu[:, None]
         out[:, i], out[:, j] = new[0], new[1]
     return out
+
+
+#: what a TraceWin .dst file sets on the beam besides its energy and frequency
+_DST_BEAM_FIELDS = ("emit_nx", "emit_ny", "emit_z", "alpha_x", "beta_x",
+                    "alpha_y", "beta_y", "alpha_z", "beta_z")
+_DST_HEADERS: dict = {}
+
+
+def _dst_header(path: str) -> dict:
+    """The header of a .dst file (its particles dropped), kept while the file is unchanged:
+    every mode reads it for the beam it starts from."""
+    import os
+    st = os.stat(path)
+    key = (os.path.abspath(path), st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
+    header = _DST_HEADERS.get(key)
+    if header is None:
+        from linac_gen.io.tracewin_dst import load_dst
+        particles, header = load_dst(path)
+        # the particles' centroid, which a run's beam keeps (create_beam)
+        header = dict(header, centroid=tuple(float(v) for v in np.asarray(particles).mean(axis=0))
+                      if len(particles) else (0.0,) * 6)
+        if len(_DST_HEADERS) > 8:
+            _DST_HEADERS.clear()
+        _DST_HEADERS[key] = header
+    return header
+
+
+def _dst_beam_fields(config, header) -> dict:
+    """The emittances and Twiss parameters a .dst file sets on the beam: all those it
+    holds, but the transverse alpha/beta of a config that re-shapes the file onto them
+    (``reshape_to_twiss``), which are its target."""
+    keep = (("alpha_x", "beta_x", "alpha_y", "beta_y")
+            if getattr(config, "reshape_to_twiss", False) else ())
+    return {f: float(header[f]) for f in _DST_BEAM_FIELDS if f in header and f not in keep}
+
+
+def reference_config(config):
+    """The beam settings a run starts from, as :func:`create_beam` takes them: ``config``
+    itself, or for a TraceWin .dst source a copy with the file's energy, frequency,
+    emittances and Twiss parameters (the file wins over the config), its particles'
+    centroid plus the config's offsets, and no mismatch (a file's emittance is used as
+    it is).  No particles are made and ``config`` is left as it is, so the envelope,
+    matrix and every other mode start where a multiparticle run does."""
+    if getattr(config, "source", None) != "file":
+        return config
+    path = str(getattr(config, "distribution_file", "") or "")
+    if not path.lower().endswith(".dst") or config.species not in SPECIES_MAP:
+        return config
+    import copy as _copy
+    header = _dst_header(path)
+    out = _copy.copy(config)
+    out.energy = float(header["w_kin_ref"])
+    out.frequency = float(header["frequency_MHz"])
+    for fld, value in _dst_beam_fields(config, header).items():
+        setattr(out, fld, value)
+    out.mismatch_x = out.mismatch_y = out.mismatch_z = 0.0
+    for fld, c in zip(("centroid_x", "centroid_xp", "centroid_y", "centroid_yp",
+                       "centroid_dphi", "centroid_dw"), header["centroid"], strict=True):
+        setattr(out, fld, float(getattr(config, fld, 0.0) or 0.0) + c)
+    return out
+
+
+def file_reference(config) -> ReferenceParticle | None:
+    """The reference a beam from ``config`` starts with when its source is a
+    TraceWin .dst file, as :func:`create_beam` takes it: the file's energy
+    and frequency (the file wins over the config).  None for any other
+    source."""
+    if getattr(config, "source", None) != "file":
+        return None
+    path = str(getattr(config, "distribution_file", "") or "")
+    if not path.lower().endswith(".dst") or config.species not in SPECIES_MAP:
+        return None
+    from linac_gen.io.tracewin_dst import load_dst
+    _particles, header = load_dst(path)
+    return ReferenceParticle(species=SPECIES_MAP[config.species],
+                             w_kin=header["w_kin_ref"], frequency=header["frequency_MHz"])
 
 
 def create_beam(config: BeamConfig, seed: int = None) -> Beam:
@@ -177,6 +290,33 @@ def create_beam(config: BeamConfig, seed: int = None) -> Beam:
             file_W = header["w_kin_ref"]
             file_freq = header["frequency_MHz"]
             file_mc2 = header["mass_MeV"]
+            if (config.current > 0.0
+                    and header["current_mA"] > 0.0
+                    and (abs(header["current_mA"] - config.current)
+                         > 1e-3 * header["current_mA"])):
+                # the beam keeps the config's current, on the file's particles
+                # (said of the config: a match with space charge off, or a
+                # preview, has no run at this current)
+                if header["n_lost"]:
+                    _dst_note(
+                        path, "loaded .dst: %d of %d particles are flagged lost, so "
+                        "the beam left in the file carries %.4g mA, but the beam is "
+                        "set to %.4g mA", header["n_lost"], header["n_in_file"],
+                        header["current_mA"], config.current,
+                    )
+                else:
+                    _dst_note(
+                        path, "loaded .dst: the file's %d particles carry %.4g mA, "
+                        "but the beam is set to %.4g mA", header["n_particles"],
+                        header["current_mA"], config.current,
+                    )
+            if header["n_off_energy"]:
+                _dst_note(
+                    path, "loaded .dst: %d of %d particles are further than half the "
+                    "median energy from it (not accelerated?): they stay in the "
+                    "beam, and dominate its energy spread and longitudinal "
+                    "emittance", header["n_off_energy"], header["n_particles"],
+                )
             if abs(file_W - config.energy) > 1e-6:
                 _log.info(
                     "loaded .dst: using file's reference energy %.4f MeV "
@@ -202,25 +342,18 @@ def create_beam(config: BeamConfig, seed: int = None) -> Beam:
             # than the (now-overridden) lgproj inputs.  The user is informed
             # of the override via _log.info.  With reshape_to_twiss the
             # config's transverse alpha/beta are the target (kept).
-            keep = (("alpha_x", "beta_x", "alpha_y", "beta_y")
-                    if getattr(config, "reshape_to_twiss", False) else ())
-            for fld in ("emit_nx", "emit_ny", "emit_z",
-                        "alpha_x", "beta_x",
-                        "alpha_y", "beta_y",
-                        "alpha_z", "beta_z"):
-                if fld in header and fld not in keep:
-                    new_val = header[fld]
-                    old_val = getattr(config, fld, None)
-                    if old_val is not None and abs(new_val - old_val) > 1e-6:
-                        _log.info(
-                            "loaded .dst: overriding config.%s "
-                            "%.6g → %.6g (file value)",
-                            fld, old_val, new_val,
-                        )
-                    try:
-                        setattr(config, fld, float(new_val))
-                    except (AttributeError, TypeError):
-                        pass  # frozen dataclass / read-only — skip silently
+            for fld, new_val in _dst_beam_fields(config, header).items():
+                old_val = getattr(config, fld, None)
+                if old_val is not None and abs(new_val - old_val) > 1e-6:
+                    _log.info(
+                        "loaded .dst: overriding config.%s "
+                        "%.6g → %.6g (file value)",
+                        fld, old_val, new_val,
+                    )
+                try:
+                    setattr(config, fld, float(new_val))
+                except (AttributeError, TypeError):
+                    pass  # frozen dataclass / read-only — skip silently
         else:
             from linac_gen.distributions.from_file import load_distribution
             particles_array, header = load_distribution(path)

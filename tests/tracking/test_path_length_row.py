@@ -22,6 +22,9 @@ from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
 from tests.dataguard import needs
 
 
+BEND_LINE_MHZ = 352.21      # examples/bend_line.dat opens with this FREQ card
+
+
 def _ref(w_kin=100.0):
     return ReferenceParticle(species=PROTON, w_kin=w_kin, frequency=352.21)
 
@@ -62,14 +65,15 @@ def test_composed_line_obeys_the_symplectic_path_length_relation():
     assert M[4, 1] == pytest.approx(r52, rel=1e-12, abs=1e-14)
 
 
-@pytest.mark.parametrize("deck, species, energy", [
-    ("examples/bend_line.dat", "H-", 2.1226695),
-    ("examples/csr_chicane.dat", "H-", 2.1226695),
+@pytest.mark.parametrize("deck, species, energy, frequency", [
+    ("examples/bend_line.dat", "H-", 2.1226695, BEND_LINE_MHZ),
+    ("examples/csr_chicane.dat", "H-", 2.1226695, 162.5),
 ])
-def test_shipped_bend_decks_obey_the_relation(deck, species, energy):
-    """The same relation on real decks, where edges and drifts compose."""
+def test_shipped_bend_decks_obey_the_relation(deck, species, energy, frequency):
+    """The same relation on real decks, where edges and drifts compose, on the
+    clock each deck runs at."""
     lat = load_lattice(deck)
-    ref = build_ref(BeamConfig(species=species, energy=energy, frequency=162.5))
+    ref = build_ref(BeamConfig(species=species, energy=energy, frequency=frequency))
     M = compute_transfer_matrix(lat, ref.copy())
     r51, r52 = _symplectic_r5(M, ref)
     scale = max(abs(M[4, 0]), abs(M[4, 1]), 1.0)
@@ -123,19 +127,36 @@ def test_a_bend_line_map_is_symplectic_and_would_not_be_without_the_row():
 
 def test_shipped_deck_map_is_symplectic():
     lat = load_lattice("examples/bend_line.dat")
-    ref = build_ref(BeamConfig(species="H-", energy=2.1226695, frequency=162.5))
+    ref = build_ref(BeamConfig(species="H-", energy=2.1226695, frequency=BEND_LINE_MHZ))
     assert _symplectic_residual(compute_transfer_matrix(lat, ref.copy()), ref) < 1e-12
+
+
+def test_a_beam_on_another_clock_takes_the_cards_factor_on_entry():
+    """A beam arriving at 162.5 MHz changes clock at the deck's first card.  Every
+    element sits after that card, so the map is the deck's own map times the card's
+    coordinate change: the Δφ column scales by f₂/f₁, and so does the determinant.
+    This is not a failure of symplecticity: Δφ is in degrees of a different clock."""
+    lat = load_lattice("examples/bend_line.dat")
+    own = compute_transfer_matrix(
+        lat, build_ref(BeamConfig(species="H-", energy=2.1226695, frequency=BEND_LINE_MHZ)))
+    jumped = compute_transfer_matrix(
+        lat, build_ref(BeamConfig(species="H-", energy=2.1226695, frequency=162.5)))
+    D = np.eye(6)
+    D[4, 4] = BEND_LINE_MHZ / 162.5
+    np.testing.assert_allclose(jumped, own @ D, rtol=1e-13, atol=1e-13)
+    assert np.linalg.det(jumped) == pytest.approx(BEND_LINE_MHZ / 162.5, rel=1e-9)
+    assert np.linalg.det(own) == pytest.approx(1.0, rel=1e-9)
 
 
 def test_the_projected_longitudinal_emittance_grows_from_a_real_correlation():
     """A bend correlates position with energy, so the PROJECTED longitudinal
-    emittance grows through a dispersive line - two orders of magnitude on
+    emittance grows through a dispersive line - x4.9 for this sigma0 on
     ``bend_line.dat``.  That is a projection, not growth: the map is
     symplectic (above) and the phase-space volume det(Sigma) is conserved.
     Read the two together before reporting an emittance blow-up.
     """
     lat = load_lattice("examples/bend_line.dat")
-    ref = build_ref(BeamConfig(species="H-", energy=2.1226695, frequency=162.5))
+    ref = build_ref(BeamConfig(species="H-", energy=2.1226695, frequency=BEND_LINE_MHZ))
     M = compute_transfer_matrix(lat, ref.copy())
 
     sigma0 = np.diag([1.0, 0.25, 1.0, 0.25, 4.0, 0.01])   # uncoupled, HELIX units
@@ -146,6 +167,34 @@ def test_the_projected_longitudinal_emittance_grows_from_a_real_correlation():
     assert proj(sigma1, 0) > 2.0 * proj(sigma0, 0)        # so does the transverse, from dispersion
     assert np.linalg.det(sigma1) == pytest.approx(np.linalg.det(sigma0), rel=1e-9)
     assert abs(M[4, 0]) > 0.0                             # the row is what couples them
+
+
+def test_the_manuals_figures_for_that_growth():
+    """Two manual pages quote these, for a beam the deck only half names: it gives
+    the species and the energy, and the factor depends on the input beam.  Two modes
+    that share no code for this agree, and nothing is lost.  (At 100 000 particles the
+    spread from seed to seed is 0.03; at 2000 it is 0.17, and seed 42 reads 10.97.)"""
+    from pathlib import Path
+
+    from linac_gen.cli.common import run_envelope_sim, run_mp_sim
+    from linac_gen.core.config import SpaceChargeConfig
+    from linac_gen.core.step_config import StepConfig
+
+    cfg = BeamConfig(species="proton", energy=100.0, frequency=BEND_LINE_MHZ,
+                     current=0.0, n_particles=100_000)
+    ez = np.asarray(run_envelope_sim(load_lattice("examples/bend_line.dat"), cfg).emit_z)
+    assert ez[-1] / ez[0] == pytest.approx(10.71, rel=1e-3)
+    rec, beam = run_mp_sim(load_lattice("examples/bend_line.dat"), cfg,
+                           SpaceChargeConfig(nx=24, ny=24, nz=24), StepConfig(), seed=42)
+    assert beam.n_alive == cfg.n_particles
+    ez = np.asarray(rec.emit_z)
+    assert ez[-1] / ez[0] == pytest.approx(10.71, rel=0.01)
+
+    root = Path(__file__).resolve().parents[2] / "docs" / "manual"
+    dipole = (root / "03_elements" / "04_dipole.md").read_text(encoding="utf-8")
+    limits = (root / "12_validation" / "03_known_limitations.md").read_text(encoding="utf-8")
+    assert "×10.7" in dipole and "×10.7" in limits
+    assert "×93" not in dipole + limits and "×53" not in dipole and "×11" not in dipole + limits
 
 
 # ---------------------------------------------------------------------------

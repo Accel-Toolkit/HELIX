@@ -92,8 +92,10 @@ The results file is named `<input-stem>_results.<ext>` in `--out`:
 | `openpmd` | `.opmd.h5` | openPMD-beamphysics 1.1 — portable interchange |
 | `partran` | `.txt` | TraceWin-style tab-separated ASCII |
 
-`--write-dst` additionally writes `<input-stem>_final.dst`; `--mode
-matrix` writes `<input-stem>_matrix.txt`.
+`--write-dst` additionally writes `<input-stem>_final.dst`, with the
+particles still in the beam and the current they carry, I × N_alive /
+N_launched, as TraceWin's own export after losses does.  `--mode matrix`
+writes `<input-stem>_matrix.txt`.
 
 ## Examples
 

@@ -68,11 +68,11 @@ tab; this page walks through them once.
 
 Every computation works on a copy of the lattice: the lattice in the window
 is never modified.  An edit of the lattice during a run (the element
-inspector, undo, the assistant's changes) leaves the run going on its copy,
-the lattice as it was at **Run**, and its results arrive as usual; the
-optics, a matched beam being computed and the ramp's preview go, since they
-describe the lattice before the edit.  Another lattice — opened, reloaded,
-from a project or from a matching Apply — stops the run, and the Run page
+inspector, a matching Apply, undo, the assistant's changes) leaves the run
+going on its copy, the lattice as it was at **Run**, and its results arrive
+as usual; the optics, a matched beam being computed and the ramp's preview
+go, since they describe the lattice before the edit.  Another lattice —
+opened, reloaded or from a project — stops the run, and the Run page
 says "Stopped: the lattice was replaced."  Switching ring mode off stops a
 run at the end of its turn and drops what the Ring & Optics and Programs
 pages are computing.

@@ -11,6 +11,7 @@ optionally re-tunes neighbouring elements to recover the beam (compensation).
 """
 from __future__ import annotations
 
+import copy
 import csv
 import sys
 from pathlib import Path
@@ -45,6 +46,7 @@ def add_arguments(p) -> None:
                    default="matrix", dest="env_solver")
     p.add_argument("--workers", type=int, default=None,
                    help="process-pool size (default: all cores; 1 = serial)")
+    common.add_surrogates_argument(p)
     # compensation
     p.add_argument("--compensate", action="store_true",
                    help="re-tune neighbours to recover the worst scenarios")
@@ -68,7 +70,6 @@ def add_arguments(p) -> None:
 
 
 def run(args) -> int:
-    from linac_gen.core.config import BeamConfig
     from linac_gen.failures import (CompensationConfig, FailureKind,
                                     FailureStudy, compensate, enumerate_scenarios,
                                     failable_elements)
@@ -114,16 +115,47 @@ def run(args) -> int:
 
     print(f"[failures] {len(scenarios)} scenario(s) over {len(names)} "
           f"element(s); mode={args.mode}; forward={args.forward}")
+    # --surrogates: the weights, the design check in this process, and what the pool's
+    # workers register (a serial sweep uses this process's registry, as the check left it)
+    check, spec = None, None
+    if args.surrogates:
+        from linac_gen.surrogates.transport import study_spec
+        sbeam = copy.deepcopy(beam_cfg)
+        common.apply_beam_overrides(sbeam, beam_overrides)
+        check, spec, notes = study_spec(lattice, sbeam, common.lattice_file_of(args.input),
+                                        args.surrogates, mode=args.forward,
+                                        env_solver=args.env_solver)
+        for note in notes:
+            print(f"[failures] surrogates: {note}", file=sys.stderr)
+        print(f"[failures] {check.note}")
     study = FailureStudy(args.input, beam_overrides=beam_overrides,
                          mode=args.forward, env_solver=args.env_solver,
-                         tracewin_ini=args.tracewin_ini)
-    results = study.run(scenarios, names, name_to_class,
-                        combination=args.combination,
-                        max_workers=(1 if args.workers == 1 else args.workers),
-                        serial=(args.workers == 1))
+                         tracewin_ini=args.tracewin_ini, surrogates=spec or None)
+    import contextlib
+    if check is not None:
+        from linac_gen.surrogates.study_check import study_surrogates
+        context = study_surrogates(check)
+    else:
+        context = contextlib.nullcontext()
+    with context:
+        results = study.run(scenarios, names, name_to_class,
+                            combination=args.combination,
+                            max_workers=(1 if args.workers == 1 else args.workers),
+                            serial=(args.workers == 1))
     print(f"[failures] baseline transmission="
           f"{results.baseline.get('transmission')}, "
           f"ref_w_kin={results.baseline.get('ref_w_kin')}")
+    if spec:
+        calls = [im.metrics.get("surrogate_calls") or 0 for im in results.impacts]
+        left: dict = {}
+        for im in results.impacts:
+            for reason, n in (im.metrics.get("surrogate_refused") or {}).items():
+                left[reason] = left.get(reason, 0) + n
+        from linac_gen.surrogates.study_check import refusal_text
+        span = (f"{min(calls)}" if min(calls) == max(calls) else f"{min(calls)}–{max(calls)}")
+        print(f"[failures] surrogates: {span} network answers per scenario"
+              + (f"; left native over the {len(calls)} scenarios: {refusal_text(left)}"
+                 if left else ""))
 
     # optional compensation of the worst scenarios
     comp_by_idx: dict[int, object] = {}
@@ -131,8 +163,11 @@ def run(args) -> int:
         cfg = CompensationConfig(
             strategy=args.strategy, k=args.k, l=args.l,
             manual_names=(args.comp_names.split(",") if args.comp_names else None),
-            algorithm=args.comp_algorithm, cost_solver=args.comp_cost_solver)
-        cbeam = BeamConfig()
+            algorithm=args.comp_algorithm, cost_solver=args.comp_cost_solver,
+            # the Reliability Study's objectives, as the Failure Study tab's
+            objectives={"ke_out_min": True, "transmission": True, "emit_growth": True})
+        # the project's beam, as the sweep has it (it used a default one)
+        cbeam = copy.deepcopy(beam_cfg)
         common.apply_beam_overrides(cbeam, beam_overrides)
         for rank_i in results.ranking[:max(0, args.top)]:
             im = results.impacts[rank_i]
@@ -141,10 +176,14 @@ def run(args) -> int:
                             results.baseline, cfg)
             comp_by_idx[rank_i] = cr
             print(f"           recovered={cr.recovered} "
-                  f"compensators={cr.compensator_names}")
+                  f"compensators={cr.compensator_names}"
+                  + (f" — {cr.message}" if not cr.compensator_names else ""))
 
     # write CSV
     rows = results.to_rows()
+    if spec:
+        for row, im in zip(rows, results.impacts, strict=True):
+            row["surrogate_calls"] = im.metrics.get("surrogate_calls")
     extra = ["recovered", "compensators", "settings"] if args.compensate else []
     with open(args.out, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)

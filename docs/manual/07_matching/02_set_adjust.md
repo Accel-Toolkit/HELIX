@@ -237,6 +237,50 @@ SET_KE_OUT_MIN 5.0 10.0
 
 → Exit kinetic energy must be ≥ 5 MeV; weight 10.
 
+### `SET_BEAM_ENERGY k energy_MeV`
+
+TraceWin's beam energy criterion, k(E − Ei)² (TraceWin manual, "Matching
+commands"): the beam's energy at the card — the reference particle's plus
+the bunch centroid's offset — against `energy_MeV`.  It changes nothing in
+tracking; HELIX set the reference energy with it until 2026-11, which the
+HELIX card `; HELIX_SET_ENERGY` does now.
+
+| Pos | Field | Type | Units | Default | Required | Description |
+|---|---|---|---|---|---|---|
+| 1 | `k` | float | — | 0 | no | weight; `0` skips the criterion |
+| 2 | `energy_MeV` | float | MeV | — | yes | the energy asked for |
+
+Residual: `k × (W_ref + ⟨ΔW⟩ − energy_MeV)` at the card — HELIX weights the
+residual by `k`, as for its other `SET_*` cards, so the cost is `k²(E − Ei)²/2`
+where TraceWin's is `k(E − Ei)²`.  A beam lost at the card reads as a larger
+residual than any live beam.  A card with `k = 0` changes nothing; since HELIX
+wrote its energy setter as `SET_BEAM_ENERGY 0 E` until 2026-11, the parser
+names each such card and the HELIX card that keeps that meaning (a strict parse
+refuses the deck).
+
+### `SET_BEAM_E0_P0 k dE_MeV dphi_deg ke kp`
+
+TraceWin's beam energy and phase criterion: the beam's energy and phase
+minus the linac's at the card (zero without errors) against `dE_MeV` and
+`dphi_deg`, `ke` and `kp` switching the two terms.  The linac is the
+reference particle and the beam the bunch centroid, so beam minus linac is
+the centroid's offset.  It changes nothing in tracking.  HELIX's reference
+particle goes through the elements as they are, field and phase errors
+included, so the criterion sees an injected offset and the centroid's own
+motion, not an element error: in an error study it does not measure the beam
+against the error-free design, as TraceWin's does.
+
+| Pos | Field | Type | Units | Default | Required | Description |
+|---|---|---|---|---|---|---|
+| 1 | `k` | float | — | 0 | no | weight; `0` skips the criterion |
+| 2 | `dE_MeV` | float | MeV | 0.0 | no | the energy offset asked for |
+| 3 | `dphi_deg` | float | deg | 0.0 | no | the phase offset asked for |
+| 4 | `ke` | int | — | 0 | no | the energy term on (1) or off (0) |
+| 5 | `kp` | int | — | 0 | no | the phase term on (1) or off (0) |
+
+Residuals: `k × ke × (⟨ΔW⟩ − dE_MeV)` and `k × kp × wrap180(⟨Δφ⟩ − dphi_deg)` at
+the card.  The `gradient` algorithm refuses both criteria.
+
 ---
 
 ## Active MIN_* constraints
@@ -326,9 +370,7 @@ labelled `... (stub)` with a `notes` field explaining why.
 | Card | Signature | Status |
 |---|---|---|
 | `SET_SYNC_PHASE` | (no args) | Sync-phase assertion card; lattice machinery only. |
-| `SET_BEAM_PHASE_ERROR` | `dphi_deg random_flag` | Parsed; not yet wired. |
-| `SET_BEAM_E0_P0` | `k dE_MeV dphi_deg ke kp` | Parsed; not yet wired. |
-| `SET_BEAM_ENERGY` | `k energy_MeV` | Parsed; not yet wired. |
+| `SET_BEAM_PHASE_ERROR` | `dphi_deg random_flag` | Shifts the RF phase of the cavities after it (see the known limitations); not a matching residual. |
 | `SET_GAUSSIAN_CUT_OFF` | `sigma` | Distribution truncation default; not a matching residual. |
 | `SET_POSITION` | `k x_mm xp_mrad y_mm yp_mrad` | Reserved for future per-marker position targeting. |
 | `SET_ACHROMAT` | `k f1 f2 plane` | Stub. |

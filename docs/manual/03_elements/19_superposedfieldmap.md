@@ -145,8 +145,10 @@ parser warns when either is used.
   offset is not part of a matrix.
 * *Not available:* backtracking (TraceWin offers none for these maps
   either), the Sacherer envelope solver (use the matrix solver), the
-  torch matrix path, ring mode, and MAD-X export (it warns that the line
-  continues straight, and `--strict` refuses).  Each says so when asked.
+  torch matrix path, ring mode, and MAD-X export (it writes a marker and a
+  drift, or with `--linearize` a `MATRIX`, as long as the reference's path
+  for the energy that reaches the cluster, warns that the line continues
+  straight, and `--strict` refuses).  Each says so when asked.
 
 **Children** are static magnetic 3-D Cartesian maps (`FIELD_MAP 70…`);
 a cluster with an electric or RF map is refused at construction.  The
@@ -200,7 +202,17 @@ multi-particle stepping and in the envelope / matrix fitted maps alike,
 so a solenoid with unpowered 3-D correctors superposed on it matches
 the solenoid alone.  3-D children are integrated with the
 container's kick-drift walk (the global DKD selection for standalone
-`FieldMap3D` does not apply inside a cluster).
+`FieldMap3D` does not apply inside a cluster).  The Sacherer envelope
+reads a straight cluster as the sum of its children's on-axis B_z over
+their windows (a corrector child's too).  Its steering-corrector children
+(dipole fields on the axis) are left out while, summed, they bend the
+beam by at most
+20 mrad and their quadrupole gradient on the axis, as the beam sees it
+in the cluster's solenoid field (turned by its Larmor angle), focuses it
+by at most 1/f = 0.0088 /m, and refused beyond: the LEBT example's first
+two corrector pairs from 2.4 to 2.5 mrad, one corrector or both of a
+pair.  A child it has no model of is refused too (see
+[DC mode](../05_space_charge/04_dc_mode.md#dc-aware-envelope-solver)).
 
 !!! note "Validation anchors"
     The shipped test battery pins: 1-child cluster ≡ plain map to

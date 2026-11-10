@@ -17,7 +17,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-WEIGHTS = "linac_gen/surrogates/weights/bb088243c9fb33ce/FMAP_001"
+WEIGHTS = "linac_gen/surrogates/weights/7429fb95147c412d/FMAP_001"
 DECK = "examples/pipii/mebt/mebt.dat"
 
 

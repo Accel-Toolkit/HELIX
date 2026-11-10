@@ -48,7 +48,10 @@ benchmark).
 `gradient` works on:
 
 * **Variables** — ADJUST cards on Quadrupole `gradient`, Solenoid
-  `field`, or Dipole `angle`.
+  `field`, or Dipole `angle`.  The angle is varied at the bend's radius,
+  as in the other algorithms, so its arc follows it; until 2026-11 the
+  gradient path varied the field of a magnet of fixed length instead and
+  did not land where `least_squares` does.
 * **Constraints** — `SET_TWISS` / `SET_SIZE`.  `SET_SIZE_MAX/MIN`
   and `SET_BEAM_PHASE_ADV` are not supported and the matcher
   raises — use `least_squares` for those.  Centroid constraints
@@ -60,12 +63,11 @@ benchmark).
   five linear element types).  RF gaps / field maps are
   unsupported and fail loud — also use `least_squares` there.
 * **Control cards** — passive `SET_*` / `ADJUST_*` markers pass
-  through (the torch mirror composes commands as identity, which is
-  faithful for them).  The runtime-active cards `FREQ`,
-  `SET_BEAM_ENERGY` and `SET_BEAM_E0_P0` mutate the reference
-  kinematics mid-lattice, which the mirror cannot represent — they
-  are **refused** (before the 2026-07 honesty round a FREQ deck under
-  space charge ran silently on the wrong lattice).  Longitudinal
+  through.  The cards that set the reference, `FREQ` and the HELIX
+  energy card (`; HELIX_SET_ENERGY`), are followed as in the other linac
+  modes: the torch mirror moves its clock and energy at the card, with and
+  without space charge.  The matching criteria `SET_BEAM_ENERGY` and
+  `SET_BEAM_E0_P0` are refused — use `least_squares`.  Longitudinal
   `SET_TWISS` flags (`kaz`/`kbz`) are also refused: no tracking mode
   records longitudinal Twiss, so the residual would be a
   zero-gradient constant.

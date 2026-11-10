@@ -165,6 +165,34 @@ def test_i0_envelope_uses_registered_surrogate_full_matrix(monkeypatch):
                                rtol=1e-12)
 
 
+def test_i0_surrogate_at_a_jump_gets_the_factor_from_the_solver(monkeypatch):
+    """The contract the training targets rely on: at a frequency jump the solver
+    applies D at the seam, and the surrogate's matrix holds the cavity alone, so
+    Σ_end = D2 . M_pin . D . D1 . S0 with no card in the line."""
+    from linac_gen.tracking.tracker import field_map_reference_states
+    lat = _lattice()
+    cav = lat.elements[1]
+    f_old = 176.105                   # the map is at 352.21: a factor of 2
+    ref = ReferenceParticle(species=PROTON, w_kin=5.0, frequency=f_old)
+    M_pin = cav.fitted_matrix(_ref())
+    M_pin[0, 0] *= 1.02
+    registry.register(_pinned_surrogate(cav, M_pin))
+    res = EnvelopeSolver(lat, ref.copy(), dict(INIT), current=0.0,
+                         initial_sigma=_S0()).run()
+    d1 = get_element_matrix(lat.elements[0], ref)
+    D = np.eye(6)
+    D[4, 4] = 2.0
+    after = ref.copy()
+    after.s += 50.0
+    after.phi_s += 360.0 * 50.0 / (after.beta * after.wavelength)
+    field_map_reference_states(lat, cav, after)
+    assert after.frequency == 352.21
+    Mt = get_element_matrix(lat.elements[2], after) @ M_pin @ D @ d1
+    S_end = Mt @ _S0() @ Mt.T
+    np.testing.assert_allclose(np.asarray(res.sigma_matrix[-1], float), S_end,
+                               rtol=1e-11, atol=1e-13)
+
+
 def test_i0_record_substeps_keeps_rk4_slice_walk(monkeypatch):
     """Regime 2b: 'Record per-sub-step' forces the bundle walk; the
     surrogate is NOT consulted and sigma is bit-identical."""

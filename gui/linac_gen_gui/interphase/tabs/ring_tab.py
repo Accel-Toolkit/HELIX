@@ -97,7 +97,8 @@ _OPTICS_NOTE = ("The optics come from the ring kernels themselves: closed orbit 
 
 _STOPPED_MSG = "Stopped: the lattice changed."
 #: the Run page's line for a run stopped by another lattice (Open, Reload, a
-#: project, a matching Apply: a new lattice object — an edit leaves a run going)
+#: project: a new lattice object — an edit, a matching Apply among them, leaves
+#: a run going)
 _RUN_STOPPED_MSG = "Stopped: the lattice was replaced."
 
 _MODELS = (("Cartesian multipoles", "cartesian"), ("curvilinear multipoles", "curvilinear"))
@@ -665,10 +666,10 @@ class RingTab(QWidget):
     # verdict and results
     # ------------------------------------------------------------------
     def _on_lattice_changed(self, lattice) -> None:
-        # another lattice (a new object: Open, Reload, a project, a matching
-        # Apply): the run of the old one is over, and nothing it still sends
-        # may reach the new lattice's results.  An edit sends the same object
-        # again (the command bus: the inspector, undo and redo, the
+        # another lattice (a new object: Open, Reload, a project): the run of
+        # the old one is over, and nothing it still sends may reach the new
+        # lattice's results.  An edit sends the same object again (the
+        # command bus: the inspector, a matching Apply, undo and redo, the
         # assistant's changes) and leaves a run going — it runs on its own
         # copy.  Either way the optics, the matched beam and the ramp preview
         # describe the lattice as it was: they go.

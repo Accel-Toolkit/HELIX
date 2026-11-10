@@ -72,9 +72,11 @@ call sites.  Pinned in
 
 A second consequence: the reported longitudinal emittance through a
 dispersive region is a *projection* of a genuinely correlated
-distribution and grows sharply — ×93 on `examples/bend_line.dat` in
-envelope mode — while the six-dimensional phase-space volume is
-conserved, because the map is symplectic.  Read such a number together
+distribution and grows sharply — ×10.7 on `examples/bend_line.dat`
+for a 100 MeV proton with no current and the `BeamConfig` defaults for the
+rest, and the factor depends on the input beam — while the six-dimensional
+phase-space volume is conserved, because the map is symplectic.  Read such
+a number together
 with the symplecticity check in the same test file before reporting a
 blow-up.
 
@@ -89,6 +91,49 @@ cell-wise periodic dispersion (`matching/periodic.py`) still calls
 `get_element_matrix` directly and sees each element untilted.  Nominal
 lattices carry no `tilt_deg`, so only error studies that inspect that
 quantity are affected.
+
+### Commands in the matrix walks
+
+Matrix mode and the phase-advance and dispersion walks apply `FREQ` and the
+HELIX energy card (`; HELIX_SET_ENERGY`, `; HELIX_SHIFT_ENERGY`), as the envelope
+and multiparticle modes do.  Ring mode skips the energy card, with a warning.
+`SET_BEAM_ENERGY` and `SET_BEAM_E0_P0` are matching criteria, as in TraceWin: they
+change nothing in tracking.  A MAD-X export holds one reference energy: it writes
+the energy card as a comment, with a warning.
+
+### SET_BEAM_PHASE_ERROR
+
+As the TraceWin manual defines it, the card leaves the beam's phase alone and shifts
+the RF phase of the cavities after it.  With `Dp`, each following cavity's beam sees
+its phase `Dp` later; with `random_flag`, a draw within ±`Dp` that an error study makes
+per seed (a plain run shifts nothing, with a warning).  `Dp = 0` starts the cavities
+after it afresh: the shifts before it end, and in an error study the cavities that see
+the arrival (field maps with `p_flag` 0, `NCELLS` with P = 1, a gap held at a pinned
+clock) take the seed's correction.  That correction is the error-free arrival at the
+card minus the seed's, along one reference walk from where the beam starts (a `.dst`
+file's header, for a beam read from one), so a seed without errors gets exactly none.
+HELIX's relative-phase cavities re-phase to the reference every run and need no
+correction.  A seed keeps its draw and its correction: pulse jitter on a frozen seed and
+a reliability campaign's transport carry them, and pulse jitter on a lattice no error
+study has stamped fixes its cards first (no correction, one draw).  Where HELIX differs
+from TraceWin:
+
+* The design includes the cards: `Dp = 0` cancels the phase error the seed's errors gave
+  the beam (a random draw counts as one), not an earlier card's deliberate shift.
+* The correction is set when the seed is drawn.  What changes the machine afterwards is
+  not corrected: pulse-to-pulse jitter (dynamic, as in TraceWin), and a fault that a
+  reliability campaign puts on a seed, which is then treated as the same fault alone.
+* An input-beam error that moves the bunch centroid is not cancelled (one that moves the
+  reference is); HELIX treats dynamic errors as static, so they are.
+* The card corrects the phase at its own position: a beam off energy goes on slipping
+  over a drift after it.
+* The cavities that follow it are those that take an `ERROR_CAV` phase: gaps, field
+  maps (also in a `SUPERPOSE` cluster) and `NCELLS`.  An RFQ does not, and an engaged
+  surrogate does not follow the shift yet.
+
+A continuous beam's Δφ is not rescaled at a `FREQ` card in a multiparticle run; a
+transfer matrix holds the factor regardless.  Nothing reads a continuous beam's z
+block.
 
 ### `Dipole.e1` / `e2` act on the full-element matrix only
 
@@ -299,9 +344,9 @@ unless `approximate_backtracking=True` accepts the plain-PIC undo.
 Two deliberate deferrals, neither a correctness defect in current
 behavior:
 
-* **Surrogate fingerprint uses the resolved field-file *path***, not
+* **Surrogate lookup uses the resolved field-file *path***, not
   a content hash — an in-place edit of a field-map file (same path,
-  same length, same drive parameters) would not be caught by the
+  same length, same geometry) would not be caught by the
   cross-lattice engagement guard.  The planned hardening replaces the
   path with the SHA-256 already computed for HDF5 provenance.
 * **Backtracking returns no machine-readable status enum** — the

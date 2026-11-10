@@ -31,7 +31,13 @@ model**.  It is *critical* when any of: normalised-emittance growth above
 multiparticle only), exit-energy deviation above `energy_pct` (0.5 %), or a
 section's peak loss density above its `w_per_m` limit (0.1 W/m in a LINAC
 section, 1 W/m elsewhere by default; sections and their names come from the
-circuit map).  A lost beam is always critical.  The failure engine's
+circuit map), or the beam edge outside an aperture: (|centroid| + 3σ) over an
+element's half-aperture at its exit (a rectangular bore's per plane, a
+circular card's radius), above `aperture_edge` (1.0) and above the baseline's
+own ratio at that element, so a scraper the beam already fills does not mask
+the rest of the line (envelope mode loses no particle, so this is the term
+that sees a fault that steers the beam into the wall).  The compensated run is
+judged with it too; `faults.csv` gives the ratio and its element.  A lost beam is always critical.  The failure engine's
 criticality *score* (weighted transmission loss, emittance growths and energy
 deviation) ranks the cases; the rule decides the verdict.  Both are recorded
 per case in `legs/faults/faults.csv`, together with the exit-clock slip
@@ -87,19 +93,33 @@ latter, the numbers it reports.)
 The top `compensation.top_n` cases (critical first, then by score) are
 re-tuned by the matcher with one job per (case × strategy) in a process pool:
 
-* `k_out_of_n` — the `k` nearest same-category elements on each side;
+* `k_out_of_n` — the `2k` elements of the failed element's family nearest to
+  it by position (about `k` on each side; a tie goes upstream);
 * `spares` — the unpowered spare cavities of the circuit map, brought up from
   zero (an unpowered field map is a `"spare"` in the failure engine's extended
-  vocabulary; `_CATEGORY["spare"] = "cavity"`);
+  vocabulary, of the RF family);
 * `section_rematch` — every same-category element downstream of the fault to
   the end of its section;
 * `l_neighboring_lattices` — `l` FODO periods around the fault.
 
-The amplitude window of every knob follows the **family headroom rule**:
-`(0, headroom[family]) × the family's nominal amplitude` (the signed median of
-its powered members), so a spare can be raised to the family's headroom and a
-neighbour cannot exceed it; the family of an element is the leading letters
-of its name (`compensation.family_pattern`).  The objectives are the exit
+The families are RF (cavities, and spares) and transverse focusing
+(quadrupoles and solenoids); a failed element is compensated within its own,
+by every strategy (a manual list drops another family's element and says
+so), and the spares strategy runs for an RF fault only.
+A bend is never a compensator — its knob, the angle, moves the reference path
+— and a failed bend is reported *not compensable by re-tuning optics* without
+a match; an element with no family (a steerer) gets no compensators.  Apply
+refuses a bend setting from a campaign run before this rule.
+
+The amplitude window of a cavity (a spare among them) follows the **family
+headroom rule**: `(0, headroom[family]) × the family's nominal amplitude` (the
+signed median of its powered members), so a spare can be raised to the
+family's headroom and a neighbour cannot exceed it.  A cavity's family is its
+type: a field-map cavity's field map (the file's name, e.g. `beta092`, which
+the `headroom` keys name), any other's leading letters of its name
+(`compensation.family_pattern`, `GAP` for an RF gap).  A magnet's window is its
+own setting × (0.5, 1.5), so it keeps its sign (one median of signed gradients
+left most quadrupoles' own setting outside the window).  The objectives are the exit
 energy (`SET_KE_OUT_MIN`), the transmission in multiparticle mode
 (`MIN_TRANSMISSION`), the nominal **arrival phase at the exit**
 (`SET_PHASE_OUT`, the reference RF clock of the nominal run — so the RF

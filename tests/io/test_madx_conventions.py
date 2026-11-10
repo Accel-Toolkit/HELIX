@@ -377,12 +377,12 @@ def test_rfcavity_lag_gives_madx_reference_energy_gain(tmp_path, lag):
 
 
 @pytest.mark.parametrize("lag", [0.0, 0.125, 0.25, 0.5])
-def test_rfcavity_lag_matches_madx_track(lag):
+def test_rfcavity_lag_matches_madx_track(lag, tmp_path):
     """The MAD-X side of the convention, measured rather than assumed:
     TRACK one reference particle (pt=0) through the cavity in MAD-X and
     read the energy gain from pt (pt = ΔE / (p0·c))."""
     cpymad = pytest.importorskip("cpymad.madx")
-    m = cpymad.Madx(stdout=False)
+    m = cpymad.Madx(stdout=False, cwd=str(tmp_path))   # TRACK writes checkpoint_restart.dat there
     m.input(f"""
     beam, particle=proton, energy=0.938272+0.0021;
     c: rfcavity, volt=1.0, lag={lag}, freq=352.21;
@@ -576,10 +576,11 @@ def test_bend_body_matches_madx_grid(tmp_path, tilt, angle, k1, edges):
 # Adversarial-review round (2026-09-03): items that round-trip symmetrically
 # but were wrong against real MAD-X
 # ---------------------------------------------------------------------------
-def _track_gain_and_slope(deck: str, pc0_GeV: float):
-    """MAD-X TRACK: reference gain [MeV] and dW/dt slope sign through one cavity."""
+def _track_gain_and_slope(deck: str, pc0_GeV: float, cwd):
+    """MAD-X TRACK: reference gain [MeV] and dW/dt slope sign through one cavity
+    (run in ``cwd``: TRACK writes checkpoint_restart.dat into its directory)."""
     cpymad = pytest.importorskip("cpymad.madx")
-    m = cpymad.Madx(stdout=False)
+    m = cpymad.Madx(stdout=False, cwd=str(cwd))
     m.input(deck + "track, onepass, onetable; start, t=0; start, t=0.01; "
                    "run, turns=1; endtrack;")
     t = m.table.trackone
@@ -614,7 +615,7 @@ def test_rfcavity_gain_and_slope_match_madx_for_both_charges(tmp_path, species):
     dW_helix = r.w_kin - ref.w_kin
     assert dW_helix == pytest.approx(ref.species.charge * math.cos(math.radians(-30.0)), rel=1e-12)
     pc0 = ref.bg * ref.species.mass / 1000.0
-    gain, slope = _track_gain_and_slope(out.read_text(encoding="utf-8"), pc0)
+    gain, slope = _track_gain_and_slope(out.read_text(encoding="utf-8"), pc0, tmp_path)
     assert gain == pytest.approx(dW_helix, rel=1e-9)
     # φs = −30° (before crest): a LATE particle (t<0 in MAD-X) gains more
     # for a proton; the whole curve flips sign with the charge.
@@ -727,7 +728,7 @@ def test_tilted_multipole_particle_kick_matches_madx_track(tmp_path, tilt, ksl1)
     from linac_gen.elements.multipole import Multipole
     deck = _TILTED_MP_DECK.format(tilt=tilt, ksl1=ksl1)
     x0, y0 = 1.0e-3, 0.5e-3                                   # m
-    m = cpymad.Madx(stdout=False)
+    m = cpymad.Madx(stdout=False, cwd=str(tmp_path))          # TRACK writes checkpoint_restart.dat there
     m.input(deck + f"track, onepass, onetable; start, x={x0}, px=0, y={y0}, py=0; "
                    "run, turns=1; endtrack;")
     t = m.table.trackone
@@ -939,7 +940,7 @@ def test_sextupole_k2s_turns_the_sextupole_as_madx(tmp_path, case):
 def test_sextupole_k2s_matches_madx_track_live(tmp_path, case):
     cpymad = pytest.importorskip("cpymad.madx")
     k2, k2s, tilt, x0, y0 = case
-    m = cpymad.Madx(stdout=False)
+    m = cpymad.Madx(stdout=False, cwd=str(tmp_path))   # TRACK writes checkpoint_restart.dat there
     m.input(_K2S_DECK.format(k2=k2, k2s=k2s, tilt=tilt)
             + "select, flag=makethin, class=sextupole, slice=1;"
               " makethin, sequence=s, style=teapot; use, sequence=s;"

@@ -52,6 +52,7 @@ class ErrorDef:
 
 _CIRCUIT_MODES = ("independent", "about_mean", "common")
 _STREAM_TAG = 0x5EEDE770            # see ErrorStudy(rng_stream=...)
+_PHASE_ERROR_STREAM = 0x5BE7         # stream_entropy key of SET_BEAM_PHASE_ERROR's draws
 
 
 def stream_entropy(seed: int, *key: int) -> tuple:
@@ -204,6 +205,9 @@ def lattice_overrides(design, errored) -> tuple[tuple, tuple]:
     corresponding ``design`` element becomes ``(f"@{i+1}.{attr}",
     float(value))``.  Attributes the design element lacks are reported
     in the second tuple as ``(element_name, attr)`` instead of emitted.
+    An attribute that follows from others (a bend's length, from its
+    angle and radius; a cavity's length, from its cells) is left out:
+    the attributes it follows from carry it, and it cannot be written.
     """
     overrides: list = []
     untransportable: list = []
@@ -212,8 +216,11 @@ def lattice_overrides(design, errored) -> tuple[tuple, tuple]:
                          f"({len(design.elements)} vs {len(errored.elements)})")
     for i, (a, b) in enumerate(zip(design.elements, errored.elements)):
         va = vars(a)
+        derived = getattr(b, "_is_derived", None)
         for k, v in vars(b).items():
             if k.startswith("_") or isinstance(v, bool) or not isinstance(v, (int, float)):
+                continue
+            if derived is not None and derived(k):
                 continue
             old = va.get(k, _MISSING)
             if old is _MISSING:
@@ -221,6 +228,26 @@ def lattice_overrides(design, errored) -> tuple[tuple, tuple]:
             elif old != v:
                 overrides.append((f"@{i + 1}.{k}", float(v)))
     return tuple(overrides), tuple(untransportable)
+
+
+def freeze_phase_error_cards(lattice, seed: int = 0) -> None:
+    """Stamp the SET_BEAM_PHASE_ERROR cards of ``lattice`` that no error study
+    has stamped, for a machine taken as it stands: a card with Dp = 0 gets
+    no correction (there is no error-free pass to correct to), a random one
+    the draw of ``seed`` (an error study's default stream).  A dynamic study
+    on that lattice (pulse jitter) then keeps them, so its errors stay
+    uncorrected, as dynamic errors are."""
+    from linac_gen.elements.lattice_commands import SetBeamPhaseError
+    for i, e in enumerate(lattice.elements):
+        if not isinstance(e, SetBeamPhaseError):
+            continue
+        if e.dphi_deg == 0.0:
+            if not e.rephased:
+                e.rephase_deg, e.rephased = 0.0, 1
+        elif e.random_flag and not e.random_drawn:
+            rng = np.random.default_rng(stream_entropy(int(seed), _PHASE_ERROR_STREAM, i, 0))
+            half = abs(float(e.dphi_deg))
+            e.random_draw_deg, e.random_drawn = float(rng.uniform(-half, half)), 1
 
 
 def element_kind(elem) -> str:
@@ -237,6 +264,23 @@ def element_kind(elem) -> str:
         ke = float(getattr(elem, "ke", 0.0) or 0.0)
         return "solenoid" if abs(ke) < 1e-12 else "cavity"
     return cls
+
+
+def _static_magnet_map(elem) -> bool:
+    """A field map with static magnetic fields only (a solenoid's, a quadrupole's, a dipole's,
+    a gradient's): its field is ``kb · (1 + voltage_rel)``, so a relative field error
+    (``field_rel``) lands in its ``voltage_rel``.  Decided by its channels, every one static
+    and magnetic, not by ``ke`` (an unpowered spare cavity, ``ke = kb = 0``, has RF channels).
+    A straight ``SUPERPOSE_MAP`` cluster of such maps is one too: its own ``voltage_rel``
+    scales every child, correctors included (a curved one, ``SUPERPOSE_MAP_OUT``, is not)."""
+    if type(elem).__name__ == "SuperposedFieldMap":
+        kids = [child for _z0, child in getattr(elem, "children", ())]
+        return (hasattr(elem, "voltage_rel") and bool(kids)
+                and all(_static_magnet_map(child) for child in kids))
+    if type(elem).__name__ not in ("FieldMap", "FieldMap3D") or not hasattr(elem, "voltage_rel"):
+        return False
+    chans = getattr(getattr(elem, "field_data", None), "channels", None) or {}
+    return bool(chans) and all(ch.is_static and ch.is_magnetic for ch in chans)
 
 
 def _draw_truncated_gaussian(rng, sigma: float, cutoff: float) -> float:
@@ -320,6 +364,53 @@ class ErrorStudyResults:
         }
 
 
+#: an envelope study with surrogates runs this many of its first seeds again natively
+NATIVE_CHECK_SEEDS = 3
+
+
+@dataclass(frozen=True)
+class _NoSurrogates:
+    """A study's surrogates when the registry was never imported: none can be registered."""
+    use: bool = False
+    note: str = ""
+
+
+NO_SURROGATES = _NoSurrogates()
+
+
+def outside_fractions(calls, refused) -> list:
+    """Per seed, the part of the traversals the network would answer (its answers, and the
+    traversals outside its trained range) that fell outside the range: ``calls`` the answers
+    per seed, ``refused`` the ``{reason: count}`` per seed."""
+    out = []
+    for answers, by_reason in zip(calls, refused, strict=True):
+        n_out = by_reason.get("outside its range", 0)
+        total = answers + n_out
+        out.append(n_out / total if total else 0.0)
+    return out
+
+
+def _native_if(on: bool):
+    """``registry.suspended()`` when ``on`` (a study that uses the surrogates), else nothing."""
+    import contextlib
+    if not on:
+        return contextlib.nullcontext()
+    from linac_gen.surrogates import registry
+    return registry.suspended()
+
+
+def _tally_if(on: bool):
+    """``base.tally()`` when ``on``, else a context giving None."""
+    import contextlib
+    if not on:
+        return contextlib.nullcontext()
+    from linac_gen.surrogates.base import tally
+    return tally()
+#: the part of a seed's surrogate traversals outside the weights' trained range above which
+#: an envelope study warns
+OUT_OF_RANGE_WARN = 0.10
+
+
 class ErrorStudy:
     """Monte Carlo error study engine.
 
@@ -337,11 +428,27 @@ class ErrorStudy:
     """
 
     def __init__(self, lattice, beam_config, n_seeds=100, sc_config=None,
-                 base_seed: int = 0, rng_stream=0):
+                 base_seed: int = 0, rng_stream=0, entrance_ref=None, *,
+                 mode: str = "mp", env_solver: str = "matrix"):
         self.lattice = lattice
         self.beam_config = beam_config
         self.n_seeds = n_seeds
         self.sc_config = sc_config
+        # The forward model of every seed: "mp" tracks particles (a beam of the config,
+        # space charge from ``sc_config``); "envelope" runs the envelope (``env_solver``,
+        # space charge from the config's current), from the same draws.
+        if mode not in ("mp", "envelope"):
+            raise ValueError(f"ErrorStudy: mode must be 'mp' or 'envelope', not {mode!r}")
+        solver = str(env_solver).lower()
+        if solver not in ("matrix", "sacherer"):
+            raise ValueError("ErrorStudy: env_solver must be 'matrix' or 'sacherer', not "
+                             f"{env_solver!r}")
+        self.mode = mode
+        self.env_solver = solver
+        # The lattice-entrance reference of the SET_BEAM_PHASE_ERROR
+        # correction walks, for a study with no beam config (default: the
+        # config's).
+        self.entrance_ref = entrance_ref
         # Offset added to every per-seed RNG draw so two studies with the
         # same configuration but different ``base_seed`` produce
         # statistically independent ensembles (useful for chained Monte
@@ -547,7 +654,8 @@ class ErrorStudy:
         regression test (mirror drift = silent audit lies)."""
         if parameter.endswith("_rel"):
             return (hasattr(elem, parameter[:-4])
-                    or hasattr(elem, parameter))
+                    or hasattr(elem, parameter)
+                    or (parameter == "field_rel" and _static_magnet_map(elem)))
         if parameter in ("dx", "dy", "dz",
                          "tilt_deg", "pitch_deg", "yaw_deg"):
             return True                      # setattr fallback always lands
@@ -562,7 +670,7 @@ class ErrorStudy:
         consuming any RNG entropy: which elements match (name pattern +
         ``element_kind`` gate), which of those would actually receive
         the draw, which would be warn-skipped, and which elements are
-        selected for the *same parameter* by more than one definition
+        selected for the *same slot* by more than one definition
         (usually a malformed selector).  Returns::
 
             {"defs": [{"index", "pattern", "element_kind", "parameter",
@@ -570,14 +678,19 @@ class ErrorStudy:
                        "bad_distribution"}, ...],
              "beam_defs": [{"index", "parameter", "applicable",
                             "bad_distribution"}, ...],
-             "multi": {(element_name, parameter): [def indices]}}
+             "multi": {(element_name, slot): [def indices]}}
 
         A def with an unknown ``distribution`` draws NOTHING — its row
         carries ``bad_distribution=True`` with empty applicable/skipped
         (the applicable↔apply mirror holds only for valid
-        distributions).  ``multi`` lists (element, parameter) pairs hit
+        distributions).  ``multi`` lists (element, slot) pairs hit
         by more than one DISTINCT def — duplicate-named elements under
         a single def are legitimate per-element draws, not overlaps.
+        The slot is the parameter a draw writes: the def's own, except
+        that a ``field_rel`` draw on a static magnet field map, or a straight ``SUPERPOSE_MAP``
+        cluster of them, writes its
+        ``voltage_rel``, so a ``field_rel`` def and a ``voltage_rel``
+        def on one such map overlap.
 
         Policy (raise / warn / print) is the caller's job — e.g. a study
         driver prints the table and refuses to run on anomalies.
@@ -601,7 +714,10 @@ class ErrorStudy:
                 matched.append(elem.name)
                 if bad_dist:
                     continue          # draws nothing — can't overlap/apply
-                lst = hits.setdefault((elem.name, err.parameter), [])
+                # by the slot the draw writes: on a static magnet map, field_rel is voltage_rel
+                slot = ("voltage_rel" if err.parameter == "field_rel"
+                        and _static_magnet_map(elem) else err.parameter)
+                lst = hits.setdefault((elem.name, slot), [])
                 if i not in lst:      # identity, not name-count: two
                     lst.append(i)     # same-named elems under ONE def
                                       # are separate draws, not overlap
@@ -732,9 +848,48 @@ class ErrorStudy:
                 "n_workers is currently ignored.  For parallel ensembles "
                 "run several studies with different base_seed via "
                 "linac_gen.parallel.scan_pool.",
-                stacklevel=2,
+                stacklevel=3,
             )
         n_requested = int(self.n_seeds)
+        envelope = self.mode == "envelope"
+        # The registered surrogates: an envelope study uses them if its design lattice with
+        # them agrees with the native run; a multiparticle study runs native.  With the
+        # registry never imported nothing can be registered, and a multiparticle study then
+        # leaves the surrogate package (and torch) unloaded.
+        import contextlib
+        import sys
+        if envelope or "linac_gen.surrogates.registry" in sys.modules:
+            from linac_gen.surrogates.study_check import (
+                check_design,
+                runs_native,
+                study_surrogates,
+            )
+            surrogates = (check_design(self.lattice, self.beam_config, mode="envelope",
+                                       env_solver=self.env_solver, should_stop=should_stop)
+                          if envelope else
+                          runs_native("a multiparticle study runs native (the surrogate path "
+                                      "is linear inside a cavity)"))
+            context = study_surrogates(surrogates)
+        else:
+            surrogates, context = NO_SURROGATES, contextlib.nullcontext()
+        with context:
+            counted = self._seed_loop(n_requested, envelope, surrogates.use, should_stop,
+                                      progress_cb, all_results, all_corrections)
+        results = ErrorStudyResults(all_results, corrections=all_corrections)
+        results.n_requested = n_requested
+        results.mode = self.mode
+        results.surrogates = surrogates
+        self._report_surrogates(results, counted, should_stop)
+        return self._finish(results, all_corrections)
+
+    def _seed_loop(self, n_requested, envelope, with_surrogates, should_stop, progress_cb,
+                   all_results, all_corrections) -> list:
+        """The seeds of :meth:`run`, into ``all_results`` and ``all_corrections``; for an
+        envelope study with surrogates, ``[(seed, lattice, beam config, answers, {reason:
+        refusals})]`` per seed, counted in this thread (``base.tally``), the first seeds'
+        lattice and config kept for the native check.  The orbit correction runs native: the
+        kicks are the native study's."""
+        counted = []
         for i in range(n_requested):
             if should_stop is not None and should_stop():
                 break
@@ -756,43 +911,137 @@ class ErrorStudy:
                 def _factory(_bcfg=_bcfg, _seed=_seed):
                     return create_beam(_bcfg, seed=_seed + 1000)
                 try:
-                    correction_info = run_correction_from_lattice(
-                        lattice_copy, _factory,
-                        should_stop=should_stop,
-                        # Per-seed BPM-noise stream — a fixed default_rng(0)
-                        # made noise 100 % correlated across the ensemble.
-                        noise_seed=_seed,
-                        # The envelope reading backend needs the config,
-                        # not particles — the per-seed beam_cfg already
-                        # carries this sample's beam errors.
-                        beam_config=_bcfg,
-                        **self._correction_kwargs,
-                    )
+                    with _native_if(with_surrogates):
+                        correction_info = run_correction_from_lattice(
+                            lattice_copy, _factory,
+                            should_stop=should_stop,
+                            # Per-seed BPM-noise stream — a fixed default_rng(0)
+                            # made noise 100 % correlated across the ensemble.
+                            noise_seed=_seed,
+                            # The envelope reading backend needs the config,
+                            # not particles — the per-seed beam_cfg already
+                            # carries this sample's beam errors.
+                            beam_config=_bcfg,
+                            **self._correction_kwargs,
+                        )
                 except OperationCancelled:
                     break   # discard this seed, return the whole ones
 
-            beam = create_beam(beam_cfg, seed=seed + 1000)
-            # 4. Optional PIC solver
-            pic = None
-            if self.sc_config:
-                from linac_gen.pic.factory import make_sc_solver
-                pic = make_sc_solver(self.sc_config)
-            # 5. Track — forward the stop hook so cancellation lands at
-            #    the next element instead of the next seed.
-            tracker = Tracker(lattice_copy, beam, pic_solver=pic,
-                              should_abort=should_stop)
-            recorder = tracker.run()
-            if getattr(tracker, "aborted", False):
-                break   # truncated recorder — never aggregate it
+            if envelope:
+                kept = (copy.deepcopy(lattice_copy), copy.deepcopy(beam_cfg)) \
+                    if with_surrogates and len(counted) < NATIVE_CHECK_SEEDS else (None, None)
+                with _tally_if(with_surrogates) as tally:
+                    recorder = self._envelope_seed(lattice_copy, beam_cfg, should_stop)
+                if recorder is None:
+                    break   # truncated — never aggregate it
+                if with_surrogates:
+                    counted.append((seed, kept[0], kept[1], tally.calls, dict(tally.refused)))
+            else:
+                beam = create_beam(beam_cfg, seed=seed + 1000)
+                # 4. Optional PIC solver
+                pic = None
+                if self.sc_config:
+                    from linac_gen.pic.factory import make_sc_solver
+                    pic = make_sc_solver(self.sc_config)
+                # 5. Track — forward the stop hook so cancellation lands at
+                #    the next element instead of the next seed.
+                tracker = Tracker(lattice_copy, beam, pic_solver=pic,
+                                  should_abort=should_stop)
+                recorder = tracker.run()
+                if getattr(tracker, "aborted", False):
+                    break   # truncated recorder — never aggregate it
             # Whole seed completed: commit recorder + correction together
             # so the two lists stay index-aligned.
             all_results.append(recorder)
             all_corrections.append(correction_info)
             if progress_cb is not None:
                 progress_cb(i + 1, n_requested)
+        return counted
 
-        results = ErrorStudyResults(all_results, corrections=all_corrections)
-        results.n_requested = n_requested
+    def _envelope_seed(self, lattice_copy, beam_cfg, should_stop):
+        """One seed's envelope run (``env_solver``, the config's current), or None when it
+        was stopped.  An envelope loses no particle: its transmission is 100 % throughout."""
+        from linac_gen.cli.common import _envelope_initial, build_ref
+        ref = build_ref(beam_cfg)
+        initial = _envelope_initial(beam_cfg, ref)
+        if self.env_solver == "sacherer":
+            from linac_gen.tracking.sacherer import SachererSolver
+            solver = SachererSolver(lattice_copy, ref, initial, current=beam_cfg.current)
+        else:
+            from linac_gen.tracking.envelope import EnvelopeSolver
+            f_bunch = float(getattr(beam_cfg, "bunch_frequency_MHz", 0.0) or 0.0) or None
+            solver = EnvelopeSolver(lattice_copy, ref, initial, current=beam_cfg.current,
+                                    bunch_frequency=f_bunch, should_abort=should_stop)
+        res = solver.run()
+        if getattr(solver, "aborted", False):
+            return None
+        if getattr(res, "transmission", None) is None:
+            res.transmission = [100.0] * len(res.s)
+        return res
+
+    def _report_surrogates(self, results, counted, should_stop=None) -> None:
+        """What an envelope study with surrogates says of them, on ``results``: per seed the
+        network's answers (``surrogate_calls``) and the traversals left to the native element
+        by reason (``native_traversals``), with a warning when more than ``OUT_OF_RANGE_WARN``
+        of the traversals the network would answer in a seed (its answers and those outside
+        the trained range) fall outside it; the first ``NATIVE_CHECK_SEEDS`` seeds run again
+        natively (``native_check``: the largest exit difference; skipped after a stop);
+        each seed's exit values as run (``exit_raw``) and, for a seed the network answered as
+        it answered the design lattice (the same answers and refusals), as the native design
+        value plus the network's change from its own design value (``exit_corrected``; None
+        for another seed: some of its traversals ran native, and the design offset is not
+        all the network's)."""
+        results.surrogate_calls = [c[3] for c in counted]
+        results.native_traversals = [c[4] for c in counted]
+        results.outside_range = []
+        results.native_check = None
+        results.exit_raw = results.exit_corrected = None
+        if not counted:
+            return
+        from linac_gen.surrogates import registry
+        from linac_gen.surrogates.study_check import EXIT_KEYS, exit_values
+        outside = outside_fractions(results.surrogate_calls, results.native_traversals)
+        results.outside_range = outside
+        flagged = [f for f in outside if f > OUT_OF_RANGE_WARN]
+        if flagged:
+            warnings.warn(
+                f"ErrorStudy: in {len(flagged)} of {len(outside)} seeds more than "
+                f"{100 * OUT_OF_RANGE_WARN:g} % of the traversals the surrogates would answer fell "
+                f"outside their trained range (up to {100 * max(flagged):.0f} %); those ran "
+                "native, so the surrogates answered less of the study than of its design lattice",
+                stacklevel=4)
+        raw = [exit_values(r) for r in results._recorders]
+        design = results.surrogates
+        design_n, design_s = design.native, design.surrogate
+        results.exit_raw = raw
+        results.exit_corrected = [
+            {k: design_n[k] + (v[k] - design_s[k]) for k in EXIT_KEYS}
+            if (answers, refused) == (design.nn_calls, design.refused) else None
+            for v, answers, refused in zip(raw, results.surrogate_calls,
+                                           results.native_traversals, strict=True)]
+        if should_stop is not None and should_stop():
+            return                              # stopped: no native runs after it
+        worst, where, seeds = -1.0, None, []
+        with registry.suspended():
+            for (seed, lat, cfg, _a, _r), got in zip(counted, raw, strict=False):
+                if lat is None:
+                    break
+                res = self._envelope_seed(lat, cfg, should_stop)
+                if res is None:
+                    break
+                native = exit_values(res)
+                seeds.append(seed)
+                for k in EXIT_KEYS:
+                    a, b = native[k], got[k]
+                    d = abs(b - a) / abs(a) if a != 0.0 else (0.0 if b == a else np.inf)
+                    if not np.isfinite(d) or d > worst:
+                        worst, where = (np.inf if not np.isfinite(d) else d), (seed, k)
+        results.native_check = {"seeds": seeds, "largest": max(worst, 0.0),
+                                "seed": where[0] if where else None,
+                                "key": where[1] if where else None}
+
+    def _finish(self, results, all_corrections):
+        """The correction bookkeeping of :meth:`run` on ``results``."""
         # Seeds whose orbit correction KILLED the beam track a dead beam
         # — count them and warn once, so the ensemble statistics are
         # never silently biased by rows full of zeros.
@@ -809,7 +1058,7 @@ class ErrorStudy:
                 f"{self.base_seed + first_idx}, at "
                 f"{all_corrections[first_idx].get('beam_lost_at')}) — "
                 "those seeds track a dead beam",
-                stacklevel=2,
+                stacklevel=4,
             )
         return results
 
@@ -1017,6 +1266,13 @@ class ErrorStudy:
                 setattr(elem, err.parameter,
                         getattr(elem, err.parameter) + val)
                 _log(elem, err, val, True, "slot-add")
+            elif err.parameter == "field_rel" and _static_magnet_map(elem):
+                # A field map with static magnetic fields only has neither: its field is
+                # kb·(1+voltage_rel), so the draw is ADDED to voltage_rel (the Error Study
+                # tab's solenoid target draws field_rel for every solenoid, field maps
+                # included)
+                elem.voltage_rel = float(getattr(elem, "voltage_rel", 0.0) or 0.0) + val
+                _log(elem, err, val, True, "voltage_rel")
             else:
                 # Neither slot exists on this element type: the
                 # error cannot be applied.  Warn ONCE per
@@ -1174,5 +1430,117 @@ class ErrorStudy:
 
                 self._apply_draw(elem, err, val, _log)
 
+        self._stamp_phase_error_cards(lattice_copy, seed, applied_log)
         self.applied_log[int(seed)] = applied_log
         return lattice_copy
+
+    def _phase_error_entrance(self, beam_config):
+        """The lattice-entrance reference of the SET_BEAM_PHASE_ERROR walks:
+        ``entrance_ref`` when the study was given one, else the one a beam
+        from the config starts with (a .dst file's header, as the tracked
+        beam has it); None: neither."""
+        given = getattr(self, "entrance_ref", None)
+        if given is not None:
+            return given.copy()
+        if beam_config is None:
+            return None
+        from linac_gen.distributions.factory import file_reference
+        ref = file_reference(beam_config)
+        if ref is not None:
+            return ref
+        from linac_gen.cli.common import build_ref
+        return build_ref(beam_config)
+
+    @staticmethod
+    def _arrivals(lattice, ref, indices, stamp=None) -> dict:
+        """The reference's clock phase at the entrance of each element in
+        ``indices`` along one reference walk of ``lattice`` (the matrix
+        walk's, :func:`reference_at`), from ``ref``.  ``stamp(i, phi_s)``,
+        when given, is called at each of them before the walk goes on, so
+        that what it sets on element ``i`` acts in the rest of the walk."""
+        from linac_gen.tracking.matrix_tracking import _replay_ref
+        r = ref.copy()
+        out: dict = {}
+        start = 0
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")    # a random card's 'no draw' note
+            for i in sorted(indices):
+                _replay_ref(lattice.elements[start:i], r, lattice)
+                out[i] = float(r.phi_s)
+                if stamp is not None:
+                    stamp(i, out[i])
+                start = i
+        return out
+
+    def _phase_error_design(self) -> dict:
+        """The error-free arrival (the reference's clock phase) at each
+        SET_BEAM_PHASE_ERROR card with Dp = 0, by element index: one walk of
+        a copy of the studied lattice, once per study."""
+        cached = getattr(self, "_phase_error_design_cache", None)
+        if cached is not None:
+            return cached
+        from linac_gen.elements.lattice_commands import SetBeamPhaseError
+        cards = [i for i, e in enumerate(self.lattice.elements)
+                 if isinstance(e, SetBeamPhaseError) and e.dphi_deg == 0.0]
+        design: dict = {}
+        ref0 = self._phase_error_entrance(self.beam_config) if cards else None
+        if ref0 is not None:
+            # a walk leaves run state on what it passes: walk a copy
+            design = self._arrivals(copy.deepcopy(self.lattice), ref0, cards)
+        self._phase_error_design_cache = design
+        return design
+
+    def _stamp_phase_error_cards(self, lattice_copy, seed, applied_log) -> None:
+        """Stamp each SET_BEAM_PHASE_ERROR card of the seed's copy.  A random
+        card gets its draw within ±Dp, from an auxiliary stream, so the
+        element and beam draws stay what they were.  A card with Dp = 0 gets
+        the seed's correction: the error-free arrival at the card minus the
+        seed's, along the same reference walk, so a seed without errors
+        gets exactly none, and the walk sees the draws and the corrections
+        before the card.  A card stamped already keeps its stamp: pulse
+        jitter on a frozen seed is dynamic, and a frozen seed's correction
+        is part of it.  Both go into the seed's log of what was applied."""
+        from linac_gen.elements.lattice_commands import SetBeamPhaseError
+        cards = [(i, e) for i, e in enumerate(lattice_copy.elements)
+                 if isinstance(e, SetBeamPhaseError)]
+        if not cards:
+            return
+
+        def _note(e, parameter, value, how):
+            applied_log.append({"element": e.name, "class": type(e).__name__,
+                                "parameter": parameter, "value": float(value),
+                                "applied": True, "mode": how})
+
+        for i, e in cards:
+            if e.dphi_deg != 0.0 and e.random_flag and not e.random_drawn:
+                rng = np.random.default_rng(
+                    stream_entropy(int(seed), _PHASE_ERROR_STREAM, i, *self._rng_key))
+                half = abs(float(e.dphi_deg))
+                e.random_draw_deg = float(rng.uniform(-half, half))
+                e.random_drawn = 1
+                _note(e, "random_draw_deg", e.random_draw_deg, "draw")
+        pending = [i for i, e in cards if e.dphi_deg == 0.0 and not e.rephased]
+        if not pending:
+            return
+        design = self._phase_error_design()
+        cfg = self._apply_beam_errors(seed) if self.beam_config is not None else None
+        ref_in = self._phase_error_entrance(cfg)
+        if ref_in is None or any(i not in design for i in pending):
+            if not getattr(self, "_warned_phase_error_entrance", False):
+                self._warned_phase_error_entrance = True
+                warnings.warn(
+                    "ErrorStudy: no beam config and no entrance_ref, so the "
+                    "SET_BEAM_PHASE_ERROR cards with Dp = 0 get no correction",
+                    stacklevel=3)
+            return
+        # walk a copy (a walk leaves run state, e.g. a curved cluster's traced
+        # length, which a campaign's transport would read as a draw)
+        walk = copy.deepcopy(lattice_copy)
+
+        def _stamp(i, phi_s):                    # i: a pending card
+            for e in (walk.elements[i], lattice_copy.elements[i]):
+                e.rephase_deg = design[i] - phi_s
+                e.rephased = 1
+            _note(lattice_copy.elements[i], "rephase_deg", design[i] - phi_s, "correction")
+
+        self._arrivals(walk, ref_in, pending, stamp=_stamp)

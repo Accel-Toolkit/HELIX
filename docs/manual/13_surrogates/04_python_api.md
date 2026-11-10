@@ -42,16 +42,16 @@ ref_template = ReferenceParticle(species=H_MINUS, w_kin=2.12, frequency=162.5)
 mlp, meta = train_surrogate_for_element(
     element=elem,
     ref_template=ref_template,
-    n_samples=50_000,
+    n_samples=5_000,
     ref_w_kin_range=(2.0, 2.5),
     param_ranges={
         "ke":    (elem.ke * 0.80, elem.ke * 1.20),
         "phase": (elem.phase - 20.0, elem.phase + 20.0),
     },
-    hidden_dims=(128, 128, 128),
-    epochs=300,
+    hidden_dims=(128, 128),
+    epochs=1000,
     out_dir="weights/FMAP_001",
-    lattice_hash="bb088243c9fb33ce",
+    lattice_hash="7429fb95147c412d",
     element_key="FMAP_001",
     n_workers=12,             # CPU parallel data gen
 )
@@ -63,7 +63,7 @@ print(f"val MAPE = {meta.val_mape:.3e}")
 | Arg | Type | Required | Notes |
 |---|---|---|---|
 | `element` | `FieldMapElement` | Yes | source whose `fitted_matrix(ref)` provides ground truth |
-| `ref_template` | reference particle | Yes | cloned per sample; only `w_kin` is varied |
+| `ref_template` | reference particle | Yes | cloned per sample; `w_kin` is varied, and a cavity at another frequency gets its own.  Its species and the clock of the targets are recorded: the map answers only for that species, and a cavity with no frequency of its own only on that clock.  The reference phase `phi_s` is recorded too: for a cavity whose field follows the running phase (`p_flag` other than 1), set it to the phase the cavity is entered at, as the Surrogates tab does |
 | `n_samples` | int | Yes | LHS sample count |
 | `ref_w_kin_range` | `(lo, hi)` MeV | Yes | scope on incoming kinetic energy |
 | `param_ranges` | `dict[str, (lo, hi)]` | Yes | element attributes to sweep |
@@ -71,9 +71,9 @@ print(f"val MAPE = {meta.val_mape:.3e}")
 | `hidden_dims` | tuple of int | `(128,128,128)` | MLP hidden layer sizes |
 | `activation` | `"silu"`/`"tanh"`/`"relu"` | `"silu"` | smooth = better Jacobians (M7-friendly) |
 | `epochs` | int | `200` | training epochs |
-| `lr` | float | `1e-3` | Adam learning rate |
+| `lr` | float | `1e-3` | Adam's starting learning rate; it falls along a half cosine to 1 % of it at the last epoch |
 | `batch_size` | int | `256` | minibatch size |
-| `val_frac` | float | `0.2` | hold-out split for val MAPE |
+| `val_frac` | float | `0.2` | hold-out split: the epoch kept is the one with the lowest validation error, and the val MAPE is over the outputs that vary ([training guide](05_training_guide.md)) |
 | `seed` | int | `42` | LHS + train RNG seed |
 | `lattice_hash` | str | `"unknown"` | recorded in metadata |
 | `element_key` | str / None | `None` | defaults to `element.name` |
@@ -116,7 +116,7 @@ if result:
 
 # Discover everything in a per-lattice weights root:
 cached = discover_cached_surrogates(
-    "linac_gen/surrogates/weights/bb088243c9fb33ce",
+    "linac_gen/surrogates/weights/7429fb95147c412d",
     element_names=["FMAP_001", "FMAP_002"],  # restrict; None = everything
 )
 # -> {"FMAP_001": (mlp, meta, Path), ...}

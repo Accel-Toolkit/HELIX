@@ -44,7 +44,7 @@ import numpy as np
 from linac_gen.elements.lattice_commands import (
     Adjust, LatticeCommand,
     MinEmit4DGrowth, MinEmitGrowth, MinTransmission, SetAchromat,
-    SetAdv, SetBeamPhaseAdv,
+    SetAdv, SetBeamE0P0, SetBeamEnergy, SetBeamPhaseAdv,
     SetKeOutMin, SetPhaseOut, SetPosition, SetSeparation, SetSize, SetSizeMax,
     SetSizeMin, SetTwiss,
 )
@@ -689,6 +689,71 @@ def _make_set_ke_out_min_evaluator(cmd: SetKeOutMin):
     return evaluator
 
 
+def _card_row(results, cmd_idx: int) -> int:
+    """The recorder row at the exit of lattice element ``cmd_idx`` (a card's own
+    row; both recorders keep one per element, ``element_exit_idx``)."""
+    n = len(getattr(results, "ref_w_kin", None) or [])
+    exit_idx = getattr(results, "element_exit_idx", None) or []
+    row = int(exit_idx[cmd_idx]) if cmd_idx < len(exit_idx) else cmd_idx + 1
+    return min(row, n - 1)
+
+
+def _beam_offset(results, row: int):
+    """The bunch centroid's offset from the reference particle at ``row``:
+    ``(dphi deg, dW MeV)``; nothing without a centroid record."""
+    cent = getattr(results, "centroid", None)
+    if cent is None or len(cent) <= row:
+        return 0.0, 0.0
+    c = np.asarray(cent[row], dtype=float).ravel()
+    return (float(c[4]), float(c[5])) if c.size >= 6 else (0.0, 0.0)
+
+
+def _lost_at(results, row: int) -> bool:
+    trans = getattr(results, "transmission", None)
+    return bool(trans is not None and row < len(trans) and float(trans[row]) <= 0.0)
+
+
+#: a lost beam's energy residual (MeV): above any energy a live beam can be off by
+_DEAD_BEAM_RESIDUAL_MEV = 1.0e6
+
+
+def _make_set_beam_energy_evaluator(cmd: SetBeamEnergy, cmd_idx: int):
+    """TraceWin's ``SET_BEAM_ENERGY k Ei`` criterion, k(E − Ei)² (manual,
+    "Matching commands"): the beam's energy at the card — the reference
+    particle's plus the bunch centroid's offset — against ``Ei`` (MeV).  A beam
+    lost at the card reads as a large residual, not as one on its target."""
+    def evaluator(results, lattice):
+        wkin = getattr(results, "ref_w_kin", None) or []
+        if not wkin:
+            return np.array([0.0])
+        row = _card_row(results, cmd_idx)
+        if _lost_at(results, row):
+            return np.array([_DEAD_BEAM_RESIDUAL_MEV])
+        _dphi, dw = _beam_offset(results, row)
+        return np.array([float(wkin[row]) + dw - cmd.energy_MeV])
+    return evaluator
+
+
+def _make_set_beam_e0p0_evaluator(cmd: SetBeamE0P0, cmd_idx: int):
+    """TraceWin's ``SET_BEAM_E0_P0 k dE dphi ke kp`` criterion: the beam's
+    energy and phase minus the linac's at the card (zero without errors) against
+    ``dE`` (MeV) and ``dphi`` (deg), ``ke`` and ``kp`` switching the terms.  The
+    linac is the reference particle; the beam is the bunch centroid, so beam
+    minus linac is the centroid's offset.  Two residuals, the phase wrapped to
+    ±180°; a beam lost at the card reads as large residuals."""
+    def evaluator(results, lattice):
+        wkin = getattr(results, "ref_w_kin", None) or []
+        if not wkin:
+            return np.zeros(2)
+        row = _card_row(results, cmd_idx)
+        if _lost_at(results, row):
+            return np.full(2, _DEAD_BEAM_RESIDUAL_MM)
+        dphi, dw = _beam_offset(results, row)
+        d_phase = (dphi - cmd.dphi_deg + 180.0) % 360.0 - 180.0
+        return np.array([cmd.ke * (dw - cmd.dE_MeV), cmd.kp * d_phase])
+    return evaluator
+
+
 _SET_PHASE_OUT_WARNED = False
 
 
@@ -967,6 +1032,24 @@ def collect_constraints(lattice) -> List[Constraint]:
                 label=f"SET_KE_OUT_MIN:{elem.energy_mev:g}MeV",
                 evaluator=_make_set_ke_out_min_evaluator(elem),
                 weight=elem.weight, source=elem,
+            ))
+
+        elif isinstance(elem, SetBeamEnergy):
+            if elem.k == 0:
+                continue
+            out.append(Constraint(
+                label=f"SET_BEAM_ENERGY:{elem.name}",
+                evaluator=_make_set_beam_energy_evaluator(elem, elem_idx),
+                weight=float(elem.k), source=elem,
+            ))
+
+        elif isinstance(elem, SetBeamE0P0):
+            if elem.k == 0 or not (elem.ke or elem.kp):
+                continue
+            out.append(Constraint(
+                label=f"SET_BEAM_E0_P0:{elem.name}",
+                evaluator=_make_set_beam_e0p0_evaluator(elem, elem_idx),
+                weight=float(elem.k), source=elem,
             ))
 
         elif isinstance(elem, SetPhaseOut):

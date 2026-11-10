@@ -323,14 +323,18 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
           ψ is computed once per cavity by :meth:`_calibrate_sync_phase`
           and stored in ``self._sync_offset_deg``.
         """
+        # SET_BEAM_PHASE_ERROR: its RF shift on the phase the beam sees; its
+        # correction on the clock, read here only where the clock itself is
+        shift = float(getattr(ref, "rf_shift", 0.0))
         if self.p_flag == 1:
             offset = self._sync_offset_deg or 0.0
             # Internal phase advance from cavity entrance — independent of
             # the lattice-global ref.phi_s, so sweeps of upstream elements
             # can't shift this cavity's operating point.
             internal = phi_s_midpoint_deg - self._phi_s_at_entrance
-            return (self.effective_phase - offset + internal) * np.pi / 180.0
-        return (self.effective_phase + phi_s_midpoint_deg) * np.pi / 180.0
+            return (self.effective_phase - offset + internal + shift) * np.pi / 180.0
+        rephase = float(getattr(ref, "rf_rephase", 0.0))
+        return (self.effective_phase + phi_s_midpoint_deg + rephase + shift) * np.pi / 180.0
 
     # -- Iterative self-consistent calibration for SET_SYNC_PHASE --------
     def _probe_voltage_integral(self, ref_entry,
@@ -1223,7 +1227,7 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
         if (eff_freq > 0
                 and eff_freq != ref.frequency
                 and self._has_electric_channel()):
-            ref.frequency = eff_freq
+            ref.switch_clock(self.frequency if self.frequency > 0 else eff_freq, eff_freq)
 
     def reset_run_state(self) -> None:
         super().reset_run_state()
@@ -1327,6 +1331,13 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
             probes.append(v_plus)
             probes.append(v_minus)
         P = np.array(probes, dtype=np.float64)
+        # Asked at another clock: the map on its own (reached as its entry would reach
+        # it, phase moved as a FREQ card moves it), the jump's factor exact.  The
+        # probes would otherwise take their Δφ step in the old clock's degrees.
+        clock = float(ref.frequency or 0.0)
+        ref = ref.copy()
+        self._propagate_frequency_to_ref(ref)
+        jump = ref.frequency / clock if clock > 0.0 and ref.frequency != clock else 1.0
 
         ref_c = ref.copy()
         beam  = Beam(ref=ref_c, n_particles=P.shape[0], current=0.0)
@@ -1344,6 +1355,8 @@ class FieldMap3D(FieldMapBase, Misalignment, FieldError):
             row += 2
             M[:, j] = (y_plus - y_minus) / (2.0 * dj)
 
+        if jump != 1.0:
+            M[:, 4] *= jump
         self._step_idx = 0   # reset after Jacobian evaluation
         return M
 

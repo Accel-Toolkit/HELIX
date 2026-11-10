@@ -23,6 +23,28 @@ Binary layout
 
 Total file size = 31 + 48*Np bytes.
 
+TraceWin (seen from 2.27) also writes a second layout (magic 0x7e 0x65),
+measured on genuine files: the same header, then 7×DOUBLE per particle, then
+mc², so 31 + 56*Np bytes.  The seventh value is 0 for a particle still in the
+beam; any other value marks it lost, and is not a stable element number.  A
+lost particle stays in the file, with whatever coordinates it was left with,
+so the loader keeps only the particles in the beam and scales the header's
+current by N_alive / Np to keep the macrocharge, as TraceWin's own classic
+export after losses does (its ``part_dtl1.dst``: 5.036692 mA =
+6.8 × 74069 / 100000).  The counts match TraceWin's other outputs at the same
+plane (``partran1.out``, ``toutatis.out``).
+
+Two things the file does not say, which the header reports:
+
+* ``dc_like``: the rms phase exceeds :data:`DC_RMS_PHASE_DEG`.  A phase uniform
+  over one RF period has rms 360/√12 = 103.9°; TraceWin's RFQ-entrance file has
+  122°, and the bunched files measured have at most 11°.
+* ``n_off_energy``: particles further than half the median energy from it.  An
+  RFQ-exit file keeps the particles the RFQ did not accelerate (77 at 30 keV
+  among 74 148 at 2.1 MeV): TraceWin counts them in the beam and its current,
+  but they dominate the statistics here (ε_z 0.487 deg·MeV with them, 0.048
+  without; TraceWin's tables give the latter).
+
 The 5th and 6th columns are *absolute* phase (rad, relative to RF clock)
 and *absolute* kinetic energy (MeV, not a deviation).  The on-disk
 record contains no separate "synchronous" particle; the bunch centroid
@@ -59,7 +81,11 @@ _HEADER_FMT = "<2sIddB"
 _HEADER_SIZE = struct.calcsize(_HEADER_FMT)   # 23
 assert _HEADER_SIZE == 23, "Header size must be 23 bytes"
 _PARTICLE_BYTES = 6 * 8                        # 48
+_FLAGGED_PARTICLE_BYTES = 7 * 8                # 56: TraceWin 2.27, in-beam flag
 _TRAILER_SIZE = 8                              # one DOUBLE for mc²
+
+#: above this rms phase a file holds a DC beam (see the module docstring)
+DC_RMS_PHASE_DEG = 90.0
 
 # TraceWin observed magic byte values (for compatibility on write).
 _MAGIC_HEAD = b"\x7d\x64"
@@ -83,18 +109,24 @@ def load_dst(path: str) -> Tuple[np.ndarray, dict]:
         (mean phi and mean W of the file, respectively).
     header : dict
         ``{n_particles, current_mA, frequency_MHz, mass_MeV,
-           w_kin_ref, phi_ref_rad}``.
+           w_kin_ref, phi_ref_rad, n_in_file, n_lost, layout,
+           n_off_energy, rms_phase_deg, dc_like}``.
 
         ``w_kin_ref`` is the centroid energy used as the synchronous
         reference; ``phi_ref_rad`` is the raw centroid phase.
+        ``n_particles`` and every statistic count the particles in the
+        beam; ``current_mA`` is theirs.  ``layout`` is ``"classic"`` (six
+        values per particle) or ``"flagged"`` (seven); ``n_in_file`` and
+        ``n_lost`` count the rows of the file.  ``n_off_energy`` and
+        ``dc_like``: see the module docstring.
 
     Raises
     ------
     FileNotFoundError
         If ``path`` does not exist.
     ValueError
-        If the file is too small or its size is inconsistent with the
-        announced particle count.
+        If the file is too small, its size fits neither layout for the
+        announced particle count, or no particle is still in the beam.
     """
     p = Path(path)
     if not p.is_file():
@@ -114,20 +146,35 @@ def load_dst(path: str) -> Tuple[np.ndarray, dict]:
         raise ValueError(f"Particle count must be positive; got {n}")
 
     expected_size = _HEADER_SIZE + n * _PARTICLE_BYTES + _TRAILER_SIZE
-    if len(raw) != expected_size:
+    flagged_size = _HEADER_SIZE + n * _FLAGGED_PARTICLE_BYTES + _TRAILER_SIZE
+    if len(raw) not in (expected_size, flagged_size):
         raise ValueError(
-            f"File size {len(raw)} != expected {expected_size} for N={n} "
-            f"(31 + 48*N + 8 byte layout).  File may be truncated, in a "
-            f"non-standard layout, or N may be misread."
+            f"File size {len(raw)} != expected {expected_size} (31 + 48*N "
+            f"bytes) or {flagged_size} (31 + 56*N bytes, TraceWin 2.27) for "
+            f"N={n}.  File may be truncated, in a non-standard layout, or N "
+            f"may be misread."
         )
 
+    flagged = len(raw) == flagged_size
+    n_columns = 7 if flagged else 6
     body_start = _HEADER_SIZE
-    body_end = body_start + n * _PARTICLE_BYTES
+    body_end = body_start + n * n_columns * 8
     body = raw[body_start:body_end]
     trailer = raw[body_end:]
 
-    arr = np.frombuffer(body, dtype="<f8").reshape(n, 6)
+    arr = np.frombuffer(body, dtype="<f8").reshape(n, n_columns)
     mass_MeV = float(struct.unpack("<d", trailer)[0])
+
+    n_in_file = n
+    if flagged:
+        arr = arr[arr[:, 6] == 0.0, :6]
+        n = arr.shape[0]
+        if n == 0:
+            raise ValueError(
+                f"No particle is still in the beam: all {n_in_file} are "
+                f"flagged lost ({path})"
+            )
+        current_mA = current_mA * n / n_in_file
 
     # Compute centroid for phi (rad) and W (MeV) — used as synchronous ref.
     phi_ref_rad = float(np.mean(arr[:, 4]))
@@ -146,6 +193,11 @@ def load_dst(path: str) -> Tuple[np.ndarray, dict]:
     # ε_n_transverse = β·γ · ε_g (using w_kin_ref as the reference energy).
     twiss = _twiss_from_particles(particles, mass_MeV, w_kin_ref)
 
+    w_median = float(np.median(arr[:, 5]))
+    n_off_energy = int(np.count_nonzero(
+        np.abs(arr[:, 5] - w_median) > 0.5 * abs(w_median)))
+    rms_phase_deg = float(np.std(particles[:, 4]))
+
     header = {
         "n_particles": int(n),
         "current_mA": float(current_mA),
@@ -153,6 +205,12 @@ def load_dst(path: str) -> Tuple[np.ndarray, dict]:
         "mass_MeV": mass_MeV,
         "w_kin_ref": w_kin_ref,
         "phi_ref_rad": phi_ref_rad,
+        "n_in_file": int(n_in_file),
+        "n_lost": int(n_in_file - n),
+        "layout": "flagged" if flagged else "classic",
+        "n_off_energy": n_off_energy,
+        "rms_phase_deg": rms_phase_deg,
+        "dc_like": bool(rms_phase_deg > DC_RMS_PHASE_DEG),
         # Sample-derived emittances and Twiss
         "emit_x": twiss["emit_x"],         # geometric, mm·mrad
         "emit_y": twiss["emit_y"],

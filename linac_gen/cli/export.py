@@ -49,8 +49,11 @@ def add_arguments(p) -> None:
     p.add_argument("--linearize", action="store_true",
                    help="export field maps / multi-gap cavities / RFQ cells "
                         "/ thin lenses / explicit matrices as MAD-X MATRIX "
-                        "elements built from their first-order map (an "
-                        "energy gain becomes a kick6 pt shift; warned)")
+                        "elements built from matrix mode's first-order map "
+                        "(an NCELLS one carries the synchronism factor where "
+                        "it acts, which the multiparticle tracker does not "
+                        "apply; an energy gain becomes a kick6 pt shift; "
+                        "warned)")
     p.add_argument("-q", "--quiet", action="store_true",
                    help="print nothing on success (warnings still go to "
                         "stderr)")

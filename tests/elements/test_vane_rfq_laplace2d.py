@@ -43,6 +43,11 @@ from linac_gen.elements.vane_rfq_laplace2d import (
 from linac_gen.io.tracewin_vane import VaneGeometry
 from linac_gen.io.vane_rfq_helper import replace_rfq_cells_with_vane
 
+# retired element (VaneRFQRetiredWarning on every construction); the warning
+# itself is tested in test_vane_rfq.py
+pytestmark = pytest.mark.filterwarnings(
+    "ignore::linac_gen.elements.vane_rfq.VaneRFQRetiredWarning")
+
 
 @pytest.fixture
 def ref():

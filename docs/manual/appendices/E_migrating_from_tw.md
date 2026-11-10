@@ -84,6 +84,11 @@ Just open the `.dat` in the GUI (Ctrl+O) and click Run.
     be the H⁻ rest-mass bug, fixed alongside; with both fixes the
     benchmark reaches 0.98–1.00 correlation in every observable.)  σ_φ is
     *reported* in degrees of the machine frequency from the card onward.
+    Matrix mode and the analysis walks do the same: a transfer matrix across
+    the card has f₂/f₁ in its Δφ row.  An RF element at another design
+    frequency with no `FREQ` card in front of it makes the same change
+    itself on entry, in every mode; an LLRF `frequency_offset` is not a
+    change of clock and leaves the reference phase where it is.
 
 !!! warning "No unit-parity claim with real TraceWin"
     `.dat` files written by HELIX round-trip through HELIX's own

@@ -26,8 +26,10 @@ Design:
 """
 from __future__ import annotations
 
+import contextlib
 import multiprocessing
 import os
+import sys
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Optional
@@ -93,6 +95,16 @@ class ScanPoint:
     #                                 an energy scan never rescales magnets
     loss_metrics: bool = False      # True: the row also carries the loss-
     #                                 power scalars of _loss_metrics()
+    # --- surrogate extension (additive; None leaves the worker as before) ---
+    surrogates: object = None       # surrogates.transport.SurrogateSpec: the
+    #                                 weights a study's design check accepted;
+    #                                 a pool worker registers them on its own
+    #                                 parse (the parent's registry serves a
+    #                                 serial run), and the row then carries
+    #                                 surrogate_calls / surrogate_refused
+    in_pool: bool = False           # set by run_scan_points when a point of
+    #                                 the run has surrogates: the point runs in
+    #                                 a worker process, whose registry it sets
 
 
 def _parse_lattice_for_scan(path: str, beam_config=None):
@@ -242,6 +254,15 @@ def _run_one_point_worker(point: ScanPoint) -> dict:
         # Element-parameter overrides (a batch-mode scan over e.g. a quad
         # gradient).  Empty for the GUI convergence-tab caller — no import
         # then.
+        # A worker registers the study's surrogates on this parse, before the point's
+        # overrides (their verdicts are the parent's); one that runs a point without
+        # them holds none.  The parent's registry is the serial run's.
+        if point.in_pool:
+            if point.surrogates:
+                from linac_gen.surrogates.transport import install
+                install(point.surrogates, lattice)
+            elif "linac_gen.surrogates.registry" in sys.modules:
+                sys.modules["linac_gen.surrogates.registry"].clear()
         if point.element_overrides:
             from linac_gen.cli.common import apply_element_override
             for selector, value in point.element_overrides:
@@ -250,20 +271,26 @@ def _run_one_point_worker(point: ScanPoint) -> dict:
         cfg = BeamConfig(**point.beam_config)
         beam = create_beam(cfg, seed=point.seed)
 
+        if point.surrogates:
+            from linac_gen.surrogates.base import tally
+            counting = tally()
+        else:
+            counting = contextlib.nullcontext()
         t0 = time.time()
         sc = None
-        if point.mode == "envelope":
-            from linac_gen.cli.common import run_envelope_sim
-            res = run_envelope_sim(lattice, cfg,
-                                   env_solver=point.env_solver)
-        else:
-            if cfg.current > 0:
-                sc = worker_sc_config(point)
-            res = Simulation(
-                lattice, beam, space_charge=sc,
-                snapshot_elements=(list(point.snapshot_elements)
-                                   if point.snapshot_elements else None),
-            ).run()
+        with counting as counted:
+            if point.mode == "envelope":
+                from linac_gen.cli.common import run_envelope_sim
+                res = run_envelope_sim(lattice, cfg,
+                                       env_solver=point.env_solver)
+            else:
+                if cfg.current > 0:
+                    sc = worker_sc_config(point)
+                res = Simulation(
+                    lattice, beam, space_charge=sc,
+                    snapshot_elements=(list(point.snapshot_elements)
+                                       if point.snapshot_elements else None),
+                ).run()
         elapsed = time.time() - t0
 
         if point.out_path:
@@ -280,6 +307,9 @@ def _run_one_point_worker(point: ScanPoint) -> dict:
         metrics = _scan_metrics(res, elapsed)
         if point.loss_metrics:
             metrics.update(_loss_metrics(res, cfg))
+        if counted is not None:
+            metrics["surrogate_calls"] = int(counted.calls)
+            metrics["surrogate_refused"] = dict(counted.refused)
         metrics["error"] = None
         if point.out_path:
             metrics["results_path"] = str(point.out_path)
@@ -349,6 +379,10 @@ def run_scan_points(
             )
             pts = [replace(p, use_gpu="cpu") if p.use_gpu != "cpu" else p
                    for p in pts]
+    # Points with surrogates set the registry of the worker that runs them (and one without,
+    # in such a run, clears it): only here, never in a serial run's own process.
+    if any(p.surrogates for p in pts):
+        pts = [replace(p, in_pool=True) for p in pts]
     results: list[dict | None] = [None] * len(pts)
     # Use the "spawn" start method explicitly.  The default on Linux is
     # "fork", which copies the parent's thread table; if the parent has

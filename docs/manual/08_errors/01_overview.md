@@ -70,7 +70,7 @@ no longitudinal shift is performed during tracking.
 | Parameter | Units | Element types |
 |---|---|---|
 | `gradient_rel` | fractional | Quadrupole (also `g3_rel..g6_rel`) |
-| `field_rel` | fractional | Solenoid |
+| `field_rel` | fractional | Solenoid; a field map with static magnetic fields only (solenoid, quadrupole, dipole), or a straight `SUPERPOSE_MAP` cluster of such maps, in its `voltage_rel` |
 | `voltage_rel` | fractional | RFGap |
 | `phase_offset` | deg | RFGap, FieldMap |
 | `frequency_offset` | MHz | RFGap, FieldMap |
@@ -137,6 +137,18 @@ The full input beam state can be perturbed per-seed via
   correction record (`None` unless `enable_correction()` was used).
 * `n_seeds` — seeds actually completed; `n_requested` — seeds asked
   for (they differ when the run was stopped early).
+* `mode` — the forward model, "mp" or "envelope" (an envelope study's
+  recorders are `EnvelopeResults`, which lose no particle).
+* `surrogates` — what the study did with the registered surrogates (its
+  design check: `use`, `note`).  For an envelope study that used them:
+  `surrogate_calls` and `native_traversals` (per seed, the network's
+  answers and the traversals left to the native element, by reason),
+  `outside_range` (per seed, the part of the traversals the network would
+  answer that fell outside its trained range), `native_check` (the largest
+  exit difference of its first three seeds run again natively), and
+  `exit_raw` / `exit_corrected` (each seed's exit values as run, and with
+  the network's design offset taken out; see
+  [A study and its surrogates](../13_surrogates/01_overview.md#a-study-and-its-surrogates)).
 * `_recorders` — the raw per-seed `DiagnosticRecorder` list, for
   forensics on an individual seed.
 

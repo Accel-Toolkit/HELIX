@@ -23,7 +23,7 @@ from linac_gen.elements.lattice_commands import (
     Adjust, AdjustBeamCentroid, AdjustBeamCurrent, AdjustBeamEmit,
     AdjustBeamTwiss, AdjustSteerer, AdjustSteererBx, AdjustSteererBy,
     SetAchromat, SetAdv, SetBeamE0P0, SetBeamEnergy, SetBeamPhaseAdv,
-    SetBeamPhaseError, SetGaussianCutOff, SetPosition, SetSeparation,
+    SetBeamPhaseError, SetGaussianCutOff, SetPosition, SetReferenceEnergy, SetSeparation,
     SetSize, SetSizeMax, SetSizeMin, SetSyncPhase, SetTwiss,
 )
 from linac_gen.elements.marker import Marker
@@ -75,6 +75,10 @@ _FACTORIES: dict[str, Callable] = {
     "SET_SYNC_PHASE":     lambda: SetSyncPhase(name="SET_SYNC_PHASE"),
     "SET_BEAM_PHASE_ERROR": lambda: SetBeamPhaseError(
                                 name="SET_BEAM_PHASE_ERROR", dphi_deg=0.0),
+    # the HELIX card that sets the reference energy (written as a comment
+    # TraceWin skips); SET_BEAM_ENERGY / SET_BEAM_E0P0 are matching criteria
+    "HELIX_SET_ENERGY":   lambda: SetReferenceEnergy(name="SET_ENERGY",
+                                                     energy_MeV=0.0, shift=True),
     "SET_BEAM_ENERGY":    lambda: SetBeamEnergy(name="SET_BEAM_ENERGY",
                                                 energy_MeV=0.0),
     "SET_BEAM_E0P0":      lambda: SetBeamE0P0(name="SET_BEAM_E0P0"),

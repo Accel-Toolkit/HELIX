@@ -225,6 +225,9 @@ def parse_with_lattix(path, *, species: str | None = None, w_kin: float | None =
                      "to_helix": rep2.model_dump(mode="json")},
         "format": fmt,
     }
+    # the pole faces lattix makes separate elements: the bends record them
+    from linac_gen.elements.dipole import link_pole_faces
+    link_pole_faces(hlat.elements)
     return hlat, meta
 
 

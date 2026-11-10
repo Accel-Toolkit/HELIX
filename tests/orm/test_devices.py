@@ -1,5 +1,8 @@
 """Device ↔ element mapping and alignment."""
 from __future__ import annotations
+
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -7,6 +10,9 @@ from linac_gen.elements.marker import Marker
 from linac_gen.orm import DeviceMap, align_measured, default_device_map, element_label, resolve_devices
 from linac_gen.orm.devices import upstream_rows
 from linac_gen.orm.measured import MeasuredOrm
+from tests.dataguard import needs
+
+_REPO = Path(__file__).resolve().parents[2]
 
 
 def _measured(kick="x", trims=("L:D01TMH", "L:D02TMH", "L:D99TMH"), bpms=("L:BPH5OT", "L:BPH2OT", "L:D01BPH", "L:D02BPH"), dead=()):
@@ -92,6 +98,7 @@ def test_plain_marker_is_not_a_bpm(fodo_lattice):
 
 
 @pytest.mark.slow
+@needs(str(_REPO / "examples/piplattice/fnalscl.lgproj"))
 def test_fnalscl_real_deck_mapping():
     import contextlib, io
     from pathlib import Path

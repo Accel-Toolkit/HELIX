@@ -172,9 +172,8 @@ a whole-lattice fallback) and the panel reports the **channel tunes**
 from the envelope phase probe: σ₀_model (bare) and σ_model (depressed,
 primary) with **η_model = σ_model/σ₀_model** as the tune-depression KPI,
 plus the beam Δμ_rms (secondary, with a tooltip caveat) from the latest
-envelope run.  Coupled cells report the normal-mode tunes I/II; a
-"frozen-longitudinal" tag appears where the longitudinal fixed point is
-not solved.  Validity notes surface when the beam is not matched (BMAG),
+envelope run.  Coupled cells report the normal-mode tunes I/II.
+Validity notes surface when the beam is not matched (BMAG),
 when β is projected-only inside a coupled interior, or when sampling is
 coarse.  See [Phase advance & tune
 depression](../09_diagnostics/06_phase_advance.md) for the full
@@ -201,7 +200,7 @@ Controls (options row):
 | **MP particles** | macroparticles per MP cost evaluation.  Always visible, but enabled only when Cost solver = `mp` (greyed out otherwise).  There is no seed spinbox. |
 | **Match** | run the matcher in the background |
 | **Stop** | cancel a running match.  Lattice is restored to the best-cost x seen so far; the Variables table populates from that result. |
-| **Apply** | write the matched values into the lattice + beam config; flags both as dirty so the close-without-save prompt warns you. |
+| **Apply** | write the matched values into the lattice + beam config as one undoable edit ([Apply](#apply)); flags both as dirty so the close-without-save prompt warns you. |
 | **Save matched .dat** | export the matched lattice to a TraceWin `.dat` |
 
 `least_squares` is local and fast.  `differential_evolution` and
@@ -326,13 +325,66 @@ followed by `— N iters, cost baseline_cost → final_cost, T s`.  The
 baseline cost is the cost at the unmatched `x0`, so you can see at a
 glance whether the match actually improved things.
 
+### Apply
+
+**Apply** writes what the match found into the lattice in hand: the
+setting each `ADJUST` variable varied, on its element, and the beam
+fields the `ADJUST_BEAM_*` cards varied, in the session beam and the
+[Beam tab](03_beam_tab.md) form.  Nothing else changes.  It is one edit
+of the lattice, as an inspector change is:
+
+* one **Undo** (Lattice tab, Ctrl+Z) puts back the values and the beam
+  fields as they were, and **Redo** applies them again; the
+  unsaved-changes details list it as `Matching Apply (…)`;
+* the lattice keeps its file, its undo history and the selected
+  element, and the last run's results stay until the next run, as
+  after any edit; both dirty flags are set, and plain **Save** asks for
+  a file name (the lattice holds fitted values);
+* the [Surrogates tab](06b_surrogates_tab.md) keeps its rows and their
+  **Use** ticks: a setting their weights hold that the match changed
+  sends that element native, as an inspector edit does;
+* **Save matched .dat** still writes the matched lattice.  An edit
+  of the lattice after the Apply, its Undo among them, or a change of
+  the session beam clears the result: click **Match** again.
+
+A beam field set after the Apply (with the Beam tab's **Apply**, say)
+keeps its value when the Apply is undone or redone.  The Apply, its
+Undo and its Redo put in the Beam tab form only the fields the match
+varied: a value typed in the form and not applied stays there, and
+the form is not applied.
+
+The match holds for the lattice and the session beam as they were
+when **Match** was clicked.  An edit of the lattice (a value edit
+too) or a change of the session beam (the Beam tab's **Apply**, say)
+made while the match runs is kept, and the result no longer holds:
+the status line says so when the result arrives (`It no longer holds:
+the lattice changed after Match was clicked`), and **Apply** changes
+nothing and says why.  **Apply** refuses in the same way when another
+lattice was opened while the match ran, or the lattice was edited in
+its structure (an element added, removed, moved, renamed or
+replaced).  Made after the result arrived, such an edit or beam
+change clears the result; a beam set that leaves the session beam as
+it was does not.  In each case click **Match** again.
+
+While a run is going (an envelope or multiparticle run from the
+toolbar, say, which walks the elements of the lattice in hand),
+**Apply** changes nothing and keeps the result: click it again when
+the run has ended.  The **Undo** and the **Redo** of an Apply are
+refused in the same way: they change nothing and the status line says
+why; click Undo or Redo again when the run has ended.  A
+run stopped with the toolbar's **Stop** is going until its worker has
+ended: the `sacherer` envelope solver has no stop check and walks on
+to the end of the lattice.  A ring run works on a copy of the lattice
+and does not hold it back.
+
 ## Workflow
 
 1. Load a lattice that contains `ADJUST_*` / `SET_*` cards.
 2. In Auto-Adjust, pick the algorithm and (optionally) Space charge.
 3. Click **Match** and watch the status line.
 4. Review the Variables / Constraints tables.
-5. Click **Apply** to commit, or **Save matched .dat** to export.
+5. Click **Apply** to commit (one **Undo** reverts it), or **Save
+   matched .dat** to export.
 
 The algorithm choice and Max-iter are session settings — they are not
 saved in the `.lgproj` project file.

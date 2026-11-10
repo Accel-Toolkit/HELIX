@@ -64,6 +64,31 @@ def _grab_png(widget, label: str, max_w: int = 1024,
             "label": label}
 
 
+def _restorable(steps):
+    """Split the steps of a rollback, ``(element, attribute, value)`` in the order they run,
+    into those that can run and the ``(element, attribute)`` that follow from other
+    parameters when their turn comes (a pipe the user gave an angle after the plan: its
+    length), judged on copies of the elements whose geometry follows from parameters."""
+    import contextlib
+    import copy
+    probes: dict = {}
+    keep, left = [], []
+    for elem, attr, value in steps:
+        if not hasattr(elem, "_is_derived"):
+            keep.append((elem, attr, value))
+            continue
+        probe = probes.get(id(elem))
+        if probe is None:
+            probe = probes[id(elem)] = copy.deepcopy(elem)
+        if probe._is_derived(attr):
+            left.append((elem, attr))
+            continue
+        with contextlib.suppress(Exception):    # the step itself refuses it, and says why
+            setattr(probe, attr, value)
+        keep.append((elem, attr, value))
+    return keep, left
+
+
 def _make_context(state, calc_dir: str, nav=None):
     from linac_gen.assist.tools import WorkContext
 
@@ -309,7 +334,11 @@ def _make_context(state, calc_dir: str, nav=None):
                                            getattr(elem, attr), new)
                         for elem, attr, new in changes]
                 cmd = MacroCommand(cmds, label=label or "Assistant edit")
-                state.bus.do(cmd)    # bus.changed → lattice_changed
+                try:
+                    state.bus.do(cmd)    # bus.changed → lattice_changed
+                except Exception as exc:                    # noqa: BLE001
+                    # an element refused a value; the command undid the rest
+                    return {"ok": False, "err": str(exc)}
                 state.status_message.emit("assistant: " + cmd.describe())
                 return {"ok": True, "handle": cmd}
 
@@ -350,11 +379,29 @@ def _make_context(state, calc_dir: str, nav=None):
                                 f"{getattr(elem, 'name', '?')!r} is no "
                                 "longer in the loaded lattice (the "
                                 "lattice was replaced)"}
-                cmds = [ParamChangeCommand(elem, attr,
-                                           getattr(elem, attr), old)
-                        for elem, attr, old in changes]
-                bus.do(MacroCommand(
-                    cmds, label=(label or "Assistant edit") + " rollback"))
+                # each value back as the edit found it, the last change first
+                # (in a group an earlier change can have moved a later one's
+                # value: a bend's length follows its angle)
+                done = [(c.element, c.attr, c.old_value)
+                        for c in getattr(handle, "commands", ())
+                        if isinstance(c, ParamChangeCommand)] or list(changes)
+                # what follows from parameters the user edited after the plan
+                # cannot be put back; everything else is
+                keep, left = _restorable(reversed(done))
+                cmds = [ParamChangeCommand(elem, attr, getattr(elem, attr), old)
+                        for elem, attr, old in keep]
+                try:
+                    if cmds:
+                        bus.do(MacroCommand(
+                            cmds, label=(label or "Assistant edit") + " rollback"))
+                except Exception as exc:                    # noqa: BLE001
+                    # an element refused a value; the command undid the rest
+                    return {"ok": False, "err": f"cannot roll back: {exc}"}
+                if left:
+                    return {"ok": False,
+                            "err": "rolled back every change but "
+                            + ", ".join(f"{getattr(e, 'name', '?')}.{a}" for e, a in left)
+                            + ", which now follows from parameters edited after the plan"}
                 return {"ok": True}
 
             self._gui_sync(_do, box)

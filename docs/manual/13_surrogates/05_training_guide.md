@@ -6,31 +6,48 @@ out-of-scope / regression issues.
 
 ## Choosing sample count + epochs
 
-Two officially-supported cycle sizes, calibrated against the M2
-acceptance gate:
+How a training fits the network (`train_surrogate`):
 
-| Cycle | Samples | Epochs | Hidden | Wall (12-core M3 Max) | Val MAPE |
-|---|---|---|---|---|---|
-| **Smoke**      | 200    | 40  | `(64,64)`        | ~25 s        | 3–6 %    |
-| **Production** | 50 000 | 300 | `(128,128,128)`  | ~1.5 h/elem  | < 1 %    |
+* every input and output is normalised by its mean and spread over the
+  training split, an output's spread floored at `OUTPUT_STD_FLOOR` (1e-9).
+  A map's structurally zero entries (the transverse-to-longitudinal
+  couplings of a symmetric cavity) hold only round-off, spread about 1e-15
+  to 2e-12 in the example decks' weights; normalised by that spread they weighed
+  as much as a real entry and held 99.8 % of a cavity's validation error;
+* Adam minimises the mean squared error of the normalised outputs, its
+  learning rate falling along a half cosine from `lr` to 1 % of it at the
+  last epoch;
+* the epoch kept is the one with the lowest validation error, in the same
+  units.  A longer run returns the best epoch it passed, not its last; the
+  rate's decay is spread over the epochs given, so a run of 200 epochs is
+  not the first 200 epochs of a run of 1000.
 
-The smoke cycle is for "does the pipeline work" sanity checks and
-quick CI runs — its accuracy is **not** sufficient for science.
-Production is the science setting.
+The weights file records this recipe (`train_recipe`, below).
 
-If you need to interpolate between the two:
+| Cycle | Samples | Epochs | Hidden | For |
+|---|---|---|---|---|
+| **Smoke**      | 200   | 40    | `(64,64)`   | checking that the pipeline runs; weights this small have failed the [accuracy check](01_overview.md#the-accuracy-check-of-a-weights-file) |
+| **Production** | 5 000 | 1 000 | `(128,128)` | use; the Surrogates tab's **Train all FieldMap\*** defaults |
 
-| n_samples | Expected val MAPE (MEBT buncher) |
-|---|---|
-| 200    | 4–6 %   |
-| 1 000  | 1.5–2.5 % |
-| 5 000  | 0.5–1 % |
-| 20 000 | 0.2–0.5 % |
-| 50 000 | < 0.1 % |
+The production cycle of one HWR cavity took about a minute on one core:
+45–53 s to generate the 5000 samples and about 14 s to train.  Its
+weights, and those of two MEBT bunchers, met the accuracy check's limits
+with a margin of at least 1.9× (block error 2.6e-4 to 1.3e-3 against 3e-3,
+determinant error 7e-5 to 5.3e-4 against 1e-3), where the earlier recipe
+(spread + 1e-12 with no floor, a constant rate, the epoch kept by
+validation MAPE) at the same samples and network missed them.  The 46
+weight sets of the development tree's example decks retrained with this
+recipe meet them too: the check's 17 points find block errors up to 1.3e-3
+and determinant errors up to 5.3e-4 on their decks.  Between its points
+the limits can be missed: on 1000 random points of their ranges, most of
+the cavity sets exceed a limit at up to 7, every one within 2.1 % of an
+edge of the range.
 
-Epochs follow a similar pattern — diminishing returns past ~5×
-samples/batch_size epochs.  Past 500 epochs you'll start seeing
-overfit (val MAPE rises while train loss falls).
+The **val MAPE** a training reports is the mean relative error over the
+outputs that vary (spread above the floor): over the zero entries a
+relative error measures round-off.  It is a relative error per entry, so
+small entries weigh in it; whether weights are used is decided by the
+accuracy check, not by it.
 
 ## Choosing the sweep ranges
 
@@ -75,19 +92,25 @@ via `param_ranges` in the Python API.
 
 ## Multiprocessing the data generation
 
-The RK4 `fitted_matrix(ref)` call dominates wall-clock (>99 %).
-Multiprocessing the LHS loop is the only meaningful speedup knob.
+The RK4 `fitted_matrix(ref)` calls of the data generation take most of a
+training's time: 41 s of the production cycle's 55 s for a MEBT buncher on
+one core.  Several workers cut them about 3×.
 
-### Benchmarks (MEBT buncher FMAP_001, M3 Max, 14 cores)
+### Benchmarks (MEBT buncher FMAP_001, 14-core Apple M-series)
 
-500-sample data gen + {ke, phase} sweep:
+The data of the production cycle, 5000 samples over its {ke, phase} sweep
+(measured 2026-11-10):
 
 | Workers | Wall-clock | Speedup | Bit-identical? |
 |---|---|---|---|
-| 1   | 1342 s    | 1.00× | reference |
-| 4   |  121 s    | 11.07× | yes |
-| 8   |   75 s    | 17.87× | yes |
-| 12  |   61 s    | 21.90× | yes |
+| 1   | 40.8 s | 1.00× | reference |
+| 4   | 14.3 s | 2.85× | yes |
+| 8   | 12.3 s | 3.32× | yes |
+| 12  | 13.6 s | 2.99× | yes |
+
+A sample takes about 8 ms, so starting the worker processes, a few
+seconds, is most of a short run: 500 samples took 4.4 s on one worker and
+9.8 s on 12.
 
 ### Why bit-identical matters
 
@@ -108,12 +131,8 @@ means:
 
 ### Recommended worker counts
 
-| Machine | Cores | Default | Rationale |
-|---|---|---|---|
-| Apple Silicon M-series | 14 | 12 | leave 2 cores for OS + GUI |
-| Apple Silicon M Pro / Max | 8-16 | `cores - 2` | same |
-| Linux server | 32-128 | `cores - 4` | leave headroom for I/O |
-| CI runner | 2-4 | 1 | spawn overhead > work for small N |
+For the production cycle 4 to 12 workers do about equally well (the table
+above); for a smoke cycle of a few hundred samples one worker is fastest.
 
 In the GUI the default is `max(1, cpu_count() - 2)`.  In the CLI
 the default is 1 (backward compat — pass `--workers N` explicitly).
@@ -124,7 +143,7 @@ the default is 1 (backward compat — pass `--workers N` explicitly).
 
 ```
 linac_gen/surrogates/weights/
-└── <SHA256[:16]>/             ← lattice .dat content hash
+└── <SHA256[:16]>/             ← lattice .dat content hash (+ _proton, _deuteron)
     └── <element-name>/
         ├── weights.pt          ← MLP state_dict (torch)
         └── metadata.json       ← scope, seed, commit SHA, val MAPE, etc.
@@ -132,29 +151,72 @@ linac_gen/surrogates/weights/
 
 ### What's in `metadata.json`
 
+The file of the MEBT deck's first buncher, trained with the windows and
+defaults of the Surrogates tab's **Train all FieldMap\*** (the
+normalisations shortened):
+
 ```json
 {
   "element_key": "FMAP_001",
   "element_class": "FieldMap3D",
   "architecture": {
-    "input_dim": 5, "output_dim": 36,
-    "hidden_dims": [128, 128, 128], "activation": "silu",
+    "input_dim": 6, "output_dim": 36,
+    "hidden_dims": [128, 128], "activation": "silu",
     "param_names": ["ke", "kb", "phase"]
   },
   "scope": {
     "input_names": ["w_kin", "beta", "gamma", "ke", "kb", "phase"],
-    "input_lo": [2.0, 0.0, 1.0, 0.0544, 0.0544, -110.0],
-    "input_hi": [2.5, 1.0, 1000.0, 0.0816, 0.0816, -70.0]
+    "input_lo": [2.0165, 0.0, 1.0, 0.0544, 0.0544, -110.0],
+    "input_hi": [2.2288, 1.0, 1000.0, 0.0816, 0.0816, -70.0]
   },
   "input_norm": {"mean": [...], "std": [...]},
   "output_norm": {"mean": [...], "std": [...]},
-  "training_seed": 42, "n_samples": 50000, "epochs": 300,
-  "val_mape": 0.0073,
-  "helix_commit_sha": "e3bd592a...",
-  "lattice_hash": "bb088243c9fb33ce6f9a...",
-  "created_iso": "2026-05-24T15:23:11Z"
+  "training_seed": 42, "n_samples": 5000, "epochs": 1000,
+  "val_mape": 0.00405,
+  "helix_commit_sha": "45d89d5088f5...",
+  "lattice_hash": "7429fb95147c412dc782...",
+  "created_iso": "2026-11-10T14:36:27.893034Z",
+  "species_name": "H-", "species_mass_mev": 939.29408606,
+  "train_frequency_mhz": 162.5,
+  "train_phi_s_deg": 2553.92,
+  "train_settings": {"scale": 1.0, "frequency": 162.5,
+                     "sync_phase_pin": null, "integrator_kind": "kd",
+                     "interp_kind": "linear"},
+  "train_recipe": {"optimizer": "adam",
+                   "loss": "mean squared error of the normalised outputs",
+                   "lr": 0.001, "lr_schedule": "cosine", "lr_final": 1e-05,
+                   "batch_size": 256, "val_frac": 0.2,
+                   "output_std_floor": 1e-09, "kept_epoch": 1000,
+                   "kept_by": "lowest validation mean squared error",
+                   "val_mse": 8.44e-05, "val_mape_outputs": 36,
+                   "torch": "2.10.0", "numpy": "1.26.4"},
+  "train_structure": {"class": "FieldMap3D", "length": 240.0,
+                      "field_file": "QWR-2012-02", "geom": 7700,
+                      "aperture": 20.0, "n_steps": 200, "p_flag": 1,
+                      "ki": 0.0, "ka": 0}
 }
 ```
+
+`train_phi_s_deg` is the reference phase at the element's entrance, as the
+tab's envelope run counts it from the start of the line; the buncher is
+after `SET_SYNC_PHASE` (`p_flag` 1), so its map does not depend on it.
+
+`train_settings` holds the element's settings the weights hold fixed (the
+example's buncher was trained over `ke`, `kb` and `phase`, so neither
+amplitude is among them): a query on an element set otherwise goes native.  Files from before it have none; see
+[which element a surrogate answers for](01_overview.md#which-element-a-surrogate-answers-for).
+
+`train_recipe` records how the network was fitted (optimiser, starting and
+final learning rate and its schedule, batch size, validation split, output
+floor, the kept epoch and its validation error, the number of outputs the
+val MAPE is over, the torch and numpy versions), and `train_structure` what
+the element was (its class and its structure: length, field file by name,
+geometry, aperture, steps, phase reference `p_flag`, and `ki`/`ka` where the
+element has them); both are records, which nothing checks, and files from
+before them have neither.
+
+`helix_commit_sha` is the commit of the HELIX checkout that ran the
+training, or `unknown` for an installed copy.
 
 The metadata is required for reload — never delete it without
 deleting `weights.pt` alongside.
@@ -168,11 +230,16 @@ deleting `weights.pt` alongside.
 | You bumped a sweep range | Partly | old weights still load but scope shrinks/grows are stale |
 | HELIX commit SHA changed | Partly | physics may differ; rerun reproducibility CI to check |
 | Re-trained with different `seed` | No | weights differ but both valid |
+| The beam's species changed | Yes | a map answers only for its species; each species has its own folder |
+| The clock changed | Not for a magnet | a magnet is converted; a cavity with no frequency of its own answers only on the clock it was trained at |
+| The phase a cavity whose field follows it is entered at moved | Partly | its phase input is shifted, and may leave the scope |
+| A setting the weights hold fixed changed (`kb`, when only `ke` and `phase` were swept) | For that element | each query goes native; `refusals` counts it, and a compare report lists it |
+| Trained before the clock was recorded | Checked when loaded | a cavity map whose longitudinal determinant is not 1 holds a frequency jump: marked stale, it goes native |
 
 ### Auto-discovery in the GUI
 
-On lattice load the Surrogates tab scans the per-lattice weights
-dir and adds a row to the Trained-surrogates table for every
+On lattice load, and when the beam changes species, the Surrogates
+tab scans the weights dir of that lattice and species and adds a row to the Trained-surrogates table for every
 subdirectory whose name matches a field-map element in the lattice.
 **Use** ticks default off (deliberate — registering loud).
 
@@ -183,7 +250,8 @@ the smoke cycle is a deliberate act, not the default.
 ### Sharing weights across machines
 
 A weights directory is fully self-contained — copy
-`linac_gen/surrogates/weights/<hash>/<elem>/` to another machine
+`linac_gen/surrogates/weights/<hash>/<elem>/` (`<hash>_proton/` or
+`<hash>_deuteron/` for those species) to another machine
 that has the same `.dat` file (matching SHA), and the GUI / CLI
 will pick it up.  The metadata records the HELIX commit SHA used
 to train — verify against the destination machine's HEAD before
@@ -236,22 +304,29 @@ retrain, or skip the surrogate for that element.
 
 ### Bit-identical compare (rel.diff = 0.00)
 
-The surrogate **wasn't queried** — most likely the compare ran at
-`current > 0` (or with *Record per-sub-step* on), where the envelope
-slice-walks field maps for SC kicks and every partial slice
-delegates to the wrapped RK4.  Check the report's
-`NN full-element queries` line (it will read 0, with a note), and
-run at **0 mA** to engage the surrogate on the full-element matrix.
+The surrogate **didn't answer**.  Either it was never queried — the
+compare ran at `current > 0` (or with *Record per-sub-step* on), where the
+envelope slice-walks field maps for SC kicks and every partial slice
+delegates to the wrapped RK4; the report's `NN full-element queries` line
+reads 0, with a note: run at **0 mA** to engage the surrogate on the
+full-element matrix — or it refused each traversal: the report's notes list
+them by reason (a setting the weights hold fixed changed, outside their
+range, …).
 
-### Val MAPE high (> 5 %) despite production cycle
+### Weights refused by the accuracy check
 
-Causes (in order of frequency):
+Causes, most likely first:
 
-1. **Scope too wide** — try halving `ke_rel` / `phase_rel_deg`.
-2. **MLP too small** — try `hidden_dims=(256, 256, 256)`.
-3. **Element has hidden state** — `FieldMap3D._sync_offset_deg` not
-   represented in the MLP input.  Currently a known gap; see the
-   roadmap for state-aware surrogates.
+1. **Trained with the earlier recipe**, or with the smoke cycle — retrain
+   with the production cycle.  More samples, epochs or a larger network
+   with the earlier recipe did not bring the refused HWR cavity weights
+   within the limits.
+2. **Trained on earlier physics** — a cavity after `SET_SYNC_PHASE`
+   (`p_flag` 1) is calibrated from its entrance energy and settings for
+   every sample and every run, so the calibration is a function of the
+   inputs; but weights trained before its ±180° fix (October 2026) hold
+   wrong targets where the cavity's offset crosses ±180°.  Retrain them.
+3. **Scope too wide** — try halving `ke_rel` / `phase_rel_deg`.
 
 ### GUI crashes mid-training
 

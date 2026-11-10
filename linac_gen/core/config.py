@@ -63,7 +63,9 @@ class BeamConfig:
     # find_periodic_twiss / find_sc_matched_input_twiss's
     # disp_x/disp_xp/disp_y/disp_yp (Σ[i,5]/Σ[5,5]).  The matched beam
     # of a bending line (arc FODO / BTL) carries nonzero values here.
-    # Generate-path only; a .dst file is authoritative as loaded.
+    # Generate-path only, and every envelope seed takes the same values
+    # (distributions.factory.input_dispersion); a .dst file is
+    # authoritative as loaded.
     disp_x: float = 0.0                # mm/MeV
     disp_xp: float = 0.0               # mrad/MeV
     disp_y: float = 0.0                # mm/MeV

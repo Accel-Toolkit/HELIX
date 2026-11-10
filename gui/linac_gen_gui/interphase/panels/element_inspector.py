@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QScrollArea, QToolButton, QWidget, QSpinBox, QCheckBox, QComboBox,
 )
 
+from linac_gen.elements.lattice_commands import SetBeamPhaseError
 from linac_gen_gui.interphase import theme
 from linac_gen_gui.interphase.manual_help import open_for_element
 from linac_gen_gui.interphase.state import AppState
@@ -22,6 +23,8 @@ from linac_gen_gui.interphase.state import AppState
 _LATTICE_COMMAND_HIDE = {
     "name", "length", "aperture", "n_steps",
     "KEYWORD", "snapshot", "is_bpm", "_s_entry", "label",
+    # what an error study stamps on its seed's SET_BEAM_PHASE_ERROR card
+    *SetBeamPhaseError.STUDY_STAMPS,
 }
 
 
@@ -208,7 +211,7 @@ _SCHEMA: dict[str, list[tuple[str, str, str]]] = {
                     ("phi_s_deg",   "Synchronous phase", "deg"),
                     ("cell_type",   "Cell type",         ""),
                     ("Tc_mm",       "Tc",                "mm"),
-                    ("dP_deg",      "ΔP",                "deg")],
+                    ("dP_deg",      "ΔP (not applied)",  "deg")],
     "Steerer":     [("bx_l", "B·L (x)", "T·m"),
                     ("by_l", "B·L (y)", "T·m")],
     "Foil":        [("material",          "Material",  ""),
@@ -239,6 +242,10 @@ class ElementInspector(QFrame):
         # synchronous chain, so without this guard every keystroke/spin
         # step would rebuild the editor under the user's cursor.
         self._in_commit = False
+        # the read-only values that follow from an editable one (a bend's length):
+        # (attribute, value label, unit), refreshed after our own commits
+        self._derived_labels: list = []
+        self._geometry_editors: list = []       # (attribute, editor) of such an element
 
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
@@ -346,6 +353,8 @@ class ElementInspector(QFrame):
 
     # ------------------------------------------------------------------
     def _on_selected(self, element) -> None:
+        self._derived_labels = []
+        self._geometry_editors = []
         while self._body_lay.count():
             item = self._body_lay.takeAt(0)
             w = item.widget()
@@ -406,10 +415,21 @@ class ElementInspector(QFrame):
 
         if schema:
             self._add_section("Properties")
+            derived = getattr(element, "_is_derived", None)
+            inputs = getattr(type(element), "_GEOMETRY_ATTRS", ())
             for attr, label, unit in schema:
                 if not hasattr(element, attr):
                     continue
+                if derived is not None and derived(attr) and attr not in inputs:
+                    # always follows from the other parameters (a cavity's length)
+                    v = self._add_readonly(f"{getattr(element, attr):g}", label, unit)
+                    self._derived_labels.append((attr, v, unit))
+                    continue
                 self._add_field(element, attr, label, unit)
+            # an input that follows from the others now (a bend's length while it has an
+            # angle) is an editor, disabled until it can be written (a bend with no angle)
+            for attr, ed in self._geometry_editors:
+                self._set_editable(ed, not (derived is not None and derived(attr)))
         if getattr(element, "is_bpm", False) and \
                 getattr(element, "diag_family", None) is not None:
             # DIAG_POSITION diagnostic-matching data.  Read-only: targets
@@ -431,7 +451,9 @@ class ElementInspector(QFrame):
         if hasattr(element, "length") and not is_cmd:
             # Layout block irrelevant for zero-length commands.
             self._add_section("Layout")
-            self._add_readonly(f"{element.length:g}", "Length", "mm")
+            v = self._add_readonly(f"{element.length:g}", "Length", "mm")
+            if hasattr(type(element), "_GEOMETRY_ATTRS"):
+                self._derived_labels.append(("length", v, "mm"))
         self._body_lay.addStretch(1)
 
     def _add_section(self, title: str) -> None:
@@ -594,8 +616,10 @@ class ElementInspector(QFrame):
             )
             lay.addWidget(u)
         self._body_lay.addWidget(row)
+        if attr in getattr(type(element), "_GEOMETRY_ATTRS", ()):
+            self._geometry_editors.append((attr, editor))
 
-    def _add_readonly(self, value: str, label: str, unit: str) -> None:
+    def _add_readonly(self, value: str, label: str, unit: str) -> QLabel:
         row = QFrame()
         lay = QHBoxLayout(row)
         lay.setContentsMargins(10, 3, 10, 3); lay.setSpacing(8)
@@ -610,6 +634,30 @@ class ElementInspector(QFrame):
         )
         lay.addWidget(v, stretch=1)
         self._body_lay.addWidget(row)
+        return v
+
+    def _refresh_derived(self, element, edited: str) -> None:
+        """After an edit of a parameter others follow from (a bend's angle or radius): the
+        values that follow, and whether they can be edited now, without touching the editor in
+        use (editors commit on every keystroke, so a rebuild would take it away)."""
+        for attr, v, unit in self._derived_labels:
+            v.setText(f"{getattr(element, attr):g}" + (f"  {unit}" if unit else ""))
+        derived = getattr(element, "_is_derived", lambda _a: False)
+        for attr, ed in self._geometry_editors:
+            if attr == edited:
+                continue
+            if hasattr(ed, "setValue"):
+                ed.blockSignals(True)
+                try:
+                    ed.setValue(getattr(element, attr))
+                finally:
+                    ed.blockSignals(False)
+            self._set_editable(ed, not derived(attr))
+
+    @staticmethod
+    def _set_editable(editor, editable: bool) -> None:
+        editor.setEnabled(editable)
+        editor.setToolTip("" if editable else "follows from the other parameters")
 
     def _commit(self, element, attr: str, value) -> None:
         try:
@@ -624,6 +672,8 @@ class ElementInspector(QFrame):
                 self._in_commit = False
             # bus.changed → state.lattice_changed (wired in state.py)
             self._state.status_message.emit(f"{element.name}.{attr} = {value}")
+            if attr in getattr(type(element), "_GEOMETRY_ATTRS", ()):
+                self._refresh_derived(element, attr)
         except Exception as exc:
             self._state.status_message.emit(f"failed: {exc}")
 

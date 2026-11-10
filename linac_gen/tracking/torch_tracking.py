@@ -20,11 +20,15 @@ import warnings
 
 import torch
 
+from linac_gen.core.constants import C_LIGHT
 from linac_gen.elements.base import PassiveElement
 from linac_gen.elements.dipole import Dipole
 from linac_gen.elements.drift import Drift
 from linac_gen.elements.edge import Edge
-from linac_gen.elements.lattice_commands import LatticeCommand
+from linac_gen.core.track_state import TrackState
+from linac_gen.elements.lattice_commands import (
+    Freq, LatticeCommand, REFERENCE_COMMANDS,
+)
 from linac_gen.elements.multipole import Multipole
 from linac_gen.elements.quadrupole import Quadrupole
 from linac_gen.elements.solenoid import Solenoid
@@ -103,11 +107,17 @@ def element_matrix_torch(element, kin: RefKinematics, *,
         return solenoid_matrix(element.length, eff_b, kin)
 
     if isinstance(element, Dipole):
-        eff_a = (ov * (1.0 + element.field_rel) if ov is not None
-                 else element.effective_angle)
-        return dipole_matrix(eff_a, element.rho, element.length,
+        if ov is None:
+            return dipole_matrix(element.effective_angle, element.rho, element.length,
+                                 element.e1, element.e2, element.field_index,
+                                 element.hv, kin, design_angle_deg=element.angle)
+        # The knob is the bend's angle at its radius, as an edit of the angle
+        # (ADJUST, the inspector): the arc follows, as Dipole.length does, in
+        # the graph — a bend switched off (field_rel = -1) is a pipe of its arc
+        return dipole_matrix(ov * (1.0 + element.field_rel), element.rho,
+                             element.length_at(ov),
                              element.e1, element.e2, element.field_index,
-                             element.hv, kin, design_angle_deg=element.angle)
+                             element.hv, kin, design_angle_deg=ov)
 
     if isinstance(element, Edge):
         return edge_matrix(element.pole_rotation, element.rho,
@@ -129,15 +139,23 @@ def element_matrix_torch(element, kin: RefKinematics, *,
     # behavior is a hard error: silently substituting an identity map
     # would let the optimizer converge on a lattice different from the
     # one the user specified.
-    from linac_gen.surrogates.base import SurrogateFieldMap   # lazy
+    from linac_gen.surrogates.base import SurrogateFieldMap, species_name_of   # lazy
     if isinstance(element, SurrogateFieldMap):
         import numpy as _np
+        # the RF shifts as the cavity reads them, on its own clock (the jump below)
+        kin = element.rf_shifts_on_own_clock(kin, C_LIGHT / (kin.wavelength * 1e3))
+        why = (element._refusal(species_name_of(kin.mass, kin.charge), None, kin)
+               or element._clock_refusal(C_LIGHT / (kin.wavelength * 1e3)))
+        if why is not None:
+            raise ValueError(
+                f"element_matrix_torch: {why} — disengage the surrogate for this "
+                f"element or use algorithm='least_squares' with the native model."
+            )
         # `RefKinematics` carries beta/gamma/mass but not w_kin -- the
         # surrogate's input convention is (w_kin, beta, gamma, params)
         # so reconstruct w_kin = (gamma - 1) * mass.
         w_kin = float((kin.gamma - 1.0) * kin.mass)
-        params_np = [float(getattr(element._wrapped, p))
-                     for p in element._param_names]
+        params_np = element._param_values(ref=kin)
         x_np = _np.array(
             [w_kin, float(kin.beta), float(kin.gamma), *params_np],
             dtype=_np.float64,
@@ -151,11 +169,17 @@ def element_matrix_torch(element, kin: RefKinematics, *,
                 f"surrogate for this element or use "
                 f"algorithm='least_squares' with the native model."
             )
+        why = element.accuracy_refusal_kinematics(kin, x_np)
+        if why:
+            raise ValueError(
+                f"element_matrix_torch: {why} — disengage the surrogate for this "
+                f"element or use algorithm='least_squares' with the native model."
+            )
         kin_t = torch.as_tensor(
             [w_kin, float(kin.beta), float(kin.gamma)],
             dtype=F64,
         )
-        M = element.fitted_matrix_torch(kin_t)
+        M = element.fitted_matrix_torch(kin_t, kin)
         # Output sanity gate — torch mirror of the numpy
         # fitted_matrix finiteness check (the two paths move in
         # pairs).  The numpy side falls back to the wrapped element;
@@ -182,6 +206,28 @@ def element_matrix_torch(element, kin: RefKinematics, *,
                 f"element or use algorithm='least_squares' with the "
                 f"native model."
             )
+        if element._legacy_magnet():
+            why = element._m45_refusal(float(M[4, 5].detach()), kin.beta, kin.gamma,
+                                       kin.mass, kin.wavelength)
+            if why is not None:
+                raise ValueError(
+                    f"element_matrix_torch: {why} — disengage the surrogate for this "
+                    f"element or use algorithm='least_squares' with the native model."
+                )
+        # the clock, from λ = c/f: a magnet's Δφ row, as fitted_matrix has it
+        clock_mhz = C_LIGHT / (kin.wavelength * 1e3)
+        ratio = element._magnet_clock_ratio(clock_mhz)
+        if ratio != 1.0:
+            D, D_inv = torch.eye(6, dtype=F64), torch.eye(6, dtype=F64)
+            D[4, 4], D_inv[4, 4] = ratio, 1.0 / ratio
+            M = D @ M @ D_inv
+        # a cavity at another frequency than the clock jumps to its own on entry, then
+        # its map: M D, the Δφ column takes the factor (a constant: autograd intact)
+        ratio = element._jump_ratio_at(clock_mhz, tol=1e-12)
+        if ratio != 1.0:
+            D = torch.eye(6, dtype=F64)
+            D[4, 4] = ratio
+            M = M @ D
         return M
 
     # Non-linear / unsupported element.
@@ -201,6 +247,26 @@ def element_matrix_torch(element, kin: RefKinematics, *,
     return torch.eye(6, dtype=F64)
 
 
+def advance_clock_past(element, clock) -> bool:
+    """Carry ``clock`` past ``element`` as the native walk does: a surrogated cavity at
+    another frequency than the clock switches it to its own on entry
+    (``SurrogateFieldMap.switch_to_own_clock``).  True when it moved, for the caller to
+    take new kinematics.  The torch walks model no other element that jumps (a native
+    cavity is the identity there, with a warning).  (Imported here: the surrogates
+    import torch_tracking.)"""
+    from linac_gen.surrogates.base import SurrogateFieldMap
+    return isinstance(element, SurrogateFieldMap) and element.switch_to_own_clock(clock)
+
+
+def apply_reference_card(element, clock) -> None:
+    """Move ``clock`` as a card that sets the reference does.  Left with no energy, the
+    other modes raise where this path would carry on with NaN."""
+    element.apply_command(TrackState(ref=clock))
+    if not clock.w_kin > 0.0:
+        raise ValueError(f"{element.KEYWORD} '{element.name}' leaves the reference with no "
+                         f"energy (W = {clock.w_kin:g} MeV)")
+
+
 def compute_transfer_matrix_torch(lattice, ref, start: int = 0,
                                   end: int | None = None, *,
                                   overrides: dict | None = None,
@@ -212,13 +278,24 @@ def compute_transfer_matrix_torch(lattice, ref, start: int = 0,
 
     The reference particle is *not* advanced per element: a linear
     lattice does not change the beam energy, so β/γ/Bρ are constant.
+    Only a card that sets the reference moves it, as in the numpy walk.
     """
-    kin = RefKinematics.from_reference(ref)
+    clock = ref.copy()
+    for element in lattice.elements[:start]:
+        if isinstance(element, REFERENCE_COMMANDS):
+            apply_reference_card(element, clock)
+    kin = RefKinematics.from_reference(clock)
     last = len(lattice.elements) - 1 if end is None else end
     if last < start:
         raise ValueError(f"end ({last}) must be >= start ({start})")
     M = torch.eye(6, dtype=F64)
     for element in lattice.elements[start:last + 1]:
+        if isinstance(element, REFERENCE_COMMANDS):
+            if isinstance(element, Freq):
+                M = torch.as_tensor(element.transfer_matrix(clock), dtype=F64) @ M
+            apply_reference_card(element, clock)
+            kin = RefKinematics.from_reference(clock)
+            continue
         M_elem = element_matrix_torch(element, kin, overrides=overrides,
                                       on_nonlinear=on_nonlinear)
         # M8 misalignment wrap: tilt_deg rotates (x, x', y, y') around
@@ -241,6 +318,8 @@ def compute_transfer_matrix_torch(lattice, ref, start: int = 0,
             R_out = tilt_rotation_matrix_torch(-tilt)
             M_elem = R_out @ M_elem @ R_in
         M = M_elem @ M
+        if advance_clock_past(element, clock):
+            kin = RefKinematics.from_reference(clock)
     return M
 
 

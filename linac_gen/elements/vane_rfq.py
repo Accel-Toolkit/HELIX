@@ -1,11 +1,12 @@
-"""TraceWin/Toutatis-equivalent RFQ tracker driven by a ``.vane`` file.
+"""Whole-RFQ element driven by a ``.vane`` file: retired (see *Retired* below).
 
 Wraps the entire RFQ as one :class:`FieldMapElement`, using per-z geometry
 (apertures ``a₁..a₄``, voltages, ``Tc``) sampled from the ``.vane`` data
 and cell-level RFQ_CELL parameters (``V``, ``A₁₀``, ``m``, ``L``, ``θₛ``,
 ``Type``) for the Crandall coefficients.
 
-This is the M1 milestone toward full Toutatis equivalence:
+It was planned as the first step toward Toutatis equivalence, which it
+never reached:
 
 * **M1 (this version)** — 2-term Crandall potential with cell-level
   coefficients ``(X, A, k=π/L, φ_s)`` and per-substep ``r₀(z)`` from the
@@ -24,9 +25,21 @@ Not used by the default parser path.  Construct manually, or use
 :func:`linac_gen.io.vane_rfq_helper.replace_rfq_cells_with_vane` to swap
 a contiguous chain of :class:`RfqCell` elements in a parsed lattice for
 one :class:`VaneRFQ` driven by a sibling ``.vane`` file.
+
+Retired
+-------
+This element does not reproduce an RFQ: its multiparticle push never
+advances the particle phase (no phase slip), and its envelope matrix holds
+the entry velocity over the slice with no energy gain.  On a 4.4 m RFQ to
+2.1 MeV it transmits 57 % where the RFQ_CELL chain the parser builds
+transmits 100 % (multiparticle runs track that chain with the time-domain
+solver, which takes the vanes from the deck's ``RFQ_GEOM`` ``.vane`` file).
+The Lattice tab no longer offers the swap, and constructing one emits a
+:class:`VaneRFQRetiredWarning`.
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -34,6 +47,10 @@ import numpy as np
 
 from linac_gen.elements.base import FieldMapElement
 from linac_gen.io.tracewin_vane import VaneGeometry
+
+
+class VaneRFQRetiredWarning(UserWarning):
+    """A retired :class:`VaneRFQ` was constructed (see the module notes)."""
 
 
 @dataclass
@@ -101,9 +118,10 @@ class VaneRFQ(FieldMapElement):
 
     #: Set of allowed values for the ``field_model`` constructor keyword.
     #:
-    #: Only the default ``"2term"`` is production-ready on the PXIE
-    #: LEBT+RFQ benchmark.  The others are diagnostic/reference paths
-    #: that document specific failure modes (see memory note
+    #: None is production-ready (the element is retired); the default
+    #: ``"2term"`` is the only stable one.  The others are
+    #: diagnostic/reference paths that document specific failure modes
+    #: (see memory note
     #: ``project_rfq_m3_findings.md``).
     #:
     #: * ``"2term"``      — M1, cell-constant Wangler short-form
@@ -148,6 +166,13 @@ class VaneRFQ(FieldMapElement):
                 f"unknown field_model {field_model!r}; "
                 f"valid: {sorted(self.FIELD_MODELS)}"
             )
+        warnings.warn(
+            f"VaneRFQ {name!r}: this element is retired and does not "
+            "reproduce an RFQ (no phase slip in its multiparticle push; its "
+            "envelope matrix holds the entry velocity) — 57 % transmission "
+            "on a 4.4 m RFQ where its RFQ_CELL chain transmits 100 %.  "
+            "Track the RfqCell chain the parser builds instead.",
+            VaneRFQRetiredWarning, stacklevel=2)
         self.field_model = str(field_model)
         # Element length is the cell-list span — that's the region with
         # well-defined physics.  The .vane file may extend beyond the

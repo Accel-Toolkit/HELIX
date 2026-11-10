@@ -33,8 +33,10 @@ The walker:
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
+import threading
 import warnings
 from dataclasses import dataclass, field
 from collections import OrderedDict
@@ -236,6 +238,29 @@ def _attr_for(elem, param_idx: int, source) -> str:
     )
 
 
+_QUIET = threading.local()
+
+
+def _warn(message: str, stacklevel: int) -> None:
+    """``warnings.warn`` at ``stacklevel`` from the caller, unless ``quiet_collection`` is in
+    force in this thread."""
+    if not getattr(_QUIET, "on", False):
+        warnings.warn(message, stacklevel=stacklevel + 1)
+
+
+@contextlib.contextmanager
+def quiet_collection():
+    """Inside it, in this thread, ``collect_variables`` warns of nothing: for a caller that
+    collects the variables before the match does (its surrogate decision), so each warning
+    comes once."""
+    before = getattr(_QUIET, "on", False)
+    _QUIET.on = True
+    try:
+        yield
+    finally:
+        _QUIET.on = before
+
+
 def _bounds(cmd, default_lo: float = -math.inf, default_hi: float = math.inf):
     """Best-effort bounds extraction; treat zero/zero pair as 'unset'."""
     lo = getattr(cmd, "vmin", None)
@@ -245,7 +270,7 @@ def _bounds(cmd, default_lo: float = -math.inf, default_hi: float = math.inf):
     if lo == 0.0 and hi == 0.0:
         return default_lo, default_hi
     if lo > hi:
-        warnings.warn(
+        _warn(
             f"{getattr(cmd, 'KEYWORD', 'ADJUST')}: vmin ({lo}) > vmax "
             f"({hi}) — swapping.  Check the card; this usually indicates "
             "a slot-order mistake.",
@@ -381,8 +406,7 @@ def collect_variables(lattice, beam_cfg) -> List[Variable]:
                 # instead of aborting the whole collect.
                 attr = _attr_for(tgt, elem.param_idx, elem)
             except MatchingConfigError as exc:
-                warnings.warn(f"matcher: skipping ADJUST: {exc}",
-                              stacklevel=2)
+                _warn(f"matcher: skipping ADJUST: {exc}", stacklevel=2)
                 continue
             x0 = float(getattr(tgt, attr))
             lo, hi = _bounds(elem)
@@ -415,7 +439,7 @@ def collect_variables(lattice, beam_cfg) -> List[Variable]:
                         target = cand
                         break
             if target is None:
-                warnings.warn(
+                _warn(
                     f"matcher: skipping {elem.KEYWORD}: no Steerer found "
                     f"after the card",
                     stacklevel=2,

@@ -183,6 +183,14 @@ def auto_paired_correction(lattice, beam_factory, *, override_method=None,
             "beam_lost_at": st["beam_lost_at"], "pairing": "auto"}
 
 
+def _native_correction():
+    """The registry suspended in this thread when it was ever imported (it may hold
+    surrogates), else nothing: a campaign's orbit correction runs native."""
+    import sys
+    registry = sys.modules.get("linac_gen.surrogates.registry")
+    return registry.suspended() if registry is not None else contextlib.nullcontext()
+
+
 def draw_seed(job: dict) -> dict:
     """Pool worker: one seed's draws (+ optional orbit correction) as
     JSON-serialisable overrides.
@@ -228,35 +236,38 @@ def draw_seed(job: dict) -> dict:
         }
         corr = job.get("correction")
         if corr and corr.get("enabled", True):
-            from linac_gen.errors.correction import run_correction_from_lattice
-            kw = {k: v for k, v in corr.items() if k not in ("enabled", "pairing")}
-            kw.setdefault("reading_backend", "envelope")
-            if "method" in kw:
-                kw["override_method"] = kw.pop("method")
-            bcfg = draw.beam_config
-            def _factory(_b=bcfg, _s=seed):
-                return create_beam(_b, seed=_s + 1000)
-            rms_before = None
-            if kw.get("reading_backend") == "envelope":
-                # the uncorrected orbit over EVERY BPM (one envelope run):
-                # the seed row reports it next to the history's after-pass rms
-                from linac_gen.cli.common import run_envelope_sim
-                from linac_gen.errors.correction import _orbit_rms_mm
-                bpms = [e for e in draw.lattice.elements if getattr(e, "is_bpm", False)]
-                rms_before = float(_orbit_rms_mm(draw.lattice, lambda: run_envelope_sim(draw.lattice, bcfg),
-                                                 bpms, 0.0, None))
-            pairing = (corr.get("pairing") or "cards")
-            if pairing == "auto":
-                info = auto_paired_correction(
-                    draw.lattice, _factory, noise_seed=seed, beam_config=bcfg, **kw)
-            elif pairing == "cards":
-                info = run_correction_from_lattice(
-                    draw.lattice, _factory, noise_seed=seed, beam_config=bcfg, **kw)
-            else:
-                raise ValueError(f"correction.pairing must be cards|auto, got {pairing!r}")
-            out["correction"] = {**info, "rms_before_mm": rms_before}   # history = per-pass rms, plain values
-            out["kick_overrides"] = [list(o) for o in
-                                     steerer_kick_overrides(lattice, draw.lattice)]
+            # the orbit correction runs native, as an error study's does: in the process of a
+            # serial campaign, whose registry may hold surrogates, as in a pool worker
+            with _native_correction():
+                from linac_gen.errors.correction import run_correction_from_lattice
+                kw = {k: v for k, v in corr.items() if k not in ("enabled", "pairing")}
+                kw.setdefault("reading_backend", "envelope")
+                if "method" in kw:
+                    kw["override_method"] = kw.pop("method")
+                bcfg = draw.beam_config
+                def _factory(_b=bcfg, _s=seed):
+                    return create_beam(_b, seed=_s + 1000)
+                rms_before = None
+                if kw.get("reading_backend") == "envelope":
+                    # the uncorrected orbit over EVERY BPM (one envelope run):
+                    # the seed row reports it next to the history's after-pass rms
+                    from linac_gen.cli.common import run_envelope_sim
+                    from linac_gen.errors.correction import _orbit_rms_mm
+                    bpms = [e for e in draw.lattice.elements if getattr(e, "is_bpm", False)]
+                    rms_before = float(_orbit_rms_mm(draw.lattice, lambda: run_envelope_sim(draw.lattice, bcfg),
+                                                     bpms, 0.0, None))
+                pairing = (corr.get("pairing") or "cards")
+                if pairing == "auto":
+                    info = auto_paired_correction(
+                        draw.lattice, _factory, noise_seed=seed, beam_config=bcfg, **kw)
+                elif pairing == "cards":
+                    info = run_correction_from_lattice(
+                        draw.lattice, _factory, noise_seed=seed, beam_config=bcfg, **kw)
+                else:
+                    raise ValueError(f"correction.pairing must be cards|auto, got {pairing!r}")
+                out["correction"] = {**info, "rms_before_mm": rms_before}   # history = per-pass rms, plain values
+                out["kick_overrides"] = [list(o) for o in
+                                         steerer_kick_overrides(lattice, draw.lattice)]
         out["elapsed"] = time.time() - t0
         return out
     except Exception as exc:

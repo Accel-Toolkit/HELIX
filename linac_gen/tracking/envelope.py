@@ -193,9 +193,12 @@ def _build_sigma_matrix(alpha_x: float, beta_x: float, emit_x: float,
     where gamma_t = (1 + alpha^2) / beta.
 
     ``disp_x`` / ``disp_xp`` / ``disp_y`` / ``disp_yp`` (default 0) seed an
-    input dispersion — a coordinate becomes ``q = q_betatron + D_q · ΔW``,
-    which adds ``D_q·D_r·σ_WW`` cross-terms.  With all four zero the result
-    is the plain block-diagonal matrix (unchanged behaviour).
+    input dispersion — a coordinate becomes ``q = q_betatron + D_q · ΔW``, as
+    the multiparticle generator shears its particles — which adds
+    ``D_q·D_r·σ_WW`` among the transverse coordinates, ``D_q·σ_WW`` against ΔW
+    and ``D_q·σ_φW`` against φ (nonzero for a bunch with α_z ≠ 0).  With all
+    four zero the result is the plain block-diagonal matrix (unchanged
+    behaviour).
     """
     sigma = np.zeros((6, 6))
 
@@ -213,12 +216,15 @@ def _build_sigma_matrix(alpha_x: float, beta_x: float, emit_x: float,
     # Optional input dispersion: q_total = q_betatron + D_q · ΔW (index 5).
     if disp_x or disp_xp or disp_y or disp_yp:
         s_ww = sigma[5, 5]
+        s_pw = sigma[4, 5]
         eta = {0: disp_x, 1: disp_xp, 2: disp_y, 3: disp_yp}
         for i, di in eta.items():
             if di == 0.0:
                 continue
             sigma[i, 5] += di * s_ww
             sigma[5, i] += di * s_ww
+            sigma[i, 4] += di * s_pw
+            sigma[4, i] += di * s_pw
             for j, dj in eta.items():
                 sigma[i, j] += di * dj * s_ww
     return sigma
@@ -686,7 +692,7 @@ class EnvelopeSolver:
         # Work on a copy of the reference particle so the original is not mutated
         self._ref = ref.copy()
         # ``TrackState`` carries SET_*/ADJUST_* run-time mutations.  Bound
-        # to the working copy of ref so SetBeamEnergy / SetBeamE0P0 flow
+        # to the working copy of ref so SetReferenceEnergy and FREQ flow
         # through.  Imported lazily to avoid a circular import at module
         # load time (envelope.py is one of the heaviest modules).
         from linac_gen.core.track_state import TrackState
@@ -954,11 +960,14 @@ class EnvelopeSolver:
             element.advance_ref(self._ref)
         else:
             self._ref.s += element.length
-            if element.length > 0:
+            if element.length != 0:     # (a negative drift steps it back)
                 self._ref.phi_s += (
                     360.0 * element.length
                     / (self._ref.beta * self._ref.wavelength)
                 )
+            gain = getattr(element, "ref_gain", 0.0)   # a matrix element that moves the reference
+            if gain:
+                self._ref.w_kin = self._ref.w_kin + gain
 
     def _orbit_offset_push(self, element, ds=None) -> None:
         """Add an element's constant first-moment term to the centroid.
@@ -1149,7 +1158,9 @@ class EnvelopeSolver:
             D = np.eye(6)
             D[4, 4] = ratio
             self._probe_push(D)
-            self._ref.frequency = elem_freq
+            design = (getattr(element, "frequency", 0.0) or getattr(element, "_rf_frequency", 0.0)
+                      or elem_freq)
+            self._ref.switch_clock(design, elem_freq)
 
         # Thin correctors (Steerer, Multipole): their kick_matrix drops
         # the constant dipole component (Steerer's is identity, Multipole
@@ -1206,6 +1217,13 @@ class EnvelopeSolver:
         # matrix (partial slices delegate to RK4 by design), so those
         # paths make no NN queries at all.
 
+        # A MatrixElement's general 6x6 cannot be sliced: its map once, as
+        # Tracker._track_matrix applies it, then one space-charge kick over
+        # its length (none for a thin one).
+        from linac_gen.elements.matrix_element import MatrixElement
+        if isinstance(element, MatrixElement):
+            return self._propagate_matrix_element(element, sigma)
+
         # --- substep recording for FieldMap without SC -------------------
         # When record_substeps is on and current=0, mirror the SC loop but
         # skip the SC kick so σ(s) is captured at every bundle boundary.
@@ -1258,6 +1276,24 @@ class EnvelopeSolver:
             )
             if not is_fieldmap_sc_inline:
                 self._advance_ref(element)
+        return sigma
+
+    def _propagate_matrix_element(self, element, sigma: np.ndarray) -> np.ndarray:
+        """A MatrixElement: its map applied once, then, with space charge, one
+        kick over its length — what Tracker._track_matrix does to particles."""
+        M = _full_matrix_at(element, self._ref)
+        self._probe_push(M)
+        o = element.map_at(self._ref)[1]
+        if o is not None and getattr(self, "_c", None) is not None:
+            self._c = self._c + o                    # c -> M c + o, as the particles go
+        sigma = M @ sigma @ M.T
+        # the kick at the exit's energy, as the tracker gives it (track() has
+        # moved the reference through a gain before its kick)
+        self._advance_ref(element)
+        if self.current != 0.0 and element.length > 0:
+            M_sc = self._sc_matrix(sigma, ds_mm=element.length)
+            self._probe_push(M_sc, is_sc=True)
+            sigma = M_sc @ sigma @ M_sc.T
         return sigma
 
     def _propagate_tme_substeps_noSC(self, element, sigma: np.ndarray) -> np.ndarray:

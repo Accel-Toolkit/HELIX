@@ -209,7 +209,7 @@ class SuperposedFieldMap(FieldMapElement, Misalignment, FieldError):
     def _propagate_frequency_to_ref(self, ref) -> None:
         eff = self.effective_frequency
         if eff > 0 and eff != ref.frequency and self._has_electric_channel():
-            ref.frequency = eff
+            ref.switch_clock(self._rf_frequency if self._rf_frequency > 0 else eff, eff)
 
     def _entrance_ops(self, ref, beam=None) -> None:
         """Cluster-entrance bookkeeping (mirrors FieldMap.track_rk4
@@ -690,6 +690,13 @@ class SuperposedFieldMap(FieldMapElement, Misalignment, FieldError):
             if min_n > n:
                 n = min_n
         ds = self.length / n
+        # Asked at another clock: the map on its own (reached as its entry would reach
+        # it, phase moved as a FREQ card moves it), the jump's factor exact.  The
+        # probes would otherwise take their Δφ step in the old clock's degrees.
+        clock = float(ref.frequency or 0.0)
+        ref = ref.copy()
+        self._propagate_frequency_to_ref(ref)
+        jump = ref.frequency / clock if clock > 0.0 and ref.frequency != clock else 1.0
 
         saved = self._save_walk_state()
 
@@ -709,6 +716,8 @@ class SuperposedFieldMap(FieldMapElement, Misalignment, FieldError):
             M = numerical_jacobian_batched(_track_batch, np.zeros(6))
         finally:
             self._restore_walk_state(saved)
+        if jump != 1.0:
+            M[:, 4] *= jump
         return M
 
     def fitted_matrix_slice(self, ref, ds_mm: float,

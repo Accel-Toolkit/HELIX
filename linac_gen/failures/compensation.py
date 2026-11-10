@@ -5,6 +5,12 @@ l-neighbouring FODO periods / manual) and re-tune the compensators' amplitude
 (+ RF phase, for cavities) via the matcher to restore the design exit energy
 and avoid beam loss — the MYRRHA / LightWin local-compensation scheme.
 
+A failed element is compensated within its own family only: RF (cavities, and
+unpowered spares when opted in) or transverse focusing (quadrupoles and
+solenoids).  A bend is never a compensator — its knob, the angle, moves the
+reference path — and a failed bend is not compensable by re-tuning optics; an
+element with no family (a steerer) gets no compensators.
+
 Mechanism: deepcopy the lattice, strip its existing ADJUST/SET cards, inject
 the failure + temporary `Adjust`/`SetKeOutMin`/`MinTransmission` cards for the
 compensators, then call :func:`linac_gen.matching.match` (there is no
@@ -22,22 +28,23 @@ from linac_gen.elements.lattice_commands import (Adjust, LatticeCommand,
                                                  MinEmitGrowth, MinTransmission,
                                                  SetKeOutMin, SetPhaseOut,
                                                  SetSizeMax)
-from linac_gen.failures.element_filter import ALL_TYPES, failable_elements
+from linac_gen.failures.element_filter import ALL_TYPES, EXTRA_TYPES, failable_elements
 from linac_gen.matching import match
-from linac_gen.matching.periodic import find_fodo_cells
 
-_CATEGORY = {"cavity": "cavity", "quad": "magnet",
-             "solenoid": "magnet", "dipole": "magnet",
-             "spare": "cavity"}          # an unpowered cavity compensates cavities
+# the compensation family of a failure-vocabulary label: an element is compensated within its
+# own family only.  A bend has none: it is never a compensator and no re-tune of the optics
+# brings the beam back onto the line it sets.  A label with no family gets no compensators.
+_CATEGORY = {"cavity": "rf", "spare": "rf",          # an unpowered cavity compensates cavities
+             "quad": "focusing", "solenoid": "focusing"}
 
-# element class -> [(param_idx, attr, role)]  (param_idx per _PARAM_INDEX_MAP)
+# element class -> [(param_idx, attr, role)]  (param_idx per _PARAM_INDEX_MAP).  No Dipole:
+# its angle moves the reference path.
 _COMP_PARAMS = {
     "RFGap":      [(1, "voltage", "amp"), (2, "phase", "phase")],
     "FieldMap":   [(6, "ke", "amp"), (2, "phase", "phase")],
     "FieldMap3D": [(6, "ke", "amp"), (2, "phase", "phase")],
     "Quadrupole": [(2, "gradient", "amp")],
     "Solenoid":   [(2, "field", "amp")],
-    "Dipole":     [(1, "angle", "amp")],
 }
 
 _CONSTRAINT_KW = {
@@ -45,6 +52,7 @@ _CONSTRAINT_KW = {
     "MIN_EMIT_4D_GROWTH", "SET_SIZE", "SET_SIZE_MAX", "SET_SIZE_MIN",
     "SET_BEAM_PHASE_ADV", "SET_ADV", "SET_POSITION", "SET_ACHROMAT",
     "SET_SEPARATION", "SET_PHASE_OUT",
+    "SET_BEAM_ENERGY", "SET_BEAM_E0_P0",      # TraceWin matching criteria (2026-11)
 }
 
 
@@ -66,7 +74,7 @@ class CompensationConfig:
     #     above exactly) ---
     extra_types: tuple = ()              # e.g. ("spare",): unpowered field
     #                                      maps become k_out_of_n / manual
-    #                                      candidates (category "cavity")
+    #                                      candidates (the RF family)
     family_of: dict | None = None        # element name -> family label
     amp_bounds_by_family: dict | None = None   # family -> (lo, hi) x the
     #                                      family's NOMINAL amplitude (the
@@ -98,8 +106,83 @@ class CompensationResult:
     message: str = ""
 
 
-def _category(label: str) -> str:
-    return _CATEGORY.get(label, "magnet")
+# link groups of a compensator's knobs that share one optimiser column (a cavity map's ke and
+# kb); far from the family numbers a deck's ADJUST cards carry, and from the beam's
+_COMP_LINK_BASE = 900_000_000
+
+
+def _solenoidal(elem) -> bool:
+    """A static magnetic field map whose field on the axis is longitudinal: a solenoid.  A 1-D
+    Bz or 2-D cylindrical map is one; a 3-D map is when its on-axis Bz exceeds its on-axis
+    transverse field and a tenth of its peak; a quadrupole's field vanishes on the axis and a
+    dipole's is transverse, and a 1-D gradient G(z) or a 2-D transverse map is neither
+    (``field_map_data.on_axis_field_kind``, the rule the Sacherer envelope reads too)."""
+    from linac_gen.io.field_map_data import on_axis_field_kind
+    from linac_gen.io.tracewin_geom import Channel
+    chans = getattr(getattr(elem, "field_data", None), "channels", None) or {}
+    if any(ch.is_rf for ch in chans):
+        return False
+    ch = chans.get(Channel.STAT_B)
+    return ch is not None and on_axis_field_kind(ch) == "longitudinal"
+
+
+def knobs(elem) -> list:
+    """The compensator's matcher knobs, ``[(param_idx, attr, role)]``.  A field map's follow its
+    field: a cavity (an RF map, an unpowered spare among them) varies ke, with kb in the same
+    column when kb equals ke, and its phase; a static solenoid map varies kb; a static
+    quadrupole or dipole map none.  Without field data, ke == 0 and kb != 0 reads as a solenoid."""
+    cls = type(elem).__name__
+    if cls not in ("FieldMap", "FieldMap3D"):
+        return list(_COMP_PARAMS.get(cls, []))
+    ke = float(getattr(elem, "ke", 0.0) or 0.0)
+    kb = float(getattr(elem, "kb", 0.0) or 0.0)
+    chans = getattr(getattr(elem, "field_data", None), "channels", None)
+    if chans:
+        rf = any(ch.is_rf for ch in chans)
+        static_solenoid = (not rf) and _solenoidal(elem)
+    else:
+        rf = not (abs(ke) < 1e-12 and abs(kb) > 1e-12)
+        static_solenoid = not rf
+    if static_solenoid:
+        return [(5, "kb", "amp")]
+    if not rf:
+        return []
+    out = [(6, "ke", "amp")]
+    if kb == ke:
+        out.append((5, "kb", "amp"))
+    return out + [(2, "phase", "phase")]
+
+
+def _static_magnet_map(elem) -> bool:
+    """A powered field map with no RF field: a solenoid's, a quadrupole's (an unpowered spare
+    cavity is none)."""
+    if type(elem).__name__ not in ("FieldMap", "FieldMap3D"):
+        return False
+    if float(getattr(elem, "kb", 0.0) or 0.0) == 0.0:
+        return False
+    chans = getattr(getattr(elem, "field_data", None), "channels", None)
+    if chans:
+        return not any(ch.is_rf for ch in chans)
+    return float(getattr(elem, "ke", 0.0) or 0.0) == 0.0
+
+
+def _focus_cells(lattice) -> list:
+    """The cells of a "neighbouring cells" zone: just after focuser k to focuser k+2, as
+    find_fodo_cells takes them, with the focusers the focusing elements (a quadrupole, a
+    solenoid, a powered static magnet map; find_fodo_cells also counts an unpowered spare),
+    the first cell reaching back to the line's start and the last on to its end."""
+    foc = [i for i, e in enumerate(lattice.elements)
+           if type(e).__name__ in ("Quadrupole", "Solenoid") or _static_magnet_map(e)]
+    cells = [(foc[k] + 1, foc[k + 2]) for k in range(len(foc) - 2) if foc[k + 2] > foc[k] + 1]
+    if cells:
+        cells[0] = (0, cells[0][1])
+        cells[-1] = (cells[-1][0], len(lattice.elements) - 1)
+    return cells
+
+
+def _category(label: str) -> str | None:
+    """The compensation family of ``label``, or None: no family, no compensators."""
+    return _CATEGORY.get(label)
 
 
 def _positions(lattice) -> dict[str, int]:
@@ -130,25 +213,55 @@ def select_zone(lattice, failed_names, cfg: CompensationConfig) -> list[str]:
 
     ``cfg.extra_types`` widens the candidate pool with the reliability
     vocabulary (``"spare"`` unpowered cavities); classes without a matcher
-    knob in ``_COMP_PARAMS`` (a multi-gap ``NCells``, a ``Steerer``) are
-    never candidates."""
-    types = tuple(ALL_TYPES) + tuple(cfg.extra_types or ())
-    label_of = {n: lbl for (n, lbl, c) in failable_elements(lattice, types)
-                if c in _COMP_PARAMS}
+    knob in ``_COMP_PARAMS`` (a bend, a multi-gap ``NCells``, a ``Steerer``)
+    are never candidates.  ``k_out_of_n`` takes the failed element's family
+    only, and none for an element with no family; ``manual`` keeps to the
+    failed elements' families too, and says what it drops (a bend, another
+    family's element, a name with no knob or not asked for).  Every label is read in the reliability vocabulary, which knows an
+    unpowered field map as a spare (RF), not a solenoid, and a multi-gap cavity
+    as a cavity; only the labels asked for are candidates."""
+    allowed = set(ALL_TYPES) | set(cfg.extra_types or ())
+    every = failable_elements(lattice, tuple(ALL_TYPES) + tuple(EXTRA_TYPES))
+    failed_label = {n: lbl for (n, lbl, _c) in every}
+    elem_of = {getattr(e, "name", None): e for e in lattice.elements}
+    label_of = {n: lbl for (n, lbl, _c) in every
+                if lbl in allowed and knobs(elem_of[n])}
     pos = _positions(lattice)
     failed = set(failed_names)
     chosen: list[str] = []
 
     if cfg.strategy == "manual":
+        import warnings
+        cls_of = {getattr(e, "name", None): type(e).__name__ for e in lattice.elements}
+        cats = {_category(failed_label.get(fn, "")) for fn in failed_names} - {None}
+        bends, other, unusable = [], [], []
         for n in (cfg.manual_names or []):
-            if n in label_of and n not in failed and n not in chosen:
+            if n in failed or n in chosen:
+                continue
+            if cls_of.get(n) == "Dipole":
+                bends.append(n)
+            elif n not in label_of:
+                unusable.append(n)
+            elif _category(label_of[n]) in cats:
                 chosen.append(n)
+            else:
+                other.append(n)
+        for names, why in ((bends, "a bend is never a compensator (its angle moves the "
+                                   "reference path)"),
+                           (other, "not of the failed element's family"),
+                           (unusable, "no compensation knob, or of a kind not asked for "
+                                      "(spares need extra_types)")):
+            if names:
+                warnings.warn(f"manual compensators: {', '.join(names)} dropped — {why}",
+                              UserWarning, stacklevel=2)
     elif cfg.strategy == "k_out_of_n":
         seen: set[str] = set()
         for fn in failed_names:
             if fn not in pos:
                 continue
-            cat = _category(label_of.get(fn, ""))
+            cat = _category(failed_label.get(fn, ""))
+            if cat is None:
+                continue                    # a bend or an element with no family
             cands = [n for n in label_of
                      if n not in failed and _category(label_of[n]) == cat]
             # nearest first; on a tie, upstream wins, then ascending index
@@ -159,7 +272,9 @@ def select_zone(lattice, failed_names, cfg: CompensationConfig) -> list[str]:
                     seen.add(n)
                     chosen.append(n)
     elif cfg.strategy == "l_neighboring_lattices":
-        cells = find_fodo_cells(lattice)            # [(start, end)] index pairs
+        # the failed elements' families only, in cells reaching both ends of the line
+        cats = {_category(failed_label.get(fn, "")) for fn in failed_names} - {None}
+        cells = _focus_cells(lattice)               # [(start, end)] index pairs
         keep: set[int] = set()
         for ci, (s, e) in enumerate(cells):
             if any(s <= pos.get(fn, -1) <= e for fn in failed_names):
@@ -170,7 +285,7 @@ def select_zone(lattice, failed_names, cfg: CompensationConfig) -> list[str]:
             cs, ce = cells[cj]
             for n, p in pos.items():
                 if cs <= p <= ce and n not in failed and n in label_of \
-                        and n not in chosen:
+                        and _category(label_of[n]) in cats and n not in chosen:
                     chosen.append(n)
     else:
         raise ValueError(f"unknown strategy {cfg.strategy!r}")
@@ -189,9 +304,7 @@ def family_nominals(lattice, cfg: CompensationConfig) -> dict:
         fam = cfg.family_of.get(nm) if nm else None
         if fam is None:
             continue
-        amp = next((attr for (_p, attr, role)
-                    in _COMP_PARAMS.get(type(e).__name__, []) if role == "amp"),
-                   None)
+        amp = next((attr for (_p, attr, role) in knobs(e) if role == "amp"), None)
         if amp is None:
             continue
         v = float(getattr(e, amp))
@@ -218,6 +331,8 @@ def amp_bounds(cfg: CompensationConfig, name: str, cur: float,
         if nominal != 0.0:
             a, b = float(fb[0]) * nominal, float(fb[1]) * nominal
             vmin, vmax = min(a, b), max(a, b)
+            if cur != 0.0:          # a powered member keeps its own setting in its window
+                vmin, vmax = min(vmin, cur), max(vmax, cur)
             if vmin != vmax:
                 return vmin, vmax
     a, b = cfg.amp_bounds[0] * cur, cfg.amp_bounds[1] * cur
@@ -277,14 +392,27 @@ def _forward_metrics(lattice, beam_cfg, cost_solver: str, seed: int = 42) -> dic
         res, _beam = run_mp_sim(lattice, beam_cfg, sc, step, seed=seed)
     else:
         res = run_envelope_sim(lattice, beam_cfg)
-    return recorder_metrics(res)
+    from linac_gen.analysis.aperture_edge import edge_metrics
+    return recorder_metrics(res) | edge_metrics(res, lattice)
 
 
 def compensate(lattice, beam_cfg, scenario, name_to_class, baseline_metrics,
                cfg: CompensationConfig) -> CompensationResult:
     """Try to recover the beam after ``scenario``'s failures by re-tuning a
     compensation zone with the matcher.  ``lattice`` is the NOMINAL lattice
-    (deep-copied here); ``beam_cfg`` is a ``BeamConfig``."""
+    (deep-copied here); ``beam_cfg`` is a ``BeamConfig``.
+
+    The registered surrogates take no part (``registry.suspended``): the matcher
+    moves settings their weights may not take as inputs, which they would answer
+    at one step and refuse at the next, and the settings it finds are judged by
+    the native elements."""
+    from linac_gen.surrogates import registry
+    with registry.suspended():
+        return _compensate(lattice, beam_cfg, scenario, name_to_class, baseline_metrics, cfg)
+
+
+def _compensate(lattice, beam_cfg, scenario, name_to_class, baseline_metrics,
+                cfg: CompensationConfig) -> CompensationResult:
     work = copy.deepcopy(lattice)
 
     # 1. strip existing matcher cards so we only adjust OUR compensators.
@@ -299,8 +427,16 @@ def compensate(lattice, beam_cfg, scenario, name_to_class, baseline_metrics,
     for sel, val in scenario.element_overrides(name_to_class):
         apply_element_override(work, sel, val)
 
-    # 3. select compensators.
+    # 3. select compensators.  A failed bend sets a reference path no re-tune of the optics
+    #    can bring the beam back onto: not compensable, and the matcher is not run.
     failed_names = list(scenario.element_names)
+    bends = [n for n in failed_names if name_to_class.get(n) == "Dipole"]
+    if bends:
+        return CompensationResult(
+            False, [],
+            message=(f"not compensable by re-tuning optics: {', '.join(bends)} is a bend, which "
+                     "sets the reference path the beam must follow"),
+            metrics_after=_forward_metrics(work, beam_cfg, cfg.cost_solver))
     comp_names = select_zone(work, failed_names, cfg)
     if not comp_names:
         return CompensationResult(
@@ -315,9 +451,19 @@ def compensate(lattice, beam_cfg, scenario, name_to_class, baseline_metrics,
     #    duplicate name prefixes; appending commands doesn't shift the count).
     j = 0
     nominals = family_nominals(work, cfg)
-    for nm in comp_names:
+    for k, nm in enumerate(comp_names):
         elem = comp_objs[nm]
-        for (pidx, attr, role) in _COMP_PARAMS.get(type(elem).__name__, []):
+        ks = knobs(elem)
+        if type(elem).__name__ in ("FieldMap", "FieldMap3D") and any(
+                role == "amp" and attr == "ke" for (_p, attr, role) in ks) \
+                and float(getattr(elem, "kb", 0.0) or 0.0) not in (0.0, float(elem.ke)):
+            import warnings
+            warnings.warn(f"compensator '{nm}': its kb differs from its ke, so re-tuning ke alone "
+                          "changes the ratio of its RF electric and magnetic fields",
+                          UserWarning, stacklevel=2)
+        # a cavity map's ke and kb share one column, so its RF fields scale together
+        link = _COMP_LINK_BASE + k if sum(role == "amp" for (_p, _a, role) in ks) > 1 else 0
+        for (pidx, attr, role) in ks:
             cur = float(getattr(elem, attr))
             if role == "amp":
                 vmin, vmax = amp_bounds(cfg, nm, cur, nominals)
@@ -327,7 +473,7 @@ def compensate(lattice, beam_cfg, scenario, name_to_class, baseline_metrics,
             j += 1
             work.elements.append(Adjust(
                 name=f"__COMP_{j}", target=str(ncidx[nm]), param_idx=pidx,
-                link_group=0, vmin=vmin, vmax=vmax,
+                link_group=link if role == "amp" else 0, vmin=vmin, vmax=vmax,
                 start_step=abs(vmax - vmin) * 0.1))
 
     # 5. recovery objectives: exit energy (+ transmission in mp) at the
@@ -348,7 +494,7 @@ def compensate(lattice, beam_cfg, scenario, name_to_class, baseline_metrics,
     settings = {}
     for nm in comp_names:
         elem = comp_objs[nm]
-        for (_pidx, attr, _role) in _COMP_PARAMS.get(type(elem).__name__, []):
+        for (_pidx, attr, _role) in knobs(elem):
             settings[f"{nm}.{attr}"] = float(getattr(elem, attr))
 
     # 8. impact after, and the recovered? verdict.

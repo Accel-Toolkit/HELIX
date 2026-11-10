@@ -19,8 +19,10 @@ each iteration is fast.
 from __future__ import annotations
 
 import copy
+import functools
 import math
 import time
+import warnings
 
 
 class _MatchCancelled(Exception):
@@ -288,13 +290,15 @@ def _run_envelope(lattice, beam_cfg: BeamConfig,
     from linac_gen.tracking.envelope import EnvelopeSolver
 
     beam = create_beam(beam_cfg, seed=42)
-    from linac_gen.distributions.factory import geometric_emittances
+    from linac_gen.distributions.factory import geometric_emittances, input_dispersion
     _ex, _ey, _ez = geometric_emittances(beam_cfg,
                                          max(beam.ref.bg, 1e-9))
     initial = dict(
         alpha_x=beam_cfg.alpha_x, beta_x=beam_cfg.beta_x, emit_x=_ex,
         alpha_y=beam_cfg.alpha_y, beta_y=beam_cfg.beta_y, emit_y=_ey,
         alpha_z=beam_cfg.alpha_z, beta_z=beam_cfg.beta_z, emit_z=_ez,
+        # the input dispersion create_beam shears the beam by, as the MP cost has it
+        **input_dispersion(beam_cfg),
         # DC beams must reach the solver: without these keys the
         # envelope cost would run the 3-D bunched-ellipsoid SC kick on
         # a continuous beam while the MP cost honours DC — same
@@ -472,7 +476,7 @@ def _evaluate_residuals(constraints: List[Constraint], results, lattice
 # Public API
 # ---------------------------------------------------------------------------
 @in_run_scope
-def match(lattice, beam_cfg: BeamConfig, *,
+def _match(lattice, beam_cfg: BeamConfig, *,
           space_charge: bool = False,
           algorithm: str = "least_squares",
           max_iter: int = 200,
@@ -1714,3 +1718,85 @@ def match(lattice, beam_cfg: BeamConfig, *,
         variables=variables, constraints=constraints,
         per_constraint_residuals=per,
     )
+
+
+def _leaves_range(surr, v) -> bool:
+    """Whether the variable ``v``, an input of the weights ``surr``, can take that input out
+    of their training range between its bounds (the element's error knobs folded in).  An
+    input the running phase moves too is checked at each query instead (and the match warns
+    after it if that mixed the models)."""
+    names = surr._param_names
+    if v.attr not in names:
+        return False
+    running = surr._running_phase_input()
+    if running is not None and running[0] == v.attr:
+        return False
+    scope = surr.metadata.scope
+    k = list(scope.input_names).index(v.attr)
+    lo, hi = float(scope.input_lo[k]), float(scope.input_hi[k])
+    folded = []
+    for bound in (float(v.vmin), float(v.vmax)):
+        for name, kind, amount in surr._folds()[0]:
+            if name == v.attr:
+                bound = bound * amount if kind == "mul" else bound + amount
+        folded.append(bound)
+    a, b = min(folded), max(folded)
+    if v.attr in ("phase", "theta_s_deg") and b - a < 360.0:
+        shifted = surr._into_phase_scope(a, v.attr)          # the map is periodic in it
+        a, b = shifted, shifted + (b - a)
+    return a < lo - 1e-9 or b > hi + 1e-9
+
+
+def _surrogates_decided_once(run, name: str = "match"):
+    """``name`` through ``run``, with the registered surrogates decided once for the run.  A
+    variable that moves a setting of a surrogated element its weights cannot follow (not one of
+    their inputs: ``SurrogateFieldMap.follows``), or an input of theirs between bounds that leave
+    their training range (``_leaves_range``), has them refuse at some steps and answer at
+    others, so the run would mix their map with the native element; such an element runs
+    native for the whole run (``registry.native_for``), and a warning says so.  After the run,
+    a warning names the weights that still answered some evaluations and refused others as
+    outside their range (an input the running phase moves too)."""
+    @functools.wraps(run)
+    def wrapped(lattice, beam_cfg, *args, **kwargs):
+        from linac_gen.matching.variables import quiet_collection
+        from linac_gen.surrogates import registry
+        try:
+            with quiet_collection():                       # the run collects them again
+                variables = collect_variables(lattice, beam_cfg)
+        except Exception:                                   # noqa: BLE001
+            return run(lattice, beam_cfg, *args, **kwargs)   # which says what is wrong
+        native, watched = [], []
+        for v in variables:
+            surr = registry.get_for_element(v.target)
+            if surr is None or any(t is v.target for t in native):
+                continue
+            why = ("not an input of its weights" if not surr.follows(v.attr)
+                   else "between bounds that leave its weights' training range"
+                   if _leaves_range(surr, v) else None)
+            if why is None:
+                watched.append((v.target, surr))
+                continue
+            native.append(v.target)
+            warnings.warn(
+                f"surrogate '{v.target.name}' runs native in this {name}: its {v.attr} is a "
+                f"variable, {why}", UserWarning, stacklevel=2)
+        watched = [(t, s) for t, s in watched if not any(t is n for n in native)]
+        before = [(s.nn_calls, s.refusals.get("outside its range", 0)) for _t, s in watched]
+        with registry.native_for(native):
+            result = run(lattice, beam_cfg, *args, **kwargs)
+        for (target, surr), (calls, outside) in zip(watched, before, strict=True):
+            n_out = surr.refusals.get("outside its range", 0) - outside
+            if n_out > 0 and surr.nn_calls > calls:
+                warnings.warn(
+                    f"surrogate '{target.name}': this {name} left its weights' training range "
+                    f"in {n_out} evaluations, which ran it native, and used the weights in "
+                    f"{surr.nn_calls - calls}: its objective mixed the two.  Narrow the "
+                    "variable's bounds to the training range, or train over them",
+                    UserWarning, stacklevel=2)
+                break
+        return result
+    wrapped.__name__ = wrapped.__qualname__ = name
+    return wrapped
+
+
+match = _surrogates_decided_once(_match)

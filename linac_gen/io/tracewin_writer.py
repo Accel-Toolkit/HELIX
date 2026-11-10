@@ -34,7 +34,7 @@ from linac_gen.elements.edge import Edge
 from linac_gen.elements.field_map import FieldMap
 from linac_gen.elements.field_map_3d import FieldMap3D
 from linac_gen.elements.foil import Foil
-from linac_gen.elements.lattice_commands import LatticeCommand
+from linac_gen.elements.lattice_commands import LatticeCommand, SetReferenceEnergy
 from linac_gen.elements.sc_grid import ScGridDirective
 from linac_gen.elements.lattice_commands import Freq as FreqCommand
 from linac_gen.elements.marker import Marker
@@ -316,6 +316,13 @@ def write_tracewin(lattice, filepath, frequency=None):
                 optionals = [(str(p_flag), p_flag == 0)]
                 _emit_card(fh, "GAP", required, optionals, elem=elem)
 
+            elif isinstance(elem, Dipole) and elem.angle == 0.0 and elem.length > 0.0:
+                # a bend with no angle is a field-free pipe of its own length,
+                # which a BEND card (length ρ·θ) cannot carry: the drift it is
+                fh.write(f"; {elem.name}: a bend with no angle, written as the drift it is\n")
+                fh.write(_label_prefix(elem)
+                         + f"DRIFT {_fmt(elem.length)} {_fmt(elem.aperture)}\n")
+
             elif isinstance(elem, Dipole):
                 # Schema: angle rho [N] [R] [HV]
                 # Pole-face (edge) angles are represented by separate EDGE
@@ -366,6 +373,11 @@ def write_tracewin(lattice, filepath, frequency=None):
                     + f"APERTURE {_fmt(elem.dx)} {_fmt(elem.dy)} "
                     f"{int(elem.aperture_type)}\n"
                 )
+
+            elif isinstance(elem, SetReferenceEnergy):
+                # HELIX card, as a comment TraceWin skips; the parser's
+                # _HELIX_ENERGY regex reconstructs it
+                fh.write(elem.comment_card() + "\n")
 
             elif isinstance(elem, LatticeCommand):
                 # SET_*/ADJUST_* round-trip: dump KEYWORD + positional args
@@ -589,5 +601,12 @@ def write_tracewin(lattice, filepath, frequency=None):
                     f"; unsupported element type: {type(elem).__name__} "
                     f"('{elem.name}')\n"
                 )
+                gain = float(getattr(elem, "ref_gain", 0.0) or 0.0)
+                if gain:
+                    warnings.warn(
+                        f"write_tracewin: {elem.name!r} ({type(elem).__name__}) moves the "
+                        f"reference energy by {gain:g} MeV and has no TraceWin card: it is "
+                        "written as a comment, so the energies after it change when the deck "
+                        "is read back", UserWarning, stacklevel=2)
 
         fh.write("END\n")

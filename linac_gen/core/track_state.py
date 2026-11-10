@@ -2,8 +2,8 @@
 
 Linac_Gen tracking loops (``Simulation.run`` / ``Simulation.run_envelope``
 / ``EnvelopeSolver.run``) walk the lattice element by element.  A handful of
-TraceWin lattice commands (``SET_SYNC_PHASE``, ``SET_BEAM_PHASE_ERROR``,
-``SET_BEAM_E0_P0``, ``SET_BEAM_ENERGY``, …) need to mutate the beam state
+lattice commands (``FREQ``, ``SET_SYNC_PHASE``, ``SET_BEAM_PHASE_ERROR``, the
+HELIX energy card ``; HELIX_SET_ENERGY``, …) need to mutate the beam state
 *at their position in the file*, not as a global pre-run option.  Those
 commands are represented as :class:`linac_gen.elements.lattice_commands.LatticeCommand`
 elements; their ``apply_command`` hook receives this object.
@@ -26,16 +26,13 @@ class TrackState:
     ----------
     ref :
         The :class:`linac_gen.core.reference.ReferenceParticle` for the run.
-        ``SetBeamEnergy`` / ``SetBeamE0P0`` mutate ``ref.w_kin`` directly.
+        ``SetReferenceEnergy`` mutates ``ref.w_kin`` directly, and
+        ``SetBeamPhaseError`` its RF shift (``ref.rf_shift`` / ``rf_rephase``).
     beam :
         The live multi-particle :class:`~linac_gen.core.beam.Beam`, bound by
         the MP tracker only (``None`` in envelope/matrix modes).  ``Freq``
         rescales the particles' Δφ coordinate through it at an RF-frequency
         change.
-    phase_ref_shift :
-        Accumulated phase offset (degrees) applied to every following RF
-        cavity reference phase.  ``SET_BEAM_PHASE_ERROR`` adds; ``Dp = 0``
-        clears.
     sync_phase_mode :
         When ``True``, RF cavity ``phase`` arguments are interpreted as
         synchronous phase φ_s rather than φ_RF.  Sticky until the end of
@@ -50,7 +47,6 @@ class TrackState:
 
     ref: object = None
     beam: object = None
-    phase_ref_shift: float = 0.0
     sync_phase_mode: bool = False
     error_cutoff_sigma: Optional[float] = None
     user: dict = field(default_factory=dict)

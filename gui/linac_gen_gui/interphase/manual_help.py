@@ -43,6 +43,7 @@ _CHAPTER_BY_TYPE: dict[str, str] = {
     "SetBeamPhaseError":    _SET_ADJUST_HTML,
     "SetBeamE0P0":          _SET_ADJUST_HTML,
     "SetBeamEnergy":        _SET_ADJUST_HTML,
+    "SetReferenceEnergy":   _SET_ADJUST_HTML,
     "SetGaussianCutOff":    _SET_ADJUST_HTML,
     "SetTwiss":             _SET_ADJUST_HTML,
     "SetPosition":          _SET_ADJUST_HTML,

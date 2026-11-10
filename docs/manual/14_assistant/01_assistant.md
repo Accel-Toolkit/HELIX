@@ -151,14 +151,25 @@ the corresponding request through the normal chat path, so nothing is
 hidden behind knowing-what-to-ask.  While the brain and voice models
 warm up in the background, anything you type is queued, not lost.
 
-**Gradient sensitivities.**  On linear decks (e.g. the BTL) the
+**Gradient sensitivities.**  On a magnet line (drifts, quadrupoles,
+solenoids, bends, pole faces, thin lenses, multipoles, correctors,
+matrix elements, foils, markers, apertures and command cards) the
 `grad_sensitivities` tool answers "which knob most affects σ_y at the
 exit?" *exactly*: one torch autograd reverse pass over the
-differentiable transfer-matrix path returns d(exit σ)/d(knob) for
-every quad gradient, solenoid field and dipole angle at once, ranked
-and signed.  It refuses decks the differentiable path cannot represent
-faithfully (field maps, RF gaps, FREQ/energy cards) rather than
-returning silently-wrong numbers — use `parameter_scan` there.
+zero-current envelope returns d(exit σ)/d(knob) for every quad
+gradient, solenoid field and dipole angle at once, ranked and signed.
+An element with no knob enters as the constant map the envelope and
+matrix modes use; a foil adds its scattering to the beam and takes its
+mean energy loss off the reference, as the envelope does; a matrix element that
+changes the reference energy moves it.  `at_index` moves the probe from
+the exit to just after an element (0-based index, that element
+included).  `FREQ` and the HELIX energy card are followed as in the
+other modes.  It refuses, naming them, the elements it does not model
+(field maps, RF gaps, multi-gap cavities, RFQ cells) and any element
+class it does not know, a subclass of a magnet among them, rather
+than returning silently-wrong numbers — use `parameter_scan` there —
+and a card, foil or matrix element that would leave the beam with no
+energy.
 
 **Instant commands.**  Unambiguous read-only requests skip the model
 entirely and execute in milliseconds: "status", "summarize the

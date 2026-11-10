@@ -26,7 +26,11 @@ elements.
   for the current lattice on load.  Per row: element name, val
   MAPE, scope, **Use** checkbox (registers it; engages in 0 mA
   envelope runs — SC runs and per-sub-step recording stay RK4),
-  **Compare** button.
+  **Compare** button, and the **Accuracy check** of weights loaded from a file
+  (*not checked yet* until a run uses them inside their range; *within limits* or *refused*,
+  with the largest block and determinant errors, the reason in the tooltip; see
+  [the accuracy check](../13_surrogates/01_overview.md#the-accuracy-check-of-a-weights-file)).
+  Refused weights go native in every run, and Compare at 0 mA still runs them.
   **Select all** / **Deselect all** buttons above the table bulk-tick
   or untick every Use checkbox.
 * **Cache-aware Train** — clicking Train for an element with

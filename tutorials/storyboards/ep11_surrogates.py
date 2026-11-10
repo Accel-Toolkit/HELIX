@@ -6,7 +6,7 @@ Output: tutorials/rendered/ep11_surrogates.mp4 (+ .srt)
 DEV-ONLY DEMO MACHINE (per user 2026-08-27: fine for the video, never
 cut to public): examples/pipii/mebt/mebt.dat — the PIP-II MEBT with
 four real buncher field maps, whose surrogates are ALREADY trained and
-cached under linac_gen/surrogates/weights/bb088243c9fb33ce/FMAP_00x,
+cached under linac_gen/surrogates/weights/7429fb95147c412d/FMAP_00x,
 so the table auto-populates with genuine models.
 
 Maximum-detail cut.  Everything on screen is the real widget doing
@@ -59,7 +59,7 @@ FRAMES = WORK / "frames"
 OUT = ROOT / "tutorials" / "rendered" / "ep11_surrogates.mp4"
 DECK = ROOT / "examples/pipii/mebt/mebt.dat"
 FODO = ROOT / "examples/fodo_cell.dat"
-CACHE_DIR = ROOT / "linac_gen/surrogates/weights/bb088243c9fb33ce"
+CACHE_DIR = ROOT / "linac_gen/surrogates/weights/7429fb95147c412d"
 
 SCENES = [
     Scene("010_title",
@@ -123,16 +123,15 @@ SCENES = [
           min_s=6.0),
     Scene("034_scope",
           "Two columns deserve a closer look. Val M A P E is the mean "
-          "absolute percentage error over all thirty six transfer "
-          "matrix entries, measured on held out samples, never on "
-          "the training set. It is a strict metric: entries that are "
-          "nearly zero inflate it, which is why these smoke trained "
-          "values sit between zero point four and zero point nine "
-          "rather than near zero. Scope is the surrogate's contract. "
-          "It answers only inside these windows: kinetic energy from "
-          "two to two point five M e V, cavity amplitude k e plus or "
-          "minus twenty percent around the card value, and phase "
-          "from minus one hundred ten to minus seventy degrees. "
+          "absolute percentage error over the transfer matrix entries "
+          "that vary over the training data, measured on held out "
+          "samples, never on the training set. These production "
+          "trained values are all below half a percent. Scope is the "
+          "surrogate's contract. It answers only inside these "
+          "windows: kinetic energy from two point zero two to two "
+          "point two three M e V, the cavity amplitudes k e and k b "
+          "plus or minus twenty percent around the card value, and "
+          "phase from minus one hundred ten to minus seventy degrees. "
           "Outside scope it raises an out of scope error and the "
           "solver falls back to full physics. Slower, never wrong.",
           min_s=8.0),
@@ -167,9 +166,9 @@ SCENES = [
           "envelope forward pass brackets this element's entry and "
           "exit energy with a five percent margin. Then the sweep "
           "rows, which are dynamic per element. This cavity sweeps "
-          "amplitude, k e, and phase, because it has an active "
-          "electric channel; a pure magnetic solenoid would show "
-          "only k b. This deck declares no ADJUST cards, so the "
+          "its two field amplitudes, k e and k b, and its phase, "
+          "because it has an active electric channel; a pure "
+          "magnetic solenoid would show only k b. This deck declares no ADJUST cards, so the "
           "defaults are plus or minus twenty percent and twenty "
           "degrees around the current values; with ADJUST bounds the "
           "row label would quote them instead. Setting a sweep to "
@@ -184,7 +183,7 @@ SCENES = [
           "a full Runge Kutta integration of the field map at a "
           "different energy, amplitude and phase. Stage two fits the "
           "network: train loss and held out validation M A P E "
-          "animate per epoch, with the best so far tracked, and the "
+          "animate per epoch, with that of the epoch kept tracked, and the "
           "six by six heatmap shows which transfer matrix entries "
           "the network finds hardest. When both stages complete the "
           "weights and metadata land on disk and the window title "
@@ -209,7 +208,7 @@ SCENES = [
     Scene("047_batch_dialog",
           "Train all FieldMap batches the whole machine. Shared "
           "settings on top, and note the production grade defaults: "
-          "five thousand samples, two hundred epochs, two layers of "
+          "five thousand samples, one thousand epochs, two layers of "
           "one hundred twenty eight. Below, a checkbox per candidate "
           "element with Select all and Select none. For the demo we "
           "select none, tick the third and fourth bunchers, and drop "
@@ -378,8 +377,8 @@ SCENES = [
           "delegation, and its measured table sets the fast path's "
           "accuracy against training quality. The "
           "training guide's cycle table tells you what a budget "
-          "buys: two hundred samples for pipeline checks, fifty "
-          "thousand for science. Its worker benchmark shows parallel "
+          "buys: two hundred samples for pipeline checks, five "
+          "thousand for use. Its worker benchmark shows parallel "
           "data generation is bit identical to serial at any worker "
           "count. And the troubleshooting section covers the out of "
           "scope flood, high validation error, and the no field "
@@ -607,19 +606,19 @@ def capture_visuals() -> None:
         return out
 
     hashes = run_out(["ls", "linac_gen/surrogates/weights/"])
-    elems = run_out(["ls", "linac_gen/surrogates/weights/bb088243c9fb33ce/"])
+    elems = run_out(["ls", "linac_gen/surrogates/weights/7429fb95147c412d/"])
     meta_lines = run_out(
         ["python3", "-m", "json.tool",
-         "linac_gen/surrogates/weights/bb088243c9fb33ce/FMAP_001/metadata.json"])
+         "linac_gen/surrogates/weights/7429fb95147c412d/FMAP_001/metadata.json"])
     keep = ("element_key", "element_class", "training_seed", "n_samples",
             '"epochs"', "val_mape", "helix_commit_sha", "created_iso")
     meta_sel = [ln.strip() for ln in meta_lines if any(k in ln for k in keep)]
     assert len(meta_sel) >= 7, meta_sel
     lines = [("cmd", "ls linac_gen/surrogates/weights/")]
     lines += [("out", ln) for ln in wrap("  ".join(hashes))]
-    lines += [("cmd", "ls linac_gen/surrogates/weights/bb088243c9fb33ce/"),
+    lines += [("cmd", "ls linac_gen/surrogates/weights/7429fb95147c412d/"),
               ("out", "  ".join(elems)),
-              ("cmd", "python -m json.tool .../bb088243c9fb33ce/FMAP_001/"
+              ("cmd", "python -m json.tool .../7429fb95147c412d/FMAP_001/"
                       "metadata.json | grep -E 'key|class|seed|samples|"
                       "epochs|mape|sha|created'")]
     lines += [("out", ln) for ln in meta_sel]
@@ -1035,7 +1034,7 @@ def capture_visuals() -> None:
             self.setStyleSheet(FONT_BUMP)
             self.show()
             settle(10)
-            assert self._samples.value() == 5000 and self._epochs.value() == 200
+            assert self._samples.value() == 5000 and self._epochs.value() == 1000
             assert self._hidden.text() == "128,128" and len(self._boxes) == 4
             f = dlg_frame_for(self)
             rec.start("047_batch_dialog")
@@ -1051,7 +1050,7 @@ def capture_visuals() -> None:
             for v in (4000, 3000, 2000, 1000, 500, 200):
                 self._samples.setValue(v)
                 rec.hold(f, 0.3)
-            for v in (150, 100, 60, 40):
+            for v in (600, 300, 100, 40):
                 self._epochs.setValue(v)
                 rec.hold(f, 0.3)
             rec.hold(f, 2.5)
@@ -1119,7 +1118,7 @@ def capture_visuals() -> None:
     rec.finish(scene_by_name("058_swap_back"))
     assert st._status.text().startswith("auto-loaded 4 cached"), st._status.text()
     assert not any(table.cellWidget(r, 3).isChecked() for r in range(4))
-    assert table.item(0, 1).text() == "6.75e-01", table.item(0, 1).text()
+    assert table.item(0, 1).text() == "4.05e-03", table.item(0, 1).text()
 
     # ---- 050 / 051 / 052: row Compare, live -----------------------------
     # CAPTURE CONFIG: 5 mA.  The scene 051 narration (composed below) and

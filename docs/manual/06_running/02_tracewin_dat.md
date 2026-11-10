@@ -168,6 +168,22 @@ grid (the standalone PIP-II BTL project uses 20 σ):
 ; HELIX_SC_GRID 20
 ```
 
+A `; HELIX_SET_ENERGY` directive sets the reference kinetic energy at its
+position, and `; HELIX_SHIFT_ENERGY` adds to it, in every linac mode — also
+comment-prefixed.  TraceWin's `SET_BEAM_ENERGY` and `SET_BEAM_E0_P0` are
+matching criteria (the beam's energy, and its energy and phase against the
+linac's) and change nothing in tracking; HELIX set and shifted the energy
+with them until 2026-11, and a deck that carries them gets one notice:
+
+```
+; HELIX_SET_ENERGY <MeV> [name=<name>] [label=<label>]
+; HELIX_SHIFT_ENERGY <MeV> [name=<name>] [label=<label>]
+```
+
+A set energy must be above 0.  A line that names the card but cannot be read
+(a unit after the number, a missing or non-finite value) is reported and
+skipped, and a strict parse refuses it.
+
 It applies in both fixed and adaptive grid modes (fixed mode re-derives
 its frozen grid once, from the beam at the card's position).  The card
 affects only the bunched 3-D PIC solver: DC/continuous kick models and
@@ -300,7 +316,7 @@ checked against MAD-X itself in `tests/io/test_madx_lines.py`.
 | `RCOLLIMATOR` / `ECOLLIMATOR` | `Aperture` (rectangular / circular; `xsize`, `ysize` are half-apertures) |
 | `SEXTUPOLE` | thin `Multipole` between half drifts (`k2·l`; `tilt` → `tilt_deg`, a bare `tilt` = π/6; a skew component `k2s` turns it as MAD-X does: √(k2² + k2s²) at `tilt` − atan2(k2s, k2)/3) |
 | `MULTIPOLE` | `Multipole` (`knl`, `ksl`; `tilt` → `tilt_deg`, same rotation sense as MAD-X's `tilt` and `Quadrupole.skew_angle`).  In MAD-X a dipole component `knl[0]` or an `angle` makes the multipole a thin bend — the reference orbit turns there — and its `TWISS` takes `ksl[0]` as a vertical one.  HELIX's `Multipole` has no curvature — the dipole part is a kick about a straight reference — and the import says so |
-| `MATRIX` | `MatrixElement` (`rm11…rm66`, `kick1…kick6` converted from MAD-X's canonical basis at the local reference energy; a `kick6` becomes a ΔW offset on every particle — HELIX's reference stays at the `BEAM` energy) |
+| `MATRIX` | `MatrixElement` (`rm11…rm66` converted from MAD-X's canonical basis at the local reference energy and clock, about HELIX's reference orbit: the `pt` a map gives that orbit is the reference's energy gain, `ref_gain`, and the rest of its kicks an offset of every particle).  The clock comes from the sequence's cavities, and with none it is 352.21 MHz; the element records it (`clock_mhz`) and, run at another frequency, gives the same map in that frequency's degrees. |
 | `RFCAVITY` | `RFGap` (`volt` in MV; `lag` follows the MAD-X definition — reference gain `V·sin(2π·lag)`, **not** multiplied by the charge, whereas HELIX gains `q·V·T·cos φs` — so the synchronous phase is `360·lag − 90°`, plus 180° when `volt` and the charge have opposite signs; TTF = 1) |
 | `SOLENOID` | `Solenoid` (`ks` → field via Bρ) |
 | `MARKER` | `Marker` |
@@ -334,7 +350,9 @@ it in the file; the importer runs it.
 The path also runs the other way: HELIX writes the loaded lattice as a
 MAD-X `SEQUENCE` file, built as the **exact inverse of the importer
 above** (same unit and rigidity conversions, so export → import gives the
-lattice back to machine precision).  Three entry points:
+elements of a line with no energy gain back to machine precision, in the
+importer's clock).  `FREQ` and energy cards are comments, which the importer
+does not read back.  Three entry points:
 
 * **GUI** — *File → Export Lattice as MAD-X…*.  The Beam tab's species
   and energy set the rigidity every `k1` / `ks` is normalised by, so the
@@ -406,26 +424,47 @@ MAD-X carries them through `EALIGN`, which this writer does not emit.
 **Linearised export** (`write_madx(…, linearize=True)` /
 `export --linearize`): field maps, `NCELLS`, RFQ cells, thin lenses and
 explicit-matrix elements are written as MAD-X `MATRIX` elements built
-from their first-order map at the local reference energy (the same map
-the matrix mode uses), converted to MAD-X's canonical basis
+from their first-order map at the local reference energy and clock (the
+map the matrix mode uses, up to an energy card, which the export stays
+before, and a misalignment, which it warns of as for every element),
+converted to MAD-X's canonical basis
 (`x, px, y, py, t, pt` — `t = −cΔt`, `pt = ΔE/p₀c`, both pinned
-against MAD-X `TRACK`).  MAD-X cannot move its reference energy along a
+against MAD-X `TRACK`).  An `NCELLS` map carries TraceWin's matrix-engine
+synchronism factor where it acts (βg > 0 and no βs≠0 transit-time tail;
+it is skipped for a cavity with no field and far off its geometric β),
+which the multiparticle tracker does not apply.  The export says so for
+each such cavity; setting the cavity's `synchronism` attribute to `False`
+in Python gives the tracker's map.  `t` holds no clock, so each side of a map
+converts with the clock at its point, and a `FREQ` card stays a comment
+because it is nothing in these coordinates.  MAD-X cannot move its reference energy along a
 sequence, so an accelerating element's map is written about the entrance
 momentum with the exit angles rescaled by `p₀/p_out` (the canonical,
-symplectic form) and its reference gain emitted as `kick6` (a `pt`
-shift on every particle); the warning says so.  MAD-X `TWISS`
+symplectic form).  Each map is written about HELIX's reference orbit in
+MAD-X's coordinates: `pt` the energy the reference has gained over `p₀c`,
+and `t` restarting at each `MATRIX` exit and growing by L·(1/β₀ − 1/β)
+over the length between.  The kicks take that orbit through the map (the
+gain is in `kick6`), so a particle's coordinates at a map's exit are its
+HELIX ones, MAD-X `TRACK` of the reference ends on the orbit, and the
+import reads the gain back as the reference's.  Two elements after a gain
+are tied to MAD-X's fixed p₀ and act differently on the faster orbit: an
+`SBEND` bends it by θ/(1+δ), where HELIX's dipole bends its reference by θ,
+and an `RFCAVITY`'s lag is set for p₀'s arrival, not the orbit's.  The
+export rescales neither, so after one of them `TRACK`'s reference leaves the
+orbit (and a deck from elsewhere with a bend after a `kick6` reads with the
+bend set for the new energy).  An explicit matrix element's energy offset
+comes back as the reference's gain.  MAD-X `TWISS`
 symplectifies `MATRIX` elements, so a map that is not symplectic (a
 non-Maxwellian synthetic field, a coarse fit) is flagged — `TRACK`
 applies it verbatim.  Foils and electric steerers still fall under the
 unsupported rule.
 
-`pt` is a deviation about the *entrance* momentum, so the linearised
-form is valid only while the accumulated gain stays small compared with
-`p₀c`: measured with cpymad on the PIP-II MEBT–SSR2 line (2.1 → 10 MeV),
-MAD-X `TWISS` fails once the accumulated `pt` reaches a few 10⁻², and
-`TRACK`'s `pt` overflows before the end.  The exporter reports the total
-linearised gain as a fraction of `p₀c` and escalates the wording at 10⁻²
-and 0.3; for a whole linac export one section at a time from its own
+`pt` is a deviation about the *entrance* momentum.  `TRACK` is exact
+about the orbit, but MAD-X `TWISS` expands the drifts between the maps to
+second order about it, and its `R56` is off by about 7.5·(pt/β₀)²
+(measured): 0.1 % at pt/β₀ = 0.0115, 1 % at 0.037, 10 % at 0.12.  The
+exporter reports the total linearised gain as `pt` and `pt/β₀`, with the
+estimate above 0.1 % and a warning that `TWISS` will not reproduce the line
+above 10 %; for a whole linac export one section at a time from its own
 entrance energy.  `ERROR_*` cards (an error study, not lattice elements)
 are not exported in either format — MAD-X models tolerances through
 `EALIGN`/`EFCOMP` — and the writer says so.
@@ -436,7 +475,11 @@ the importer), `TWISS` does not follow the energy gain of an
 accelerating line (`TRACK` sees it as `pt`), and `RFCAVITY` carries no
 transverse RF (de)focusing — an accelerating deck therefore exports with
 a one-line warning and MAD-X reproduces its optics only up to the first
-cavity.  MAD-X sequences cannot step backwards, so a negative-length
+cavity.  The HELIX energy card (`; HELIX_SET_ENERGY`, `; HELIX_SHIFT_ENERGY`)
+stays a comment, and the line keeps the energy before the card; one that would
+move the energy warns, and `--strict` refuses it.  `SET_BEAM_ENERGY` and
+`SET_BEAM_E0_P0`, matching criteria, stay comments as well.
+MAD-X sequences cannot step backwards, so a negative-length
 drift refuses the export, as does a zero-length lattice.  Element names
 are made MAD-X-legal (illegal characters, leading digits, reserved
 command/class names such as `start` or `wire`, names longer than 40

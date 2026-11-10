@@ -84,12 +84,16 @@ class _StudyWorker(QThread):
     def run(self) -> None:
         try:
             from linac_gen.study.engine import StudyManager
+            from linac_gen.surrogates.study_check import runs_native, study_surrogates
+            # no design check of the surrogates here yet: the study runs native
+            self.surrogates = runs_native("a parameter study runs native")
             mgr = StudyManager.load(self._study_dir)
-            mgr.run(max_workers=self._max_workers,
-                    serial=self._max_workers <= 1,
-                    on_run_done=self._on_run_done,
-                    progress_cb=self._on_progress,
-                    should_stop=self._stopping)
+            with study_surrogates(self.surrogates):
+                mgr.run(max_workers=self._max_workers,
+                        serial=self._max_workers <= 1,
+                        on_run_done=self._on_run_done,
+                        progress_cb=self._on_progress,
+                        should_stop=self._stopping)
         except Exception as exc:                        # noqa: BLE001
             self.failed.emit(f"{type(exc).__name__}: {exc}")
             return
@@ -203,6 +207,7 @@ class StudyTab(QWidget):
         self._bar = QProgressBar()
         self._bar.setRange(0, 1)
         self._status = QLabel("")
+        self._status.setWordWrap(True)
         eg.addWidget(QLabel("Name"), 0, 0)
         eg.addWidget(self._name, 0, 1, 1, 2)
         eg.addWidget(QLabel("Folder"), 1, 0)
@@ -526,10 +531,12 @@ class StudyTab(QWidget):
     def _on_done(self, stopped: bool) -> None:
         if self.sender() is not self._worker:
             return
+        note = getattr(getattr(self._worker, "surrogates", None), "note", "")
         self._status.setText(
             ("stopped — resume with Start (completed runs are kept)"
              if stopped else
-             f"complete — summary in {self._study_dir}/summary/"))
+             f"complete — summary in {self._study_dir}/summary/")
+            + (f"; {note}" if note else ""))
         if self._study_dir is not None:
             try:
                 self._analysis.load_study(self._study_dir,

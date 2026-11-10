@@ -162,12 +162,84 @@ def test_field_independent_of_probe_ladder(ref):
         fp = tune_footprint(lat, ref.copy(), period, init, current=_CURRENT,
                             n_turns=_NT, n_particles=_NP, amp_max_sigma=_AMP,
                             seed=0)
-        i = int(np.argmin(fp["ax_sigma"] + fp["ay_sigma"]))
-        return fp["qx"][i]
+        # the smallest X-ray, by name: argmin(ax + ay) tied at the ulp level with the
+        # smallest y-ray (ay = 0.049999999999999996) in 4 of 26 perturbed inputs
+        xray = np.flatnonzero((fp["ax_sigma"] > 0) & (fp["ay_sigma"] == 0))
+        return fp["qx"][xray[np.argmin(fp["ax_sigma"][xray])]]
 
     q_tight = smallest_tune(10.0)
     q_wide = smallest_tune(50.0)
-    assert q_tight == pytest.approx(q_wide, rel=1e-6, abs=1e-9)
+    # 1e-5: a change of the input at round-off level moves this tune by up to 3.7e-6 (a 3e-12
+    # change of beta_y, measured 2026-11-08) through the matched-Σ search of this DC beam; the
+    # field itself is exact to 1e-10
+    assert q_tight == pytest.approx(q_wide, rel=1e-5, abs=1e-9)
+
+
+def test_footprint_is_insensitive_to_round_off_in_its_input(ref):
+    """A 1e-12 change of the input Twiss or emittance moves no tune by more than the matched
+    search's own reproducibility.  Before (2026-11-07) the field was more than 1 % wrong a few σ
+    out on one side of a nearly round beam (infinite or NaN further out) and carried round-off
+    across the axes, and the largest tune went from 17.32 to 14.11 deg under such a change."""
+    lat = _fodo()
+    period = detect_periods(lat)[0]
+
+    def run(**pert):
+        init = _initial(lat, ref)
+        for k, v in pert.items():
+            init[k] *= 1.0 + v
+        return tune_footprint(lat, ref.copy(), period, init, current=_CURRENT, n_turns=_NT,
+                              n_particles=_NP, amp_max_sigma=_AMP, seed=0)
+
+    a = run()
+    for b in (run(beta_x=1e-12), run(emit_y=1e-12)):
+        assert abs(np.nanmax(b["qx"]) - np.nanmax(a["qx"])) * 360.0 < 1e-4
+        for k in ("mu_x_spread_pp_deg", "mu_y_spread_pp_deg", "mu_x_core_deg"):
+            assert abs(b[k] - a[k]) < 1e-4, k
+        assert b["qx"][0] == pytest.approx(a["qx"][0], rel=1e-5)        # the 0.05-sigma x-ray
+
+
+def test_a_ray_in_one_plane_has_a_small_amplitude_tune_in_the_other(fp_current):
+    """A ray launched in one plane stays in it; its tune in the other plane is that of a shadow
+    copy started with a small angle there: finite, and rising with the ray's amplitude (the field
+    across an axis is exactly zero; before, those tunes were FFTs of round-off, 5.2 to 17.3 deg,
+    in no order)."""
+    fp, _, _ = fp_current
+    for q, a_on, a_off in ((fp["qx"], fp["ay_sigma"], fp["ax_sigma"]),
+                           (fp["qy"], fp["ax_sigma"], fp["ay_sigma"])):
+        ray = (a_on > 0) & (a_off == 0)
+        qq = q[ray][np.argsort(a_on[ray])]
+        assert ray.sum() >= 10 and np.all(np.isfinite(qq)) and np.all(np.diff(qq) > 0)
+    assert fp["n_unstable_other_plane"] == 0
+
+
+def test_a_ray_keeps_its_own_tune_where_the_other_plane_is_unstable(ref, monkeypatch):
+    """A flat beam (emit_y = emit_x / 4) at 10 mA: the frozen field's centre is unstable in y,
+    so a small y motion about an x-ray grows without bound.  The x-rays stay in their plane, so
+    their own tunes and the core tune do not depend on the shadow that measures the other plane
+    (seeded on the ray itself, the seed grew and moved the 0.05-sigma ray's tune from 7.07 to
+    7.82 deg); the unstable other-plane tunes are left out, and counted."""
+    import linac_gen.analysis.footprint as fp_mod
+    lat = _fodo()
+    period = detect_periods(lat)[0]
+    init = _initial(lat, ref)
+    init["emit_y"] = 0.25 * init["emit_x"]
+
+    def run(angle):
+        monkeypatch.setattr(fp_mod, "_SHADOW_ANGLE", angle)
+        return tune_footprint(lat, ref.copy(), period, init, current=10.0, n_turns=_NT,
+                              n_particles=_NP, amp_max_sigma=_AMP, seed=0)
+
+    a, b = run(1e-6), run(1e-3)
+    xray = (a["ax_sigma"] > 0) & (a["ay_sigma"] == 0)
+    yray = (a["ay_sigma"] > 0) & (a["ax_sigma"] == 0)
+    for q in ("qx", "qy"):
+        own = xray if q == "qx" else yray
+        np.testing.assert_allclose(a[q][own] * 360.0, b[q][own] * 360.0, rtol=0.0, atol=1e-9)
+    assert a["mu_x_core_deg"] == pytest.approx(b["mu_x_core_deg"], abs=1e-9)
+    assert a["n_unstable_other_plane"] > 0
+    assert (np.isnan(a["qy"][xray]).sum() + np.isnan(a["qx"][yray]).sum()
+            == a["n_unstable_other_plane"])
+    assert "unstable in their other plane" in a["model"]
 
 
 # ---------------------------------------------------------------------------

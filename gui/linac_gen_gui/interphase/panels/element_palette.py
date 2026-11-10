@@ -49,7 +49,8 @@ _LABELS: dict[str, str] = {
     # essential keyword.  The full name shows up on hover.
     "SET_SYNC_PHASE":        "SyncPhi",
     "SET_BEAM_PHASE_ERROR":  "ϕ-err",
-    "SET_BEAM_ENERGY":       "E-set",
+    "HELIX_SET_ENERGY":      "E-set",
+    "SET_BEAM_ENERGY":       "E-goal",
     "SET_BEAM_E0P0":         "E0P0",
     "SET_GAUSS_CUTOFF":      "GCutoff",
     "SET_TWISS":             "Twiss",
@@ -203,7 +204,7 @@ class ElementPalette(QFrame):
             ("Drift / passive", ["Drift", "ThinLens", "Aperture",
                                  "Marker", "SpaceChargeComp"]),
             ("SET_* commands", [t for t in supported_types()
-                                if t.startswith("SET_")]),
+                                if t.startswith(("SET_", "HELIX_"))]),
             ("ADJUST_* commands", [t for t in supported_types()
                                    if t.startswith("ADJUST")]),
         ]

@@ -35,6 +35,12 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 
+def _put_back(changes) -> None:
+    """Undo an edit: each value as the edit found it, the last change first."""
+    for elem, attr, old in reversed(changes):
+        setattr(elem, attr, old)
+
+
 # ---------------------------------------------------------------------------
 # Session context — the assistant's working state
 # ---------------------------------------------------------------------------
@@ -115,14 +121,26 @@ class WorkContext:
     # [(element, attr, old_value)]; apply returns an opaque handle (None
     # headless) that revert receives back.
     def apply_param_changes(self, changes, label: str = ""):
-        for elem, attr, new in changes:
-            setattr(elem, attr, new)
-        return None                       # opaque handle for revert
+        applied = []
+        try:
+            for elem, attr, new in changes:
+                old = getattr(elem, attr)
+                setattr(elem, attr, new)
+                applied.append((elem, attr, old))
+        except Exception:
+            # all or nothing: an element can refuse a value (a derived or
+            # whole-number attribute), and the changes before it go back
+            _put_back(applied)
+            raise
+        # opaque handle for revert: what each change found, when the edit
+        # touches an element's geometry (an earlier change can have moved a
+        # later one's value: a bend's length follows its angle)
+        geometry = any(a in getattr(type(e), "_GEOMETRY_ATTRS", ()) for e, a, _o in applied)
+        return {"applied": applied} if geometry else None
 
     def revert_param_changes(self, handle, changes,
                              label: str = "") -> None:
-        for elem, attr, old in changes:
-            setattr(elem, attr, old)
+        _put_back(handle["applied"] if isinstance(handle, dict) else changes)
 
     # The space-charge settings of the session (the GUI's Numerics tab):
     # None when there are none (headless, zero current); the GUI adapter
@@ -1523,6 +1541,13 @@ def _parameter_scan(ctx, element: str, attribute: str, start: float,
     if not hasattr(el, attribute):
         return _refused(f"element {getattr(el, 'name', idx)!r} has no "
                         f"attribute {attribute!r}")
+    if getattr(el, "_is_derived", lambda _a: False)(attribute):
+        return _refused(f"{attribute!r} of {getattr(el, 'name', idx)!r} follows from "
+                        "other parameters (a bend's length from its angle and radius, "
+                        "a cavity's from its cells): scan those")
+    if attribute in getattr(el, "STUDY_STAMPS", ()):
+        return _refused(f"{attribute!r} of {getattr(el, 'name', idx)!r} is what an error "
+                        "study stamps on each seed, not a setting")
     n = max(2, min(int(n_points), 41))
     import dataclasses as _dc
 
@@ -2475,6 +2500,9 @@ def _set_param(ctx, element_name: str, param: str, value: float):
     if not hasattr(elem, param):
         return _refused(f"'{type(elem).__name__}' has no parameter "
                         f"'{param}'")
+    if param in getattr(elem, "STUDY_STAMPS", ()):
+        return _refused(f"'{param}' of '{element_name}' is what an error study "
+                        "stamps on each seed, not a setting")
     old = getattr(elem, param)
     if not isinstance(old, (int, float)):
         return _refused(f"'{param}' is not numeric (is {type(old).__name__})")

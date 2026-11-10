@@ -1881,14 +1881,16 @@ class _DispersionPopup(_PopupPlot):
             from linac_gen.core.reference import ReferenceParticle
             sp_map = {"proton": PROTON, "deuteron": DEUTERON, "H-": H_MINUS}
             sp = sp_map.get(cfg.species, PROTON)
-            ref = ReferenceParticle(species=sp, w_kin=cfg.energy,
-                                    frequency=cfg.frequency)
+            from linac_gen.distributions.factory import reference_config
+            start = reference_config(cfg)     # a .dst beam: the file's energy and clock
+            ref = ReferenceParticle(species=sp, w_kin=start.energy,
+                                    frequency=start.frequency)
         except Exception as exc:                              # noqa: BLE001
             return None, f"Reference particle build failed: {exc}"
         eta0 = tuple(float(getattr(cfg, k, 0.0) or 0.0)
                      for k in ("disp_x", "disp_xp", "disp_y", "disp_yp"))
-        key = (id(lattice), len(lattice.elements), float(cfg.energy),
-               float(cfg.frequency), str(cfg.species), eta0)
+        key = (id(lattice), len(lattice.elements), float(start.energy),
+               float(start.frequency), str(cfg.species), eta0)
         return (lattice, ref, eta0, key), None
 
     def _on_model_toggled(self, checked: bool) -> None:
@@ -2525,6 +2527,63 @@ def _RfqCell():
 
 def _is_cluster(el) -> bool:
     return isinstance(el, _SuperposedFieldMap())
+
+
+def _field_map_entries(lattice):
+    """Every field map of *lattice* as ``(element index, map, cluster)``.
+
+    A plain map has cluster ``None``.  A SUPERPOSE_MAP cluster (a curved one
+    too) gives one entry per map, unpowered correctors included.
+    """
+    from linac_gen.elements.field_map import FieldMap
+    from linac_gen.elements.field_map_3d import FieldMap3D
+    for i, el in enumerate(lattice.elements if lattice is not None else ()):
+        if _is_cluster(el):
+            for _z0, child in el.children:
+                if isinstance(child, (FieldMap, FieldMap3D)):
+                    yield i, child, el
+        elif isinstance(el, (FieldMap, FieldMap3D)):
+            yield i, el, None
+
+
+def _channel_run_factor(el, ch) -> float | None:
+    """What a run multiplies this channel's file values by: Kb or Ke with the
+    global scale, the amplitude error and the map's norm (``_scale_factor`` /
+    ``_scale``).  A cluster-level ERROR_CAV amplitude is not included."""
+    fd = getattr(el, "field_data", None)
+    fn = getattr(el, "_scale_factor", None) or getattr(el, "_scale", None)
+    if fd is None or not fd.channels or fn is None:
+        return None
+    for ch_enum, c in fd.channels.items():
+        if c is ch:
+            return float(fn(ch_enum, c))
+    return None
+
+
+def _field_map_strengths(el) -> str:
+    """The deck's strengths of a map, for a label: ``Kb 0.2839``."""
+    fd = getattr(el, "field_data", None)
+    channels = list(fd.channels) if fd is not None and fd.channels else []
+    parts = []
+    if any(not c.is_electric for c in channels):
+        parts.append(f"Kb {float(getattr(el, 'kb', 0.0)):.4g}")
+    if any(c.is_electric for c in channels):
+        parts.append(f"Ke {float(getattr(el, 'ke', 0.0)):.4g}")
+    return ", ".join(parts)
+
+
+def _cluster_map_label(i: int, cluster, child) -> str:
+    """``[1] SUPERP_001 › FMAP_002  (FieldMap3D) — corrector_h · Kb 0``.
+
+    It names the file: a static-B channel alone cannot tell a solenoid from a
+    corrector or a dipole.
+    """
+    name = getattr(child, "label", None) or child.name
+    src = getattr(child, "field_file", None)
+    what = Path(str(src)).name if src else "no source file"
+    strengths = _field_map_strengths(child)
+    return (f"[{i}] {cluster.name} › {name}  ({type(child).__name__}) — {what}"
+            + (f" · {strengths}" if strengths else ""))
 
 
 def _clipped_trapz(z_mm, g, lo, hi) -> float:
@@ -3661,14 +3720,16 @@ class _PhaseAdvancePopup(_CoupledWalkMixin, _PopupPlot):
             self._info.setText("Set a beam config (Beam tab) to seed Twiss.")
             return
 
-        # Build a ReferenceParticle from the beam config.
+        # Build a ReferenceParticle from the beam config (a .dst beam: the file's).
         try:
             from linac_gen.core.particle import PROTON, DEUTERON, H_MINUS
             from linac_gen.core.reference import ReferenceParticle
+            from linac_gen.distributions.factory import reference_config
             sp_map = {"proton": PROTON, "deuteron": DEUTERON, "H-": H_MINUS}
             sp = sp_map.get(cfg.species, PROTON)
-            ref = ReferenceParticle(species=sp, w_kin=cfg.energy,
-                                    frequency=cfg.frequency)
+            start = reference_config(cfg)
+            ref = ReferenceParticle(species=sp, w_kin=start.energy,
+                                    frequency=start.frequency)
         except Exception as exc:                              # noqa: BLE001
             self._info.setText(f"Reference particle build failed: {exc}")
             return
@@ -3901,6 +3962,10 @@ def _beam_inputs_from_config(cfg):
     ε via βγ, DC/continuous metadata included)."""
     from linac_gen.core.particle import PROTON, DEUTERON, H_MINUS
     from linac_gen.core.reference import ReferenceParticle
+    from linac_gen.distributions.factory import reference_config
+    # a beam read from a .dst file: the file's energy, clock, Twiss and centroid, as
+    # app._run_envelope and the multiparticle run take them
+    cfg = reference_config(cfg)
     sp = {"proton": PROTON, "deuteron": DEUTERON,
           "H-": H_MINUS}.get(getattr(cfg, "species", "proton"), PROTON)
     ref = ReferenceParticle(species=sp, w_kin=cfg.energy,
@@ -3914,7 +3979,7 @@ def _beam_inputs_from_config(cfg):
     # needed — e.g. the bend-field card series), so getattr-extract
     # with the historical defaults first.
     from types import SimpleNamespace
-    from linac_gen.distributions.factory import geometric_emittances
+    from linac_gen.distributions.factory import geometric_emittances, input_dispersion
     _ex, _ey, _ez = geometric_emittances(SimpleNamespace(
         emit_nx=float(getattr(cfg, "emit_nx", 0.2)),
         emit_ny=float(getattr(cfg, "emit_ny", 0.2)),
@@ -3934,6 +3999,8 @@ def _beam_inputs_from_config(cfg):
         continuous=bool(getattr(cfg, "continuous", False)),
         dc_energy_spread_keV=float(
             getattr(cfg, "dc_energy_spread_keV", 0.0)),
+        # the input dispersion create_beam shears a generated beam by
+        **input_dispersion(cfg),
     )
     return ref, initial
 
@@ -3963,6 +4030,10 @@ def _probe_sig(lattice, cfg) -> tuple:
         float(getattr(cfg, "mismatch_x", 0.0)),
         float(getattr(cfg, "mismatch_y", 0.0)),
         float(getattr(cfg, "mismatch_z", 0.0)),
+        # and so does the input dispersion, which a beam read from a file does not take
+        str(getattr(cfg, "source", "")),
+        *(float(getattr(cfg, k, 0.0) or 0.0)
+          for k in ("disp_x", "disp_xp", "disp_y", "disp_yp")),
     )
 
 
@@ -4540,10 +4611,12 @@ class _TuneDepressionPopup(_CoupledWalkMixin, _PopupPlot):
         try:
             from linac_gen.core.particle import PROTON, DEUTERON, H_MINUS
             from linac_gen.core.reference import ReferenceParticle
+            from linac_gen.distributions.factory import reference_config
             sp_map = {"proton": PROTON, "deuteron": DEUTERON, "H-": H_MINUS}
             sp = sp_map.get(cfg.species, PROTON)
-            ref = ReferenceParticle(species=sp, w_kin=cfg.energy,
-                                    frequency=cfg.frequency)
+            start = reference_config(cfg)     # a .dst beam: the file's energy and clock
+            ref = ReferenceParticle(species=sp, w_kin=start.energy,
+                                    frequency=start.frequency)
         except Exception as exc:                              # noqa: BLE001
             self._info.setText(f"Reference particle build failed: {exc}")
             return
@@ -6905,6 +6978,12 @@ class _EnsemblePopup(_PopupPlot):
         self._sy_band_lo.setData(s, np.maximum(sy_mean - sy_std, 0.0))
         self._sy_max.setData(s, sy_max)
 
+        if getattr(study, "mode", "mp") == "envelope":
+            # an envelope run loses no particle: there is no transmission to show
+            self._th_bars.setOpts(x=[], height=[])
+            self._summary.setText(f"n_seeds = {study.n_seeds}   envelope study: particle losses "
+                                  "are not modelled (no transmission)")
+            return
         # Final transmission histogram.  Skip any seed whose recorder has an
         # empty transmission array (a degenerate/zero-step seed) so a single
         # bad seed can't raise IndexError here (this block is outside the
@@ -8201,8 +8280,10 @@ class _FieldMapPopup(_PopupPlot):
     """Field-map visualiser: 2D contour + 1D line cuts.
 
     Lets the user pick (a) a FieldMap / FieldMap3D element from the
-    lattice, (b) a Channel (STAT_E / STAT_B / RF_E / RF_B), and (c) a
-    component (Fx, Fy, Fz, Fr, Fq).  Renders:
+    lattice, or a map inside a SUPERPOSE_MAP cluster, (b) a Channel
+    (STAT_E / STAT_B / RF_E / RF_B), and (c) a component (Fx, Fy, Fz, Fr,
+    Fq).  It shows the file's values; the info line gives the factor a run
+    multiplies them by.  Renders:
 
     * a 2D pseudocolour heatmap of the chosen component on the two
       "in-plane" axes, sliced at the user-picked third-axis coordinate
@@ -8259,6 +8340,7 @@ class _FieldMapPopup(_PopupPlot):
         self._info.setStyleSheet(
             f"color:{theme.TEXT_2}; font-family:{theme.FONT_MONO}; font-size:10px;"
         )
+        self._info.setWordWrap(True)        # (it must not widen the window)
         tb.addWidget(self._info, stretch=2)
         v.addLayout(tb)
 
@@ -8361,36 +8443,33 @@ class _FieldMapPopup(_PopupPlot):
     # ------------------------------------------------------------------
     def _populate_elements(self, *_args) -> None:
         """Rebuild the element dropdown from the current lattice."""
-        from linac_gen.elements.field_map import FieldMap
-        from linac_gen.elements.field_map_3d import FieldMap3D
         self._suspend_signals = True
         try:
             self._el_combo.clear()
             lat = self._state.lattice if self._state else None
             self._fm_elements = []
-            if lat is not None:
-                for i, el in enumerate(lat.elements):
-                    if isinstance(el, (FieldMap, FieldMap3D)):
-                        self._fm_elements.append((i, el))
-                        cls = type(el).__name__
-                        # Quick "what is it" label from the channel set:
-                        #   STAT_B only      → solenoid
-                        #   RF_E (+RF_B)     → cavity
-                        #   STAT_E only      → DC E
-                        kind = ""
-                        fd = getattr(el, "field_data", None)
-                        if fd is not None and fd.channels:
-                            chs = {c.name for c in fd.channels.keys()}
-                            if "STAT_B" in chs and not (chs & {"RF_E", "RF_B"}):
-                                kind = "solenoid"
-                            elif chs & {"RF_E", "RF_B"}:
-                                kind = "cavity"
-                            elif "STAT_E" in chs:
-                                kind = "DC electric"
-                        suffix = f" — {kind}" if kind else ""
-                        self._el_combo.addItem(
-                            f"[{i}] {el.name}  ({cls}){suffix}"
-                        )
+            for i, el, cluster in _field_map_entries(lat):
+                self._fm_elements.append((i, el))
+                if cluster is not None:
+                    self._el_combo.addItem(_cluster_map_label(i, cluster, el))
+                    continue
+                cls = type(el).__name__
+                # Quick "what is it" label from the channel set:
+                #   STAT_B only      → solenoid
+                #   RF_E (+RF_B)     → cavity
+                #   STAT_E only      → DC E
+                kind = ""
+                fd = getattr(el, "field_data", None)
+                if fd is not None and fd.channels:
+                    chs = {c.name for c in fd.channels.keys()}
+                    if "STAT_B" in chs and not (chs & {"RF_E", "RF_B"}):
+                        kind = "solenoid"
+                    elif chs & {"RF_E", "RF_B"}:
+                        kind = "cavity"
+                    elif "STAT_E" in chs:
+                        kind = "DC electric"
+                suffix = f" — {kind}" if kind else ""
+                self._el_combo.addItem(f"[{i}] {el.name}  ({cls}){suffix}")
             if not self._fm_elements:
                 self._el_combo.addItem("(no field-map elements)")
                 self._info.setText("Load a lattice with FIELD_MAP elements.")
@@ -8588,8 +8667,13 @@ class _FieldMapPopup(_PopupPlot):
                      f"max={float(np.nanmax(F)):.3g}")
         else:
             stats = "(no finite values)"
+        el_idx = self._el_combo.currentIndex()
+        factor = (_channel_run_factor(self._fm_elements[el_idx][1], ch)
+                  if 0 <= el_idx < len(self._fm_elements) else None)
         self._info.setText(
             f"{key}{derived}  ·  shape={F.shape}  ·  geom={geom}  ·  {stats}"
+            + (f"  ·  the run scales these ×{factor:.4g}"
+               if factor is not None else "")
         )
 
     def _infer_axis_order(self, shape, axes, geometry) -> list[str]:
@@ -8793,31 +8877,27 @@ class _TtfPopup(_PopupPlot):
         self._populate()
 
     def _populate(self, *_):
-        from linac_gen.elements.field_map import FieldMap
-        from linac_gen.elements.field_map_3d import FieldMap3D
         self._el_combo.blockSignals(True)
         self._el_combo.clear()
         self._fm_elements = []
         lat = self._state.lattice if self._state is not None else None
-        if lat is not None:
-            for i, el in enumerate(lat.elements):
-                if not isinstance(el, (FieldMap, FieldMap3D)):
-                    continue
-                fd = getattr(el, "field_data", None)
-                if fd is None:
-                    continue
-                channel_names = {c.name for c in fd.channels.keys()}
-                if "RF_E" not in channel_names:
-                    continue
-                if float(getattr(el, "ke", 0.0)) == 0.0:
-                    continue
-                if float(getattr(el, "frequency", 0.0)) <= 0.0:
-                    continue
-                self._fm_elements.append((i, el))
-                self._el_combo.addItem(
-                    f"[{i}] {el.name}  (f={el.frequency:.1f} MHz, "
-                    f"L={el.length:.0f} mm)"
-                )
+        for i, el, cluster in _field_map_entries(lat):
+            fd = getattr(el, "field_data", None)
+            if fd is None:
+                continue
+            channel_names = {c.name for c in fd.channels.keys()}
+            if "RF_E" not in channel_names:
+                continue
+            if float(getattr(el, "ke", 0.0)) == 0.0:
+                continue
+            if float(getattr(el, "frequency", 0.0)) <= 0.0:
+                continue
+            self._fm_elements.append((i, el))
+            where = f"{cluster.name} › " if cluster is not None else ""
+            self._el_combo.addItem(
+                f"[{i}] {where}{el.name}  (f={el.frequency:.1f} MHz, "
+                f"L={el.length:.0f} mm)"
+            )
         self._el_combo.blockSignals(False)
         if not self._fm_elements:
             self._info.setText(
@@ -8880,8 +8960,10 @@ class _TtfPopup(_PopupPlot):
         try:
             ref_bg = list(getattr(results, "ref_bg", []) or [])
             elem_names = list(getattr(results, "element_names", []) or [])
-            if elem_names and ref_bg and el.name in elem_names:
-                k = elem_names.index(el.name)
+            # (a run records the cluster's name, not the name of a map inside)
+            name = self._state.lattice.elements[elem_idx].name
+            if elem_names and ref_bg and name in elem_names:
+                k = elem_names.index(name)
                 bg = float(ref_bg[k])
                 bb = bg / np.sqrt(1.0 + bg * bg)
                 self._beam_line.setValue(bb); self._beam_line.show()
@@ -11064,6 +11146,14 @@ class ResultsTab(QWidget):
             # growth of the NORMALISED emittance: the geometric one shrinks
             # with acceleration (an RFQ: x0.14), which is not growth
             ex = getattr(results, "emit_nx", None)
+            if not _has(ex, 2) or not float(ex[0]) > 0.0:
+                # an envelope run records only the geometric one: ε × βγ
+                from linac_gen_gui.interphase.panels.result_card import (
+                    _derive_envelope_fallback,
+                )
+                ex = _derive_envelope_fallback(
+                    "emit_nx", results,
+                    np.asarray(getattr(results, "s", []), dtype=float))
             if not _has(ex, 2) or not float(ex[0]) > 0.0:
                 ex = getattr(results, "emit_x", [])
             trans = getattr(results, "transmission", [])

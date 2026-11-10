@@ -54,11 +54,52 @@ def _resolve_element(lattice, key: str):
                      f"(by name or index)")
 
 
-def _build_ref_h_minus(w_kin_mev: float, frequency_mhz: float):
-    from linac_gen.core.particle import H_MINUS
+def _build_ref(species: str, w_kin_mev: float, frequency_mhz: float):
     from linac_gen.core.reference import ReferenceParticle
-    return ReferenceParticle(species=H_MINUS, w_kin=w_kin_mev,
+    from linac_gen.distributions.factory import SPECIES_MAP
+    if species not in SPECIES_MAP:
+        raise SystemExit(f"unknown species {species!r} (one of {', '.join(sorted(SPECIES_MAP))})")
+    return ReferenceParticle(species=SPECIES_MAP[species], w_kin=w_kin_mev,
                               frequency=frequency_mhz)
+
+
+def _load_weights(lattice, dirs) -> list:
+    """``(weights_dir, mlp, meta, element)`` for each weights folder whose element is in
+    the lattice; a line on stderr for each one that is not."""
+    from linac_gen.surrogates.training import load_surrogate
+    out = []
+    for w in dirs:
+        mlp, meta = load_surrogate(Path(w))
+        element = next((e for e in lattice.elements if e.name == meta.element_key), None)
+        if element is None:
+            print(f"warning: surrogate '{meta.element_key}' (from {w}) "
+                  f"not in lattice; skipping", file=sys.stderr)
+            continue
+        out.append((Path(w), mlp, meta, element))
+    return out
+
+
+def _beam_species(asked: str | None, loaded) -> str:
+    """The species to run: the one asked for, else the one the weights record (a file that
+    records none counts as H⁻), else H⁻.  Weights for several species need ``--species``.
+    Each weight that cannot engage for the beam says so on stderr."""
+    from linac_gen.distributions.factory import SPECIES_MAP
+    trained = sorted({meta.trained_species for _w, _m, meta, _e in loaded if meta.trained_species})
+    if asked is None:
+        if len(trained) > 1:
+            raise SystemExit(f"the weights are for several species ({', '.join(trained)}): "
+                             "name the beam's with --species")
+        asked = trained[0] if trained else "H-"
+        if asked not in SPECIES_MAP:
+            raise SystemExit(f"the weights are for {asked!r}, a species HELIX has no reference "
+                             f"particle for: name the beam with --species "
+                             f"(one of {', '.join(sorted(SPECIES_MAP))})")
+    for w, _mlp, meta, _e in loaded:
+        if meta.trained_species and meta.trained_species != asked:
+            print(f"warning: surrogate '{meta.element_key}' (from {w}) is for "
+                  f"{meta.trained_species} and the beam is {asked}: it will not engage",
+                  file=sys.stderr)
+    return asked
 
 
 def _build_default_init_twiss(ref, alpha_x: float, beta_x: float,
@@ -80,7 +121,7 @@ def _cmd_train(args) -> int:
     from linac_gen.elements.field_map_3d import FieldMap3D
     from linac_gen.io.tracewin_parser import parse_tracewin
     from linac_gen.surrogates import registry
-    from linac_gen.surrogates.training import train_surrogate_for_element
+    from linac_gen.surrogates.training import train_surrogate_for_element, weights_folder
 
     lat, _ = parse_tracewin(args.lattice)
     element = _resolve_element(lat, args.element)
@@ -98,14 +139,13 @@ def _cmd_train(args) -> int:
         "phase": (phase0 - args.phase_rel_deg, phase0 + args.phase_rel_deg),
     }
 
-    ref_template = _build_ref_h_minus(args.ref_w_kin, args.frequency)
+    ref_template = _build_ref(args.species, args.ref_w_kin, args.frequency)
     lattice_hash = registry.hash_lattice_file(args.lattice)
     out_dir = (Path(args.out) if args.out
-               else Path("linac_gen/surrogates/weights")
-                    / lattice_hash[:16] / element.name)
+               else weights_folder(lattice_hash, ref_template.species.name) / element.name)
 
     print(f"Training surrogate for element '{element.name}'  "
-          f"({args.samples} samples, {args.epochs} epochs)")
+          f"({args.samples} samples, {args.epochs} epochs, {ref_template.species.name})")
     print(f"  ke      range: [{param_ranges['ke'][0]:.4f}, "
           f"{param_ranges['ke'][1]:.4f}]")
     print(f"  phase   range: [{param_ranges['phase'][0]:.1f}, "
@@ -144,27 +184,19 @@ def _cmd_compare(args) -> int:
     from linac_gen.surrogates.compare import (
         compare_envelope, plot_compare_report,
     )
-    from linac_gen.surrogates.training import load_surrogate
 
     lat, _ = parse_tracewin(args.lattice)
 
+    loaded = _load_weights(lat, args.weights)
     surrogates = []
-    for w in args.weights:
-        weights_dir = Path(w)
-        mlp, meta = load_surrogate(weights_dir)
-        element = next((e for e in lat.elements
-                        if e.name == meta.element_key), None)
-        if element is None:
-            print(f"warning: surrogate '{meta.element_key}' (from {w}) "
-                  f"not in lattice; skipping", file=sys.stderr)
-            continue
+    for weights_dir, mlp, meta, element in loaded:
         surr = SurrogateFieldMap(element, mlp, meta)
         surr.weights_dir = str(weights_dir)     # provenance: weights hash
         surrogates.append(surr)
         print(f"loaded surrogate '{meta.element_key}' "
               f"(val MAPE {meta.val_mape:.2e})")
 
-    ref = _build_ref_h_minus(args.ref_w_kin, args.frequency)
+    ref = _build_ref(_beam_species(args.species, loaded), args.ref_w_kin, args.frequency)
     twiss = _build_default_init_twiss(
         ref,
         alpha_x=args.alpha_x, beta_x=args.beta_x, emit_x_n=args.emit_x_n,
@@ -187,11 +219,16 @@ def _cmd_compare(args) -> int:
 def _cmd_register_multi(args) -> int:
     """Register a single trained surrogate under N element names.
 
-    Use case: HWR cryomodule has 8 cavities all backed by the same
-    ``HWRDonut.map`` file, with different per-element ``ke`` / ``phase``
-    settings.  If the trained sweep range is wide enough to cover all
-    of them, you can share one surrogate across the whole family
-    instead of training 8 separate ones -- TRACKING looks surrogates
+    Use case: a cryomodule of cavities all backed by the same field
+    file, with different per-element settings.  The weights answer for
+    an element only where its settings are theirs: its inputs within
+    the trained range, every other setting (``kb`` when only ``ke`` and
+    ``phase`` were swept, say) equal to what they hold
+    (``SurrogateFieldMap._settings_reason``).  So one set serves the
+    cavities whose held settings equal the training cavity's; for the
+    others this prints a WARN with the setting, and they run native --
+    train with that setting (or ``scale``) as an input to share it.
+    TRACKING looks surrogates
     up by element name (last registration wins) GUARDED by the element
     in hand (identity / structural fingerprint; a same-named element
     from a different lattice is skipped with a warning), so each
@@ -226,6 +263,7 @@ def _cmd_register_multi(args) -> int:
 
     n_ok = 0
     n_skip = 0
+    n_native = 0
     for name in args.names:
         element = next((e for e in lat.elements if e.name == name), None)
         if element is None:
@@ -248,16 +286,24 @@ def _cmd_register_multi(args) -> int:
             if hasattr(element, attr):
                 info_bits.append(f"{attr}={float(getattr(element, attr)):+.4g}")
         info = "  " + " ".join(info_bits) if info_bits else ""
-        print(f"  OK   {name}{info}", file=sys.stderr)
+        held = surr._settings_reason()
+        if held is not None:
+            # registered, but its weights hold another setting: every query refuses
+            print(f"  WARN {name}{info}: runs native — {held[1]}", file=sys.stderr)
+            n_native += 1
+        else:
+            print(f"  OK   {name}{info}", file=sys.stderr)
         n_ok += 1
 
     print(f"registered {n_ok} of {len(args.names)} requested "
-          f"(skipped {n_skip})", file=sys.stderr)
+          f"(skipped {n_skip}"
+          + (f"; {n_native} run native: a setting their weights hold differs" if n_native
+             else "") + ")", file=sys.stderr)
     # Honesty: the registry is an in-process singleton and this CLI
     # process exits right here — nothing is persisted.
     print("note: registration is IN-PROCESS only (no persistence); "
           "as a standalone command this only VALIDATES that the "
-          "surrogate loads and matches the named elements.  For runs, "
+          "surrogate loads and which named elements it answers for.  For runs, "
           "register from the GUI Surrogates tab or call "
           "linac_gen.surrogates.registry.register() in the same "
           "process as the tracking.", file=sys.stderr)
@@ -269,21 +315,14 @@ def _cmd_run_envelope(args) -> int:
     from linac_gen.io.tracewin_parser import parse_tracewin
     from linac_gen.surrogates import registry
     from linac_gen.surrogates.base import SurrogateFieldMap
-    from linac_gen.surrogates.training import load_surrogate
     from linac_gen.tracking.envelope import EnvelopeSolver
 
     lat, _ = parse_tracewin(args.lattice)
 
+    loaded = _load_weights(lat, args.use_surrogates)
+    species = _beam_species(args.species, loaded)
     n_registered = 0
-    for w in args.use_surrogates:
-        weights_dir = Path(w)
-        mlp, meta = load_surrogate(weights_dir)
-        element = next((e for e in lat.elements
-                        if e.name == meta.element_key), None)
-        if element is None:
-            print(f"warning: surrogate '{meta.element_key}' (from {w}) "
-                  f"not in lattice; skipping", file=sys.stderr)
-            continue
+    for weights_dir, mlp, meta, element in loaded:
         surr = SurrogateFieldMap(element, mlp, meta)
         surr.weights_dir = str(weights_dir)     # provenance: weights hash
         registry.register(surr)
@@ -292,7 +331,7 @@ def _cmd_run_envelope(args) -> int:
               f"(val MAPE {meta.val_mape:.2e})")
     print(f"\nregistered {n_registered} surrogates total.")
 
-    ref = _build_ref_h_minus(args.ref_w_kin, args.frequency)
+    ref = _build_ref(species, args.ref_w_kin, args.frequency)
     twiss = _build_default_init_twiss(
         ref,
         alpha_x=args.alpha_x, beta_x=args.beta_x, emit_x_n=args.emit_x_n,
@@ -319,6 +358,9 @@ def _cmd_run_envelope(args) -> int:
 
 # ---------------------------------------------------------------------------
 def _add_common_beam_args(p, defaults):
+    p.add_argument("--species", choices=("H-", "proton", "deuteron"), default=None,
+                   help="the beam's species (default: the one the weights record; a "
+                        "file that records none counts as H-)")
     p.add_argument("--ref-w-kin", type=float, default=2.12,
                    help="reference particle kinetic energy (MeV)")
     p.add_argument("--frequency", type=float, default=162.5,
@@ -358,7 +400,7 @@ def main(argv=None) -> int:
     p_train.add_argument("--element", required=True,
                           help="element name or 0-based index")
     p_train.add_argument("--samples", type=int, default=200,
-                          help="LHS samples (smoke: 200, full: 50000)")
+                          help="LHS samples (smoke: 200, production: 5000)")
     p_train.add_argument("--epochs", type=int, default=40)
     p_train.add_argument("--hidden", default="64,64",
                           help="hidden dims, comma-separated")
@@ -370,6 +412,9 @@ def main(argv=None) -> int:
                           help="phase sweep range deg")
     p_train.add_argument("--ref-w-kin", type=float, default=2.12)
     p_train.add_argument("--frequency", type=float, default=162.5)
+    p_train.add_argument("--species", choices=("H-", "proton", "deuteron"), default="H-",
+                         help="the species the maps are sampled with (default H-); "
+                              "another species' weights go to <hash16>_<species>/")
     p_train.add_argument("--out", default=None)
     p_train.add_argument("--seed", type=int, default=42)
     p_train.add_argument(

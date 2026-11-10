@@ -56,6 +56,46 @@ class FieldChannel:
     norm_factor: float = 1.0
 
 
+def on_axis_field_kind(ch: FieldChannel) -> str:
+    """What a static magnetic channel's field is on the axis, the rule that makes a field map a
+    solenoid (the failure compensation's and the Sacherer envelope's):
+
+    * ``"longitudinal"`` -- a solenoid: a 1-D B_z or 2-D cylindrical map, or a 3-D map whose
+      on-axis B_z exceeds its on-axis transverse field and a tenth of its peak;
+    * ``"transverse"`` -- a 3-D map whose on-axis transverse field is at least its on-axis B_z
+      and above a tenth of its peak (a dipole, a steering corrector);
+    * ``"vanishing"`` -- a 3-D map whose field vanishes on the axis (a quadrupole, a multipole;
+      a small end-field B_z under a tenth of the peak included);
+    * ``"gradient"`` -- a 1-D quadrupole gradient G(z) (geometry 9);
+    * ``"none"`` -- a 3-D map with no field at all;
+    * ``"other"`` -- anything else (a 2-D Cartesian map).
+
+    The axis of a 3-D map is its grid points nearest x = 0 and y = 0."""
+    if ch.geometry in (1, 4, 5):
+        return "longitudinal"
+    if ch.geometry == 9:
+        return "gradient"
+    if ch.geometry != 7:
+        return "other"
+    comps = [np.asarray(a) for a in (ch.Fx, ch.Fy, ch.Fz) if a is not None]
+    if not comps:
+        return "none"
+    ix = int(np.argmin(np.abs(np.asarray(ch.x))))
+    iy = int(np.argmin(np.abs(np.asarray(ch.y))))
+    peak = max(float(np.max(np.abs(a))) for a in comps)
+    bz = (float(np.max(np.abs(np.asarray(ch.Fz)[ix, iy, :])))
+          if ch.Fz is not None else 0.0)
+    bt = max([float(np.max(np.abs(np.asarray(a)[ix, iy, :])))
+              for a in (ch.Fx, ch.Fy) if a is not None] or [0.0])
+    if peak == 0.0:
+        return "none"
+    if bz > bt and bz > 0.1 * peak:
+        return "longitudinal"
+    if bt >= bz and bt > 0.1 * peak:
+        return "transverse"
+    return "vanishing"
+
+
 class FieldMapData:
     """Container of per-channel data for a single FIELD_MAP element.
 

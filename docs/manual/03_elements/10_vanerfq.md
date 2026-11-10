@@ -1,5 +1,19 @@
 # VaneRFQ
 
+!!! warning "Retired"
+    `VaneRFQ` does not reproduce an RFQ; it is kept so old scripts still
+    run, and constructing one emits a `VaneRFQRetiredWarning`.  Its
+    multiparticle push never advances the particle phase (no phase
+    slip), and its envelope matrix holds the entry velocity over the
+    slice with no energy gain: on a 4.4 m RFQ to 2.1 MeV it transmits
+    57 % where the RFQ_CELL chain transmits 100 %.  Track the
+    [RfqCell](09_rfqcell.md) chain the parser builds: multiparticle runs
+    track it with the [time-domain solver](20_rfq_time_domain.md) by
+    default, which takes the vanes from the deck's `RFQ_GEOM` `.vane`
+    file (or builds them from the cards); envelope runs and
+    backtracking use the per-cell model.  The Lattice tab no longer
+    offers the swap.
+
 A `VaneRFQ` represents an entire RFQ as **one element**: a single
 `FieldMapElement` whose per-z geometry (apertures, voltages, `Tc`)
 comes from a `.vane` file (Toutatis convention) and whose cell-level
@@ -14,26 +28,26 @@ from linac_gen.elements.vane_rfq import VaneRFQ
 from linac_gen.io.tracewin_parser import parse_tracewin
 from linac_gen.io.vane_rfq_helper import replace_rfq_cells_with_vane
 
-# Usual route: parse a .dat with RFQ_CELL lines, then swap the
-# contiguous RfqCell chain for one VaneRFQ driven by the .vane file.
+# How one was made (the retired Lattice-tab swap): parse a .dat with
+# RFQ_CELL lines, then swap the RfqCell chain for one VaneRFQ.
 lattice, _ = parse_tracewin("examples/lebt_plus_rfq/lebt_plus_rfq_user.dat")
 replace_rfq_cells_with_vane(lattice, "Fields/pxie-rfq.vane")
 ```
 
 `VaneRFQ` is **not** built by the default parser path — the parser
-produces a chain of [RfqCell](09_rfqcell.md) elements.  Construct a
-`VaneRFQ` manually (with a parsed `VaneGeometry` + `CellSpan` list),
-or use `replace_rfq_cells_with_vane` to swap a parsed cell chain
-in-place.
+produces a chain of [RfqCell](09_rfqcell.md) elements.  An old script
+that needs one constructs it from a parsed `VaneGeometry` + `CellSpan`
+list, or calls `replace_rfq_cells_with_vane` on a parsed cell chain;
+either way it warns.
 
 ## Tutorial
 
-The PXIE RFQ — used in PIP-II's H⁻ injector — has hundreds of cells
-over 4.45 m, accelerating from 30 keV to 2.1 MeV.  Rather than
-tracking each cell with its cell-constant `r₀`, the `VaneRFQ`
-samples `r₀(z)`, voltages, and `Tc` from the `.vane` data per
-substep while taking the Crandall coefficients from the cell-level
-RFQ_CELL parameters.
+The PXIE RFQ has hundreds of cells over 4.45 m, accelerating from
+30 keV to 2.1 MeV.  The `VaneRFQ` tracks it as one element, taking the
+Crandall coefficients from the cell-level RFQ_CELL parameters.  In the
+default `"2term"` model the quadrupole coefficient uses each cell's
+constant `r₀` from its RFQ_CELL line; only `"8term"` reads a per-z
+`r₀` from the `.vane` data.
 
 ### Field models
 
@@ -42,15 +56,15 @@ geometry but using progressively higher-fidelity field models:
 
 | `field_model` | Field model | Status |
 |---|---|---|
-| `"2term"` | 2-term Crandall, cell-constant Wangler short form (M1) | **production**; σ_x within ~30 % of the TraceWin reference |
+| `"2term"` | 2-term Crandall, cell-constant Wangler short form (M1) | default; stable, but no phase slip (see the warning above) |
 | `"8term"` | matcher-aware per-z `r₀` from `.vane` (M2) | diagnostic |
 | `"8term_full"` | full 8-term Crandall analytic expansion (M3.3) | *unstable* (AG resonance) |
 | `"laplace2d"` | per-slice 2-D numerical Laplace (M3) | σ_x converges; σ_y blows up |
 | `"laplace3d"` | full 3-D Laplace, Shortley-Weller boundary (M3.2) | research-grade; σ diverges either way |
 
-The default is `"2term"` — it is the only stable production path
-within the current implementation budget.  The others are kept as
-diagnostic/reference paths that document specific failure modes.
+The default is `"2term"`, the only model that stays stable.  The
+others are kept as diagnostic/reference paths that document specific
+failure modes.  None of them reproduces an RFQ.
 
 ### Example
 
@@ -64,13 +78,12 @@ print(f"VaneRFQ spans {len(rfq.cells)} cells, "
 
 ### Transfer matrix
 
-The `VaneRFQ` follows the same per-substep integration as
-[RfqCell → Transfer matrix](09_rfqcell.md#transfer-matrix-and-per-substep-integration),
-with `A_quad = (1−A₁₀)/r₀(z)²` re-evaluated each substep from the
-`.vane` interpolation.  The element-level matrix is the chain of
-per-substep 6×6 Jacobians and includes strong (x ↔ Δφ), (y ↔ Δφ)
-couplings (the RFQ's whole job is to bunch the beam by coupling
-transverse and longitudinal).
+The element-level matrix (`fitted_matrix`) holds the entry velocity
+over the whole element: it has no coupling between the transverse
+planes and the longitudinal one, no energy gain and a unit
+determinant.  An RfqCell's default `tw2term` matrix updates the
+velocity substep by substep ([RfqCell → Transfer
+matrix](09_rfqcell.md#transfer-matrix-and-per-substep-integration)).
 
 ## API reference
 
@@ -107,7 +120,7 @@ degrees.
 
 ### Source
 
-* `linac_gen/elements/vane_rfq.py:135` (constructor; `CellSpan` at `:40`)
+* `linac_gen/elements/vane_rfq.py:153` (constructor; `CellSpan` at `:57`)
 * `linac_gen/io/vane_rfq_helper.py` (`replace_rfq_cells_with_vane`)
 * `linac_gen/io/tracewin_vane.py` (`VaneGeometry` parser)
 

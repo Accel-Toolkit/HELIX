@@ -182,7 +182,8 @@ def _madx_track_columns(path, amplitudes=1e-4):
     """Track one particle per transverse coordinate through the exported
     line; return the 4x4 map MAD-X applied (columns, in m/rad × 1e4) and
     the pt every particle ends with."""
-    m = cpymad.Madx(stdout=False)
+    # TRACK writes checkpoint_restart.dat into MAD-X's working directory
+    m = cpymad.Madx(stdout=False, cwd=str(Path(path).parent))
     m.call(str(path))
     starts = "".join(
         f"start, x={x}, px={px}, y={y}, py={py};"
@@ -273,6 +274,55 @@ def test_linearised_field_map_matches_madx_track(tmp_path, regime):
         assert dW == 0.0
     else:
         assert dW != 0.0
+
+
+@pytest.mark.parametrize("case", ["one_clock", "card", "own_jump"])
+def test_a_linearised_map_after_a_frequency_change_matches_real_madx(tmp_path, case):
+    """MAD-X's TWISS through the export == the HELIX line's matrix-mode map (its NCELLS
+    carries the synchronism factor, which the tracker does not apply), each side in its
+    clock's degrees.  Read about the entrance's clock on both sides, R65 came out at half
+    and R56 at 1.49 times the right value; the transverse block never moved."""
+    from linac_gen.elements.lattice_commands import Freq
+    from linac_gen.tracking.matrix_tracking import reference_at
+    from tests.tracking.test_envelope_reference_matches_tracker import _ncells
+    ref = ReferenceParticle(species=PROTON, w_kin=20.0, frequency=162.5)
+    lat = Lattice()
+    lat.add(Drift("d1", length=200.0))
+    if case == "card":
+        lat.add(Freq("F", 325.0))
+    lat.add(Drift("d2", length=150.0))
+    lat.add(_ncells(frequency=162.5 if case == "one_clock" else 325.0))
+    lat.add(Drift("d3", length=100.0))
+    out = tmp_path / "line.madx"
+    write_madx(lat, out, ref, linearize=True)
+    R, _ = _madx_end_rmatrix(out)
+    exit_ref = reference_at(lat, ref, len(lat.elements))
+    assert exit_ref.frequency == (162.5 if case == "one_clock" else 325.0)
+    want = matrix_to_madx(compute_transfer_matrix(lat, ref.copy()), ref, ref, exit_ref)
+    # (with a gain, MAD-X's drifts read the orbit's pt: 2e-4 in R56 on the card's case)
+    np.testing.assert_allclose(R[4:6, 4:6], want[4:6, 4:6], rtol=1e-3)
+    np.testing.assert_allclose(R[:4, :4], want[:4, :4], rtol=1e-3, atol=1e-6)
+
+
+def test_with_no_gain_a_line_after_a_frequency_change_matches_real_madx_to_round_off(tmp_path):
+    """No orbit pt for MAD-X's drifts to read, so what is left is round-off."""
+    from linac_gen.elements.lattice_commands import Freq
+    from linac_gen.elements.matrix_element import MatrixElement
+    from linac_gen.tracking.matrix_tracking import reference_at
+    ref = ReferenceParticle(species=PROTON, w_kin=20.0, frequency=162.5)
+    at_325 = ReferenceParticle(species=PROTON, w_kin=20.0, frequency=325.0)
+    lat = Lattice()
+    lat.add(Drift("d1", length=200.0))
+    lat.add(Freq("F", 325.0))
+    lat.add(Drift("d2", length=150.0))
+    lat.add(MatrixElement("mx", Drift("x", 100.0).transfer_matrix(at_325), length=100.0))
+    lat.add(Drift("d3", length=100.0))
+    out = tmp_path / "line.madx"
+    write_madx(lat, out, ref, linearize=True)
+    R, _ = _madx_end_rmatrix(out)
+    exit_ref = reference_at(lat, ref, len(lat.elements))
+    want = matrix_to_madx(compute_transfer_matrix(lat, ref.copy()), ref, ref, exit_ref)
+    np.testing.assert_allclose(R[4:6, 4:6], want[4:6, 4:6], rtol=1e-12, atol=1e-12)
 
 
 # ---------------------------------------------------------------------------

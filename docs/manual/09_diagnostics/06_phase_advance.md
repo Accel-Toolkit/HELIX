@@ -28,6 +28,15 @@ maps — in two parallel products:
 * `element_maps_bare[j]` — the *same slices* with the SC factors set to
   identity → the consistent bare map `M_bare`.
 
+A cell or window that holds a change of clock (a `FREQ` card, or a cavity
+at another frequency) has its exit side in degrees of another clock than
+its entrance.  That scales Δφ alone, which no eigen-analysis can absorb, so
+the exit is brought back to the entrance clock before the tune is taken:
+`μ_z` is then the cell's own, and the z Twiss are in degrees of the
+entrance clock (`clock_mhz` in the result; `M_period` stays the raw map,
+`M_period_one_clock` is the converted one).  The matched period Σ is
+solved the same way.
+
 Building σ₀ from a *separate* zero-current run would be wrong: a plain
 `I=0` run uses whole-element FieldMap maps, not the SC walk's slicing, and
 the two disagree at the fraction-of-a-degree level.  σ₀ must be the
@@ -90,7 +99,25 @@ print(ch["eta_machine_x"], ch["matched_state"])
 
 When the longitudinal fixed point is not meaningful (strong acceleration
 per cell), pass `longitudinal="frozen"`; the result is tagged
-`sigma_model_approx="frozen-longitudinal"` and the GUI/CLI say so.
+`sigma_model_approx="frozen-longitudinal"`.
+
+A bunched beam in a cell where nothing changes a particle's energy with
+its phase (no RF, as in a transport line's FODO or arc) has no matched
+bunch at all: the bunch lengthens on every pass.  There the default holds
+the incoming beam's bunch length and energy spread, and solves for the
+transverse beam, with the incoming beam's betatron normal-mode
+emittances, and for its dispersion, which in a cell with bends comes out
+as the cell's periodic dispersion whatever dispersion the beam came in
+with.  The phase is taken to correlate with x only through the energy
+(in a cell with bends the path length correlates them too; the
+space-charge kick does not depend on it).  It says so:
+`longitudinal="held"` and `longitudinal_held` in the result, a note in
+the footprint's model line, and a warning.  With space charge the held
+beam is periodic only as far as holding the bunch allows: space charge
+acting on the energy spread moves it a little from pass to pass (by up to
+0.4 % in one pass through an arc cell of a transfer line at its design
+current).  A search that does not converge warns, and the footprint's
+model line says so.
 
 ## The two curves, mathematically
 

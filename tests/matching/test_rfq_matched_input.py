@@ -180,8 +180,7 @@ def test_zero_length_lens_upstream_is_not_the_entrance(tmp_path):
 
 
 def test_freq_card_before_the_rfq_sets_its_frequency(tmp_path):
-    """Matrix-mode replay ignores FREQ; the RFQ is matched at the
-    frequency of the last FREQ card before it."""
+    """The RFQ is matched at the frequency of the last FREQ card before it."""
     lat = _deck(tmp_path, _cards())             # FREQ 352.21 first
     at_card = find_rfq_matched_input_twiss(lat, _ref(freq=176.105))
     at_beam = find_rfq_matched_input_twiss(lat, _ref(freq=352.21))
@@ -416,3 +415,16 @@ def test_cli_manual_rfq_range_uses_a_dc_seed(capsys):
     tw = find_rfq_matched_input_twiss(_parse(DEMO_DAT), _ref(), current=15.0,
                                       emit_x=ex, emit_y=ey)
     assert nums == pytest.approx([tw[k] for k in TW_KEYS], rel=1e-4)
+
+
+def test_an_energy_card_upstream_leaves_the_rfqs_emittance_alone(tmp_path):
+    """A card moves the reference, not the particles\' angles: the emittance reaches the
+    RFQ as it was.  Taken over βγ as for a cavity, it came out 18 % too small."""
+    cards = _cards()
+    plain = _deck(tmp_path, ["DRIFT 1 20 0", *cards], name="a.dat")
+    with_card = _deck(tmp_path, ["DRIFT 1 20 0", "; HELIX_SET_ENERGY 0.075", *cards], name="b.dat")
+    below = ReferenceParticle(species=PROTON, w_kin=0.05, frequency=352.21)
+    a = find_rfq_matched_input_twiss(plain, _ref(), current=15.0, emit_x=0.2, emit_y=0.2)
+    b = find_rfq_matched_input_twiss(with_card, below, current=15.0, emit_x=0.2, emit_y=0.2)
+    for key in TW_KEYS:
+        assert b[key] == pytest.approx(a[key], rel=2e-4), key

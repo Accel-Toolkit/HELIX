@@ -149,7 +149,12 @@ Gaussian field beam**:
   central gradient and tail particles a weaker one → a **real
   amplitude-dependent spread**;
 * per-particle tunes come from a windowed-FFT NAFF-lite of the
-  Courant–Snyder-normalized coordinate.
+  Courant–Snyder-normalized coordinate;
+* a ray launched in one plane stays in it (the field across an axis is
+  exactly zero); its tune in the other plane is that of a shadow copy started
+  with an angle of 1e-6 of the matched rms divergence there, and is left out
+  where that small motion grows without bound, as it does where the frozen
+  field's centre is unstable in that plane (the model line counts such rays).
 
 ```python
 from linac_gen.analysis.footprint import tune_footprint

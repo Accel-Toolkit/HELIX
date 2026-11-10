@@ -20,25 +20,26 @@ Anything outside this — ``SET_SIZE_MAX`` / ``SET_SIZE_MIN`` /
 ``DIAG_POSITION`` targets — the torch mirror propagates Σ only, no
 first moment, so it cannot see steerer kicks or misalignment
 feed-down), longitudinal ``SET_TWISS`` flags (kaz/kbz — no tracking
-mode records longitudinal Twiss), runtime-active control cards that
-mutate the reference kinematics (``FREQ`` / ``SET_BEAM_ENERGY`` /
-``SET_BEAM_E0_P0`` — the mirror composes commands as identity), RF /
-field-map elements, beam-Twiss variables, space charge — raises a
-clear :class:`ValueError` telling the caller to use
-``least_squares``.  The matcher additionally self-validates the
-torch residual against the numpy residual at ``x0``.
+mode records longitudinal Twiss), RF / field-map elements, beam-Twiss
+variables, space charge — raises a clear :class:`ValueError` telling the
+caller to use ``least_squares``.  The matcher additionally self-validates
+the torch residual against the numpy residual at ``x0``.  Cards that set
+the reference (``FREQ``, the HELIX energy card) are followed, as in the
+numpy walk; ``SET_BEAM_ENERGY`` and ``SET_BEAM_E0_P0``, TraceWin matching
+criteria, are refused like the other criteria it does not represent.
 """
 from __future__ import annotations
 
 import numpy as np
 import torch
 
+from linac_gen.core.track_state import TrackState
 from linac_gen.elements.dipole import Dipole
 from linac_gen.elements.drift import Drift
 from linac_gen.elements.edge import Edge
 from linac_gen.elements.lattice_commands import (
-    Freq, LatticeCommand, SetAchromat, SetAdv, SetBeamE0P0,
-    SetBeamEnergy, SetBeamPhaseAdv, SetPosition, SetSeparation, SetSize,
+    LatticeCommand, REFERENCE_COMMANDS, SetAchromat, SetAdv,
+    SetBeamPhaseAdv, SetPosition, SetSeparation, SetSize,
     SetSizeMax, SetSizeMin, SetTwiss,
 )
 from linac_gen.elements.quadrupole import Quadrupole
@@ -140,41 +141,21 @@ def check_gradient_supported(lattice, ref, variables, constraints) -> None:
     # check below).  The `element_matrix_torch` arm in
     # `linac_gen/tracking/torch_tracking.py` handles the per-element
     # gradient path; OOD inputs raise (hard error, never identity).
+    from linac_gen.elements.foil import Foil
     from linac_gen.surrogates.base import SurrogateFieldMap   # lazy
-    # Running machine frequency: a FREQ card whose value EQUALS the
-    # incoming frequency is a no-op (jump ratio 1 — the freq-jump D
-    # matrix is the identity), so the torch identity composition is
-    # exactly faithful.  This exempts the header FREQ that opens
-    # virtually every real TraceWin deck; only a genuine mid-lattice
-    # frequency CHANGE is refused.
-    cur_freq = float(getattr(ref, "frequency", 0.0) or 0.0)
+    clock = ref.copy()              # what each element is judged at: the cards move it
     for el in lattice.elements:
-        if isinstance(el, Freq):
-            f_new = float(getattr(el, "frequency_mhz", 0.0) or 0.0)
-            if abs(f_new - cur_freq) <= 1e-9 * max(1.0, abs(cur_freq)):
-                continue                       # ratio-1 no-op: faithful
-        if isinstance(el, (Freq, SetBeamEnergy, SetBeamE0P0)):
-            # The torch mirror composes every LatticeCommand as IDENTITY
-            # — faithful for the passive SET_*/ADJUST_* markers, but
-            # these three mutate the reference frequency/energy at the
-            # card, changing downstream focusing (K ∝ 1/Bρ) and the
-            # longitudinal coordinate.  Silently optimizing without
-            # them means solving a different lattice (PRAB review
-            # finding: FREQ + gradient + SC ran with zero warnings).
-            raise ValueError(
-                f"the 'gradient' algorithm cannot represent the "
-                f"runtime-active card {el.KEYWORD} ('{el.name}'): the "
-                f"torch mirror treats command cards as identity, but "
-                f"this card changes the reference kinematics mid-"
-                f"lattice — use 'least_squares'."
-            )
+        if isinstance(el, REFERENCE_COMMANDS):
+            el.apply_command(TrackState(ref=clock))
+            continue
         if isinstance(el, (_LINEAR_TYPES, LatticeCommand)):
             # Passive constraint/variable markers, plus the remaining
-            # active commands (SET_SYNC_PHASE, SET_BEAM_PHASE_ERROR,
-            # SET_GAUSSIAN_CUT_OFF) which act only through RF cavities
-            # or the error study — both unreachable here (the linear-
-            # element check below refuses cavities), so identity is
-            # faithful for them.
+            # active commands (SET_SYNC_PHASE, SET_GAUSSIAN_CUT_OFF)
+            # which act only through RF cavities or the error study —
+            # both unreachable here (the linear-element check below
+            # refuses cavities), so identity is faithful for them.
+            # (SET_BEAM_PHASE_ERROR moves the clock above, and only a
+            # cavity reads it.)
             continue
         if isinstance(el, SurrogateFieldMap):
             # M8: autograd-differentiable — but only faithful for
@@ -195,8 +176,23 @@ def check_gradient_supported(lattice, ref, variables, constraints) -> None:
                     f"model — use 'least_squares'."
                 )
             continue
+        # A foil's map is the identity and a matrix element can be, but the foil scatters the
+        # beam and slows the reference, and the element can move the reference: the torch
+        # composition models neither, so either would be ignored, not matched.  (A foil of
+        # no thickness does nothing in the envelope either.)
+        if isinstance(el, Foil) and float(getattr(el, "thickness_ug_cm2", 0.0) or 0.0) > 0.0:
+            raise ValueError(
+                f"the 'gradient' algorithm does not model foil '{el.name}': its scattering and "
+                f"energy loss change the beam, and its torch composition models neither — use "
+                f"'least_squares'.")
+        gain = float(getattr(el, "ref_gain", 0.0) or 0.0)
+        if gain:
+            raise ValueError(
+                f"the 'gradient' algorithm does not follow a matrix element's reference gain; "
+                f"'{getattr(el, 'name', '?')}' changes the reference energy by {gain:g} MeV — "
+                f"use 'least_squares'.")
         try:
-            M = _compute_element_matrix(el, ref.copy())
+            M = _compute_element_matrix(el, clock.copy())
         except Exception:                                  # noqa: BLE001
             M = None
         if M is None or not np.allclose(M, eye, rtol=0.0, atol=1e-12):
@@ -287,14 +283,16 @@ def build_torch_residual(lattice, beam_cfg, ref, variables, constraints,
     Call :func:`check_gradient_supported` first.
     """
     # Initial beam sigma — constant; built exactly as engine._run_envelope
-    # (mismatch-scaled geometric emittances via the shared helper).
-    from linac_gen.distributions.factory import geometric_emittances
+    # (mismatch-scaled geometric emittances and the input dispersion via the
+    # shared helpers).
+    from linac_gen.distributions.factory import geometric_emittances, input_dispersion
     _ex, _ey, _ez = geometric_emittances(beam_cfg, max(float(ref.bg), 1e-9))
     sigma_in = torch.as_tensor(
         _build_sigma_matrix(
             beam_cfg.alpha_x, beam_cfg.beta_x, _ex,
             beam_cfg.alpha_y, beam_cfg.beta_y, _ey,
             beam_cfg.alpha_z, beam_cfg.beta_z, _ez,
+            **input_dispersion(beam_cfg),
         ),
         dtype=F64,
     )
@@ -356,6 +354,7 @@ def build_torch_residual_sc(lattice, beam_cfg, ref, variables, constraints,
         apply tilt rotations; this limitation is specific to the SC
         step tracker.
     """
+    from linac_gen.elements.space_charge_comp import SpaceChargeComp
     for el in lattice.elements:
         if getattr(el, "is_misaligned", False):
             raise ValueError(
@@ -365,12 +364,19 @@ def build_torch_residual_sc(lattice, beam_cfg, ref, variables, constraints,
                 "would silently ignore.  Remove the misalignment or use "
                 "'least_squares' (the full tracker applies it)."
             )
-    from linac_gen.distributions.factory import geometric_emittances
+        if isinstance(el, SpaceChargeComp) and float(el.factor or 0.0) != 0.0:
+            raise ValueError(
+                f"gradient+SC matching cannot model space-charge compensation: "
+                f"'{el.name}' compensates {100.0 * float(el.factor):g} % of the space charge "
+                "after it, which the stepwise torch tracker would ignore — use 'least_squares' "
+                "(the envelope and the tracker apply it).")
+    from linac_gen.distributions.factory import geometric_emittances, input_dispersion
     _ex, _ey, _ez = geometric_emittances(beam_cfg, max(float(ref.bg), 1e-9))
     sigma_in = _build_sigma_matrix(
         beam_cfg.alpha_x, beam_cfg.beta_x, _ex,
         beam_cfg.alpha_y, beam_cfg.beta_y, _ey,
         beam_cfg.alpha_z, beam_cfg.beta_z, _ez,
+        **input_dispersion(beam_cfg),
     )
     bunch = torch.as_tensor(_sample_bunch(sigma_in, bunch_size, seed),
                             dtype=F64)

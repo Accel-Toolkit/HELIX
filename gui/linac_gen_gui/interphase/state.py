@@ -6,6 +6,7 @@ hairball and gives us a single place to serialise session state later.
 """
 from __future__ import annotations
 
+import weakref
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -62,6 +63,8 @@ class AppState(QObject):
         self._beam_config: Any = None
         self._s_cursor: float = 0.0
         self._running: bool = False
+        # weak references to the workers of the runs started (see run_going)
+        self._run_workers: list = []
         self._results: Any = None
         # Ring mode: off in every linac session.  ``ring_used`` keeps the
         # project's "ring" section once the mode has been switched on (a
@@ -133,6 +136,8 @@ class AppState(QObject):
         # assistant worker thread) delivered after teardown segfaulted
         # the process (full-suite crash in test_assistant_panel, 2026-09-27).
         self.bus.changed.connect(self._rebroadcast_bus_change)
+        # an undo or a redo the bus refused says why on the status line
+        self.bus.refused.connect(self.status_message)
 
     def _rebroadcast_bus_change(self) -> None:
         try:
@@ -274,6 +279,21 @@ class AppState(QObject):
             self._running = r
             self.running_changed.emit(r)
 
+    def add_run_worker(self, worker) -> None:
+        """Count ``worker``, the thread of a run that set :attr:`running`, in
+        :attr:`run_going` until it has ended."""
+        self._run_workers = [w for w in self._run_workers if _going(w())]
+        self._run_workers.append(weakref.ref(worker))
+
+    @property
+    def run_going(self) -> bool:
+        """True while a run is going: :attr:`running` is set, or the worker
+        of a run has not ended.  The toolbar's Stop clears ``running`` at
+        once; the worker walks on to its solver's next stop check, or to its
+        end when the solver has none (the Sacherer envelope) or Stop does
+        not reach it (the Surrogates tab's comparisons)."""
+        return self._running or any(_going(w()) for w in self._run_workers)
+
     # --- ring mode -----------------------------------------------------
     @property
     def ring_mode(self) -> bool: return self._ring_mode
@@ -329,6 +349,14 @@ class AppState(QObject):
                 changed = True
         if changed:
             self.tweaks_changed.emit(self._tweaks)
+
+
+def _going(worker) -> bool:
+    """True while ``worker`` (a QThread, or None once it is gone) runs."""
+    try:
+        return worker is not None and worker.isRunning()
+    except RuntimeError:                # its C++ object is deleted
+        return False
 
 
 # Top-level tab registry (TraceWin-style, left-to-right).

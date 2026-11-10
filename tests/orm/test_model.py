@@ -1,5 +1,8 @@
 """Model ORM: analytic anchor, map vs tracking (both current regimes), restore and cancellation."""
 from __future__ import annotations
+
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -14,7 +17,10 @@ from linac_gen.elements.steerer import Steerer
 from linac_gen.orm import DeviceMap, resolve_devices
 from linac_gen.orm.measured import MeasuredOrm
 from linac_gen.orm.model import OrmModel
+from tests.dataguard import needs
 from tests.orm.conftest import fodo_with_devices
+
+_REPO = Path(__file__).resolve().parents[2]
 
 
 def _cfg(species="proton", energy=100.0, current=0.0):
@@ -91,6 +97,7 @@ def test_cancellation_raises_and_restores():
 
 
 @pytest.mark.slow
+@needs(str(_REPO / "examples/piplattice/fnalscl.lgproj"))
 def test_fnalscl_maps_vs_tracking_and_prototype_class():
     import contextlib, io
     from pathlib import Path

@@ -143,6 +143,8 @@ def test_the_reference_gains_the_whole_field_integral():
     assert ref2.w_kin - w0 == pytest.approx(expected, rel=1e-12)
 
 
+@pytest.mark.filterwarnings(
+    "ignore::linac_gen.elements.vane_rfq.VaneRFQRetiredWarning")
 def test_vane_rfq_leftover_steps_stay_in_the_cells(monkeypatch):
     L_cell = 20.0
     z = np.linspace(0.0, 2 * L_cell * 1e-3, 200)

@@ -35,7 +35,7 @@ from typing import Optional
 import numpy as np
 
 from linac_gen.core.constants import C_LIGHT
-from linac_gen.elements.base import FieldMapElement, angle_nearest, wrap_deg
+from linac_gen.elements.base import DerivedGeometry, FieldMapElement, angle_nearest, wrap_deg
 from linac_gen.core.beam import transport_alive
 
 
@@ -159,7 +159,7 @@ def _ttf_value(s: TTFSet, beta: float, beta_s: float) -> float:
     return s.Ts + s.kTp * u + 0.5 * s.k2Tpp * u * u
 
 
-class NCells(FieldMapElement):
+class NCells(DerivedGeometry, FieldMapElement):
     """TraceWin ``NCELLS`` multi-gap cavity, tracked as a set of thin gaps.
 
     Parameters
@@ -192,14 +192,25 @@ class NCells(FieldMapElement):
         per cell).
     """
 
-    # ``βg≤0`` cavities can't know their length until the beam arrives, but the
-    # tracker sizes its slice count from ``element.length`` BEFORE tracking.  A
-    # deliberate OVER-estimate (β=0.9, above any hadron-linac NCELLS velocity)
-    # guarantees the tracker's slices span the real cavity so no cell-gap is
-    # skipped in MP mode; ``track_rk4`` caps drifts at the lazily-resolved true
-    # length so there is never phantom drift past the cavity.  SC-kick cadence
-    # is coarser for βg≤0 (flagged); reference/envelope (advance_ref) is exact.
-    _PROVISIONAL_BETA = 0.9
+    # ``βg≤0`` cavities can't know their length until the beam arrives.  The
+    # tracker and the envelope call ``prepare_reference`` at entry, which builds
+    # the cells for the entering beam before they size their slices.  Anything
+    # sized before that sees an OVER-estimate, cells sized for β=1, which no beam
+    # reaches (β=0.9 was used until 2026-11: a 2 GeV proton outruns it), so its
+    # slices span the real cavity and no gap is skipped; ``track_rk4`` caps drifts
+    # at the resolved true length so there is never phantom drift past the cavity.
+    _PROVISIONAL_BETA = 1.0
+
+    # What the geometry (cells, gaps, length, the default step count) derives
+    # from: an edit of any of them after construction derives it again
+    # (DerivedGeometry), so an edited cavity is the cavity built with the new
+    # value.  An explicit ``n_steps`` stops the step count following ``n_cells``.
+    _GEOMETRY_ATTRS = frozenset({"mode", "n_cells", "beta_g", "eot_v_per_m", "k_eot_i", "k_eot_o",
+                                 "dz_i_mm", "dz_o_mm", "frequency_mhz", "_ttf", "n_steps"})
+    _DERIVED_ATTRS = frozenset({"length", "beta_s"})
+    _DERIVED_FROM = {"length": "the mode, the cell count, beta_g and the frequency (and with beta_g <= 0 "
+                               "the beam, when it arrives)",
+                     "beta_s": "the transit-time table"}
 
     # Multibunch hybrid-replay channel (linac_gen/train/replay.py):
     # static transverse HOM kick [mrad] consumed once at element ENTRY
@@ -243,17 +254,13 @@ class NCells(FieldMapElement):
         self._ttf = ttf
         self.beta_s = ttf.beta_s if ttf is not None else 0.0
 
+        self._n_steps_default = n_steps is None
         if n_steps is None:
             n_steps = max(2 * self.n_cells, 2)
 
         # Resolve geometry now iff βg>0 (fixed length); else provisional length
         # for step-count sizing, real cells built lazily at track entry.
-        self._gaps: Optional[list[_Gap]] = None
-        if self.beta_g > 0:
-            self._gaps = self._build_gaps_fixed(self.beta_g)
-            length = sum(self._cell_lengths(self.beta_g))
-        else:
-            length = self.n_cells * self._interior_cell_length(self._PROVISIONAL_BETA)
+        self._gaps, length = self._resolve_geometry()
 
         super().__init__(name=name, length=float(length),
                          aperture=float(aperture_mm), n_steps=int(n_steps))
@@ -270,6 +277,38 @@ class NCells(FieldMapElement):
         self._phi_s_at_entrance = 0.0
         self._phi_s_at_gap1 = 0.0
         self._sync_offset_deg: Optional[float] = None
+        self._geometry_ready = True
+
+    # ------------------------------------------------------------------ #
+    # Derived geometry
+    # ------------------------------------------------------------------ #
+    def _resolve_geometry(self) -> tuple[Optional[list[_Gap]], float]:
+        """The gaps and the length: fixed for βg>0; for βg≤0 no gaps yet and the
+        provisional length (the cells are built at entry)."""
+        if self.beta_g > 0:
+            return self._build_gaps_fixed(self.beta_g), sum(self._cell_lengths(self.beta_g))
+        return None, self.n_cells * self._interior_cell_length(self._PROVISIONAL_BETA)
+
+    def _coerce(self, name: str, value):
+        if name in ("mode", "n_cells", "n_steps"):
+            v = float(value)
+            if not v.is_integer():
+                raise ValueError(f"NCells.{name} must be a whole number, got {value!r}")
+            return int(v)
+        return value if name == "_ttf" else float(value)
+
+    def _derive_geometry(self, changed: str, old=None) -> None:
+        """Derive the geometry again, as ``__init__`` does, after ``changed`` was edited."""
+        if changed == "n_steps":
+            self._set_derived("_n_steps_default", False)
+            return
+        if changed == "_ttf":
+            self._set_derived("beta_s", self._ttf.beta_s if self._ttf is not None else 0.0)
+        gaps, length = self._resolve_geometry()
+        self._set_derived("_gaps", gaps)
+        self._set_derived("length", float(length))
+        if self.__dict__.get("_n_steps_default", False):
+            self._set_derived("n_steps", int(max(2 * self.n_cells, 2)))
 
     @property
     def frequency(self) -> float:
@@ -402,7 +441,7 @@ class NCells(FieldMapElement):
         """
         rf = ref.copy()
         if self.frequency_mhz > 0:
-            rf.frequency = self.frequency_mhz
+            rf.switch_clock(self.frequency_mhz)
         if self.beta_g < 0:
             rf.w_kin = _w_kin_from_beta(abs(self.beta_g), rf.species.mass)
         # Pin the gap-1 phase reference from the ENTRY state so this forward
@@ -429,13 +468,20 @@ class NCells(FieldMapElement):
                          * self._ttf_correction(rf.beta, gap.kind) * np.cos(phi))
             self._ref_drift(rf, ls)
             z += lc
-        self.length = z
+        self._set_derived("length", z)
         return gaps
 
     def _ensure_gaps(self, ref) -> list[_Gap]:
         if self._gaps is None:
             self._gaps = self._build_gaps_running(ref)
         return self._gaps
+
+    def prepare_reference(self, ref) -> None:
+        """At entry, before the slices are counted: a βg≤0 cavity builds its cells for
+        the entering beam, so the slices and their space-charge kicks span its true
+        length, not the provisional one."""
+        if self.beta_g <= 0:
+            self._gaps = self._build_gaps_running(ref)
 
     # ------------------------------------------------------------------ #
     # Phase (the crux — one place; sign locked by fnalscl validation)
@@ -460,12 +506,16 @@ class NCells(FieldMapElement):
         """
         theta = self.theta_s_deg + self.phase_offset
         phi_run = ref.phi_s
+        # SET_BEAM_PHASE_ERROR: its RF shift on the phase the beam sees (P=1
+        # counts theta the other way); its correction on the clock, read here
+        # only by P=1
+        shift = float(getattr(ref, "rf_shift", 0.0))
         if self.sync_phase:
             off = self._sync_offset_deg or 0.0
-            return np.deg2rad(theta - off + (phi_run - self._phi_s_at_gap1))
+            return np.deg2rad(theta - off + (phi_run - self._phi_s_at_gap1) + shift)
         if self.p_flag == 1:
-            return np.deg2rad(phi_run - theta)
-        return np.deg2rad(theta + (phi_run - self._phi_s_at_gap1))
+            return np.deg2rad(phi_run + float(getattr(ref, "rf_rephase", 0.0)) - theta + shift)
+        return np.deg2rad(theta + (phi_run - self._phi_s_at_gap1) + shift)
 
     def _calibrate_sync_phase(self, ref_entry) -> None:
         """SET_SYNC_PHASE calibration: find ψ so θs is the synchronous phase.
@@ -698,9 +748,7 @@ class NCells(FieldMapElement):
         ref = beam.ref
         f = self.frequency_mhz
         if f > 0 and f != ref.frequency and ref.frequency > 0:
-            ratio = f / ref.frequency
-            beam.particles[beam.alive_mask, 4] *= ratio
-            ref.frequency = f
+            beam.particles[beam.alive_mask, 4] *= ref.switch_clock(f)
         self._snapshot_entry(ref)
         if self.sync_phase and self._sync_offset_deg is None:
             self._calibrate_sync_phase(ref)
@@ -743,7 +791,7 @@ class NCells(FieldMapElement):
     def advance_ref(self, ref) -> None:
         """Advance the reference particle through the whole cavity (envelope/matrix)."""
         if self.frequency_mhz > 0 and ref.frequency > 0 and self.frequency_mhz != ref.frequency:
-            ref.frequency = self.frequency_mhz
+            ref.switch_clock(self.frequency_mhz)
         self._snapshot_entry(ref)
         gaps = self._gaps
         if self.sync_phase and self._sync_offset_deg is None:
@@ -770,7 +818,7 @@ class NCells(FieldMapElement):
             return
         if z_from_mm == 0.0:
             if self.frequency_mhz > 0 and ref.frequency > 0 and self.frequency_mhz != ref.frequency:
-                ref.frequency = self.frequency_mhz
+                ref.switch_clock(self.frequency_mhz)
             self._snapshot_entry(ref)
             if self.sync_phase and self._sync_offset_deg is None:
                 self._calibrate_sync_phase(ref)
@@ -871,7 +919,18 @@ class NCells(FieldMapElement):
 
         Saves/restores ALL per-run cursor + phase state so a mid-sequence call
         (e.g. a diagnostic probe) can't corrupt an in-progress slice walk.
+
+        Asked at another clock than the cavity's, it holds the jump ``_on_entry``
+        makes: the map on the cavity's own clock, with the Δφ column scaled, on a
+        copy of ``ref``.  The gaps read that clock, so scaling alone is not enough:
+        it has the right determinant and the wrong map.  The envelope jumps before
+        it asks and sees no difference.
         """
+        f, clock = self.frequency_mhz, ref.frequency
+        jump = f > 0 and clock > 0 and f != clock
+        if jump:
+            ref = ref.copy()
+            ref.switch_clock(f)
         saved = (self._step_idx, self._z_cursor, self._next_gap,
                  self._phi_s_at_entrance, self._phi_s_at_gap1,
                  self._sync_offset_deg)
@@ -881,7 +940,14 @@ class NCells(FieldMapElement):
         (self._step_idx, self._z_cursor, self._next_gap,
          self._phi_s_at_entrance, self._phi_s_at_gap1,
          self._sync_offset_deg) = saved
+        if jump:
+            M[:, 4] *= f / clock
         return M
+
+    def _propagate_frequency_to_ref(self, ref) -> None:
+        """Put ``ref`` on the cavity's clock, as a surrogate's training does."""
+        if self.frequency_mhz > 0:
+            ref.switch_clock(self.frequency_mhz)
 
     def reset_run_state(self) -> None:
         self._step_idx = 0
@@ -899,9 +965,9 @@ class NCells(FieldMapElement):
             # cavity and the tail gaps would never fire (measured −6 MeV on
             # a 45→235 MeV reuse).  The over-estimate guarantees coverage;
             # track paths cap at the re-resolved true length as on run 1.
-            self.length = float(
+            self._set_derived("length", float(
                 self.n_cells
-                * self._interior_cell_length(self._PROVISIONAL_BETA))
+                * self._interior_cell_length(self._PROVISIONAL_BETA)))
 
     def _has_electric_channel(self) -> bool:
         """NCELLS is always an RF (electric) cavity — used by bunching/SC hooks."""

@@ -4,11 +4,13 @@ TRACKING LOOKUP IS BY ELEMENT NAME **GUARDED BY THE ELEMENT IN HAND**:
 the envelope solver, the MP tracker and the backtracker all call
 :func:`get_for_element`, which resolves by name (last registration
 wins) and then verifies the registered surrogate actually wraps the
-element being tracked — identity first, structural fingerprint (class,
-length, field file, drive parameters) as fallback for a reloaded copy
-of the same deck.  A mismatch (e.g. two decks' auto-named ``FMAP_001``
-colliding in one process) skips the surrogate with a once-per-name
-warning and the native element tracks.  The ``(lattice_hash,
+element being tracked — identity first, then its structure (class,
+length, field file, geometry, aperture, steps, p_flag) for a copy of it:
+a reloaded deck, an error or failure study's copy.  How the element is
+set (its inputs, its errors, its other settings) is checked when the
+weights are asked (``SurrogateFieldMap._refusal``).  A mismatch (e.g.
+two decks' auto-named ``FMAP_001`` colliding in one process) skips the
+surrogate with a once-per-name warning and the native element tracks.  The ``(lattice_hash,
 element_key)`` key exists alongside for on-disk weight paths and GUI
 presence checks only.  If an engaged surrogate is admissible (input in
 training scope) it is used; otherwise the wrapped element tracks
@@ -18,10 +20,12 @@ Module-level singleton.  Use :func:`clear` in tests.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import threading
 from pathlib import Path
 
-from linac_gen.surrogates.base import SurrogateFieldMap
+from linac_gen.surrogates.base import SurrogateFieldMap, structure_of
 
 
 _REGISTRY: dict[tuple[str, str], SurrogateFieldMap] = {}
@@ -147,6 +151,47 @@ def is_fast_path_enabled() -> bool:
     return _FAST_PATH_ENABLED
 
 
+_LOCAL = threading.local()
+
+
+@contextlib.contextmanager
+def suspended():
+    """Inside it, in this thread, no registered surrogate engages: :func:`get_for_element`
+    gives None and pins nothing, so the native elements track and the registrations stay as
+    they were.  For a study that runs native (``study_check.study_surrogates``)."""
+    before = getattr(_LOCAL, "suspended", False)
+    _LOCAL.suspended = True
+    try:
+        yield
+    finally:
+        _LOCAL.suspended = before
+
+
+def is_suspended() -> bool:
+    """Whether :func:`suspended` is in force in this thread."""
+    return bool(getattr(_LOCAL, "suspended", False))
+
+
+@contextlib.contextmanager
+def native_for(elements):
+    """Inside it, each of ``elements`` runs native: its decision is pinned to none for the
+    registry generation in force; after it, every one is pinned as it was.  For a match whose
+    variables move a setting of a surrogated element that its weights do not take as an input:
+    deciding once for the whole run keeps the objective one model (a change of such a setting
+    has the weights refuse, so they would answer the first evaluation and not the next)."""
+    saved = []
+    for element in elements:
+        saved.append((element, getattr(element, "_surr_binding", None)))
+        with contextlib.suppress(Exception):               # slotted/frozen: no pinning
+            element._surr_binding = _Pin(_GENERATION[0], None, id(element))
+    try:
+        yield
+    finally:
+        for element, pin in saved:
+            with contextlib.suppress(Exception):
+                element._surr_binding = pin
+
+
 def get(lattice_hash: str, element_key: str) -> SurrogateFieldMap | None:
     """Return the registered surrogate, or ``None``."""
     return _REGISTRY.get((lattice_hash, element_key))
@@ -168,37 +213,52 @@ def get_by_element_name(name: str) -> SurrogateFieldMap | None:
     return _BY_NAME.get(name)
 
 
-#: element attributes that identify a field map for dispatch purposes —
-#: the things that would be WRONG if another lattice's surrogate were
-#: substituted.  Superset of FieldMap._cache_keys (the repo's
-#: authoritative matrix-affecting list: ke, kb, phase, frequency,
-#: scale, p_flag, voltage_rel, phase_offset, frequency_offset) plus
-#: geometry/data identity (length, field_file, geom, aperture — the
-#: surrogate element copies the WRAPPED element's aperture, so a
-#: false engage would apply the wrong lattice's aperture cuts).
-_FINGERPRINT_ATTRS = ("length", "field_file", "geom", "aperture",
-                     "ke", "kb", "ki", "ka", "phase", "frequency",
-                     "scale", "p_flag", "voltage_rel", "phase_offset",
-                     "frequency_offset", "n_steps")
-
 _MISMATCH_WARNED: set[str] = set()
 
-#: bumped on every register/unregister/clear — engagement decisions
+
+def _no_pin():
+    return None
+
+
+class _Pin:
+    """An engagement decision pinned on an element: valid in the registry generation it
+    was made in, and for that very element.  A copy carries none (deepcopy, as error and
+    failure studies copy the lattice, and pickle give None; a shallow copy shares it,
+    and the owner check sends that copy back to a fresh decision): the copy decides for
+    itself.  Within a run, an ADJUST on the element keeps the decision on which weights
+    stand for it; how the element is set is checked when they are asked."""
+    __slots__ = ("generation", "decision", "owner")
+
+    def __init__(self, generation: int, decision, owner: int) -> None:
+        self.generation, self.decision, self.owner = generation, decision, owner
+
+    def __getitem__(self, i):
+        """As the (generation, decision) tuple the pin used to be."""
+        return (self.generation, self.decision, self.owner)[i]
+
+    def __deepcopy__(self, memo):
+        return None
+
+    def __reduce__(self):
+        return (_no_pin, ())
+
+#: bumped on every register/unregister/clear — lookup decisions
 #: memoized on elements are valid only within one generation, so a
-#: mid-run ADJUST mutation can never flip-flop engagement (the
-#: decision is pinned at first lookup), while any registry change
-#: invalidates all pins immediately.
+#: mid-run ADJUST never changes which weights stand for an element (the
+#: decision is pinned at first lookup; how the element is set, and its
+#: structure, are checked when the weights are asked), while any registry
+#: change invalidates all pins immediately.
 _GENERATION: list[int] = [0]
 
 
 def _fingerprint(elem) -> tuple:
-    out = [type(elem).__name__]
-    for a in _FINGERPRINT_ATTRS:
-        v = getattr(elem, a, None)
-        if isinstance(v, float):
-            v = round(v, 9)
-        out.append(v)
-    return tuple(out)
+    """What identifies a field map for dispatch (``base.structure_of``: its class and
+    ``STRUCTURE``): what it is (the surrogate element copies the WRAPPED element's aperture,
+    so a false engage would apply the wrong lattice's aperture cuts), not how it is set.
+    Its settings are checked when the weights are asked: its inputs live, its error knobs
+    folded, its misalignments around it, anything else equal to what the weights hold
+    (``SurrogateFieldMap._settings_reason``), and its structure again (``_structure_reason``)."""
+    return structure_of(elem)
 
 
 def get_for_element(element) -> SurrogateFieldMap | None:
@@ -212,11 +272,14 @@ def get_for_element(element) -> SurrogateFieldMap | None:
     Guard: the registered surrogate engages only if it wraps THIS
     element (identity — true in every shipped register-then-track
     flow) or an element structurally identical to it (fingerprint:
-    class, length, field file, drive parameters — so re-loading the
-    SAME deck still engages).  On a mismatch the surrogate is skipped,
+    ``base.structure_of``, class and ``STRUCTURE`` — so re-loading the
+    SAME deck still engages; how it is set is checked when the weights
+    are asked).  On a mismatch the surrogate is skipped,
     the native element tracks, and a warning fires once per element
     name.
     """
+    if is_suspended():
+        return None
     name = getattr(element, "name", None)
     if name is None:
         return None
@@ -224,14 +287,16 @@ def get_for_element(element) -> SurrogateFieldMap | None:
     if surr is None:
         return None
     # Per-element pinned decision: the first lookup within a registry
-    # generation decides engage/skip and the decision sticks for the
-    # rest of the run — an ADJUST mutating drive parameters mid-match
-    # must not silently flip engagement (discontinuous objective,
-    # contaminated finite-difference Jacobians).  Any register/
-    # unregister/clear bumps the generation and invalidates the pin.
+    # generation decides which weights stand for the element and the
+    # decision sticks for the rest of the run.  The weights check how the
+    # element is set, and its structure, at each query (a match pins a
+    # held-setting variable's element native for the whole run,
+    # ``native_for``).  Any register/unregister/clear bumps the
+    # generation and invalidates the pin.
     pin = getattr(element, "_surr_binding", None)
-    if pin is not None and pin[0] == _GENERATION[0]:
-        return pin[1]
+    if (isinstance(pin, _Pin) and pin.generation == _GENERATION[0]
+            and pin.owner == id(element)):
+        return pin.decision
 
     wrapped = getattr(surr, "_wrapped", None)
     decision = None
@@ -248,21 +313,24 @@ def get_for_element(element) -> SurrogateFieldMap | None:
                 f"element tracks instead.",
                 stacklevel=3)
     elif _fingerprint(wrapped) == _fingerprint(element):
-        decision = surr
+        # the same element in another object (the deck reloaded, a study's copy): a view
+        # of the surrogate that reads ITS parameters and keeps its own traversal state
+        decision = surr.bound_to(element)
     else:
         if name not in _MISMATCH_WARNED:
             _MISMATCH_WARNED.add(name)
             import warnings
             warnings.warn(
                 f"registered surrogate '{name}' wraps a DIFFERENT "
-                f"element than the one being tracked (auto-generated "
-                f"names collide across decks) — skipping the "
-                f"surrogate for every '{name}' in this lattice; the "
-                f"native element tracks instead.  Re-register the "
-                f"surrogate for the current lattice to engage it.",
+                f"element than the one being tracked (another field "
+                f"file, length, geometry, aperture, steps or p_flag: "
+                f"auto-generated names collide across decks) — skipping "
+                f"the surrogate for every such '{name}'; the native "
+                f"element tracks instead.  Re-register the surrogate for "
+                f"the current lattice to engage it.",
                 stacklevel=3)
     try:
-        element._surr_binding = (_GENERATION[0], decision)
+        element._surr_binding = _Pin(_GENERATION[0], decision, id(element))
     except Exception:                                       # noqa: BLE001
         pass                     # slotted/frozen element: no pinning
     return decision

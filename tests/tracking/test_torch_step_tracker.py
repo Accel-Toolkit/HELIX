@@ -108,6 +108,88 @@ def test_sc_on_matches_numpy_tracker_fodo():
                                rtol=1e-6, atol=1e-6 * scale)
 
 
+def _with_card(card):
+    lat = Lattice()
+    lat.add(Drift("D1", length=200.0))
+    lat.add(card)
+    lat.add(Quadrupole("QF", length=100.0, gradient=8.0))
+    lat.add(Drift("D2", length=400.0))
+    return lat
+
+
+def _cards():
+    from linac_gen.elements.lattice_commands import Freq, SetReferenceEnergy
+    return {"FREQ": lambda: Freq("F", frequency_mhz=704.42),
+            "FREQ_same": lambda: Freq("F", frequency_mhz=352.21),
+            "HELIX_SET_ENERGY": lambda: SetReferenceEnergy("E", energy_MeV=4.0),
+            "HELIX_SHIFT_ENERGY": lambda: SetReferenceEnergy("E", energy_MeV=1.0, shift=True)}
+
+
+@pytest.mark.parametrize("card", ["FREQ", "FREQ_same", "HELIX_SET_ENERGY", "HELIX_SHIFT_ENERGY"])
+@pytest.mark.parametrize("current", [0.0, 12.0], ids=["no_sc", "sc"])
+def test_a_card_that_sets_the_reference_matches_numpy_tracker(card, current):
+    """The gradient matcher through PIC has no numpy check at its start, so this is
+    what stands behind following these cards: the same tolerance as with no card."""
+    make = _cards()[card]
+    beam = _bunched_beam(current=max(current, 1e-9))
+    X0 = beam.particles.copy()
+    beam_np = copy.deepcopy(beam)
+    cfg = SpaceChargeConfig(nx=16, ny=16, nz=16, grid_extent=4.0,
+                            use_gpu="cpu", grid_mode="adaptive")
+    beam_np.current = current
+    Simulation(_with_card(make()), beam_np, space_charge=cfg if current else None).run()
+    assert beam_np.n_alive == beam.n_particles, "no particles should be lost"
+    out = track_beam_torch_stepwise(_with_card(make()), _ref(), X0,
+                                    sc_cfg=cfg if current else None,
+                                    macro_charge=_macro_charge(beam) if current else None)
+    scale = float(np.abs(beam_np.particles).max())
+    np.testing.assert_allclose(out.detach().numpy(), beam_np.particles,
+                               rtol=1e-6, atol=1e-6 * scale)
+
+
+def test_a_card_leaves_the_callers_particles_alone():
+    """A matching residual passes the same bunch on every call: scaling its phase in
+    place would compound.  The card comes first, so it is handed the caller's own
+    tensor, not what an element before it made."""
+    from linac_gen.elements.lattice_commands import Freq
+
+    def line():
+        lat = Lattice()
+        lat.add(Freq("F", frequency_mhz=704.42))
+        lat.add(Drift("D1", length=200.0))
+        return lat
+    X = torch.as_tensor(_bunched_beam().particles.copy(), dtype=torch.float64)
+    before = X.clone()
+    a = track_beam_torch_stepwise(line(), _ref(), X)
+    b = track_beam_torch_stepwise(line(), _ref(), X)
+    assert torch.equal(X, before)
+    assert torch.equal(a, b)
+    array = _bunched_beam().particles.copy()
+    kept = array.copy()
+    track_beam_torch_stepwise(line(), _ref(), array)
+    np.testing.assert_array_equal(array, kept)
+
+
+def test_a_card_keeps_gradients_and_checkpointing():
+    from linac_gen.elements.lattice_commands import Freq
+
+    def grads(checkpoint):
+        lat = _with_card(Freq("F", frequency_mhz=704.42))
+        g = torch.tensor(8.0, dtype=torch.float64, requires_grad=True)
+        qf = next(e for e in lat.elements if e.name == "QF")
+        beam = _bunched_beam()
+        out = track_beam_torch_stepwise(
+            lat, _ref(), beam.particles.copy(), overrides={id(qf): g},
+            sc_cfg=SpaceChargeConfig(nx=16, ny=16, nz=16, grid_extent=4.0,
+                                     use_gpu="cpu", grid_mode="adaptive"),
+            macro_charge=_macro_charge(beam), checkpoint=checkpoint)
+        out[:, 0].pow(2).mean().backward()
+        return float(g.grad)
+    plain = grads(False)
+    assert plain != 0.0
+    assert grads(True) == pytest.approx(plain, rel=1e-9)
+
+
 def test_autograd_through_sc_tracker():
     """A scalar of the SC-on tracked beam is differentiable w.r.t. a quad
     gradient — autograd vs central finite differences (FD-limited)."""
@@ -234,3 +316,10 @@ def test_step_tracker_fails_loud_on_nonlinear_element():
     x = np.random.default_rng(0).normal(0.0, 1.0, size=(16, 6))
     with pytest.raises(TypeError, match="not a differentiable"):
         track_beam_torch_stepwise(lat, _ref(), x, on_nonlinear="error")
+
+
+def test_a_card_that_leaves_no_energy_stops_the_step_tracker():
+    from linac_gen.elements.lattice_commands import SetReferenceEnergy
+    with pytest.raises(ValueError, match="no energy"):
+        track_beam_torch_stepwise(_with_card(SetReferenceEnergy("E", energy_MeV=0.0)), _ref(),
+                                  _bunched_beam().particles.copy())

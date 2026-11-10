@@ -12,6 +12,7 @@ SPACE_CHARGE_COMP, END
 All lengths are in mm, matching the internal Linac_Gen convention.
 """
 
+import math
 import os
 import re
 import shlex
@@ -53,7 +54,8 @@ _DISPATCHED_CARDS = frozenset({
     "LATTICE", "LATTICE_END", "MARKER", "MATCH_FAM_FIELD",
     "MATCH_FAM_GRAD", "MEBTABSORBER", "MIN_FIELD_VARIATION", "NCELLS",
     "PARTRAN_STEP", "QUAD", "READ_DST", "RFQ_CELL", "RFQ_GAP_RMS_FFS",
-    "RFQ_GEOM", "RPU", "RWCM", "SET_SIZE", "SET_SIZE_MAX", "SET_SIZE_MIN",
+    "RFQ_GEOM", "RPU", "RWCM", "SET_BEAM_E0_P0", "SET_BEAM_ENERGY",
+    "SET_SIZE", "SET_SIZE_MAX", "SET_SIZE_MIN",
     "SET_SYNC_PHASE", "SHIFT_IN_FIELD_MAP", "SOLENOID", "SPACE_CHARGE_COMP",
     "STEERER", "SUPERPOSE_MAP", "SUPERPOSE_MAP_OUT", "THIN_STEERING",
     "TITLE", "XCOR", "YCOR",
@@ -659,6 +661,16 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
     _HELIX_SC_GRID = re.compile(
         r"^\s*;\s*HELIX_SC_GRID\s+([\d.eE+-]+)\s*(?:;.*)?$"
     )
+    # ``; HELIX_SET_ENERGY <MeV>`` / ``; HELIX_SHIFT_ENERGY <MeV>`` — HELIX cards
+    # that set or shift the reference energy (SetReferenceEnergy), as TraceWin
+    # comments.  SET_BEAM_ENERGY and SET_BEAM_E0_P0 are TraceWin matching
+    # criteria and do not change the beam; a deck with them gets one notice.
+    _HELIX_ENERGY = re.compile(
+        r"^\s*;+\s*HELIX_(SET|SHIFT)_ENERGY\s+(\S+)((?:\s+(?:name|label)=\S+)*)\s*(?:;.*)?$",
+        re.IGNORECASE)
+    # any line that names the card, so that one it cannot read is said, not dropped
+    _HELIX_ENERGY_ANY = re.compile(r"^\s*;+\s*HELIX_(SET|SHIFT)_ENERGY\b", re.IGNORECASE)
+    energy_notice = [False]
 
     # latin-1 is byte-transparent: real decks are cp1252/latin-1 and
     # the locale default (cp1252 on Windows, utf-8 elsewhere) made
@@ -709,6 +721,30 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                            f" sigma, got {extent:g} — card IGNORED.")
                     _downgrade(msg)
                     lattice.add(Marker(next_name("SCGRID"), snapshot=False))
+                continue
+            # ``; HELIX_SET_ENERGY …`` / ``; HELIX_SHIFT_ENERGY …``
+            m_any = _HELIX_ENERGY_ANY.match(raw_line)
+            if m_any:
+                from linac_gen.elements.lattice_commands import SetReferenceEnergy
+                kind = m_any.group(1).upper()
+                m = _HELIX_ENERGY.match(raw_line)
+                try:
+                    value = float(m.group(2)) if m else None
+                except ValueError:
+                    value = None
+                if value is None or not math.isfinite(value) or (kind == "SET" and value <= 0.0):
+                    _downgrade(f"Line {line_num}: {raw_line.strip()!r} is not read: the card is "
+                               f"'; HELIX_{kind}_ENERGY <MeV>'"
+                               + (" with an energy above 0" if kind == "SET" else "")
+                               + " — card IGNORED.")
+                    continue
+                opts = dict(tok.split("=", 1) for tok in m.group(3).split())
+                opts = {k.lower(): v for k, v in opts.items()}
+                card = SetReferenceEnergy(opts.get("name") or next_name("SET_ENERGY"),
+                                          energy_MeV=value, shift=kind == "SHIFT")
+                if opts.get("label"):
+                    card.label = opts["label"]
+                lattice.add(card)
                 continue
             # Strip inline comments and whitespace
             line = raw_line.split(";")[0].strip()
@@ -1339,6 +1375,26 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
                         else:
                             cmd = cmd_cls(next_name(keyword))
                     lattice.add(cmd)
+                    if keyword == "SET_BEAM_ENERGY" and not cmd.k:
+                        # HELIX wrote its energy setter so until 2026-11 (the
+                        # palette's E-set); in TraceWin a criterion with no weight
+                        _downgrade(f"Line {line_num}: SET_BEAM_ENERGY with k = 0 is a matching "
+                                   "criterion with no weight and changes nothing.  HELIX set the "
+                                   f"reference energy to {cmd.energy_MeV:g} MeV with it until "
+                                   f"2026-11: write '; HELIX_SET_ENERGY {cmd.energy_MeV:g}' for that.")
+                    elif keyword == "SET_BEAM_E0_P0" and not cmd.k and cmd.ke and cmd.dE_MeV:
+                        _downgrade(f"Line {line_num}: SET_BEAM_E0_P0 with k = 0 is a matching "
+                                   "criterion with no weight and changes nothing.  HELIX shifted the "
+                                   f"reference energy by {cmd.dE_MeV:g} MeV with it until 2026-11: "
+                                   f"write '; HELIX_SHIFT_ENERGY {cmd.dE_MeV:g}' for that.")
+                    if keyword in ("SET_BEAM_ENERGY", "SET_BEAM_E0_P0") and not energy_notice[0]:
+                        energy_notice[0] = True
+                        metadata["warnings"].append(
+                            f"Line {line_num}: SET_BEAM_ENERGY and SET_BEAM_E0_P0 are TraceWin "
+                            "matching criteria: they do not change the beam (HELIX set or "
+                            "shifted the reference energy with them until 2026-11).  For a change "
+                            "of the reference energy write '; HELIX_SET_ENERGY E' or "
+                            "'; HELIX_SHIFT_ENERGY dE', which TraceWin reads as comments.")
                     if (keyword in ("SET_SIZE", "SET_SIZE_MAX",
                                     "SET_SIZE_MIN")
                             and getattr(cmd, "k2", 0)):
@@ -1714,5 +1770,10 @@ def parse_tracewin(filepath, strict=False, base_dir=None):
 
     # Push accumulated ERROR_* directives onto lattice.errors / .beam_errors.
     error_state.finalize(lattice)
+
+    # An EDGE card next to a BEND is that bend's pole face: the bend records it,
+    # so that an edit of its angle or radius can say the face stays.
+    from linac_gen.elements.dipole import link_pole_faces
+    link_pole_faces(lattice.elements)
 
     return lattice, metadata

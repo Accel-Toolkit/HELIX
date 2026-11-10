@@ -208,7 +208,7 @@ from linac_gen.io.tracewin_dst import write_dst
 write_dst(
     "final.dst",
     beam.alive_particles,            # (N, 6) — filtering losses is your job
-    current_mA=beam.current,
+    current_mA=beam.alive_current,   # the current those particles carry
     frequency_MHz=beam.ref.frequency,
     mass_MeV=beam.ref.species.mass,
     w_kin_ref=beam.ref.w_kin,

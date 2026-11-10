@@ -644,7 +644,7 @@ def has_curved_elements(lattice) -> bool:
 _ENERGY_NEUTRAL = frozenset({
     "Drift", "Quadrupole", "Solenoid", "Dipole", "Edge", "Marker", "Aperture",
     "SpaceChargeComp", "Steerer", "Multipole", "ThinLens", "ScGridDirective"})
-_ENERGY_COMMANDS = frozenset({"SetBeamEnergy", "SetBeamPhaseError"})
+_ENERGY_COMMANDS = frozenset({"SetReferenceEnergy", "SetBeamPhaseError"})
 
 
 def _energy_neutral(e) -> bool:
@@ -657,7 +657,7 @@ def _energy_neutral(e) -> bool:
         return True
     if name == "MatrixElement":
         off = getattr(e, "offset", None)
-        return off is None or float(off[5]) == 0.0
+        return (off is None or float(off[5]) == 0.0) and not getattr(e, "ref_gain", 0.0)
     from linac_gen.elements.base import FieldMapElement, PassiveElement
     from linac_gen.elements.lattice_commands import LatticeCommand
     if isinstance(e, FieldMapElement):

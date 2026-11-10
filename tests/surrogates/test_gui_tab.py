@@ -24,7 +24,7 @@ def test_surrogates_tab_constructs(qapp):
     tab = SurrogatesTab(AppState())
     assert tab._elem_combo is not None
     assert tab._train_btn is not None
-    assert tab._table.columnCount() == 5
+    assert tab._table.columnCount() == 6          # ... Use, Action, Accuracy check
     # No lattice -> no elements in the combo
     assert tab._elem_combo.count() == 0
 

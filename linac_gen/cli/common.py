@@ -56,7 +56,10 @@ def coerce_like(old, raw: str):
     if isinstance(old, bool):
         return str(raw).strip().lower() in ("1", "true", "yes", "on")
     if isinstance(old, int):
-        return int(float(raw))
+        v = float(raw)
+        if not v.is_integer():
+            raise ValueError(f"an integer attribute takes a whole number, got '{raw}'")
+        return int(v)
     if isinstance(old, float):
         return float(raw)
     return raw
@@ -100,7 +103,8 @@ def load_lattice(path, *, fallback_beam=None):
     # The beam the importer scaled the magnets with (a deck's BEAM, or the
     # importer's default when the deck states none — "declared" False): ring
     # mode keeps the magnets' normalized strengths from it and runs at a
-    # declared one; nothing on the linac side reads it.
+    # declared one; nothing on the linac side reads it (an imported MATRIX
+    # records the clock it was converted on, MatrixElement.clock_mhz).
     ref = meta.get("reference") if isinstance(meta, dict) else None
     if ref is not None:
         with contextlib.suppress(AttributeError, TypeError, ValueError):
@@ -272,7 +276,10 @@ def apply_element_override(lattice, selector: str, value) -> None:
             new = str(value)
         setattr(elem, attr, new)
         return
-    setattr(elem, attr, coerce_like(current, str(value)))
+    try:
+        setattr(elem, attr, coerce_like(current, str(value)))
+    except AttributeError as exc:            # a parameter that follows from others
+        raise ValueError(f"--set: {exc}") from None
 
 
 # ---------------------------------------------------------------------------
@@ -431,9 +438,13 @@ def apply_fieldmap_settings(conv: dict, cli: dict) -> None:
 # running
 # ---------------------------------------------------------------------------
 def build_ref(cfg):
-    """Build a ``ReferenceParticle`` from a ``BeamConfig``."""
+    """Build a ``ReferenceParticle`` from a ``BeamConfig``: for a beam read from a
+    TraceWin .dst file, the file's energy and frequency, as a multiparticle run takes
+    them (``factory.reference_config``)."""
     from linac_gen.core.particle import PROTON, DEUTERON, H_MINUS
     from linac_gen.core.reference import ReferenceParticle
+    from linac_gen.distributions.factory import reference_config
+    cfg = reference_config(cfg)
     sp = {"proton": PROTON, "deuteron": DEUTERON,
           "H-": H_MINUS}.get(cfg.species, PROTON)
     return ReferenceParticle(species=sp, w_kin=cfg.energy,
@@ -442,13 +453,21 @@ def build_ref(cfg):
 
 def _envelope_initial(cfg, ref) -> dict:
     """The envelope-solver ``initial`` dict — mirrors app.py:_run_envelope
-    (normalised emittance → geometric via βγ, mismatch applied)."""
-    from linac_gen.distributions.factory import geometric_emittances
+    (normalised emittance → geometric via βγ, mismatch applied, the input
+    dispersion); for a beam read from a TraceWin .dst file, the file's emittances
+    and Twiss parameters."""
+    from linac_gen.distributions.factory import (
+        geometric_emittances,
+        input_dispersion,
+        reference_config,
+    )
+    cfg = reference_config(cfg)
     emit_x, emit_y, emit_z = geometric_emittances(cfg, ref.bg)
     return dict(
         alpha_x=cfg.alpha_x, beta_x=cfg.beta_x, emit_x=emit_x,
         alpha_y=cfg.alpha_y, beta_y=cfg.beta_y, emit_y=emit_y,
         alpha_z=cfg.alpha_z, beta_z=cfg.beta_z, emit_z=emit_z,
+        **input_dispersion(cfg),
         continuous=bool(getattr(cfg, "continuous", False)),
         dc_energy_spread_keV=float(getattr(cfg, "dc_energy_spread_keV", 0.0)),
         # First-moment seed — mirrors create_beam's centroid offsets so
@@ -462,8 +481,9 @@ def _envelope_initial(cfg, ref) -> dict:
     )
 
 
-def run_envelope_sim(lattice, cfg, env_solver: str = "matrix"):
-    """Run an envelope simulation; returns an ``EnvelopeResults``."""
+def run_envelope_sim(lattice, cfg, env_solver: str = "matrix", should_abort=None):
+    """Run an envelope simulation; returns an ``EnvelopeResults``.  ``should_abort``
+    (a zero-argument callable) stops the matrix envelope at the next element."""
     ref = build_ref(cfg)
     initial = _envelope_initial(cfg, ref)
     if env_solver == "sacherer":
@@ -473,7 +493,7 @@ def run_envelope_sim(lattice, cfg, env_solver: str = "matrix"):
     from linac_gen.tracking.envelope import EnvelopeSolver
     f_bunch = float(getattr(cfg, "bunch_frequency_MHz", 0.0) or 0.0) or None
     return EnvelopeSolver(lattice, ref, initial, current=cfg.current,
-                          bunch_frequency=f_bunch).run()
+                          bunch_frequency=f_bunch, should_abort=should_abort).run()
 
 
 def run_mp_sim(lattice, cfg, sc_config, step_config, *, seed: int = 42,
@@ -628,7 +648,9 @@ def write_final_dst(beam, out_path) -> str:
     would (a) corrupt any moment/shape analysis of the file and (b)
     resurrect them as live beam on re-import (2026-07-26 finding — a
     treaty-point capture carried 2.7 % dead strikes whose frozen x'
-    values inflated the geometric emittance 7.5x)."""
+    values inflated the geometric emittance 7.5x).  The header holds the
+    current those particles carry, I × N_alive / N_launched, as TraceWin's
+    own export after losses does."""
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     from linac_gen.io.tracewin_dst import (write_dst,
@@ -638,7 +660,7 @@ def write_final_dst(beam, out_path) -> str:
         parts = beam.particles
     warn_if_nonstandard_dst_header(beam)
     write_dst(str(out), parts,
-              current_mA=float(beam.current),
+              current_mA=float(beam.alive_current),
               # KNOWN MISMATCH, deliberately left as-is — see the
               # DEFERRED FIX block in io/tracewin_dst.py.  write_dst
               # documents this parameter as the BUNCH frequency and
@@ -673,10 +695,34 @@ def result_summary(results) -> dict:
 # ---------------------------------------------------------------------------
 # scan-point construction (shared by the `scan` and `batch` subcommands)
 # ---------------------------------------------------------------------------
+def lattice_file_of(input_path) -> str:
+    """The lattice file of a CLI input: a project's own, else the input itself (what a
+    surrogate's weights folder is keyed by, ``registry.hash_lattice_file``)."""
+    p = Path(input_path)
+    if p.suffix.lower() == ".lgproj":
+        from linac_gen.io.project import load_project
+        return str(load_project(p).lattice_path)
+    return str(p.resolve())
+
+
+def _folder_list(text: str) -> list:
+    return [p.strip() for p in str(text).split(",") if p.strip()]
+
+
+def add_surrogates_argument(p) -> None:
+    """``--surrogates DIR[,DIR...]|auto`` of a study run through the scan pool (one value, so
+    it cannot take the input path for a folder)."""
+    p.add_argument(
+        "--surrogates", type=_folder_list, default=None, metavar="DIR[,DIR...]|auto",
+        help="use surrogate weights in the envelope runs, where the design lattice with them "
+             "agrees with the native run: each DIR a set's folder or a folder of sets named by "
+             "element, 'auto' the lattice's own weights folder; comma-separated")
+
+
 def build_scan_point(input_path, *, beam_overrides=None, element_overrides=(),
                      sc_overrides=None, mode="mp", env_solver="matrix",
                      seed: int = 42, cli: dict | None = None,
-                     tracewin_ini=None, notes: list | None = None):
+                     tracewin_ini=None, notes: list | None = None, surrogates=None):
     """Resolve a CLI input + overrides into a :class:`ScanPoint`.
 
     Used by both ``scan`` (one point per swept value) and ``batch`` (one
@@ -689,6 +735,8 @@ def build_scan_point(input_path, *, beam_overrides=None, element_overrides=(),
     TraceWin options file before ``beam_overrides`` are applied).  Notes of
     the space-charge resolution (a method replacing the project's settings)
     are appended to ``notes``, or issued as warnings when ``notes`` is None.
+    ``surrogates`` (a ``surrogates.transport.SurrogateSpec``) is what a pool worker registers
+    for the point: the weights the study's design check accepted.
     """
     from dataclasses import asdict
     from linac_gen.core.config import BeamConfig
@@ -755,6 +803,7 @@ def build_scan_point(input_path, *, beam_overrides=None, element_overrides=(),
                            if k not in ("nx", "grid_extent", "use_gpu")),
         drift_single_push=single,
         lattice_beam=lattice_beam,
+        surrogates=surrogates or None,
         **rfq_settings(conv, cli),
     )
 

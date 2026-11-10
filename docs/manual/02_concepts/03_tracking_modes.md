@@ -157,9 +157,25 @@ $$
 $$
 
 with generalised perveance K = qI / (2π ε₀ m c³ (βγ)³) and a focusing
-function κ(s) read off element-by-element.  Scope: drifts,
-hard-edge quadrupoles, 1-D / 3-D solenoid field maps.  RF cavities and
-acceleration are out of scope.
+function κ(s) read off element-by-element.  Scope: drifts, hard-edge
+quadrupoles and solenoids, and solenoid field maps (1-D, 2-D
+cylindrical or 3-D, alone or in a `SUPERPOSE_MAP` cluster); a map is
+read at the amplitude every other mode uses (kb, scale, the file's
+normalisation, a `voltage_rel` error or failure).  A steering-corrector
+map (a 3-D dipole field on the axis), standing alone or in a cluster,
+is left out, as a `STEERER` card is (a B_z it holds on the axis focuses
+as a solenoid's), while the correctors of the map or
+of the cluster together bend the beam by at most 20 mrad and their
+gradient, as the beam sees it in a solenoid's rotation, focuses it by
+at most 1/f = 0.0088 /m: the LEBT example's first two corrector pairs up
+to 2.4 to 2.5 mrad.
+A map it has no model of (a G(z) gradient, a 3-D quadrupole map
+centred on its grid, a 3-D map whose grid point nearest the axis reads
+a solenoid's field the axis does not hold, or the other way round, a
+multipole map, correctors that bend or focus the beam by more, a static
+electric map) is refused with a pointer to `env_solver='matrix'`.  RF
+cavities count as drifts; acceleration is out of scope.  See
+[DC mode](../05_space_charge/04_dc_mode.md#dc-aware-envelope-solver).
 
 ### 2-D analytic DC kick (in MP mode)
 
@@ -255,7 +271,7 @@ below).
 | Limitation | Behaviour |
 |---|---|
 | Aperture losses | non-invertible — no cuts are applied backward; a warning notes the reconstruction covers **survivors only** |
-| Field maps (cavities, solenoid maps) | undone **exactly** by default (`field_map_mode="rk4"`): each forward kick–drift step is closed-form invertible, and a zero-particle replay of the literal tracker schedule supplies bit-identical per-step references and SET_SYNC_PHASE calibration — full-MEBT round trips close at ~1e-13.  `field_map_mode="linear"` keeps the v1 fitted-matrix inverse (~2 % through strong bunchers); RFQ cells and surrogate-driven elements always fall back to it |
+| Field maps (cavities, solenoid maps) | undone **exactly** by default (`field_map_mode="rk4"`): each forward kick–drift step is closed-form invertible, and a zero-particle replay of the literal tracker schedule supplies bit-identical per-step references and SET_SYNC_PHASE calibration — full-MEBT round trips close at ~1e-13.  `field_map_mode="linear"` keeps the v1 fitted-matrix inverse (~2 % through strong bunchers); RFQ cells and NCELLS cavities always fall back to it.  A push through surrogate weights (the multiparticle fast path) is undone exactly too, call by call, from the record the forward run leaves on the beam, while the element's settings (its structure among them, such as its step count and aperture, whose change has the weights refuse it; its misalignment aside, which the walk undoes as it stands), its step schedule and the reference at its entrance are still those of the run.  The record of a traversal the native element made alone is taken the same way.  An edit that changes none of them (a marker added, a BPM deleted) leaves the record valid; after one that does (the element's own settings, the step density, an edit upstream that moves the reference at its entrance, the beam's entrance energy) the element is undone as the weights would push it with the current settings, with a caveat that says what changed, unless the native element pushes it both in the run and now.  A beam read from a file carries no record and is undone the same way, with a caveat wherever the weights push the element now or, with the fast path off, would push it with the fast path on |
 | Quadrupole g3–g6 multipole content | undone exactly (position-only kicks re-applied with the opposite sign at the same positions — an IEEE-exact subtraction) |
 | Fixed-grid PIC space charge | a fresh backward solver cannot rebuild the forward run's frozen grid — reuse the forward `pic_solver` (exact) or accept the adaptive-grid fallback (warned) |
 | Space charge (collective, per particle) | undone exactly per step — a short 5 mA range closes to ~1e-14 — but over a long SC-dominated line the non-bit-reversible PIC solve seeds an error the collective dynamics amplify through ~10³ kicks.  **Beam moments recover** (σ/ε/Twiss to ~0.2–2.4 % over the full MEBT+HWR at 5 mA); **per-particle trajectories do not** (~0.14 mm median).  Reconstruct the *beam*, not individual particles, under strong SC |

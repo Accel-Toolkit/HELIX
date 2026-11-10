@@ -46,13 +46,17 @@ def _transform(beta: float, gamma: float, mass_MeV: float, wavelength_mm: float)
     return T
 
 
-def matrix_to_tracewin(M: np.ndarray, ref) -> np.ndarray:
+def matrix_to_tracewin(M: np.ndarray, ref, ref_out=None) -> np.ndarray:
     """Return ``M`` expressed in TraceWin's (x, x', y, y', z, δ) basis.
 
     ``ref`` must expose .beta, .gamma, .wavelength and .species.mass (in MeV).
+    ``ref_out`` is the reference at the map's exit, for a map across which the
+    energy or the RF clock changes (default: ``ref``).
     """
     T = _transform(ref.beta, ref.gamma, ref.species.mass, ref.wavelength)
-    Tinv = np.diag(1.0 / np.diag(T))
+    T_out = T if ref_out is None else _transform(
+        ref_out.beta, ref_out.gamma, ref_out.species.mass, ref_out.wavelength)
+    Tinv = np.diag(1.0 / np.diag(T_out))
     return Tinv @ M @ T
 
 
@@ -95,15 +99,22 @@ def sigma_to_tracewin_custom(sigma: np.ndarray, *, beta: float, gamma: float,
 #     p₀/p_out.  That is the canonical (symplectic) form, which MAD-X
 #     TWISS leaves alone (it symplectifies MATRIX elements) and TRACK
 #     applies verbatim.
-def madx_transform(ref0, *, p_local_over_p0: float = 1.0) -> np.ndarray:
+#   * t holds no clock, but HELIX's Δφ is in degrees of the clock at its
+#     point, so λ_free is the local one: across a FREQ card, whose map is
+#     diag(1,1,1,1,f₂/f₁,1), the two sides give the same t, and the card is
+#     nothing to MAD-X.
+def madx_transform(ref0, *, p_local_over_p0: float = 1.0,
+                   wavelength_local_mm: float | None = None) -> np.ndarray:
     """Diagonal 6×6 T such that ``X_helix = T · X_madx`` at a point where
     the local reference momentum is ``p_local_over_p0`` times the
-    sequence reference ``ref0`` (species, kinetic energy, frequency)."""
-    if ref0.beta <= 0.0 or ref0.wavelength <= 0.0:
+    sequence reference ``ref0`` (species, kinetic energy, frequency) and
+    the clock's wavelength is ``wavelength_local_mm`` (default: ``ref0``'s)."""
+    wavelength = ref0.wavelength if wavelength_local_mm is None else wavelength_local_mm
+    if ref0.beta <= 0.0 or wavelength <= 0.0:
         raise ValueError("beta and wavelength must be positive to convert bases")
     if p_local_over_p0 <= 0.0:
         raise ValueError("p_local/p0 must be positive")
-    lambda_free_m = ref0.wavelength / 1000.0     # ref.wavelength is c/f [mm]
+    lambda_free_m = wavelength / 1000.0          # ref.wavelength is c/f [mm]
     p0c_MeV = ref0.bg * ref0.species.mass
     T = np.eye(6)
     T[0, 0] = T[2, 2] = 1000.0
@@ -117,29 +128,35 @@ def _p_ratio(ref_local, ref0) -> float:
     return (ref_local.bg * ref_local.species.mass) / (ref0.bg * ref0.species.mass)
 
 
+def _madx_transform_at(ref0, ref_local) -> np.ndarray:
+    """``madx_transform`` at a point with the reference ``ref_local`` (default: ``ref0``)."""
+    r = ref_local or ref0
+    return madx_transform(ref0, p_local_over_p0=_p_ratio(r, ref0),
+                          wavelength_local_mm=r.wavelength)
+
+
 def matrix_to_madx(M: np.ndarray, ref0, ref_in=None, ref_out=None) -> np.ndarray:
     """HELIX-basis map ``M`` → MAD-X canonical map about the sequence
     reference ``ref0``.  ``ref_in`` / ``ref_out`` are the local reference
-    states at the element's entrance / exit (default: ``ref0`` — the
-    non-accelerating case, where the transform is a similarity)."""
-    T_in = madx_transform(ref0, p_local_over_p0=_p_ratio(ref_in or ref0, ref0))
-    T_out = madx_transform(ref0, p_local_over_p0=_p_ratio(ref_out or ref0, ref0))
+    states at the element's entrance / exit, energy and clock (default:
+    ``ref0`` — the non-accelerating case on one clock, where the transform
+    is a similarity)."""
+    T_in = _madx_transform_at(ref0, ref_in)
+    T_out = _madx_transform_at(ref0, ref_out)
     return np.diag(1.0 / np.diag(T_out)) @ np.asarray(M, dtype=float) @ T_in
 
 
 def matrix_from_madx(R: np.ndarray, ref0, ref_in=None, ref_out=None) -> np.ndarray:
     """Inverse of :func:`matrix_to_madx` (same reference arguments)."""
-    T_in = madx_transform(ref0, p_local_over_p0=_p_ratio(ref_in or ref0, ref0))
-    T_out = madx_transform(ref0, p_local_over_p0=_p_ratio(ref_out or ref0, ref0))
+    T_in = _madx_transform_at(ref0, ref_in)
+    T_out = _madx_transform_at(ref0, ref_out)
     return T_out @ np.asarray(R, dtype=float) @ np.diag(1.0 / np.diag(T_in))
 
 
 def vector_to_madx(v: np.ndarray, ref0, ref_local=None) -> np.ndarray:
     """HELIX phase-space offset → MAD-X canonical (e.g. MATRIX kick1..6)."""
-    T = madx_transform(ref0, p_local_over_p0=_p_ratio(ref_local or ref0, ref0))
-    return np.asarray(v, dtype=float) / np.diag(T)
+    return np.asarray(v, dtype=float) / np.diag(_madx_transform_at(ref0, ref_local))
 
 
 def vector_from_madx(k: np.ndarray, ref0, ref_local=None) -> np.ndarray:
-    T = madx_transform(ref0, p_local_over_p0=_p_ratio(ref_local or ref0, ref0))
-    return np.asarray(k, dtype=float) * np.diag(T)
+    return np.asarray(k, dtype=float) * np.diag(_madx_transform_at(ref0, ref_local))

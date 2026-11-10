@@ -77,8 +77,10 @@ class RfqCell(FieldMapElement):
         Transverse curvature (TraceWin's ``Tc``).  Currently unused —
         accepted for parser compatibility.
     dP_deg : float, optional
-        Output-phase shift (TraceWin's ``dP``).  Applied to the running
-        synchronous phase at the cell exit.
+        The card's ninth value (TraceWin's ``dP``), kept so that a deck
+        round-trips.  It does not move the reference phase in any mode:
+        TraceWin's parameter table calls it "not used any more", and in
+        TraceWin 2.27 decks it holds values from 0 to 1, not a phase.
     n_steps : int
         Sub-steps per cell.  When ``None`` (default), auto-selects
         ``max(20, ceil(L_mm / 0.1))`` so every cell gets ≤0.1 mm per
@@ -833,9 +835,6 @@ class RfqCell(FieldMapElement):
                 full = 360.0 * ds / (ref.beta * ref.wavelength)
                 ref.phi_s += full
                 cell_phi_deg += full
-        # Apply the user-requested output-phase shift to the *global*
-        # ref phase (it propagates to the next element).
-        ref.phi_s += self.dP_deg
 
     def advance_ref_over(self, ref, z_from_mm: float, z_to_mm: float) -> None:
         """Advance ``ref`` through a sub-range of the cell.
@@ -885,9 +884,6 @@ class RfqCell(FieldMapElement):
                 ref.phi_s += full
                 cell_phi_deg += full
         self._adv_cell_phi_deg = cell_phi_deg
-        # Apply the user-requested output-phase shift on the last slice.
-        if abs(z_to_mm - self.length) < 1e-9:
-            ref.phi_s += self.dP_deg
 
     def fitted_matrix(self, ref):
         """6×6 transfer matrix for the full cell at the entry-side ref.

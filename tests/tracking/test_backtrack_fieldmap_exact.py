@@ -274,43 +274,51 @@ def test_quad_g_multipole_roundtrip_exact():
 class _AlwaysOOSSurrogate:
     """A registered surrogate whose matrix query is always out-of-scope.
 
-    Its *presence* (``get_by_element_name`` returns non-None while MP mode
-    is engaged) is what forces the rk4 walk to warn and drop to the linear
-    inverse.  Raising :class:`OutOfScopeError` from the matrix query then
-    makes the linear path fall through to the REAL element fields
-    (``envelope._fitted_matrix_slice_at`` catches OOS), so the numbers
-    stay pure-physics — matching an explicit linear run to within the
-    tracker-vs-advance_ref replay-mode gap.  This keeps the assertion
-    about the *control-flow* (rk4 → linear) without coupling it to any
-    surrogate's numeric output.
+    ``drives`` is what it answers to ``drives_mp`` — whether the weights
+    would push the element now (the multiparticle fast path).  The walk
+    does not ask it for a beam whose record of its forward run
+    (``surrogate_pushes``) covers the element as it stands: the record
+    says what pushed the element.  The
+    matrix query raises :class:`OutOfScopeError`, so nothing can answer
+    for the real element fields.  tests/surrogates check the record and
+    the exact undo of a push through real weights.
     """
 
-    def __init__(self, wrapped=None):
+    def __init__(self, wrapped=None, drives=True):
         # get_for_element (2026-07 guard) verifies the registered
         # surrogate wraps the tracked element — a realistic engaged
         # surrogate always does, so the stub must too.
         self._wrapped = wrapped
+        self._drives = drives
+        self.length = getattr(wrapped, "length", 0.0)
+
+    def drives_mp(self, ref):
+        return self._drives
+
+    def fast_path_map(self, ref):
+        """What weights that pushed the element would use (its own linear map),
+        so a walk that asked them, not the beam's record, would undo the
+        native push wrongly."""
+        if not self._drives:
+            return None
+        from linac_gen.surrogates.base import _fast_log
+        m = np.asarray(self._wrapped.fitted_matrix(ref), dtype=float)
+        return m, _fast_log(m)
+
+    def in_fast_scope(self, ref, phi_s_entry):
+        return True
 
     def fitted_matrix_slice(self, ref, ds_mm):
         raise OutOfScopeError("stub surrogate: always out of scope")
 
 
-def test_surrogate_registered_element_falls_back_to_linear(mebt):
-    """rk4 mode + an MP-engaged surrogate on the element: a neural
-    surrogate has no algebraic inverse, so the walk must WARN and drop to
-    the LINEAR inverse for that element.  We prove the control flow two
-    ways: (1) the ``BacktrackWarning`` is emitted (it is raised on the
-    exact line that sets ``use_rk4 = False``); (2) the reconstruction
-    lands on the LINEAR result and is far from the exact-rk4 result.
-
-    The fallback is *not* bit-identical to an explicit-linear run: rk4
-    mode builds the replay table in ``tracker`` ref mode while explicit
-    linear uses ``advance_ref``, and that ~1e-3 ref gap propagates
-    through the field-map phase column.  So we assert *proximity* to
-    linear and *distance* from exact-rk4, not equality.  (The forward run
-    is surrogate-free, so the exit state is the true-physics one; the
-    out-of-scope stub means the linear path uses the real element fields,
-    isolating the claim to control flow, not surrogate numerics.)"""
+def test_the_forward_record_decides_not_the_registry(mebt):
+    """rk4 mode + a surrogate registered on the element that says its
+    weights would push it now (``drives_mp`` True, MP surrogates and the
+    fast path on) — but the beam's own record says the forward run pushed
+    it natively: the walk keeps the EXACT inverse, with no warning, bit-
+    identical to the walk with no surrogate (a box flipped between the
+    run and its backtrack changes nothing)."""
     from linac_gen.surrogates import registry as surr
     from linac_gen.tracking.backtrack import BacktrackWarning
 
@@ -323,40 +331,77 @@ def test_surrogate_registered_element_falls_back_to_linear(mebt):
             t._track_element(mebt.elements[i])
         return b
 
-    def _back(beam, mode):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            backtrack_distribution(mebt, beam, _make_ref(),
-                                   start=BUNCHER, end=BUNCHER,
-                                   field_map_mode=mode)
-
-    # A: rk4 requested but a surrogate is engaged → warn + fall to linear.
     beam_a = _fwd()
-    surr.register(_AlwaysOOSSurrogate(mebt.elements[BUNCHER]),
-                  lattice_hash="test-fallback",
-                  element_key=name)
+    # the native elements pushed everything
+    assert not any(rec["calls"] for _name, rec in beam_a.surrogate_pushes.values())
+    surr.register(_AlwaysOOSSurrogate(mebt.elements[BUNCHER], drives=True),
+                  lattice_hash="test-record", element_key=name)
+    fast = surr.is_fast_path_enabled()
+    surr.set_mp_enabled(True)
+    surr.set_fast_path_enabled(True)
+    try:
+        with warnings.catch_warnings(record=True) as seen:
+            warnings.simplefilter("always")
+            backtrack_distribution(mebt, beam_a, _make_ref(),
+                                   start=BUNCHER, end=BUNCHER,
+                                   field_map_mode="rk4")
+    finally:
+        surr.set_mp_enabled(False)
+        surr.set_fast_path_enabled(fast)
+        surr.clear()
+    assert not [w for w in seen if issubclass(w.category, BacktrackWarning)
+                and "surrogate" in str(w.message)]
+
+    beam_c = _fwd()          # exact rk4 (no surrogate)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        backtrack_distribution(mebt, beam_c, _make_ref(),
+                               start=BUNCHER, end=BUNCHER,
+                               field_map_mode="rk4")
+    np.testing.assert_array_equal(beam_a.particles, beam_c.particles)
+
+
+def test_surrogate_registered_element_left_native_is_undone_exactly(mebt):
+    """rk4 mode + a surrogate registered on the element that the forward
+    MP run did not push through (``drives_mp`` False: the fast path off,
+    the default, or weights refused at the entrance): the native element
+    pushed, so the walk keeps the EXACT inverse — no warning, and the
+    reconstruction is bit-identical to the walk with no surrogate."""
+    from linac_gen.surrogates import registry as surr
+    from linac_gen.tracking.backtrack import BacktrackWarning
+
+    name = mebt.elements[BUNCHER].name
+
+    def _fwd():
+        b = _fresh_beam()
+        t = Tracker(mebt, b)
+        for i in range(BUNCHER + 1):
+            t._track_element(mebt.elements[i])
+        return b
+
+    beam_a = _fwd()
+    surr.register(_AlwaysOOSSurrogate(mebt.elements[BUNCHER], drives=False),
+                  lattice_hash="test-native", element_key=name)
     surr.set_mp_enabled(True)
     try:
-        with pytest.warns(BacktrackWarning, match="surrogate"):
+        with warnings.catch_warnings(record=True) as seen:
+            warnings.simplefilter("always")
             backtrack_distribution(mebt, beam_a, _make_ref(),
                                    start=BUNCHER, end=BUNCHER,
                                    field_map_mode="rk4")
     finally:
         surr.set_mp_enabled(False)
         surr.clear()
+    assert not [w for w in seen if issubclass(w.category, BacktrackWarning)
+                and "surrogate" in str(w.message)]
 
-    beam_b = _fwd()          # explicit linear (no surrogate)
-    _back(beam_b, "linear")
     beam_c = _fwd()          # exact rk4 (no surrogate)
-    _back(beam_c, "rk4")
-
-    d_lin = np.abs(beam_a.particles[:, :6] - beam_b.particles[:, :6]).max()
-    d_rk4 = np.abs(beam_a.particles[:, :6] - beam_c.particles[:, :6]).max()
-    assert d_lin < 1e-2, f"fallback strayed from linear (d={d_lin:.2e})"
-    assert d_rk4 > 1e-3, f"exact-rk4 too close to distinguish (d={d_rk4:.2e})"
-    assert d_lin < 0.1 * d_rk4, (
-        f"fallback not decisively linear: d_lin={d_lin:.2e} "
-        f"vs d_rk4={d_rk4:.2e}")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        backtrack_distribution(mebt, beam_c, _make_ref(),
+                               start=BUNCHER, end=BUNCHER,
+                               field_map_mode="rk4")
+    np.testing.assert_array_equal(beam_a.particles, beam_c.particles)
 
 
 def test_quad_g_multipole_skew_misaligned_roundtrip():

@@ -578,6 +578,20 @@ def find_matched_input_twiss(lattice, ref, cell_start, cell_end):
     }
 
 
+def _emittance_damping(lattice, ref, index, at) -> float:
+    """What a geometric emittance shrinks by on the way to element ``index``, whose
+    reference is ``at``: the ratio of βγ, over the cavities only.  An energy card moves
+    the reference and leaves the particles' angles alone, in the tracker and the
+    envelope alike."""
+    from linac_gen.elements.lattice_commands import SetReferenceEnergy
+    from linac_gen.tracking.matrix_tracking import reference_at
+    damp = ref.bg / at.bg if at.bg > 0 else 1.0
+    for i, e in enumerate(lattice.elements[:index]):
+        if isinstance(e, SetReferenceEnergy):
+            damp *= reference_at(lattice, ref, i + 1).bg / reference_at(lattice, ref, i).bg
+    return damp
+
+
 def find_sc_matched_input_twiss(lattice, ref, cell_start, cell_end,
                                 current, base_initial, *,
                                 max_iter: int = 50, tol: float = 1e-4,
@@ -599,7 +613,8 @@ def find_sc_matched_input_twiss(lattice, ref, cell_start, cell_end,
     input-dispersion support makes that possible.
 
     ``base_initial`` carries the fixed envelope inputs — ``emit_x``,
-    ``emit_y``, ``emit_z``, ``alpha_z``, ``beta_z``.  ``sc_factor`` is the
+    ``emit_y``, ``emit_z``, ``alpha_z``, ``beta_z``, at the entrance: the cell
+    runs at the reference and with the beam the front hands it.  ``sc_factor`` is the
     space-charge compensation state at ``lattice``'s entrance (the
     multiplier a SPACE_CHARGE_COMP upstream left in force; 1.0 = full space
     charge, the default).
@@ -618,7 +633,7 @@ def find_sc_matched_input_twiss(lattice, ref, cell_start, cell_end,
     import numpy as np
     from linac_gen.core.lattice import Lattice
     from linac_gen.tracking.envelope import EnvelopeSolver
-    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix, reference_at
 
     n = len(lattice.elements)
     if not (0 <= cell_start <= cell_end < n):
@@ -662,20 +677,31 @@ def find_sc_matched_input_twiss(lattice, ref, cell_start, cell_end,
         return [tw[0][0], tw[0][1], tw[1][0], tw[1][1],
                 disp[0][0], disp[0][1], disp[1][0], disp[1][1]]
 
-    def _run(sub, st):
-        init = dict(base_initial)
+    ref_cell = reference_at(lattice, ref, cell_start)
+    # (a cavity damps the transverse emittances; a FREQ card puts Δφ in degrees of the
+    # new clock, the same bunch)
+    damp = _emittance_damping(lattice, ref, cell_start, ref_cell)
+    clock_ratio = ref_cell.frequency / ref.frequency if ref.frequency > 0 else 1.0
+    cell_initial = dict(base_initial)
+    for key, factor in (("emit_x", damp), ("emit_y", damp),
+                        ("emit_z", clock_ratio), ("beta_z", clock_ratio)):
+        if key in base_initial:
+            cell_initial[key] = float(base_initial[key]) * factor
+
+    def _run(sub, st, r=ref, initial=base_initial):
+        init = dict(initial)
         init.update(alpha_x=st[0], beta_x=st[1], alpha_y=st[2], beta_y=st[3],
                     disp_x=st[4], disp_xp=st[5], disp_y=st[6], disp_yp=st[7])
-        env = EnvelopeSolver(sub, ref.copy(), init, current=current,
-                             sc_factor=sc_factor).run()
+        env = EnvelopeSolver(sub, r.copy(), init, current=current, sc_factor=sc_factor,
+                             bunch_frequency=float(ref.frequency)).run()
         return _state(np.asarray(env.sigma_matrix[-1]))
 
     # seed: zero-current cell betatron Twiss + periodic dispersion
     # (shared _periodic_dispersion helper; a NaN result — near-integer
     # tune — is sanitised to 0.0 here because this is only a SEED for
     # the fixed-point iteration, which can still converge from zero).
-    zc = find_periodic_twiss(cell_lat, ref)
-    mc0 = compute_transfer_matrix(cell_lat, ref.copy())
+    zc = find_periodic_twiss(cell_lat, ref_cell)
+    mc0 = compute_transfer_matrix(cell_lat, ref_cell.copy())
     dx0 = np.nan_to_num(_periodic_dispersion(mc0, (0, 1)), nan=0.0)
     dy0 = np.nan_to_num(_periodic_dispersion(mc0, (2, 3)), nan=0.0)
     state = [zc["alpha_x"], zc["beta_x"], zc["alpha_y"], zc["beta_y"],
@@ -685,7 +711,7 @@ def find_sc_matched_input_twiss(lattice, ref, cell_start, cell_end,
     damping = 0.5
     converged = False
     for _ in range(max_iter):
-        out = _run(cell_lat, state)
+        out = _run(cell_lat, state, ref_cell, cell_initial)
         err = max(abs(o - s) / max(abs(s), 1e-3)
                   for o, s in zip(out, state))
         if err < tol:
@@ -794,22 +820,18 @@ def _rfq_phase_sensitivity(lattice, ref_k, period, tw0):
 def _rfq_entry_state(lattice, ref, k):
     """(reference, SC multiplier, at-entrance flag, upstream length mm) at
     the entrance of element ``k``: the reference replayed through the
-    elements before it, with the RF frequency of the last FREQ card among
-    them (matrix-mode replay ignores FREQ); the space-charge compensation
+    elements before it, FREQ cards included; the space-charge compensation
     they leave in force (the envelope solver's rule: 1 − the last
     SPACE_CHARGE_COMP factor); whether they transport the beam at all."""
     import numpy as np
     from linac_gen.elements.base import PassiveElement
-    from linac_gen.elements.lattice_commands import Freq
     from linac_gen.tracking.matrix_tracking import (compute_transfer_matrix,
                                                    reference_at)
     before = lattice.elements[:k]
     ref_k = reference_at(lattice, ref, k)
     sc_factor = 1.0
     for e in before:
-        if isinstance(e, Freq) and float(e.frequency_mhz) > 0.0:
-            ref_k.frequency = float(e.frequency_mhz)
-        elif isinstance(e, PassiveElement) and hasattr(e, "factor"):
+        if isinstance(e, PassiveElement) and hasattr(e, "factor"):
             sc_factor = 1.0 - float(e.factor)
     upstream = sum(float(getattr(e, "length", 0.0) or 0.0) for e in before)
     at_entrance = upstream < RFQ_AT_ENTRANCE_MM
@@ -917,7 +939,7 @@ def find_rfq_matched_input_twiss(lattice, ref, period=None, *, current=0.0,
             raise ValueError(
                 "space-charge matching of an RFQ needs emit_x and emit_y "
                 "(geometric rms emittances, mm mrad)")
-        damp = ref.bg / ref_k.bg if ref_k.bg > 0 else 1.0
+        damp = _emittance_damping(lattice, ref, k, ref_k)
         base = {"emit_x": float(emit_x) * damp, "emit_y": float(emit_y) * damp,
                 "emit_z": 0.0, "alpha_z": 0.0, "beta_z": 1.0,
                 "continuous": True,
@@ -994,7 +1016,8 @@ def _sigma_from_modes(modes):
     return Sigma
 
 
-def _renormalize_eigenemittances(Sigma, target_modes):
+def _renormalize_eigenemittances(Sigma, target_modes, *, pairing: str = "overlap",
+                                 keep_unspanned: bool = True):
     """Rescale Σ's normal-mode emittances back to the targets.
 
     Under acceleration det(M) < 1 damps every emittance per pass —
@@ -1005,6 +1028,13 @@ def _renormalize_eigenemittances(Sigma, target_modes):
     the targets by symplectic eigenvector overlap |v_t† J v|.
     Rows/columns not spanned by any mode (degenerate z block of a DC
     beam) are preserved from the input.
+
+    ``pairing="emittance"`` pairs them in order of emittance instead (the
+    largest target with the largest mode): a coupled beam overlaps both
+    modes of an uncoupled cell almost equally, and the overlap pairing then
+    switches between them from one call to the next.  ``keep_unspanned=
+    False`` rebuilds Σ from the paired modes alone, so a subspace that no
+    target spans (a plane of zero emittance) comes out zero.
     """
     import numpy as np
     Sigma = np.asarray(Sigma, float)
@@ -1013,22 +1043,27 @@ def _renormalize_eigenemittances(Sigma, target_modes):
         return Sigma.copy()
     J = _j6()[:Sigma.shape[0], :Sigma.shape[0]]
     rebuilt = []
-    used = set()
-    for eps_t, v_t in target_modes:
-        best, best_o = None, -1.0
-        for k, (eps, v) in enumerate(modes):
-            if k in used:
+    if pairing == "emittance":
+        by_eps_t = sorted(target_modes, key=lambda m: m[0], reverse=True)
+        by_eps = sorted(modes, key=lambda m: m[0], reverse=True)
+        rebuilt = [(eps_t, v) for (eps_t, _), (_, v) in zip(by_eps_t, by_eps, strict=False)]
+    else:
+        used = set()
+        for eps_t, v_t in target_modes:
+            best, best_o = None, -1.0
+            for k, (eps, v) in enumerate(modes):
+                if k in used:
+                    continue
+                o = abs(v_t.conj() @ J @ v)
+                if o > best_o:
+                    best, best_o = k, o
+            if best is None:
                 continue
-            o = abs(v_t.conj() @ J @ v)
-            if o > best_o:
-                best, best_o = k, o
-        if best is None:
-            continue
-        used.add(best)
-        rebuilt.append((eps_t, modes[best][1]))
+            used.add(best)
+            rebuilt.append((eps_t, modes[best][1]))
     out = _sigma_from_modes(rebuilt)
     # Preserve any subspace the modes don't span (rank-deficient z).
-    if len(rebuilt) < Sigma.shape[0] // 2:
+    if keep_unspanned and len(rebuilt) < Sigma.shape[0] // 2:
         spanned = np.zeros(Sigma.shape[0], dtype=bool)
         for _, v in rebuilt:
             spanned |= np.abs(v) > 1e-12
@@ -1039,13 +1074,36 @@ def _renormalize_eigenemittances(Sigma, target_modes):
     return out
 
 
+def _betatron_block(Sigma, s55: float):
+    """The transverse block of Σ less the part the energy deviation accounts for, the
+    dispersion's: ``Σ_T − c·cᵀ/Σ55`` with ``c = Σ[0:4, 5]``.  It is the Σ of the betatron
+    motion, whose emittances a cell without RF keeps.  With no energy spread it is ``Σ_T``."""
+    import numpy as np
+    T = np.array(Sigma[0:4, 0:4], float)
+    if s55 > 0.0:
+        c = np.asarray(Sigma[0:4, 5], float)
+        T = T - np.outer(c, c) / s55
+    return T
+
+
+def _has_negative_eigenvalue(A, rel: float = 1e-12) -> bool:
+    """True when the symmetric matrix A has an eigenvalue below −rel times its largest diagonal
+    entry: round-off on a singular block (a plane or an energy spread of zero) is not one."""
+    import numpy as np
+    A = 0.5 * (np.asarray(A, float) + np.asarray(A, float).T)
+    scale = float(np.abs(np.diag(A)).max()) if A.size else 0.0
+    return bool(A.size) and float(np.linalg.eigvalsh(A).min()) < -rel * max(scale, 1e-300)
+
+
 def make_period_sigma_map(lattice, ref, period, current: float,
                           base_initial: dict):
     """Build the DISCRETE one-period Σ-map of a periodic cell, with the
     delicate prefix-state capture done once and preserved.
 
     Returns ``(sigma_map, state)`` where ``sigma_map(Σ_entry) -> Σ_exit``
-    performs one REAL envelope pass over the FIRST repeat of ``period``
+    performs one REAL envelope pass over the FIRST repeat of ``period``, the
+    exit Σ handed back on the entrance's clock when the repeat holds a change
+    of clock (``state["clock_ratio"]`` = f_exit/f_entrance),
     (so the map is the solver's exact discrete dynamics, self-consistent
     SC included), and ``state`` carries ``ref_entry`` (ReferenceParticle
     at the period entry), ``sc_factor``, ``bunch_frequency`` (the
@@ -1061,7 +1119,7 @@ def make_period_sigma_map(lattice, ref, period, current: float,
     """
     import numpy as np
     from linac_gen.core.lattice import Lattice
-    from linac_gen.elements.lattice_commands import LatticeCommand
+    from linac_gen.elements.lattice_commands import LatticeCommand, REFERENCE_COMMANDS
     from linac_gen.tracking.envelope import EnvelopeSolver
 
     spans = period.spans()
@@ -1083,8 +1141,10 @@ def make_period_sigma_map(lattice, ref, period, current: float,
     continuous = bool(env_pre._continuous)
     sigma_seed = np.asarray(res_pre.sigma_matrix[-1], float).copy()
 
+    # (ref_entry already holds the cards that set the reference: one that shifts it would
+    # count twice, and a card before a cavity would undo what the cavity did)
     prefix_cmds = [e for e in lattice.elements[:a0]
-                   if isinstance(e, LatticeCommand)]
+                   if isinstance(e, LatticeCommand) and not isinstance(e, REFERENCE_COMMANDS)]
 
     # --- Cell sub-lattice (first repeat). ------------------------------
     cell_lat = Lattice()
@@ -1092,6 +1152,12 @@ def make_period_sigma_map(lattice, ref, period, current: float,
         cell_lat.add(e)
     if step_cfg is not None:
         cell_lat.step_config = step_cfg
+    # the clock at the cell's exit over the clock at its entrance (1 with no change in it)
+    from linac_gen.tracking.matrix_tracking import _replay_ref
+    rc = ref_entry.copy()
+    _replay_ref(list(cell_lat.elements), rc, cell_lat)
+    clock_ratio = (float(rc.frequency) / float(ref_entry.frequency)
+                   if float(ref_entry.frequency) > 0.0 and float(rc.frequency) > 0.0 else 1.0)
 
     def sigma_map(Sigma_n):
         init = dict(base_initial)
@@ -1106,12 +1172,51 @@ def make_period_sigma_map(lattice, ref, period, current: float,
             except Exception:                                # noqa: BLE001
                 pass
         r = env.run()
-        return np.asarray(r.sigma_matrix[-1], float)
+        S = np.asarray(r.sigma_matrix[-1], float)
+        # a cell that holds a change of clock hands its exit on another clock: brought back
+        # to the entrance's, so that the map compares like with like
+        f_out = float(r.ref_frequency[-1]) if len(r.ref_frequency) else 0.0
+        f_in = float(ref_entry.frequency)
+        if f_in > 0.0 and f_out > 0.0 and f_out != f_in:
+            k = f_in / f_out
+            S = S.copy()
+            S[4, :] *= k
+            S[:, 4] *= k
+        return S
 
     state = {"ref_entry": ref_entry, "sc_factor": sc_factor,
              "bunch_frequency": bunch_freq, "continuous": continuous,
-             "sigma_seed": sigma_seed}
+             "sigma_seed": sigma_seed, "clock_ratio": clock_ratio}
     return sigma_map, state
+
+
+def _no_longitudinal_focusing(lattice, period, ref_entry) -> bool:
+    """True when nothing in the period's first cell changes a particle's energy with its
+    phase: no RF element in it, and a zero-current map whose energy row does not depend on
+    the phase (an explicit matrix element can do that without being an RF element).  The map
+    is that of a copy of the cell, so no element's run state moves.  When the map cannot be
+    computed the answer is False, which leaves the search as it was.  No warning filter is
+    set around it: filters are process-wide, and this runs on GUI worker threads."""
+    import copy
+
+    from linac_gen.core.lattice import Lattice
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+    from linac_gen.tracking.tracker import _is_rf_bunching_element
+    a0, b0 = period.spans()[0]
+    cell = lattice.elements[a0:b0]
+    if any(_is_rf_bunching_element(e) for e in cell):
+        return False
+    try:
+        sub_lat = Lattice()
+        for e in copy.deepcopy(cell):
+            sub_lat.add(e)
+        step_cfg = getattr(lattice, "step_config", None)
+        if step_cfg is not None:
+            sub_lat.step_config = step_cfg
+        M = compute_transfer_matrix(sub_lat, ref_entry.copy())
+    except Exception:                                           # noqa: BLE001
+        return False
+    return float(M[5, 4]) == 0.0
 
 
 def find_matched_period_sigma(lattice, ref, period, current: float,
@@ -1135,7 +1240,8 @@ def find_matched_period_sigma(lattice, ref, period, current: float,
     factor, the ORIGINAL bunch repetition frequency (a post-FREQ-jump
     slice must not re-derive it from the local reference), the
     DC/bunched state, and the physical seed Σ.  Sticky LatticeCommands
-    from the prefix are re-applied to each iterate's track state
+    from the prefix are re-applied to each iterate's track state, except
+    the ones that set the reference, which the reference at the entry holds
     (idempotent set-style commands assumed — same limitation as every
     replay path in this codebase).
 
@@ -1145,6 +1251,29 @@ def find_matched_period_sigma(lattice, ref, period, current: float,
     meaningful (strong acceleration per cell).  The result then carries
     ``sigma_model_approx="frozen-longitudinal"``.
 
+    A bunched beam in a cell where nothing changes a particle's energy with its
+    phase (no RF: a transport line's FODO or arc) has no matched bunch: the
+    bunch lengthens on every pass, iterating its longitudinal block does not
+    converge, and the transverse Σ handed on is wherever the search stopped.
+    ``"iterate"`` therefore holds the incoming beam's bunch length, energy
+    spread and their correlation there (the longitudinal 2×2 block), and
+    solves for the transverse block and its correlation with the energy,
+    which in a cell with bends carries the cell's periodic dispersion.  The
+    phase is taken to correlate with the transverse planes only through the
+    energy: in a cell with bends the path length also correlates it with x
+    and x', which the held beam leaves out (that keeps Σ a covariance matrix,
+    and the space-charge kick does not read it).  The betatron normal-mode
+    emittances (of the transverse block less the dispersion's share) are the
+    incoming beam's; a plane of zero emittance stays zero.  (An x-y coupled
+    beam into an uncoupled cell has two matched beams, one for each way of
+    giving its two emittances to the cell's two planes: each incoming mode
+    keeps its emittance through the search, which ends at one of them.)  It
+    says so: a UserWarning, ``longitudinal`` reads ``"held"``,
+    ``sigma_model_approx`` ``"held-longitudinal"``, and ``longitudinal_held``
+    gives the reason.  A DC beam and a cell with RF iterate as before.  A
+    solve that does not converge raises a RuntimeWarning, and so does a held
+    beam with a negative eigenvalue (it is then reported as not converged).
+
     Returns
     -------
     dict
@@ -1152,8 +1281,12 @@ def find_matched_period_sigma(lattice, ref, period, current: float,
         ``residual`` (relative Frobenius), ``ref_entry``
         (ReferenceParticle at the period entry), ``bunch_frequency``,
         ``sc_factor``, ``continuous``, ``longitudinal``,
-        ``sigma_model_approx`` (None | "frozen-longitudinal").
+        ``sigma_model_approx`` (None | "frozen-longitudinal" |
+        "held-longitudinal"), ``longitudinal_held`` (None, or why ``"iterate"``
+        held the bunch length and energy spread).
     """
+    import warnings
+
     import numpy as np
 
     _pass, state = make_period_sigma_map(lattice, ref, period, current,
@@ -1164,29 +1297,140 @@ def find_matched_period_sigma(lattice, ref, period, current: float,
     continuous = state["continuous"]
     sigma_seed = state["sigma_seed"]
 
-    target_modes = _sigma_modes(sigma_seed)
-    zblk_seed = sigma_seed[4:6, :].copy(), sigma_seed[:, 4:6].copy()
+    held = None
+    hold = (longitudinal == "iterate" and not continuous
+            and _no_longitudinal_focusing(lattice, period, ref_entry))
+    if hold:
+        longitudinal = "held"
+        held = ("no longitudinal focusing in the cell (no RF): the incoming beam's bunch length "
+                "and energy spread are held")
+        warnings.warn(f"period {getattr(period, 'label', '')!r}: a bunched beam and no RF in the "
+                      "cell, so no matched bunch exists; the matched beam keeps the incoming "
+                      "beam's bunch length and energy spread", UserWarning, stacklevel=2)
+
+    n_pass = [0]
+
+    def _counted_pass(Sigma):
+        n_pass[0] += 1
+        return _pass(Sigma)
+
+    if hold:
+        # The longitudinal 2×2 block is held, and so is the phase's correlation with the
+        # betatron motion, at zero: Σ[0:4, 4] = Σ[0:4, 5]·Σ45/Σ55 is the part the energy accounts
+        # for.  (In a cell with bends the path length correlates the phase with x and x' too; held
+        # at zero, Σ = L·diag(B, zz)·Lᵀ with L unit triangular stays a covariance matrix, and the
+        # space-charge kick does not read it.)  The betatron block (the transverse one less the
+        # dispersion's share) and the correlation with the energy (the dispersion) are solved
+        # for, the betatron normal-mode emittances renormalized to the incoming beam's.  The
+        # search runs on the betatron block itself: at zero current a pass maps it to M·B·Mᵀ
+        # whatever the dispersion does, so a step in the dispersion cannot make it lose a mode.
+        # Renormalizing the full 6-D modes instead would mix in the longitudinal plane, whose
+        # units (deg, MeV) are not canonical with the transverse ones once a bend couples them.
+        s55 = float(sigma_seed[5, 5])
+        zz_seed = sigma_seed[4:6, 4:6].copy()
+        b_seed = _betatron_block(sigma_seed, s55)
+        target_modes = _sigma_modes(b_seed)
+        # A plane of zero emittance has no mode to hold its size, so the renormalized block is
+        # rebuilt from the modes alone (that plane comes out zero).  Otherwise any rows the modes
+        # do not span are kept from the pass, as elsewhere: of two equal emittances the mode
+        # decomposition can return one, and the other plane must not be lost with it.
+        eps_seed = np.sort(np.abs(np.linalg.eigvals(b_seed @ _j6()[:4, :4]).imag))
+        keep_unspanned = not (eps_seed[0] <= 1e-12 * max(float(eps_seed[-1]), 1e-300))
+    else:
+        target_modes = _sigma_modes(sigma_seed)
+        zblk_seed = sigma_seed[4:6, :].copy(), sigma_seed[:, 4:6].copy()
+
+    def _held_complete(S, zz):
+        """S with the held block zz and the phase correlated with the transverse planes only
+        through the energy (its correlation with the betatron motion held at zero); symmetric.
+        (zz is the block in the frame S is in.)"""
+        S[4:6, 4:6] = zz
+        if zz[1, 1] > 0.0:
+            S[0:4, 4] = S[0:4, 5] * (zz[0, 1] / zz[1, 1])
+        else:
+            S[0:4, 4:6] = 0.0
+        S[4:6, 0:4] = S[0:4, 4:6].T
+        return S
+
+    def _to_betatron(S):
+        S = np.array(S, float)
+        S[0:4, 0:4] = _betatron_block(S, s55)
+        return S
+
+    def _from_betatron(S):
+        S = np.array(S, float)
+        if s55 > 0.0:
+            S[0:4, 0:4] += np.outer(S[0:4, 5], S[0:4, 5]) / s55
+        return S
 
     def _step(Sigma):
-        """One renormalized period map application R(M·Σ·Mᵀ)."""
-        Sigma_new = _renormalize_eigenemittances(_pass(Sigma), target_modes)
+        """One renormalized period map application R(M·Σ·Mᵀ).  With the bunch held, Σ in and
+        out carries the betatron block in place of the transverse one."""
+        if hold:
+            S = _held_complete(np.array(_counted_pass(_from_betatron(Sigma)), float), zz_seed)
+            S[0:4, 0:4] = _renormalize_eigenemittances(_betatron_block(S, s55), target_modes,
+                                                       pairing="emittance",
+                                                       keep_unspanned=keep_unspanned)
+            return S
+        Sigma_new = _renormalize_eigenemittances(_counted_pass(Sigma), target_modes)
         if longitudinal == "frozen":
             Sigma_new = Sigma_new.copy()
             Sigma_new[4:6, :] = zblk_seed[0]
             Sigma_new[:, 4:6] = zblk_seed[1]
         return Sigma_new
 
-    norm0 = max(float(np.linalg.norm(sigma_seed)), 1e-30)
+    # A cell that holds a change of clock is solved on its exit clock, where most of it runs.
+    # This is conditioning only, the fixed point is the same.  The unscaled least-squares
+    # polish below ends where round-off takes it on such a cell: from six starts perturbed by
+    # up to 1e-11 it converged 6 and 4 times on the exit clock (one test cell switching up,
+    # one switching down), against 4 and 0 on the entrance clock, where the second stalled
+    # 2-3e-2 off in beta_z.  The renormalized step itself stays on the entrance clock, and
+    # the result is handed back on it.
+    k = float(state.get("clock_ratio", 1.0) or 1.0)
+    sigma_start = sigma_seed
+    if k != 1.0:
+        K = np.eye(6)
+        K[4, 4] = k
+        Ki = np.eye(6)
+        Ki[4, 4] = 1.0 / k
+        _step_on_entry = _step
+
+        def _step(S, _s=_step_on_entry):
+            return K @ _s(Ki @ S @ Ki.T) @ K.T
+
+        sigma_start = K @ sigma_seed @ K.T
+    if hold:
+        zz_start = np.array(sigma_start[4:6, 4:6], float)      # the held block, on this clock
+        sigma_start = _to_betatron(_held_complete(np.array(sigma_start, float), zz_start))
+        # the scale of the entries solved for: the held block (deg², large for a long bunch)
+        # would loosen their tolerance by its own size
+        solved = np.zeros((6, 6))
+        solved[0:4, 0:4] = sigma_start[0:4, 0:4]
+        solved[0:4, 5] = solved[5, 0:4] = sigma_start[0:4, 5]
+        norm0 = max(float(np.linalg.norm(solved)), 1e-30)
+    else:
+        norm0 = max(float(np.linalg.norm(sigma_start)), 1e-30)
     iu = np.triu_indices(6)
+    # the entries the polish varies: all of them, or with the bunch held the transverse block
+    # and its correlation with the energy
+    free = (np.flatnonzero((iu[1] < 4) | ((iu[1] == 5) & (iu[0] < 4))) if hold
+            else np.arange(len(iu[0])))
+    fixed_vec = sigma_start[iu].copy()       # only its held entries are read
+
+    def _from_vec(v):
+        full = fixed_vec.copy()
+        full[free] = v
+        S = np.zeros((6, 6))
+        S[iu] = full
+        S = S + np.triu(S, 1).T             # symmetrize
+        return _held_complete(S, zz_start) if hold else S
 
     def _residual_vec(v):
-        S = np.zeros((6, 6))
-        S[iu] = v
-        S = S + np.triu(S, 1).T          # symmetrize
-        return (_step(S) - S)[iu] / norm0
+        S = _from_vec(v)
+        return (_step(S) - S)[iu][free] / norm0
 
     # Damped Picard warm-up (robust far from the fixed point) …
-    Sigma = sigma_seed.copy()
+    Sigma = sigma_start.copy()
     residual = float("inf")
     n_done = 0
     warmup = min(max_iter, 8)
@@ -1197,6 +1441,8 @@ def find_matched_period_sigma(lattice, ref, period, current: float,
         Sigma = Sigma_mixed
         if residual < tol:
             break
+    if hold:
+        Sigma = _held_complete(Sigma, zz_start)      # exactly the held block, whatever the mix
 
     # … then a least-squares polish (Picard converges slowly when the
     # period map's spectral radius is near 1; for accelerating cells no
@@ -1204,18 +1450,33 @@ def find_matched_period_sigma(lattice, ref, period, current: float,
     # residual quasi-periodic state, which is the honest answer).
     if residual >= tol:
         from scipy.optimize import least_squares
-        sol = least_squares(_residual_vec, Sigma[iu],
+        sol = least_squares(_residual_vec, Sigma[iu][free],
                             xtol=1e-12, ftol=1e-12, gtol=1e-12,
-                            max_nfev=60 * len(iu[0]))
-        S = np.zeros((6, 6))
-        S[iu] = sol.x
-        Sigma = S + np.triu(S, 1).T
+                            max_nfev=60 * len(free))
+        Sigma = _from_vec(sol.x)
         residual = float(np.abs(sol.fun).max())
         n_done += int(sol.nfev)
 
+    if hold:
+        Sigma = _from_betatron(Sigma)
+    if k != 1.0:
+        Sigma = Ki @ Sigma @ Ki.T
+    converged = residual < tol
+    why = None
+    if not converged:
+        why = (f"did not converge (residual {residual:.2e} against {tol:.0e} after "
+               f"{n_pass[0]} passes of the cell); what is computed from it is approximate")
+    elif hold and (_has_negative_eigenvalue(_betatron_block(Sigma, s55))
+                   or _has_negative_eigenvalue(Sigma[4:6, 4:6])):
+        converged = False
+        why = ("has a negative eigenvalue, so it is not a beam: it is reported as not "
+               "converged")
+    if why is not None:
+        warnings.warn(f"period {getattr(period, 'label', '')!r}: the matched beam {why}",
+                      RuntimeWarning, stacklevel=2)
     return {
         "sigma_entry": Sigma,
-        "converged": residual < tol,
+        "converged": converged,
         "n_iter": n_done,
         "residual": residual,
         "ref_entry": ref_entry,
@@ -1223,6 +1484,7 @@ def find_matched_period_sigma(lattice, ref, period, current: float,
         "sc_factor": sc_factor,
         "continuous": continuous,
         "longitudinal": longitudinal,
-        "sigma_model_approx": ("frozen-longitudinal"
-                               if longitudinal == "frozen" else None),
+        "sigma_model_approx": ("frozen-longitudinal" if longitudinal == "frozen"
+                               else "held-longitudinal" if hold else None),
+        "longitudinal_held": held,
     }

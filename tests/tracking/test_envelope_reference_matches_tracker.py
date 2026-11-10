@@ -26,7 +26,7 @@ from linac_gen.core.step_config import StepConfig
 from linac_gen.elements.drift import Drift
 from linac_gen.elements.field_map import FieldMap
 from linac_gen.elements.field_map_3d import FieldMap3D
-from linac_gen.elements.lattice_commands import Freq
+from linac_gen.elements.lattice_commands import Freq, SetBeamE0P0, SetReferenceEnergy
 from linac_gen.elements.marker import Marker
 from linac_gen.elements.superposed_field_map import SuperposedFieldMap
 from linac_gen.io.field_map_data import FieldChannel, FieldMapData
@@ -372,3 +372,548 @@ def test_dispersion_and_matrix_mode_ignore_a_previous_run_at_another_energy():
     reused_m = compute_transfer_matrix(reused, ref)
     np.testing.assert_array_equal(reused_d["eta_x"], fresh_d["eta_x"])
     np.testing.assert_array_equal(reused_m, fresh_m)
+
+
+# ------------------------------------------------------------ negative drift
+@pytest.mark.parametrize("current", [0.0, 5.0])
+def test_a_negative_drift_steps_the_clock_back_in_every_mode(current):
+    """A deck can overlap two elements with a negative drift.  A multiparticle run
+    steps ``s`` and φ_s back through it; the other modes skipped φ_s, and the
+    backtracking table skipped ``s`` as well."""
+    def lat():
+        return _lattice(Drift("D0", 100.0), Drift("D1", -204.288), Drift("D2", 300.0))
+    ref = ReferenceParticle(species=PROTON, w_kin=800.0, frequency=162.5)
+    s = 100.0 - 204.288 + 300.0
+    phi = 360.0 * s / (ref.beta * ref.wavelength)
+    mp_exit, _ = _mp(lat(), ref, current)
+    env_exit, _ = _env(lat(), ref, current)
+    rows = [mp_exit, env_exit, reference_at(lat(), ref, 3),
+            build_replay_table(lat(), ref, end=2)[-1]]
+    for got in rows:
+        assert got.s == pytest.approx(s, rel=1e-12)
+        assert got.phi_s == pytest.approx(phi, rel=1e-12)
+
+
+@pytest.mark.parametrize("current", [0.0, 5.0])
+def test_rf_after_a_negative_drift_reads_the_same_clock(current):
+    """No deck has this today.  An absolute-phase map after the drift is what the
+    skipped φ_s would have got wrong."""
+    def lat():
+        return _lattice(Drift("D0", 100.0), Drift("D1", -40.0), _fm3d(p_flag=0))
+    ref = ReferenceParticle(species=PROTON, w_kin=2.1, frequency=162.5)
+    mp_exit, _ = _mp(lat(), ref, current)
+    env_exit, _ = _env(lat(), ref, current)
+    assert env_exit.w_kin == pytest.approx(mp_exit.w_kin, rel=1e-12)
+    assert env_exit.phi_s == pytest.approx(mp_exit.phi_s, rel=1e-9)
+
+
+def test_a_negative_drift_in_the_matrix_and_phase_advance_walks():
+    """Overlapping with a negative drift is the same line as the shorter drift: the
+    map after it sees the same clock, so the whole matrix and the walk agree."""
+    from linac_gen.analysis.phase_advance import _advance_ref_like_matrix_walk
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+
+    def overlap():
+        return _lattice(Drift("D0", 100.0), Drift("D1", -40.0), _fm3d(p_flag=0))
+
+    def shorter():
+        return _lattice(Drift("D0", 60.0), _fm3d(p_flag=0))
+    ref = ReferenceParticle(species=PROTON, w_kin=2.1, frequency=162.5)
+    np.testing.assert_allclose(compute_transfer_matrix(overlap(), ref),
+                               compute_transfer_matrix(shorter(), ref),
+                               rtol=1e-9, atol=1e-12)
+    lat = overlap()
+    walked = ref.copy()
+    for el in lat.elements:
+        _advance_ref_like_matrix_walk(el, walked, lat)
+    mp_exit, _ = _mp(overlap(), ref)
+    assert walked.w_kin == pytest.approx(mp_exit.w_kin, rel=1e-12)
+    assert walked.phi_s == pytest.approx(mp_exit.phi_s, rel=1e-9)
+
+
+# ------------------------------------------------- FREQ cards in the matrix walks
+def _tracker_matrix(lat, ref):
+    """The multiparticle tracker's whole-line map, by central differences."""
+    eps = np.array([1e-3, 1e-3, 1e-3, 1e-3, 1e-2, 1e-6])
+    beam = Beam(ref=ref.copy(), n_particles=13, current=0.0)
+    beam.particles[:] = 0.0
+    for i in range(6):
+        beam.particles[2 * i + 1, i] = eps[i]
+        beam.particles[2 * i + 2, i] = -eps[i]
+    T.Tracker(lat, beam).run()
+    M = np.zeros((6, 6))
+    for i in range(6):
+        M[:, i] = (beam.particles[2 * i + 1] - beam.particles[2 * i + 2]) / (2 * eps[i])
+    return M, beam.ref
+
+
+def _ncells(frequency=325.0):
+    from linac_gen.elements.ncells import NCells
+    return NCells("NC", mode=1, n_cells=6, beta_g=0.2, eot_v_per_m=2.0e6,
+                  theta_s_deg=-30.0, aperture_mm=15.0, p_flag=1,
+                  frequency_mhz=frequency)
+
+
+def _f_ref(w=2.1, f=162.5):
+    return ReferenceParticle(species=PROTON, w_kin=w, frequency=f)
+
+
+@pytest.mark.parametrize("current", [0.0, 5.0])
+@pytest.mark.parametrize("rf_after", [False, True], ids=["no_rf", "map_after"])
+def test_a_freq_card_moves_the_clock_in_every_walk(current, rf_after):
+    """The matrix walks treated FREQ as passive, so the clock stayed at the old
+    frequency up to the next RF element, and to the end of a line without one."""
+    from linac_gen.analysis.phase_advance import _advance_ref_like_matrix_walk
+
+    def lat():
+        tail = [_fm3d(freq=325.0, p_flag=0)] if rf_after else []
+        return _lattice(Drift("D0", 100.0), Freq("F", 325.0), Drift("D1", 150.0), *tail)
+    ref = _f_ref()
+    mp_exit, _ = _mp(lat(), ref, current)
+    env_exit, _ = _env(lat(), ref, current)
+    line = lat()
+    walked = ref.copy()
+    for el in line.elements:
+        _advance_ref_like_matrix_walk(el, walked, line)
+    rows = [env_exit, reference_at(lat(), ref, len(line.elements)), walked,
+            build_replay_table(lat(), ref, end=len(line.elements) - 1)[-1]]
+    assert mp_exit.frequency == 325.0
+    for got in rows:
+        assert got.frequency == mp_exit.frequency
+        assert got.w_kin == pytest.approx(mp_exit.w_kin, rel=1e-12)
+        assert got.phi_s == pytest.approx(mp_exit.phi_s, rel=1e-9)
+
+
+def test_the_card_is_a_change_of_the_phase_coordinate_in_the_matrix():
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+
+    def lat():
+        return _lattice(Drift("D0", 100.0), Freq("F", 325.0), Drift("D1", 150.0))
+    ref = _f_ref()
+    M = compute_transfer_matrix(lat(), ref)
+    assert M[4, 4] == 2.0
+    Mt, _ = _tracker_matrix(lat(), ref)
+    np.testing.assert_allclose(M, Mt, rtol=1e-6, atol=1e-9)
+    # the card alone, read at the clock it meets
+    line = lat()
+    D = np.eye(6)
+    D[4, 4] = 2.0
+    np.testing.assert_array_equal(compute_transfer_matrix(line, ref, start=1, end=1), D)
+    # a window after the card starts on the new clock, as a line built at 325 MHz does
+    np.testing.assert_allclose(
+        compute_transfer_matrix(lat(), ref, start=2),
+        compute_transfer_matrix(_lattice(Drift("D1", 150.0)), _f_ref(f=325.0)),
+        rtol=1e-13, atol=0)
+
+
+@pytest.mark.parametrize("card_mhz", [162.5, 0.0], ids=["same", "card_zero"])
+def test_a_card_that_rescales_nothing_leaves_the_matrix_alone(card_mhz):
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+    card = Freq("F", card_mhz)
+    ref = _f_ref()
+    np.testing.assert_array_equal(card.transfer_matrix(ref), np.eye(6))
+    line = _lattice(Marker("M0", snapshot=False), card)
+    np.testing.assert_array_equal(compute_transfer_matrix(line, ref), np.eye(6))
+    after = reference_at(line, ref, 2)
+    assert after.frequency == 162.5
+    assert after.phi_s == ref.phi_s
+
+
+def test_a_card_meeting_a_clock_without_a_frequency_has_nothing_to_scale():
+    """``apply_command`` guards this; a ``ReferenceParticle`` cannot be built at 0 MHz."""
+    from types import SimpleNamespace
+    np.testing.assert_array_equal(
+        Freq("F", 325.0).transfer_matrix(SimpleNamespace(frequency=0.0)), np.eye(6))
+
+
+def test_an_equal_card_is_bit_identical_to_no_card():
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+    ref = _f_ref()
+
+    def lat(*card):
+        return _lattice(Drift("D0", 100.0), *card, _fm3d(p_flag=0), Drift("D1", 50.0))
+    np.testing.assert_array_equal(compute_transfer_matrix(lat(Freq("F", 162.5)), ref),
+                                  compute_transfer_matrix(lat(), ref))
+    a, b = reference_at(lat(Freq("F", 162.5)), ref, 4), reference_at(lat(), ref, 3)
+    assert (a.s, a.w_kin, a.phi_s, a.frequency) == (b.s, b.w_kin, b.phi_s, b.frequency)
+
+
+def test_a_card_before_a_calibrated_map_gives_what_the_map_alone_gives():
+    """A map with no card makes the jump itself on entry.  A drift's matrix obeys
+    Drift(f₂)·D = D·Drift(f₁), so both routes are the same whole-line map when the
+    map calibrates its own phase.  (Not φ_s, and not an absolute-phase map: that
+    route leaves φ_s in degrees of the old clock.)"""
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+    ref = _f_ref()
+    with_card = _lattice(Drift("D0", 100.0), Freq("F", 325.0), Drift("D1", 150.0),
+                         _fm3d(freq=325.0, p_flag=1))
+    no_card = _lattice(Drift("D0", 100.0), Drift("D1", 150.0), _fm3d(freq=325.0, p_flag=1))
+    np.testing.assert_allclose(compute_transfer_matrix(with_card, ref),
+                               compute_transfer_matrix(no_card, ref),
+                               rtol=1e-6, atol=1e-8)
+    a, b = reference_at(with_card, ref, 4), reference_at(no_card, ref, 3)
+    assert a.frequency == b.frequency == 325.0
+    assert a.w_kin == pytest.approx(b.w_kin, rel=1e-9)
+
+
+@pytest.mark.parametrize("make", [
+    lambda: _fm3d(freq=325.0, p_flag=0),
+    lambda: _fm3d(freq=325.0, p_flag=1),
+    _ncells,
+], ids=["map_absolute", "map_sync", "ncells"])
+@pytest.mark.parametrize("jump", [True, False], ids=["jump", "same_frequency"])
+def test_matrix_mode_reproduces_the_envelope_at_zero_current(make, jump):
+    """M Σ₀ Mᵀ is the envelope's exit Σ on every block, with a card and without."""
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+
+    def lat():
+        return _lattice(Drift("D0", 100.0), Freq("F", 325.0), Drift("D1", 150.0), make())
+    ref = _f_ref(f=162.5 if jump else 325.0)
+    _e, res = _env(lat(), ref, 0.0)
+    S0, S1 = np.asarray(res.sigma_matrix[0]), np.asarray(res.sigma_matrix[-1])
+    M = compute_transfer_matrix(lat(), ref)
+    got = M @ S0 @ M.T
+    scale = np.sqrt(np.outer(np.diag(S1), np.diag(S1)))
+    assert np.abs((got - S1) / scale).max() < 1e-10
+
+
+@pytest.mark.parametrize("jump", [True, False], ids=["jump", "same_frequency"])
+def test_ncells_after_a_card_agrees_with_the_tracker_on_x_y_energy_and_phase(jump):
+    """Not z: the tracker adds NCELLS's synchronism factor to the phase it hands the
+    gaps (the 2-engine split in ``NCells._sync_delta``), and matrix mode and the
+    envelope do not, by design."""
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+
+    def lat():
+        return _lattice(Drift("D0", 100.0), Freq("F", 325.0), Drift("D1", 150.0), _ncells())
+    ref = _f_ref(f=162.5 if jump else 325.0)
+    M = compute_transfer_matrix(lat(), ref)
+    Mt, rt = _tracker_matrix(lat(), ref)
+    np.testing.assert_allclose(M[:4, :4], Mt[:4, :4], rtol=1e-5, atol=1e-6)
+    line = lat()
+    r = reference_at(line, ref, len(line.elements))
+    assert r.w_kin == pytest.approx(rt.w_kin, rel=1e-11)
+    assert r.phi_s == pytest.approx(rt.phi_s, rel=1e-9)
+    assert r.frequency == rt.frequency == 325.0
+
+
+def test_longitudinal_twiss_and_phase_advance_across_a_card():
+    """β_z is in deg/MeV at the running clock, so it takes the factor at the card
+    (the recorder's documented rule), the card adds no phase advance, and the drift
+    after it advances on the new clock, as the same drift in a line at 325 MHz does."""
+    from linac_gen.analysis.period_detect import PeriodicStructure
+    from linac_gen.analysis.phase_advance import structure_phase_advance_along_s
+
+    def walk(lat, ref, seed):
+        n = len(lat.elements)
+        period = PeriodicStructure(start=0, end=n, inner_period_length=n, inner_slice_end=n,
+                                   n_repeats=1, label="p", source="test")
+        return structure_phase_advance_along_s(lat, ref, period, seed=seed)
+    seed = {"alpha_x": 0.0, "beta_x": 1.0, "alpha_y": 0.0, "beta_y": 1.0,
+            "alpha_z": 0.0, "beta_z": 2.0}
+    out = walk(_lattice(Drift("D0", 100.0), Freq("F", 325.0), Drift("D1", 150.0)), _f_ref(), seed)
+    assert out["beta_z"][2] == pytest.approx(2.0 * out["beta_z"][1], rel=1e-13)
+    assert out["mu_z_deg"][2] == pytest.approx(out["mu_z_deg"][1], rel=1e-13)
+    assert out["beta_x"][2] == pytest.approx(out["beta_x"][1], rel=1e-13)
+    after = walk(_lattice(Drift("D1", 150.0)), _f_ref(f=325.0),
+                 {**seed, "alpha_z": out["alpha_z"][2], "beta_z": out["beta_z"][2]})
+    assert out["beta_z"][3] == pytest.approx(after["beta_z"][1], rel=1e-13)
+    assert out["mu_z_deg"][3] - out["mu_z_deg"][2] == pytest.approx(after["mu_z_deg"][1], rel=1e-11)
+
+
+def test_a_window_after_a_card_starts_on_the_new_clock():
+    """The first cavity after a card used to make the jump itself inside the window,
+    so a period there had a longitudinal determinant of f₂/f₁, and a wrong β_z and μ_z."""
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+    lat = _lattice(Drift("D0", 100.0), Freq("F", 325.0), _fm3d(freq=325.0, p_flag=1))
+    M = compute_transfer_matrix(lat, _f_ref(), start=2)
+    assert np.linalg.det(M[4:, 4:]) == pytest.approx(1.0, abs=2e-2)
+
+
+def test_dispersion_walk_applies_the_card_mid_line():
+    """Downstream of a bend the dispersion vector has a Δφ component, so the card's
+    factor reaches η_x through the cavity's phase dependence.  Against the tracker,
+    which NCELLS's x plane matches."""
+    from linac_gen.analysis.dispersion import dispersion_along_s
+    from linac_gen.elements.dipole import Dipole
+
+    def lat():
+        return _lattice(Drift("D0", 100.0), Dipole("B1", angle=15.0, rho=1500.0, aperture=40.0),
+                        Drift("D1", 200.0), Freq("F", 325.0), Drift("D2", 150.0),
+                        _ncells(), Drift("D3", 100.0))
+    ref = _f_ref()
+    got = dispersion_along_s(lat(), ref)
+    Mt, _rt = _tracker_matrix(lat(), ref)
+    assert got["eta_x"][-1] == pytest.approx(Mt[0, 5] / Mt[5, 5], rel=1e-3)
+
+
+def test_the_torch_mirror_applies_the_card():
+    """``compute_transfer_matrix_torch`` is the mirror of the numpy walk."""
+    from linac_gen.elements.quadrupole import Quadrupole
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+    from linac_gen.tracking.torch_tracking import compute_transfer_matrix_torch
+
+    def lat():
+        return _lattice(Drift("D0", 100.0), Freq("F", 325.0), Drift("D1", 150.0),
+                        Quadrupole("Q", length=100.0, gradient=2.0, aperture=30.0))
+    ref = _f_ref()
+    for start, end in ((0, None), (2, None), (1, 1)):
+        np.testing.assert_allclose(
+            compute_transfer_matrix_torch(lat(), ref, start=start, end=end).detach().numpy(),
+            compute_transfer_matrix(lat(), ref, start=start, end=end), rtol=1e-13, atol=1e-13)
+
+
+def test_envelope_backtracking_closes_across_a_card():
+    """The backward walk inverts each element's matrix, and the card's was the
+    identity, so the entrance σ_φ came back wrong."""
+    from linac_gen.tracking.backtrack import backtrack_envelope
+
+    def lat():
+        return _lattice(Drift("D0", 100.0), Freq("F", 325.0), Drift("D1", 150.0))
+    ref = _f_ref()
+    _e, fw = _env(lat(), ref, 0.0)
+    exit_twiss = {"alpha_x": fw.alpha_x[-1], "beta_x": fw.beta_x[-1], "emit_x": fw.emit_x[-1],
+                  "alpha_y": fw.alpha_y[-1], "beta_y": fw.beta_y[-1], "emit_y": fw.emit_y[-1],
+                  "alpha_z": fw.alpha_z[-1], "beta_z": fw.beta_z[-1], "emit_z": fw.emit_z[-1]}
+    back = backtrack_envelope(lat(), ref, exit_twiss)
+    np.testing.assert_allclose(np.asarray(back.sigma_matrix[0]), np.asarray(fw.sigma_matrix[0]),
+                               rtol=1e-9, atol=1e-11)
+
+
+# ------------------------------------------------- cards that set the energy
+# (the HELIX card; SET_BEAM_ENERGY and SET_BEAM_E0_P0 set and shifted the energy until
+# 2026-11, and are TraceWin matching criteria, tests/elements/test_energy_cards.py)
+ENERGY_CARDS = {
+    "HELIX_SET_ENERGY": lambda: SetReferenceEnergy("E", energy_MeV=120.0),
+    "HELIX_SHIFT_ENERGY": lambda: SetReferenceEnergy("E", energy_MeV=20.0, shift=True),
+}
+
+
+def _quad(name, g):
+    from linac_gen.elements.quadrupole import Quadrupole
+    return Quadrupole(name, length=100.0, gradient=g, aperture=30.0)
+
+
+def _energy_line(make):
+    return _lattice(Drift("D0", 300.0), _quad("Q0", 4.0), make(),
+                    Drift("D1", 300.0), _quad("Q1", -4.0), Drift("D2", 100.0))
+
+
+@pytest.mark.parametrize("current", [0.0, 5.0])
+@pytest.mark.parametrize("make", ENERGY_CARDS.values(), ids=ENERGY_CARDS.keys())
+def test_an_energy_card_moves_the_reference_in_every_walk(make, current):
+    """The walks stepped over it, so the energy, the phase and every map after it
+    were at the energy before the card."""
+    from linac_gen.analysis.phase_advance import _advance_ref_like_matrix_walk
+
+    ref = _f_ref(w=100.0, f=352.21)
+    mp_exit, _ = _mp(_energy_line(make), ref, current)
+    env_exit, _ = _env(_energy_line(make), ref, current)
+    line = _energy_line(make)
+    walked = ref.copy()
+    for el in line.elements:
+        _advance_ref_like_matrix_walk(el, walked, line)
+    rows = [env_exit, reference_at(_energy_line(make), ref, len(line.elements)), walked,
+            build_replay_table(_energy_line(make), ref, end=len(line.elements) - 1)[-1]]
+    assert mp_exit.w_kin == 120.0
+    for got in rows:
+        assert got.w_kin == mp_exit.w_kin
+        assert got.phi_s == pytest.approx(mp_exit.phi_s, rel=1e-12)
+        assert got.s == mp_exit.s
+
+
+@pytest.mark.parametrize("make", ENERGY_CARDS.values(), ids=ENERGY_CARDS.keys())
+def test_matrix_mode_reproduces_the_envelope_across_an_energy_card(make):
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+
+    ref = _f_ref(w=100.0, f=352.21)
+    _e, res = _env(_energy_line(make), ref, 0.0)
+    S0, S1 = np.asarray(res.sigma_matrix[0]), np.asarray(res.sigma_matrix[-1])
+    M = compute_transfer_matrix(_energy_line(make), ref)
+    got = M @ S0 @ M.T
+    scale = np.sqrt(np.outer(np.diag(S1), np.diag(S1)))
+    assert np.abs((got - S1) / scale).max() < 1e-12
+    # the card's own map changes no coordinate
+    line = _energy_line(make)
+    np.testing.assert_array_equal(compute_transfer_matrix(line, ref, start=2, end=2), np.eye(6))
+
+
+@pytest.mark.parametrize("make", ENERGY_CARDS.values(), ids=ENERGY_CARDS.keys())
+def test_matrix_mode_matches_the_tracker_across_an_energy_card(make):
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+
+    ref = _f_ref(w=100.0, f=352.21)
+    M = compute_transfer_matrix(_energy_line(make), ref)
+    Mt, _r = _tracker_matrix(_energy_line(make), ref)
+    np.testing.assert_allclose(M, Mt, rtol=1e-6, atol=1e-9)
+
+
+def test_a_window_after_an_energy_card_starts_at_its_energy():
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+
+    ref = _f_ref(w=100.0, f=352.21)
+    line = _energy_line(ENERGY_CARDS["HELIX_SET_ENERGY"])
+    alone = _lattice(Drift("D1", 300.0), _quad("Q1", -4.0), Drift("D2", 100.0))
+    np.testing.assert_allclose(compute_transfer_matrix(line, ref, start=3),
+                               compute_transfer_matrix(alone, _f_ref(w=120.0, f=352.21)),
+                               rtol=1e-13, atol=1e-13)
+
+
+def test_an_energy_card_before_a_map_evaluates_it_at_the_new_energy():
+    """Through a cavity the gain starts from the card's energy, in the walk as in a run."""
+    def lat():
+        return _lattice(Drift("D0", 50.0), SetReferenceEnergy("E", energy_MeV=3.0),
+                        _fm3d(freq=162.5, p_flag=0), Drift("D1", 50.0))
+    ref = _f_ref(w=2.1, f=162.5)
+    mp_exit, _ = _mp(lat(), ref, 0.0)
+    line = lat()
+    got = reference_at(line, ref, len(line.elements))
+    assert got.w_kin == pytest.approx(mp_exit.w_kin, rel=1e-12)
+    assert got.phi_s == pytest.approx(mp_exit.phi_s, rel=1e-9)
+
+
+@pytest.mark.parametrize("make, where", [
+    (ENERGY_CARDS["HELIX_SET_ENERGY"], "first"), (ENERGY_CARDS["HELIX_SET_ENERGY"], "last"),
+    (ENERGY_CARDS["HELIX_SHIFT_ENERGY"], "first"), (ENERGY_CARDS["HELIX_SHIFT_ENERGY"], "last")])
+def test_an_energy_card_at_either_end_of_the_line(make, where):
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+
+    def lat():
+        body = [Drift("D0", 300.0), _quad("Q0", 4.0)]
+        return _lattice(*([make()] + body if where == "first" else body + [make()]))
+    ref = _f_ref(w=100.0, f=352.21)
+    mp_exit, _ = _mp(lat(), ref, 0.0)
+    line = lat()
+    got = reference_at(line, ref, len(line.elements))
+    assert got.w_kin == mp_exit.w_kin == 120.0
+    assert got.phi_s == pytest.approx(mp_exit.phi_s, rel=1e-12)
+    M = compute_transfer_matrix(lat(), ref)
+    Mt, _r = _tracker_matrix(lat(), ref)
+    np.testing.assert_allclose(M, Mt, rtol=1e-6, atol=1e-9)
+
+
+def test_e0_p0_without_its_energy_flag_changes_nothing():
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+
+    def lat(card):
+        return _lattice(Drift("D0", 300.0), *card, _quad("Q0", 4.0))
+    ref = _f_ref(w=100.0, f=352.21)
+    a = compute_transfer_matrix(lat([]), ref)
+    b = compute_transfer_matrix(lat([SetBeamE0P0("E", dE_MeV=20.0, dphi_deg=5.0, ke=0, kp=1)]), ref)
+    assert a.tobytes() == b.tobytes()
+
+
+def test_the_phase_advance_and_dispersion_walks_follow_an_energy_card():
+    """Each evaluates its maps at the walk's energy, against a line with no card that
+    starts at that energy."""
+    from linac_gen.analysis.dispersion import dispersion_along_s
+    from linac_gen.elements.dipole import Dipole
+
+    def bend():
+        return Dipole("B1", angle=15.0, rho=1500.0, aperture=40.0)
+    line = _lattice(Drift("D0", 100.0), SetReferenceEnergy("E", energy_MeV=120.0), bend(), Drift("D1", 200.0))
+    alone = _lattice(Drift("D0", 100.0), bend(), Drift("D1", 200.0))
+    got = dispersion_along_s(line, _f_ref(w=100.0, f=352.21))
+    want = dispersion_along_s(alone, _f_ref(w=120.0, f=352.21))
+    assert got["eta_x"][-1] == pytest.approx(want["eta_x"][-1], rel=1e-12)
+    assert abs(want["eta_x"][-1]) > 1e-3
+
+
+def test_the_torch_mirror_follows_the_energy_cards():
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+    from linac_gen.tracking.torch_tracking import compute_transfer_matrix_torch
+
+    ref = _f_ref(w=100.0, f=352.21)
+    for make in ENERGY_CARDS.values():
+        for start, end in ((0, None), (3, None), (2, 2)):
+            np.testing.assert_allclose(
+                compute_transfer_matrix_torch(_energy_line(make), ref, start=start, end=end).detach().numpy(),
+                compute_transfer_matrix(_energy_line(make), ref, start=start, end=end),
+                rtol=1e-13, atol=1e-13)
+
+
+def test_a_curved_cluster_after_an_energy_card_is_not_traced_at_the_old_energy():
+    from linac_gen.elements.curved_field_map import _energy_neutral
+
+    assert not _energy_neutral(SetReferenceEnergy("E", energy_MeV=20.0, shift=True))
+    assert not _energy_neutral(SetReferenceEnergy("E", energy_MeV=120.0))
+    assert _energy_neutral(Drift("D", 100.0))
+
+
+# ---------------------------------------------- NCELLS with no card before it
+def _cardless(frequency=325.0):
+    return _lattice(Drift("D0", 200.0), _ncells(frequency), Drift("D1", 100.0))
+
+
+def test_ncells_without_a_card_makes_its_jump_in_the_matrix():
+    """On Σ, not the determinant: scaling the Δφ column without evaluating the cavity
+    on its own clock has the right determinant and gives σ_φ 7.08 for 15.56."""
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+
+    ref = _f_ref(w=20.0)
+    _e, res = _env(_cardless(), ref, 0.0)
+    S0, S1 = np.asarray(res.sigma_matrix[0]), np.asarray(res.sigma_matrix[-1])
+    M = compute_transfer_matrix(_cardless(), ref)
+    got = M @ S0 @ M.T
+    scale = np.sqrt(np.outer(np.diag(S1), np.diag(S1)))
+    assert np.abs((got - S1) / scale).max() < 1e-10
+    assert np.linalg.det(M[4:6, 4:6]) == pytest.approx(2.0, rel=1e-12)
+
+
+def test_ncells_without_a_card_agrees_with_the_tracker_on_x_y_energy_and_phase():
+    from linac_gen.tracking.matrix_tracking import compute_transfer_matrix
+
+    ref = _f_ref(w=20.0)
+    M = compute_transfer_matrix(_cardless(), ref)
+    Mt, rt = _tracker_matrix(_cardless(), ref)
+    np.testing.assert_allclose(M[:4, :4], Mt[:4, :4], rtol=1e-5, atol=1e-6)
+    line = _cardless()
+    r = reference_at(line, ref, len(line.elements))
+    assert r.w_kin == pytest.approx(rt.w_kin, rel=1e-11)
+    assert r.phi_s == pytest.approx(rt.phi_s, rel=1e-9)
+    assert r.frequency == rt.frequency == 325.0
+
+
+def test_ncells_on_its_own_clock_is_bit_identical():
+    """The branch every deck with a card takes: nothing to do."""
+    el = _ncells()
+    M = el.fitted_matrix(_f_ref(w=20.0, f=325.0))
+    el2 = _ncells()
+    el2.reset_run_state()
+    N = el2.fitted_matrix_slice(_f_ref(w=20.0, f=325.0), el2.length)
+    assert M.tobytes() == N.tobytes()
+
+
+def test_ncells_fitted_matrix_leaves_the_callers_reference_alone():
+    ref = _f_ref(w=20.0)
+    before = (ref.frequency, ref.w_kin, ref.phi_s, ref.s)
+    _ncells().fitted_matrix(ref)
+    assert (ref.frequency, ref.w_kin, ref.phi_s, ref.s) == before
+
+
+@pytest.mark.parametrize("f_cavity, clock", [(0.0, 162.5), (325.0, 325.0)], ids=["no_frequency", "same"])
+def test_ncells_with_nothing_to_scale_makes_no_jump(f_cavity, clock):
+    el = _ncells(f_cavity)
+    M = el.fitted_matrix(_f_ref(w=20.0, f=clock))
+    assert np.linalg.det(M[4:6, 4:6]) == pytest.approx(1.0, rel=1e-9)
+
+
+def test_the_envelope_is_not_given_the_jump_twice():
+    """It makes the jump, then asks for the matrix on the new clock."""
+    ref = _f_ref(w=20.0)
+    _e, res = _env(_cardless(), ref, 0.0)
+    S0, S1 = np.asarray(res.sigma_matrix[0]), np.asarray(res.sigma_matrix[-1])
+    # phase space area scales with the clock once
+    assert np.sqrt(np.linalg.det(S1[4:6, 4:6]) / np.linalg.det(S0[4:6, 4:6])) == pytest.approx(2.0, rel=1e-9)
+
+
+@pytest.mark.parametrize("start", [0, 2], ids=["in the span", "before the window"])
+def test_a_card_that_leaves_no_energy_stops_the_torch_walk(start):
+    from linac_gen.tracking.torch_tracking import compute_transfer_matrix_torch
+    lat = Lattice()
+    lat.add(Drift("D1", length=100.0))
+    lat.add(SetReferenceEnergy("E", energy_MeV=0.0))
+    lat.add(Drift("D2", length=100.0))
+    with pytest.raises(ValueError, match="no energy"):
+        compute_transfer_matrix_torch(lat, ReferenceParticle(species=PROTON, w_kin=5.0, frequency=162.5),
+                                      start=start)

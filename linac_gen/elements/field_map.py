@@ -327,11 +327,15 @@ class FieldMap(FieldMapBase, Misalignment, FieldError):
           pre-computed by :meth:`_calibrate_sync_phase`.
               phi_sync_rad = (self.phase − ψ) + phi_s_midpoint.
         """
+        # SET_BEAM_PHASE_ERROR: its RF shift on the phase the beam sees; its
+        # correction on the clock, read here only where the clock itself is
+        shift = float(getattr(ref, "rf_shift", 0.0))
         if self.p_flag == 1:
             offset = getattr(self, "_sync_offset_deg", None) or 0.0
             internal = phi_s_midpoint_deg - self._phi_s_at_entrance
-            return (self.effective_phase - offset + internal) * (np.pi / 180.0)
-        return (self.effective_phase + phi_s_midpoint_deg) * (np.pi / 180.0)
+            return (self.effective_phase - offset + internal + shift) * (np.pi / 180.0)
+        rephase = float(getattr(ref, "rf_rephase", 0.0))
+        return (self.effective_phase + phi_s_midpoint_deg + rephase + shift) * (np.pi / 180.0)
 
     # -- Iterative self-consistent SET_SYNC_PHASE calibration ------------
     def _probe_voltage_integral(self, ref_entry,
@@ -1063,7 +1067,7 @@ class FieldMap(FieldMapBase, Misalignment, FieldError):
         if (eff_freq > 0
                 and eff_freq != ref.frequency
                 and self._has_electric_channel()):
-            ref.frequency = eff_freq
+            ref.switch_clock(self.frequency if self.frequency > 0 else eff_freq, eff_freq)
 
     def reset_run_state(self) -> None:
         super().reset_run_state()
@@ -1164,6 +1168,13 @@ class FieldMap(FieldMapBase, Misalignment, FieldError):
                 if min_n > n:
                     n = min_n
         ds = self.length / n
+        # Asked at another clock: the map on its own (reached as its entry would reach
+        # it, phase moved as a FREQ card moves it), the jump's factor exact.  The
+        # probes would otherwise take their Δφ step in the old clock's degrees.
+        clock = float(ref.frequency or 0.0)
+        ref = ref.copy()
+        self._propagate_frequency_to_ref(ref)
+        jump = ref.frequency / clock if clock > 0.0 and ref.frequency != clock else 1.0
 
         def _track_batch(P):
             # one ref copy and one beam for all twelve probes — see
@@ -1180,6 +1191,8 @@ class FieldMap(FieldMapBase, Misalignment, FieldError):
 
         ref_state = np.zeros(6)
         M = numerical_jacobian_batched(_track_batch, ref_state)
+        if jump != 1.0:
+            M[:, 4] *= jump
         return M
 
     def fitted_matrix_slice(self, ref, ds_mm: float) -> np.ndarray:

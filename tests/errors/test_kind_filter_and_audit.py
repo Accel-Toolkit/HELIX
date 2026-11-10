@@ -128,8 +128,8 @@ def test_audit_mirrors_apply_outcomes(hwr_lattice):
     defs = [
         ErrorDef(pattern="FMAP_*", parameter="voltage_rel", sigma=0.01,
                  element_kind="cavity"),
-        # field_rel is unsupported on FieldMaps — the historical
-        # solenoid trap: matched but warn-skipped.
+        # field_rel on a solenoid FieldMap lands in its voltage_rel (applied, not
+        # warn-skipped)
         ErrorDef(pattern="FMAP_*", parameter="field_rel", sigma=0.01,
                  element_kind="solenoid"),
         ErrorDef(pattern="QUAD_*", parameter="dx", sigma=0.1),
@@ -149,9 +149,9 @@ def test_audit_mirrors_apply_outcomes(hwr_lattice):
         for name, _cls in row["skipped"]:
             assert (name, row["parameter"]) in skipped, \
                 f"audit said skipped, apply landed: {name}"
-    # the solenoid field_rel def really is fully skipped (the trap)
+    # the solenoid field_rel def lands on every solenoid map it matched
     sol_row = audit["defs"][1]
-    assert sol_row["matched"] and not sol_row["applicable"]
+    assert sol_row["matched"] and sol_row["applicable"] == sol_row["matched"]
 
 
 @needs("examples/pipii/mebt+hwr/mebt+hwr.dat", "examples/pip2_misalignment_study")

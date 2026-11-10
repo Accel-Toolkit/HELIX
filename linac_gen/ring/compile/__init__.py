@@ -902,13 +902,19 @@ class _Builder:
     # ---- matrix -----------------------------------------------------------------
     def _matrix(self, e, L):
         """A HELIX matrix element: only a transverse map with no coupling to
-        the longitudinal plane (HELIX's matrix does not record the RF
-        frequency of its phase units, and a dispersion column without its
-        path-length row would not be symplectic)."""
+        the longitudinal plane (its phase units are a linac clock's, which
+        the ring's longitudinal coordinates do not take, and a dispersion
+        column without its path-length row would not be symplectic)."""
         M = np.asarray(e.matrix, dtype=float)
         lon = np.zeros((6, 6), dtype=bool)
         lon[:4, 4:] = lon[4:, :4] = True
-        if (np.any(M[lon] != 0.0) or not np.array_equal(M[4:, 4:], np.eye(2))
+        # (not exactly 1: an imported map's z diagonal goes through the Δφ degrees of its
+        # clock and back)
+        if getattr(e, "ref_gain", 0.0):
+            raise RingCompileError(
+                f"element {e.name!r}: a matrix element that changes the reference energy "
+                f"({e.ref_gain:g} MeV) is not modelled in ring mode")
+        if (np.any(M[lon] != 0.0) or not np.allclose(M[4:, 4:], np.eye(2), rtol=0.0, atol=1e-12)
                 or (e.offset is not None and np.any(e.offset[4:] != 0.0))):
             raise RingCompileError(
                 f"element {e.name!r}: a matrix element coupled to the longitudinal plane is "

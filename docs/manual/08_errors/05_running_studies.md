@@ -39,10 +39,22 @@ print(f"σ_x at end (mean ± 1σ): {sx_mean[-1]:.3f} ± {sx_std[-1]:.3f}")
 1. Draws a per-seed sample of every error (alignment, field,
    beam input).
 2. Applies the perturbation to a per-seed lattice/beam copy.
-3. Tracks the multi-particle beam through the perturbed lattice
-   (**always multi-particle** — there is no envelope mode; pass
-   `sc_config` to add PIC space charge).
-4. Keeps the seed's `DiagnosticRecorder` (whole seeds only).
+3. Runs the seed's forward model: by default it tracks the
+   multi-particle beam through the perturbed lattice (pass `sc_config`
+   to add PIC space charge); with `mode="envelope"` it runs the rms
+   envelope (`env_solver` "matrix" or "sacherer", space charge from the
+   beam current, no particle losses; the Sacherer envelope takes a
+   solenoid map's `voltage_rel` draw as every mode does, not a hard-edge
+   quadrupole's `gradient_rel`, and refuses a map it has no model of: a
+   seed whose draws push a steering corrector past its bounds (the LEBT
+   example's first two corrector pairs past 2.4 to 2.5 mrad, the other
+   corrector maps past 20 mrad) stops the study, see
+   [DC mode](../05_space_charge/04_dc_mode.md#dc-aware-envelope-solver))
+   and uses the registered surrogates
+   when the design lattice with them agrees with the native run (see
+   [A study and its surrogates](../13_surrogates/01_overview.md#a-study-and-its-surrogates)).
+4. Keeps the seed's recorder (a `DiagnosticRecorder`, or the
+   `EnvelopeResults` of an envelope study; whole seeds only).
 5. Returns an `ErrorStudyResults` that aggregates across seeds on
    demand (`mean` / `std` / `percentile` / `transmission_stats`).
 
@@ -56,6 +68,10 @@ ErrorStudy(
     sc_config: SpaceChargeConfig | None = None,   # None = no space charge
     base_seed: int = 0,                # RNG offset, for reproducibility /
                                        # extending a study with new seeds
+    *,
+    mode: str = "mp",                  # "mp" tracks particles; "envelope"
+                                       # runs the rms envelope
+    env_solver: str = "matrix",        # envelope study: "matrix" or "sacherer"
 )
 ```
 
@@ -121,7 +137,8 @@ directives and Python `add_error()` calls.
    * If the `.dat` has `ERROR_*` directives, they're already
      loaded; the form shows them in the "Registered errors" list.
    * Or use the form to add element / beam errors interactively.
-4. Set `n_seeds` (default 50; 100-200 for production).
+4. Set `n_seeds` (default 50; 100-200 for production) and the
+   **forward** model (multiparticle, the default, or envelope).
 5. Click **Run study**.  Status bar shows progress; results land
    on `state.error_study_results`.
 6. Open **Results** tab → click the **Error study ensemble** tile.
@@ -149,9 +166,10 @@ run with one click.
 
 ## Performance tips
 
-All rows are multi-particle runs (`ErrorStudy` has no envelope mode);
-"no SC" means `sc_config=None`, "MP+SC" means a PIC `sc_config` was
-passed.  Times are indicative and scale with `n_particles`.
+All rows are multi-particle runs (an envelope study, `mode="envelope"`,
+costs one envelope run per seed); "no SC" means `sc_config=None`, "MP+SC"
+means a PIC `sc_config` was passed.  Times are indicative and scale with
+`n_particles`.
 
 | Lattice | Seeds | Mode | Wall time |
 |---|---|---|---|

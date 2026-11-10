@@ -96,9 +96,11 @@ def test_get_for_element_identity_and_fingerprint_paths():
         registry.register(surr)
         # identity: the very element the surrogate wraps
         assert registry.get_for_element(surr._wrapped) is surr
-        # fingerprint: a fresh instance of the same element (reload)
+        # fingerprint: a fresh instance of the same element (reload) gets a view of
+        # the same weights bound to it
         clone = _Mock(name="FMAP_001")
-        assert registry.get_for_element(clone) is surr
+        view = registry.get_for_element(clone)
+        assert view._wrapped is clone and view.mlp is surr.mlp and view.metadata is surr.metadata
     finally:
         registry.clear()
 
@@ -126,25 +128,52 @@ def test_get_for_element_cross_lattice_mismatch_skips_and_warns_once():
         registry.clear()
 
 
-def test_get_for_element_kb_and_cache_key_attrs_fingerprinted():
-    """Adversarial-review finding: the fingerprint must cover the
-    repo's matrix-affecting attribute list (FieldMap._cache_keys) —
-    headlined by kb, the drive parameter of every magnetic map — plus
-    aperture (the surrogate element copies the wrapped aperture)."""
+def _set(element, **values):
+    for k, v in values.items():
+        setattr(element, k, v)
+    return element
+
+
+def _held_on(element):
+    """``_make_surrogate``'s weights built on ``element``, whose settings they then hold."""
+    surr = _make_surrogate(element.name)
+    surr.metadata.train_settings = None
+    return SurrogateFieldMap(element, surr.mlp, surr.metadata)
+
+
+def test_get_for_element_keys_on_structure_and_refuses_settings_at_query():
+    """The lookup recognises an element by its structure (the aperture
+    among it: the surrogate element copies the wrapped aperture); how it
+    is set — kb, the drive parameter of every magnetic map, the scale, an
+    error knob on an element whose knobs no input takes — is checked
+    when the weights are asked, which refuses with the setting named."""
     import warnings
 
+    from linac_gen.core.particle import PROTON
+    from linac_gen.core.reference import ReferenceParticle
+    from linac_gen.surrogates.base import OutOfScopeError
+
+    ref = ReferenceParticle(species=PROTON, w_kin=5.0, frequency=162.5)
+    held = {"ke": 1.0, "kb": 1.0, "scale": 1.0, "voltage_rel": 0.0}
     registry.clear()
     try:
+        registry.register(_make_surrogate("FMAP_001"))
+        other = _Mock(name="FMAP_001")
+        other.aperture = 30.0
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            assert registry.get_for_element(other) is None
         for attr, other_val in (("kb", 5.0), ("scale", 2.0),
-                                ("aperture", 30.0),
                                 ("voltage_rel", 0.5)):
             registry.clear()
-            registry.register(_make_surrogate("FMAP_001"))
-            other = _Mock(name="FMAP_001")
+            registry.register(_held_on(_set(_Mock(name="FMAP_001"), **held)))
+            other = _set(_Mock(name="FMAP_001"), **held)
             setattr(other, attr, other_val)
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                assert registry.get_for_element(other) is None, attr
+            view = registry.get_for_element(other)
+            assert view is not None and view._wrapped is other, attr
+            with pytest.raises(OutOfScopeError,
+                               match=rf"its {attr} is {other_val}, {held[attr]}"):
+                view.fitted_matrix(ref)
     finally:
         registry.clear()
 
@@ -154,22 +183,27 @@ def test_get_for_element_decision_pinned_within_generation():
     generation: mutating a drive parameter mid-run (ADJUST during a
     match) must NOT flip engagement (discontinuous objective); a
     registry change invalidates the pin immediately."""
-    import warnings
 
     registry.clear()
     try:
-        surr = _make_surrogate("FMAP_001")
+        surr = _held_on(_set(_Mock(name="FMAP_001"), ke=1.0))
         registry.register(surr)
-        clone = _Mock(name="FMAP_001")          # fingerprint-equal
-        assert registry.get_for_element(clone) is surr
+        clone = _set(_Mock(name="FMAP_001"), ke=1.0)    # fingerprint-equal
+        view = registry.get_for_element(clone)
+        assert view._wrapped is clone and view.mlp is surr.mlp
         clone.ke = 1.234                        # ADJUST-style mutation
-        assert registry.get_for_element(clone) is surr   # pinned
-        # a registry change bumps the generation -> re-decide: the
-        # mutated clone now mismatches and is skipped
+        assert registry.get_for_element(clone) is view   # pinned
+        # a registry change bumps the generation -> re-decide: the clone
+        # is the same element by its structure, and its query refuses its
+        # changed ke (not an input of these weights)
+        from linac_gen.core.particle import PROTON
+        from linac_gen.core.reference import ReferenceParticle
+        from linac_gen.surrogates.base import OutOfScopeError
         registry.register(_make_surrogate("OTHER"))
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            assert registry.get_for_element(clone) is None
+        again = registry.get_for_element(clone)
+        assert again is not None and again is not view and again._wrapped is clone
+        with pytest.raises(OutOfScopeError, match=r"its ke is 1\.234, 1\.0"):
+            again.fitted_matrix(ReferenceParticle(species=PROTON, w_kin=5.0, frequency=162.5))
     finally:
         registry.clear()
 

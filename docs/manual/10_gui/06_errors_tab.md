@@ -35,6 +35,7 @@ Failure Study in the tab strip.
 │   Tolerance [0.05 mm]  BPM noise [0 mm]  │
 ├──────────────────────────────────────────┤
 │ Run: n_seeds [50] base seed [0]          │
+│      forward [multiparticle ▾]           │
 │      [Run study] [Stop] ▓▓▓▓▓            │
 │ Status: seed 27/50 done                  │
 └──────────────────────────────────────────┘
@@ -94,20 +95,37 @@ See [Errors → Orbit correction](../08_errors/07_correction.md).
    for the canonical run, or bump it (e.g. 1000) to extend an
    existing 50-seed study with statistically independent seeds
    [1000–1049].
-2. Click **Run study**.  The status line confirms whether the study
-   runs with **space charge ON or off** — it uses the exact
-   `SpaceChargeConfig` from the Numerics tab whenever the beam
-   current is non-zero, the same configuration a toolbar
-   multi-particle run would use.
-3. The progress bar advances per completed seed
+2. Pick the **forward** model of every seed (the error draws are the
+   same in both): **multiparticle** (default) tracks a beam, with
+   space charge from the Numerics tab; **envelope** runs the rms
+   envelope, which loses no particle (transmission 100 %), with the
+   space charge of the beam current.  A multiparticle study runs
+   without surrogates.  An envelope study uses the surrogates ticked
+   in the Surrogates tab when its design lattice with them agrees with
+   the native run within 0.5 % (see
+   [A study and its surrogates](../13_surrogates/01_overview.md#a-study-and-its-surrogates)),
+   and the status line then says how many times the network answered
+   per seed, which traversals it left to the native element over the
+   seeds and why, in how many seeds many fell outside the trained range,
+   and the largest exit difference of its first three seeds run again
+   natively.  Its orbit correction runs native.
+3. Click **Run study**.  The status line confirms whether the study
+   runs with **space charge ON or off** — a multiparticle study uses
+   the exact `SpaceChargeConfig` from the Numerics tab whenever the
+   beam current is non-zero, the same configuration a toolbar
+   multi-particle run would use; an envelope study takes its space
+   charge from the beam current.
+4. The progress bar advances per completed seed
    (`seed k/n done` on the status line).
-4. On done: results land on `state.error_study_results` →
+5. On done: results land on `state.error_study_results` →
    open the Results tab to view ensemble plots.
 
 ### Stopping a study
 
-**Stop** ends the study after the seed currently being tracked
-(latency: one lattice element).  Seeds that completed are kept as a
+**Stop** ends the study at the next lattice element of the seed being
+run, which is discarded (latency: one lattice element); an envelope
+study's design check stops the same way, and its native check of the
+first seeds is skipped.  Seeds that completed are kept as a
 **partial ensemble** — only whole seeds are aggregated, so the
 statistics stay valid — and stored for the Results tab; the status
 line reports `stopped — k/n seeds kept`.  If no seed finished,

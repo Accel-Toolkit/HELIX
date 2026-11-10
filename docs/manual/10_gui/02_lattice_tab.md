@@ -13,7 +13,7 @@ you spend time when building or auditing a lattice.
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │ [Open…] [Save] [Save As…] [Reload]  [+ Add…] [Duplicate] [Delete]  │
-│ [Undo] [Redo]  [Correct orbit] [RfqCell → VaneRFQ]   summary text  │
+│ [Undo] [Redo]  [Correct orbit] [BPM targets…]        summary text  │
 ├─────────┬─────────────┬───────────────────────────────┬────────────┤
 │ Palette │ Outline     │ [type chips: Drift Quad Cav …]│ Inspector  │
 │         │ tree        │ ───────────────────────────── │            │
@@ -29,7 +29,7 @@ you spend time when building or auditing a lattice.
 The toolbar strip (top) holds the file operations — **Open…**,
 **Save**, **Save As…**, **Reload** — followed by the edit buttons
 **+ Add…**, **Duplicate**, **Delete**, **Undo**, **Redo**, then
-**Correct orbit** and **RfqCell → VaneRFQ**.  The body is four
+**Correct orbit** and **BPM targets…**.  The body is four
 columns: an element **palette** (drag or double-click to insert), the
 **outline tree**, the centre pane (type-chip filter strip + element
 timeline + a **Sequence** / **Breakdown** tabbed view), and the
@@ -134,7 +134,10 @@ finishes so the spinbox shows the restored value.
 * **Undo / Redo**: **Undo** / **Redo** buttons or Ctrl+Z /
   Ctrl+Y (Ctrl+Shift+Z also redoes) — every insert, delete, move,
   and parameter edit goes through the command bus, so the full
-  editing history is walkable.
+  editing history is walkable.  The Undo and Redo of a Matching
+  **Apply** change nothing while a run is going, and the status line
+  says why: click again when the run has ended (see the
+  [Matching tab](05_matching_tab.md)).
 
 The **type-chip strip** above the timeline filters by element type —
 click a chip to dim everything else, which makes quad or cavity
@@ -167,13 +170,6 @@ constraints, but they are runtime-only — saving the lattice never
 writes them into the `.dat`.  Position constraints evaluate only with
 the Matching tab's **mp** cost solver (the envelope carries no
 centroid).
-
-## RfqCell → VaneRFQ
-
-The **RfqCell → VaneRFQ** toolbar button picks a `.vane` file and
-replaces the lattice's RfqCell chain with a single VaneRFQ element
-(the Toutatis-equivalent path).  After the swap, use the inspector's
-`field_model` dropdown to choose `2term` / `8term` / `laplace2d`.
 
 ## Saving
 
@@ -215,9 +211,10 @@ risk before you choose:
 
 * **Lattice edits since the last save** — one line per edit from the
   undo history (`QUAD 'Q7': gradient 10.6 → 9.48`, `deleted Drift
-  'D3'`, …).  Wholesale replacements that no single edit describes
-  (e.g. an applied match result) and edits **undone past the save
-  point** are reported as such rather than silently omitted.
+  'D3'`, …; a Matching **Apply** is one line, `Matching Apply (…)`).
+  Wholesale replacements that no single edit describes (e.g. a design
+  applied from the multi-objective dialog) and edits **undone past the
+  save point** are reported as such rather than silently omitted.
 * **Project settings vs the saved .lgproj** — a field-by-field diff
   of the live configuration against the file on disk
   (`beam.current: 5 → 4.8`, `convergence.grid_nx: 48 → 64`).  If the

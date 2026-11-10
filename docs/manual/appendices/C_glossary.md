@@ -150,7 +150,8 @@ Domain terms used throughout the manual.
 
 ## V
 
-* **VaneRFQ** — HELIX's whole-RFQ wrapper around RfqCell instances.
+* **VaneRFQ** — a retired whole-RFQ element driven by a `.vane` file;
+  RFQs are tracked as RfqCell chains.
 
 ## W
 

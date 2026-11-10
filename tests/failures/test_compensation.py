@@ -67,3 +67,26 @@ def test_compensate_cavity_improves_energy_deficit():
     # the compensator ramped up -> exit energy recovered toward the baseline
     assert e_after > e_failed + 1e-6
     assert any(k.endswith(".voltage") for k in res.settings)
+
+
+def test_compensation_matches_to_its_own_objectives_only(monkeypatch):
+    """SET_BEAM_ENERGY and SET_BEAM_E0_P0 are matching criteria (2026-11): like the deck's other criteria they are
+    taken out before the compensation matches to its own objectives."""
+    from linac_gen.elements.lattice_commands import SetBeamE0P0, SetBeamEnergy
+    from linac_gen.failures import compensation as comp
+    lat, _ = parse_tracewin(LAT)
+    lat.insert(1, SetBeamEnergy("SBE", k=1, energy_MeV=99.0))
+    lat.insert(1, SetBeamE0P0("SE0", k=1, dE_MeV=1.0, ke=1, kp=1))
+    _scn, n2c, _names = enumerate_scenarios(lat, kind=FailureKind.OFF, combination="single")
+    scenario = next(s for s in _scn if s.element_names == ("GAP_001",))
+    seen = []
+    real = comp.match
+
+    def spy(work, *args, **kwargs):
+        seen.append({type(e).__name__ for e in work.elements})
+        return real(work, *args, **kwargs)
+    monkeypatch.setattr(comp, "match", spy)
+    cfg = CompensationConfig(strategy="k_out_of_n", k=2, algorithm="least_squares", cost_solver="envelope",
+                             max_iter=3)
+    compensate(lat, _beam(), scenario, n2c, _forward_metrics(lat, _beam(), "envelope"), cfg)
+    assert seen and not (seen[0] & {"SetBeamEnergy", "SetBeamE0P0"})

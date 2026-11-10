@@ -81,6 +81,19 @@ class _FailureWorker(QThread):
             # write→reparse rename.
             study = FailureStudy(lattice=self._lattice, beam_config=self._beam,
                                  mode=self._mode)
+            # the registered surrogates answer in the study only if the design lattice with
+            # them agrees with the native run (multiparticle studies run native)
+            from linac_gen.surrogates.study_check import (
+                check_design,
+                runs_native,
+                study_surrogates,
+            )
+            surrogates = check_design(self._lattice, self._beam, mode=self._mode)
+            if self.isInterruptionRequested():
+                self.failed.emit("cancelled by user")
+                return
+            # a compensation runs native whatever the sweep does (failures.compensate)
+            comp_surrogates = runs_native("a compensation runs native")
             counter = {"n": 0}
 
             def _on_done(i, im):
@@ -90,21 +103,25 @@ class _FailureWorker(QThread):
                 if self.isInterruptionRequested():
                     raise StopIteration("cancelled")
 
-            results = study.run(
-                scenarios, names, n2c, combination=self._combination,
-                on_scenario_done=_on_done)
+            with study_surrogates(surrogates):
+                results = study.run(
+                    scenarios, names, n2c, combination=self._combination,
+                    on_scenario_done=_on_done)
 
             # optional compensation of the worst scenarios
             comp = {}
             if self._compensate:
-                for rank_i in results.ranking[:max(0, self._n_compensate)]:
-                    if self.isInterruptionRequested():
-                        break
-                    im = results.impacts[rank_i]
-                    comp[rank_i] = compensate(
-                        self._lattice, self._beam, im.scenario, n2c,
-                        results.baseline, self._comp_cfg)
+                with study_surrogates(comp_surrogates):
+                    for rank_i in results.ranking[:max(0, self._n_compensate)]:
+                        if self.isInterruptionRequested():
+                            break
+                        im = results.impacts[rank_i]
+                        comp[rank_i] = compensate(
+                            self._lattice, self._beam, im.scenario, n2c,
+                            results.baseline, self._comp_cfg)
             results.compensation = comp     # attach (dynamic attr)
+            results.surrogates = surrogates
+            results.compensation_surrogates = comp_surrogates if self._compensate else None
             self.done.emit(results)
         except StopIteration:
             self.failed.emit("cancelled by user")
@@ -144,10 +161,9 @@ class FailureStudyTab(QWidget):
         if lat is not self._known_lattice:
             self._known_lattice = lat
             # PRUNE rather than clear: a new lattice object often carries the
-            # same element names (matching Apply installs a deep copy with
-            # only parameter values changed; re-opening the same .dat too) —
-            # those custom sets are still valid.  Drop only sets naming
-            # elements that no longer exist.
+            # same element names (re-opening the same .dat, or a deck derived
+            # from it) — those custom sets are still valid.  Drop only sets
+            # naming elements that no longer exist.
             self._prune_custom_sets(lat)
         self._populate_elements()
 
@@ -284,6 +300,8 @@ class FailureStudyTab(QWidget):
         fv.addRow(self._progress)
         self._status = QLabel("idle")
         self._status.setStyleSheet(f"color:{theme.TEXT_2}; font-size:11px;")
+        # a long status (the surrogates' design check) wraps instead of widening the column
+        self._status.setWordWrap(True)
         fv.addRow(self._status)
         left.addWidget(fg)
         left.addStretch(1)
@@ -391,10 +409,16 @@ class FailureStudyTab(QWidget):
             self._pair_mat = None
             # empty selection ("none = all") must mean None, not an empty filter
             only = (self._selected_names() or None) if combo != "custom" else None
+            strategy = self._strategy.currentText()
             comp_cfg = CompensationConfig(
-                strategy=self._strategy.currentText(), k=self._k.value(),
+                strategy=strategy, k=self._k.value(),
                 l=self._k.value(), algorithm=self._comp_algo.currentText(),
-                cost_solver=self._comp_cost.currentText())
+                cost_solver=self._comp_cost.currentText(),
+                # a manual zone is the elements picked in the list
+                manual_names=(self._selected_names() or None) if strategy == "manual" else None,
+                # the reliability campaign's objectives: a magnet fault leaves the energy as it
+                # was, so with the exit energy alone its compensation had nothing to do
+                objectives={"ke_out_min": True, "transmission": True, "emit_growth": True})
             import copy
             worker = _FailureWorker(
                 copy.deepcopy(self.state.lattice), copy.deepcopy(self.state.beam_config),
@@ -606,10 +630,15 @@ class FailureStudyTab(QWidget):
         self.state.failure_study_results = results
         self._run_btn.setEnabled(True); self._stop_btn.setEnabled(False)
         comp = getattr(results, "compensation", {}) or {}
+        note = getattr(getattr(results, "surrogates", None), "note", "")
+        comp_note = getattr(getattr(results, "compensation_surrogates", None), "note", "")
+        if comp_note and comp_note != note:
+            note = (note + "; compensation: " if note else "compensation: ") + comp_note
         self._status.setText(
             f"done — {len(results.impacts)} scenarios"
             + (f", {sum(1 for c in comp.values() if c.recovered)}/"
-               f"{len(comp)} recovered" if comp else ""))
+               f"{len(comp)} recovered" if comp else "")
+            + (f"; {note}" if note else ""))
 
         # rebuild the table in ranking order: failed-case metrics, recovered
         # flag, and (when compensation ran) the recovered-case metrics.

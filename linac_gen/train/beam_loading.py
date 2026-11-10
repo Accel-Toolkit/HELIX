@@ -21,6 +21,20 @@ from linac_gen.pic.macrocharge import macro_charge_for
 from linac_gen.train.cavity_state import CavityStateRegistry
 
 
+def _rf_shift_at_entry(element, ref) -> float:
+    """SET_BEAM_PHASE_ERROR's RF shift that ``element`` fires with, from the
+    reference at its entrance, in degrees of the element's clock (a cavity
+    with a clock of its own reads it after its jump)."""
+    if hasattr(element, "rf_shift_deg"):
+        return float(element.rf_shift_deg(ref))
+    shift = float(getattr(ref, "rf_shift", 0.0))
+    f = float(getattr(element, "frequency", 0.0) or 0.0)
+    f_eff = float(getattr(element, "effective_frequency", f) or 0.0)    # (NCELLS: frequency)
+    if shift and f_eff > 0 and f_eff != ref.frequency:
+        shift *= ref.clock_scale(f if f > 0 else f_eff, f_eff)
+    return shift
+
+
 class BeamLoadingManager:
     def __init__(self, registry: CavityStateRegistry,
                  bunch_frequency_MHz: float):
@@ -71,6 +85,8 @@ class BeamLoadingManager:
                 st.phi_s_deg = float(st.mode.phi_s_deg)
             else:
                 phi = self._design_phi_s(el)
+                if phi is not None:          # a SET_BEAM_PHASE_ERROR shift before it
+                    phi += getattr(st, "_rf_shift_deg", 0.0)
                 if phi is None:
                     problems.append(
                         f"{name}: synchronous phase not derivable "
@@ -114,6 +130,7 @@ class BeamLoadingManager:
             return
         if self._design_mode:
             st._w_at_entry = float(beam.ref.w_kin)
+            st._rf_shift_deg = _rf_shift_at_entry(element, beam.ref)
             return
         # decay to this bunch's arrival
         if st.last_slot is not None:

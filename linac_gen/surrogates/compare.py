@@ -26,7 +26,7 @@ from typing import Iterable
 import numpy as np
 
 from linac_gen.surrogates import registry
-from linac_gen.surrogates.base import SurrogateFieldMap
+from linac_gen.surrogates.base import SurrogateFieldMap, accuracy_refusals_suspended, tally
 
 # Both compare paths swap the PROCESS-GLOBAL surrogate registry for the
 # duration of their two runs.  Any solve running concurrently (toolbar
@@ -96,6 +96,45 @@ class CompareReport:
 
 
 # ---------------------------------------------------------------------------
+def _calls(surrogates) -> dict:
+    """{id of a load's call count: its value}: views share one count."""
+    return {id(c): c[0] for c in (getattr(s, "_calls", None) for s in surrogates) if c is not None}
+
+
+def _check_seconds(surrogates) -> float:
+    """The time the loads' one-time accuracy checks have taken so far."""
+    metas = {id(m): m for m in (getattr(s, "metadata", None) for s in surrogates) if m is not None}
+    return sum(float(getattr(m, "accuracy_seconds", 0.0) or 0.0) for m in metas.values())
+
+
+def _refusal_notes(counted) -> list[str]:
+    """The traversals the surrogate run left to the native element, by reason (a setting
+    the weights hold changed, out of their range, ...)."""
+    if not counted.refused:
+        return []
+    from linac_gen.surrogates.study_check import refusal_text
+    return [f"traversals the weights left to the native element: {refusal_text(counted.refused)}"]
+
+
+def accuracy_notes(surrogates, calls_before: dict) -> list[str]:
+    """What the report says of compared weights that failed their accuracy check
+    (``SurrogateFieldMap._accuracy_refusal``): every run but a compare has the native element
+    in their place; here they answered, to show how far off they are, or did not (a current
+    slices the map, a multiparticle compare without the fast path, outside their range)."""
+    out = []
+    for s in surrogates:
+        meta = getattr(s, "metadata", None)
+        if not getattr(meta, "accuracy_check", None):
+            continue
+        calls = getattr(s, "_calls", None)
+        answered = calls is not None and calls[0] > calls_before.get(id(calls), 0)
+        out.append(f"{meta.element_key}: refused in runs by its accuracy check (largest 2x2-block "
+                   f"error {meta.accuracy_block:.2g}, determinant error {meta.accuracy_det:.2g}); "
+                   + ("it answered in this compare only to show how far it is from its native "
+                      "element" if answered else "it did not answer in this compare either"))
+    return out
+
+
 def _envelope_run(lattice, ref, init_twiss: dict, current: float,
                   should_abort=None):
     from linac_gen.tracking.envelope import EnvelopeSolver
@@ -167,11 +206,17 @@ def compare_envelope(
             engaged = [registry.get(lh, ek)
                        for (lh, ek) in registry.list_registered()]
             n0 = sum(getattr(s, "nn_calls", 0) for s in engaged)
+            calls0, checks0 = _calls(engaged), _check_seconds(engaged)
 
             t0 = time.time()
-            res_s = _envelope_run(lattice, ref, init_twiss, current,
-                                  should_abort)
-            wall_s = time.time() - t0
+            # weights that failed their accuracy check answer here, to show how far off
+            # they are; every other run has them go native
+            with accuracy_refusals_suspended(), tally() as counted:
+                res_s = _envelope_run(lattice, ref, init_twiss, current,
+                                      should_abort)
+            # the run's time, not the one-time checks of weights met first here
+            checked = _check_seconds(engaged) - checks0
+            wall_s = time.time() - t0 - checked
             nn_calls = sum(getattr(s, "nn_calls", 0)
                            for s in engaged) - n0
         finally:
@@ -198,15 +243,18 @@ def compare_envelope(
         end[f"sigma_{k}_surr"] = srr
         end[f"rel_diff_{k}"] = (abs(b - srr) / max(abs(b), 1e-12))
 
-    notes: list[str] = []
+    notes: list[str] = accuracy_notes(engaged, calls0)
+    if checked > 0.0:
+        notes.append(f"the surrogate run's time leaves out {checked:.2g} s of one-time accuracy "
+                     "checks")
+    notes += _refusal_notes(counted)
     if not engaged_names:
         notes.append("no surrogate engaged (registry empty)")
-    elif nn_calls == 0:
+    elif nn_calls == 0 and not counted.refused:
         notes.append(
             "surrogates registered but never queried — at current > 0 "
             "the envelope slice-walks FieldMaps with RK4; surrogates "
-            "serve the full-element matrix at current = 0 only (or "
-            "every query fell outside the trained scope)")
+            "serve the full-element matrix at current = 0 only")
     return CompareReport(
         s=s_b,
         sigma_baseline=sig_b,
@@ -418,10 +466,15 @@ def compare_mp(
                 registry._BY_NAME.update(saved_by_name)
             registry.set_mp_enabled(True)
             engaged_names = [k[1] for k in registry.list_registered()]
+            engaged = [registry.get(lh, ek)
+                       for (lh, ek) in registry.list_registered()]
+            calls0, checks0 = _calls(engaged), _check_seconds(engaged)
 
             t0 = time.time()
-            res_s = _mp_run(lattice, beam)
-            wall_s = time.time() - t0
+            with accuracy_refusals_suspended(), tally() as counted:   # as in compare_envelope
+                res_s = _mp_run(lattice, beam)
+            checked = _check_seconds(engaged) - checks0
+            wall_s = time.time() - t0 - checked
         finally:
             registry._REGISTRY.clear()
             registry._BY_NAME.clear()
@@ -459,7 +512,11 @@ def compare_mp(
     end["trans_surr"] = ts
     end["rel_diff_trans"] = abs(tb - ts) / max(abs(tb), 1e-12)
 
-    notes: list[str] = []
+    notes: list[str] = accuracy_notes(engaged, calls0)
+    if checked > 0.0:
+        notes.append(f"the surrogate run's time leaves out {checked:.2g} s of one-time accuracy "
+                     "checks")
+    notes += _refusal_notes(counted)
     if not engaged_names:
         notes.append("no surrogate engaged (registry empty)")
     if fast_path:

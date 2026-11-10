@@ -13,6 +13,7 @@ from linac_gen.orm.calibration import (apply_calibration, apply_changes, calibra
 from linac_gen.orm.fit import OrmFitOptions, fit_orm
 from linac_gen.orm.model import OrmModel
 from linac_gen.orm.devices import DeviceMap, resolve_devices
+from tests.dataguard import needs
 from tests.orm.test_fit import _setup
 
 REPO = Path(__file__).resolve().parents[2]
@@ -118,6 +119,7 @@ def test_export_refusals_and_ordinal_fallback(tmp_path):
     assert rep["changed"][1][0] == "QUAD #2"
 
 
+@needs(str(REPO / "examples/piplattice/fnalscl.dat"), str(REPO / "examples/piplattice/fnalscl.lgproj"))
 def test_export_fnalscl_only_fitted_lines_change(tmp_path):
     src = REPO / "examples/piplattice/fnalscl.dat"
     cwd = os.getcwd(); os.chdir(src.parent)

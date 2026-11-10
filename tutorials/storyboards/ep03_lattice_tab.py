@@ -9,8 +9,8 @@ macro delete, live validation badges, outline drag-reorder, the Add
 Element dialog, the palette-drop gap indicator, the full CRUD loop,
 context menus, the inline manual popup, per-type inspector variants,
 command-card inspectors, a REAL orbit correction on the correction
-demo deck (measured numbers), the BPM-targets file flow, the
-199-cell RfqCell→VaneRFQ swap, a live envelope parameter scan, and
+demo deck (measured numbers), the BPM-targets file flow, a live
+envelope parameter scan, and
 the save-safety net (status-bar dirty chip + itemized discard prompt).
 Two scenes render the real mkdocs manual through QtWebEngine in a
 subprocess.  All dialogs/menus are driven non-modally (offscreen
@@ -50,8 +50,8 @@ SCENES = [
     Scene("010_title",
           "Welcome back. This deep dive covers the Lattice tab "
           "completely: navigation, editing, and the tools. A real "
-          "orbit correction, the R F Q vane swap, a live parameter "
-          "scan, and the safety net around Save. Our machine is the "
+          "orbit correction, a live parameter scan, and the safety "
+          "net around Save. Our machine is the "
           "drift tube linac from the tour.",
           min_s=7.0),
     Scene("020_context",
@@ -267,20 +267,6 @@ SCENES = [
           "is not an undoable edit; reload the lattice to clear "
           "it.",
           min_s=7.0),
-    Scene("142_vane_swap",
-          "One button remains, RfqCell to VaneRFQ, for R F Q work. "
-          "This deck holds one hundred ninety nine cell cards, each "
-          "a thin bar. The button asks for a dot vane file, the same "
-          "geometry Toutatis uses, and a field model. One click, and "
-          "the cells become a single vane R F Q element spanning the "
-          "machine; the status bar reports the swap. If you never "
-          "touch R F Qs, you never need this, and that is fine.",
-          min_s=7.0),
-    Scene("143_vane_inspector",
-          "The consolidated element keeps the whole cell chain, the "
-          "listing reports one hundred ninety nine cells, and the "
-          "inspector lets you switch field model any time: two term, "
-          "eight term, full eight term, or the two Laplace solvers."),
     Scene("144_param_scan",
           "One more tool, from the Tools menu: Parameter Scan. "
           "Pick any element and numeric parameter, here quadrupole "
@@ -1042,36 +1028,6 @@ def capture_visuals() -> None:
     QFileDialog.getOpenFileName = orig_open
     print("[bpm] override on bpm2:",
           getattr(bpm2, "diag_target_override", None))
-
-    # ---- 142 / 143 RfqCell → VaneRFQ ---------------------------------
-    rfq_deck = str(ROOT / "examples/rfq_demo/rfq_demo.dat")
-    rfq_lat = load_deck(rfq_deck)
-    lt._refresh_validation()
-    settle(4)
-    from PyQt6.QtWidgets import QInputDialog
-    orig_open2 = QFileDialog.getOpenFileName
-    orig_item = QInputDialog.getItem
-    QFileDialog.getOpenFileName = staticmethod(
-        lambda *a, **k: (str(ROOT / "examples/lebt_plus_rfq/pxie-rfq.vane"),
-                         ""))
-    QInputDialog.getItem = staticmethod(
-        lambda *a, **k: ("2term", True))
-    rec.start("142_vane_swap")
-    rec.hold(win_g, 3.0)
-    lt._btn_to_vane.click()
-    settle(10)
-    rec.hold(win_g, 3.0)
-    vane = next(e for e in rfq_lat.elements
-                if type(e).__name__ == "VaneRFQ")
-    win.state.set_selected(vane)
-    rec.hold(win_g, 3.5)
-    rec.finish(scene_by_name("142_vane_swap"))
-    QFileDialog.getOpenFileName = orig_open2
-    QInputDialog.getItem = orig_item
-    print("[vane] n elements:", len(rfq_lat.elements),
-          "model:", vane.field_model, "L:", vane.length)
-    compose((seq_g(), 30, 200, 0.95),
-            (insp_g(), 1250, 10, 1.28)).save(s["143_vane_inspector"])
 
     # ---- 144 / 146 parameter scan ------------------------------------
     lattice = load_deck(deck)

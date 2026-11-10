@@ -69,9 +69,14 @@ The amplitude / phase fields enable only for the modes that use them.
 Tick **Re-tune neighbours to recover the beam** to attempt compensation of the
 worst scenarios after the sweep:
 
-* **Strategy** — `k_out_of_n` (the *k* nearest same-category elements on each
-  side), `l_neighboring_lattices` (full FODO periods around the fault), or
-  `manual`.
+* **Strategy** — `k_out_of_n` (the *2k* elements of the failed element's
+  family nearest to it, about *k* on each side: cavities for a cavity,
+  quadrupoles and solenoids for a focusing magnet), `l_neighboring_lattices` (full FODO
+  periods around the fault), or `manual` (the elements picked in the list
+  above, of the failed element's family).  A bend is never a compensator (its
+  angle moves the reference path), and a failed bend is not compensable by
+  re-tuning optics: no match is run and the table marks it ✗ (the CLI and the
+  Reliability Study give the reason).
 * **k / l** — zone size.
 * **Algorithm** — the matcher used to re-tune (`cmaes` recommended for the
   multimodal RF amplitude+phase landscape; `least_squares` for magnets).
@@ -80,8 +85,11 @@ worst scenarios after the sweep:
 * **Compensate top-N** — how many of the worst scenarios to attempt.
 
 The matcher injects temporary `ADJUST` cards on the compensators (cavity
-voltage + phase, magnet gradient/field) and `SET_KE_OUT_MIN` (+ `MIN_TRANSMISSION`
-in MP mode) objectives to restore the design exit energy without losing beam.
+voltage + phase, quadrupole gradient, solenoid field) and the Reliability
+Study's objectives: the design exit energy (`SET_KE_OUT_MIN`), no beam lost
+(`MIN_TRANSMISSION`, in MP mode) and no emittance growth in any plane
+(`MIN_EMIT_GROWTH` — a magnet fault leaves the energy as it was, so without it
+a magnet compensation would have nothing to do).
 
 ### Run
 **Forward model** (`envelope`/`mp`). The GUI sweeps **serially in-process** on
@@ -89,6 +97,12 @@ the in-memory lattice so edited/unsaved element names are honoured exactly — t
 **Workers** field is therefore disabled (CLI-only); for a parallel multi-core
 sweep use `python -m linac_gen failures`. **Run failure study** starts a
 background worker; **Stop** cancels.
+
+With surrogates ticked in the Surrogates tab, the study first runs its design
+lattice natively and with them, and uses them only if every exit rms size and
+emittance agrees within 0.5 %; in `mp` mode it runs native, and a
+compensation always does.  The status line says which, and why
+([A study and its surrogates](../13_surrogates/01_overview.md#a-study-and-its-surrogates)).
 
 ## Reading the results
 
@@ -123,6 +137,12 @@ python -m linac_gen failures lattice.dat \
     --forward mp --workers 8 --energy 2.5 --current 5 --freq 162.5 \
     --compensate --strategy k_out_of_n --k 2 --out failures.csv
 ```
+
+With `--forward envelope`, `--surrogates DIR[,DIR...]|auto` sweeps with the
+surrogate weights of those folders where the design lattice with them agrees
+with the native run, in every worker (see
+[A study and its surrogates](../13_surrogates/01_overview.md#a-study-and-its-surrogates));
+the CSV then has a `surrogate_calls` column.
 
 ```{.python .skip}
 from linac_gen.failures import (FailureKind, enumerate_scenarios,

@@ -31,7 +31,8 @@ run at a glance: **σ_x end**, **σ_y end**, **σ_z end** (mm),
 **ε_x growth**, **transmission** (%), and **loss** (%).  The growth is
 that of the normalised emittance, end over start: the geometric one
 shrinks with acceleration.  Through an RFQ it would read ×0.14 for a beam
-whose normalised emittance grows ×1.17.  A value the run shown does not
+whose normalised emittance grows ×1.17.  An envelope run records only the
+geometric emittance, so the card uses ε·βγ there.  A value the run shown does not
 have reads "—" (2026-10-25: an envelope run shown after a multiparticle
 run used to keep the multiparticle run's transmission and loss).  For a
 [ring run](#ring-runs) the six are σ_x, σ_y and σ_ζ (mm) on the last
@@ -150,6 +151,11 @@ the checkbox.
 * **PHASE SPACE · DIAGNOSTICS** — **Phase space (4-panel)** (the
   full phase-space view at any snapshot marker), density-vs-s
   heatmap, BPMs, field-map viewer (2D + cuts), cavity TTF T(β).
+  The field-map window lists every map, those inside a `SUPERPOSE_MAP`
+  cluster too (an unpowered corrector as well), by file name and
+  strength.  It plots the file's values, and its info line gives the
+  factor a run multiplies them by.  The TTF window lists every powered
+  cavity map, those inside a cluster too.
   The density-vs-s heatmap is drawn against the true s: recorded steps
   are unevenly spaced, so every column covers the same length of
   beamline and shows the average of the steps inside it, or the last

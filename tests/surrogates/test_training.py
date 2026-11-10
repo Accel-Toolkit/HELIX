@@ -329,9 +329,14 @@ def test_train_surrogate_progress_callback_fires(tmp_path):
     assert isinstance(arr, np.ndarray)
     assert arr.shape == (6, 6)
     assert np.isfinite(arr).all()
-    # best_val_mape monotonically non-increasing.
-    bests = [ev["best_val_mape"] for ev in events]
-    assert all(b2 <= b1 for b1, b2 in zip(bests, bests[1:]))
+    # The epoch kept is the one with the lowest validation MSE: best_val_mse never rises, and
+    # best_val_mape is the val MAPE of the epoch kept so far, which can rise (at 60 epochs on
+    # this data it does for 7 of 40 seeds).
+    bests = [ev["best_val_mse"] for ev in events]
+    assert all(b2 <= b1 for b1, b2 in zip(bests, bests[1:], strict=False))
+    for ev in events:
+        kept = events[ev["best_epoch"] - 1]
+        assert (ev["best_val_mse"], ev["best_val_mape"]) == (kept["val_mse"], kept["val_mape"])
 
 
 def test_train_surrogate_for_element_threads_workers(tmp_path):

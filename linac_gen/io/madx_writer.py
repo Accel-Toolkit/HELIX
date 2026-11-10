@@ -45,6 +45,7 @@ in ``metadata["warnings"]``).
 """
 from __future__ import annotations
 
+import copy
 import datetime as _dt
 import math
 import re
@@ -56,11 +57,13 @@ from linac_gen.core.lattice import Lattice
 from linac_gen.core.particle import PROTON
 from linac_gen.core.reference import ReferenceParticle
 from linac_gen.elements.aperture import Aperture
-from linac_gen.elements.base import FieldMapElement, ThinKickElement
+from linac_gen.elements.base import FieldMapElement
 from linac_gen.elements.dipole import Dipole
 from linac_gen.elements.drift import Drift
 from linac_gen.elements.edge import Edge
 from linac_gen.elements.lattice_commands import Freq as FreqCommand
+from linac_gen.elements.lattice_commands import SetReferenceEnergy
+from linac_gen.core.track_state import TrackState
 from linac_gen.elements.lattice_commands import LatticeCommand
 from linac_gen.elements.marker import Marker
 from linac_gen.elements.matrix_element import MatrixElement
@@ -174,6 +177,9 @@ def _beam_line(ref: ReferenceParticle) -> str:
 
 def _command_comment(elem) -> str:
     """One-line ``! HELIX: …`` reproduction of a TraceWin command card."""
+    card = getattr(elem, "comment_card", None)
+    if callable(card):                       # a HELIX card: the line a deck carries it as
+        return "! HELIX: " + card().lstrip(";").strip()
     kw = getattr(elem, "KEYWORD", None) or type(elem).__name__
     try:
         args = elem.to_tracewin_args()
@@ -212,12 +218,100 @@ def _misalignment_warning(elem, warnings: list) -> None:
             return
 
 
+#: cards that move the reference energy, which a MAD-X sequence cannot do
+ENERGY_CARDS = (SetReferenceEnergy,)
+
+
+def _sized_by_walk(e) -> bool:
+    """A run sizes it for the beam that reaches it: a curved field-map cluster
+    (its length is the reference's path) or an NCELLS with βg ≤ 0 (its cells)."""
+    if getattr(e, "is_curved", False):
+        return True
+    bg = getattr(e, "beta_g", None)
+    return hasattr(e, "prepare_reference") and bg is not None and float(bg) <= 0.0
+
+
+def _length_before_any_run(e) -> float:
+    """The length of an element ``_sized_by_walk`` before any run sized it, which
+    does not depend on what it went through: a curved cluster's estimate from its
+    exit frame, a cavity's provisional length.  ``e`` is a copy (it is reset)."""
+    if hasattr(e, "_provisional_length"):
+        return float(e._provisional_length())
+    e.reset_run_state()
+    return float(e.length)
+
+
+def _walk_lengths(lattice, ref):
+    """The lengths a run gives the elements it sizes for the beam that reaches
+    them (``_sized_by_walk``), from the deck's own walk of the reference on a
+    copy of the lattice (its energy cards applied, as in every run).
+
+    Returns ``{index: length}`` and, for the elements that walk cannot size,
+    ``{index: (length before any run, why)}``."""
+    els = list(lattice.elements)
+    idx = [k for k, e in enumerate(els) if _sized_by_walk(e)]
+    if not idx:
+        return {}, {}
+    from linac_gen.tracking.matrix_tracking import _replay_ref
+    cp = copy.deepcopy(lattice)
+    cels = list(cp.elements)
+    sized, unsized = {}, {}
+    r = ref.copy()
+    done = 0
+    for j, k in enumerate(idx):
+        try:
+            _replay_ref(cels[done:k], r, cp)
+            if not r.w_kin > 0:
+                raise ValueError(f"W = {r.w_kin:g} MeV")
+        except (ValueError, ZeroDivisionError, OverflowError) as exc:
+            why = f"the deck's own reference does not reach it ({exc})"
+        else:
+            try:
+                if isinstance(cels[k], FieldMapElement):
+                    cels[k].reset_run_state()
+                cels[k].prepare_reference(r.copy())
+                sized[k] = float(cels[k].length)
+                done = k
+                continue
+            except (ValueError, ZeroDivisionError, OverflowError) as exc:
+                why = (f"its reference path cannot be traced ({exc})"
+                       if getattr(cels[k], "is_curved", False)
+                       else f"it cannot be sized for the beam that reaches it ({exc})")
+        for kk in idx[j:]:                # (no energy for this one or any after it)
+            unsized[kk] = (_length_before_any_run(cels[kk]), why if kk == k else (
+                f"the deck's own reference does not reach it (it does not get past "
+                f"{els[k].name!r})"))
+        break
+    return sized, unsized
+
+
+def _synchronism_changes_map(elem, ref, M) -> bool:
+    """Whether an NCELLS's matrix-engine synchronism factor changes its matrix-mode
+    map ``M`` at ``ref`` (the multiparticle tracker never applies it).  The factor
+    is skipped for βg ≤ 0, a βs≠0 transit-time table, a cavity with no field, below
+    βg/2 and past its validity clamp (``NCells._sync_delta``), so this compares
+    with the map built without it, on a copy of ``elem``."""
+    if not getattr(elem, "synchronism", False):     # (only an NCELLS has one)
+        return False
+    from linac_gen.tracking.matrix_tracking import get_element_matrix
+    off = copy.deepcopy(elem)
+    off.synchronism = False
+    off.reset_run_state()
+    M_off = np.asarray(get_element_matrix(off, ref.copy()), dtype=float)
+    return float(np.abs(M - M_off).max()) > 1e-12 * max(1.0, float(np.abs(M).max()))
+
+
 def write_madx(lattice: Lattice, filepath, ref: ReferenceParticle, *,
                sequence_name: str | None = None,
                on_unsupported: str = "marker",
                linearize: bool = False,
                title: str | None = None) -> list[str]:
     """Write *lattice* as a MAD-X file.  Returns the list of warnings.
+
+    The lattice is left as it is: the export walks the reference on a copy.
+    An element a run sizes for the beam that reaches it (a curved field-map
+    cluster, an ``NCELLS`` with βg ≤ 0) is written with that length, from the
+    deck's own walk (its energy cards applied).
 
     Parameters
     ----------
@@ -235,9 +329,19 @@ def write_madx(lattice: Lattice, filepath, ref: ReferenceParticle, *,
         explicit-matrix elements as MAD-X ``MATRIX`` elements built from
         their first-order map at the local reference energy (MAD-X
         canonical basis, see :mod:`linac_gen.tracking.longitudinal_coords`).
-        A reference energy gain is emitted as ``kick6`` (a ``pt`` shift —
-        MAD-X cannot move its reference energy) and warns.  Foils and
-        electric steerers still fall under ``on_unsupported``.
+        The map is matrix mode's, for the element as aligned: a misalignment
+        is warned of, as for every element (a curved field-map cluster, which
+        moves its own maps, keeps its own).  An ``NCELLS`` map carries
+        TraceWin's matrix-engine synchronism factor where it acts, which the
+        multiparticle tracker does not apply; the export says so for each
+        such cavity, and setting the cavity's ``synchronism`` attribute to
+        False gives the tracker's map.
+        MAD-X cannot move its reference energy, so each map is written about
+        HELIX's reference orbit in MAD-X's coordinates (pt the energy it has
+        gained, t restarting at each ``MATRIX`` exit): its kicks take that
+        orbit through, a gain as ``kick6``, which the importer reads back as
+        the reference's gain.  Foils and electric steerers still fall under
+        ``on_unsupported``.
     title : str, optional
         ``TITLE`` text; defaults to the file stem.
     """
@@ -265,6 +369,21 @@ def write_madx(lattice: Lattice, filepath, ref: ReferenceParticle, *,
     elems = list(lattice.elements)
     i = 0
     n = len(elems)
+    # The export's own walk of the reference runs on a copy, made when the walk is
+    # first needed: a walk leaves run state on the field maps it passes and sizes
+    # some elements for the energy that reaches them, which an export must not do
+    # to the lattice it is given.
+    walk_copy: list = []
+
+    def walk_elem(k):
+        if not walk_copy:
+            walk_copy.append(list(copy.deepcopy(lattice).elements))
+        return walk_copy[0][k]
+
+    # The elements a run sizes for the beam that reaches them are written with
+    # that length, from the deck's own walk (which applies the energy cards).
+    sized, unsized = _walk_lengths(lattice, ref)
+    skipped_cards: list = []      # (index, name): energy cards MAD-X cannot hold
 
     # Local reference replay (same rules as compute_transfer_matrix) —
     # only consulted by the linearised MATRIX path.
@@ -274,9 +393,19 @@ def write_madx(lattice: Lattice, filepath, ref: ReferenceParticle, *,
     n_rfcav = [0]
     lin_gain = [0.0]              # MeV: reference gain emitted as MATRIX kick6
     n_lin = [0]
-    vis_shift = [0.0]             # MeV: explicit-matrix energy offsets already
-                                  # emitted as kick6 (they shift the MAD-X-
-                                  # visible energy but not HELIX's reference)
+    # HELIX's reference in MAD-X's coordinates, the orbit the MATRIX maps are
+    # written about (the importer replays it): pt from the energy the importer
+    # will see (the BEAM's, the RFCAVITY gains, the maps' gains), and t, reset
+    # at each MATRIX exit, growing by L·(1/β₀ − 1/β) over the length between.
+    orbit = {"s": 0.0, "t": 0.0, "w": ref.w_kin}
+
+    def orbit_t(s_now) -> float:
+        """The orbit's t [m] at ``s_now`` [mm]."""
+        r = ref.copy()
+        r.w_kin = orbit["w"]
+        orbit["t"] += (s_now - orbit["s"]) * _MM_TO_M * (1.0 / ref.beta - 1.0 / r.beta)
+        orbit["s"] = s_now
+        return orbit["t"]
 
     def _advance(r, e, *, reset: bool = True) -> None:
         if isinstance(e, FieldMapElement):
@@ -288,12 +417,11 @@ def write_madx(lattice: Lattice, filepath, ref: ReferenceParticle, *,
                 e.reset_run_state()
             _advance_field_map_ref(lattice, e, r, reset=reset)
         else:
-            L = float(getattr(e, "length", 0.0) or 0.0)
-            r.s += L
-            if L > 0:
-                r.phi_s += 360.0 * L / (r.beta * r.wavelength)
-            if isinstance(e, ThinKickElement):
-                e.advance_ref(r)
+            from linac_gen.tracking.matrix_tracking import _advance_ref_past
+            # MAD-X holds one reference energy: the line stays at the energy
+            # before such a card (a warning below says so).
+            if not isinstance(e, ENERGY_CARDS):
+                _advance_ref_past(e, r)
 
     dead = [None]                 # (index, name) where the reference died
 
@@ -303,62 +431,118 @@ def write_madx(lattice: Lattice, filepath, ref: ReferenceParticle, *,
         energy — e.g. a proton DTL exported with an H⁻ reference)."""
         while adv[0] < k and dead[0] is None:
             try:
-                _advance(ref_local, elems[adv[0]])
-            except (ValueError, ZeroDivisionError, OverflowError):
+                _advance(ref_local, walk_elem(adv[0]))
+                if not ref_local.w_kin > 0:          # (W = 0 passes the kinematics)
+                    raise ValueError(f"W = {ref_local.w_kin:g} MeV")
+            except (ValueError, ZeroDivisionError, OverflowError) as exc:
                 dead[0] = (adv[0], elems[adv[0]].name)
                 warnings.append(
                     f"reference particle lost at {elems[adv[0]].name!r} "
-                    f"(element {adv[0] + 1}) — this species decelerates "
-                    "below zero energy in the deck's RF; the energy-"
+                    f"(element {adv[0] + 1}) — {loss_cause(adv[0], exc)}; the energy-"
                     "dependent notes (line gain, linearised maps) stop "
                     "there, the static conversions are unaffected")
             adv[0] += 1
         return None if dead[0] is not None else ref_local.copy()
 
-    def linearised(elem) -> bool:
-        """Emit *elem* as a MAD-X MATRIX; False if it cannot be linearised."""
-        nonlocal s_mm
+    def deck_gets_past(k) -> bool:
+        """Whether the deck's own walk (its energy cards applied) gets past element k."""
+        from linac_gen.tracking.matrix_tracking import _replay_ref
+        cp = copy.deepcopy(lattice)
+        r = ref.copy()
+        try:
+            _replay_ref(list(cp.elements)[:k + 1], r, cp)
+        except (ValueError, ZeroDivisionError, OverflowError):
+            return False
+        return r.w_kin > 0
+
+    def loss_cause(k, exc) -> str:
+        cards = [nm for kc, nm in skipped_cards if kc < k]
+        if cards and deck_gets_past(k):
+            return (f"the export stays at the energy before the energy card(s) "
+                    f"{', '.join(repr(c) for c in cards)} (MAD-X holds one reference "
+                    "energy), so its walk loses the reference the deck keeps")
+        e = walk_elem(k)
+        if getattr(e, "is_curved", False):
+            return f"its reference path cannot be traced ({exc})"
+        gain = float(getattr(e, "ref_gain", 0.0) or 0.0)
+        if gain < 0:
+            return f"its reference gain of {gain:g} MeV takes the reference to zero energy or below"
+        return "this species decelerates below zero energy in the deck's RF"
+
+    def not_linearised(elem, reason: str) -> str:
+        why = f"{elem.name!r} ({type(elem).__name__}): {reason}"
+        warnings.append(why + " — exported as MARKER + body DRIFT instead of MATRIX")
+        return why
+
+    def linearised(elem):
+        """Emit *elem* as a MAD-X MATRIX.  True when written; otherwise why it
+        could not be (a message), or None when it is not one to linearise."""
+        nonlocal s_mm, current_freq
         if not linearize or not isinstance(
                 elem, (FieldMapElement, MatrixElement, ThinLens)):
-            return False
+            return None
         from linac_gen.tracking.longitudinal_coords import (
             matrix_to_madx, vector_to_madx)
         from linac_gen.tracking.matrix_tracking import get_element_matrix
         r_true = ref_at(i)            # i: the loop's current index
         if r_true is None:
-            return False              # no local energy: MARKER + DRIFT path
-        if isinstance(elem, FieldMapElement):
-            elem.reset_run_state()    # same order as compute_transfer_matrix
+            return None               # no local energy: MARKER + DRIFT path
+        welem = walk_elem(i)          # (the walk's copy: its state, its traced length)
+        if isinstance(welem, FieldMapElement):
+            welem.reset_run_state()   # same order as compute_transfer_matrix
+        gain = float(getattr(welem, "ref_gain", 0.0) or 0.0)    # (a matrix element's)
+        if gain and not r_true.w_kin + gain > 0:
+            return not_linearised(elem, f"its energy change ΔW={gain:.6g} MeV takes the "
+                                        f"reference to zero energy or below (W={r_true.w_kin:.6g} MeV)")
         try:
-            M = np.asarray(get_element_matrix(elem, r_true.copy()), dtype=float)
+            M = np.asarray(get_element_matrix(welem, r_true.copy()), dtype=float)
             r_after = r_true.copy()
-            _advance(r_after, elem, reset=False)
+            _advance(r_after, welem, reset=False)
         except (ValueError, ZeroDivisionError, OverflowError) as exc:
-            warnings.append(
-                f"{elem.name!r} ({type(elem).__name__}): first-order map "
-                f"unavailable at W_in={r_true.w_kin:.6g} MeV ({exc}) — "
-                "exported as MARKER + body DRIFT instead of MATRIX")
-            return False
+            return not_linearised(elem, f"first-order map unavailable at "
+                                        f"W_in={r_true.w_kin:.6g} MeV ({exc})")
         dW = r_after.w_kin - r_true.w_kin
-        offset = getattr(elem, "offset", None)
+        offset = (elem.map_at(r_true)[1] if isinstance(elem, MatrixElement)   # (its clock's dphi
+                  else getattr(elem, "offset", None))                          # in the walk's)
         dW_off = float(offset[5]) if offset is not None else 0.0
-        # MAD-X-visible energies: HELIX's replay plus every energy offset
-        # already written as a kick6 (the importer replays exactly this).
+        # The energies the importer will see: the orbit's, then its gain (an
+        # explicit matrix's energy offset included: it comes back as the
+        # reference's gain).  Each must be above zero: W = 0 passes the
+        # kinematics, which the maps cannot convert about.
+        w_in = orbit["w"]
+        if not w_in > 0:
+            return not_linearised(elem, f"the reference orbit it would be written about is at "
+                                        f"zero energy or below there (W={w_in:.6g} MeV, after the "
+                                        "RF cavities before it)")
+        w_out = w_in + dW + dW_off
+        if not w_out > 0:
+            return not_linearised(elem, f"its energy change ΔW={dW + dW_off:.6g} MeV takes the "
+                                        f"reference to zero energy or below (W={w_in:.6g} MeV)")
         r_in = r_true.copy()
-        r_in.w_kin = r_true.w_kin + vis_shift[0]
+        r_in.w_kin = w_in
         r_out = r_in.copy()
-        r_out.w_kin = r_in.w_kin + dW + dW_off
+        r_out.w_kin = w_out
+        r_out.frequency = r_after.frequency      # a map can make its own jump
+        if r_after.frequency > 0:
+            current_freq = r_after.frequency     # which a gap with no frequency then reads
         R = matrix_to_madx(M, ref, r_in, r_out)
-        kick = np.zeros(6)
-        if offset is not None:
-            kick += vector_to_madx(offset, ref, r_out)
+        # The map about the orbit: it takes the orbit (t, pt) at its entrance to
+        # (0, pt_out) at its exit, so a particle's coordinates there are HELIX's.
         p0c = ref.bg * ref.species.mass
-        kick[5] += dW / p0c
-        vis_shift[0] += dW_off
-        lin_gain[0] += dW
+        z_in = np.zeros(6)
+        z_in[4] = orbit_t(s_mm)
+        z_in[5] = (r_in.w_kin - ref.w_kin) / p0c
+        z_out = np.zeros(6)
+        z_out[5] = (r_out.w_kin - ref.w_kin) / p0c
+        kick = z_out - R @ z_in
+        if offset is not None:
+            o = np.array(offset, dtype=float)
+            o[5] = 0.0                           # (its energy is the reference's gain)
+            kick += vector_to_madx(o, ref, r_out)
+        lin_gain[0] += dW + dW_off
         n_lin[0] += 1
         nm = sanitise(elem.name, type(elem).__name__.lower())
-        length = float(getattr(elem, "length", 0.0) or 0.0)
+        length = sized.get(i, float(getattr(welem, "length", 0.0) or 0.0))
         parts = [f"l={_fmt(length * _MM_TO_M)}"]
         parts += [f"kick{a + 1}={_fmt(kick[a])}" for a in range(6) if kick[a] != 0.0]
         rows = [", ".join(f"rm{a + 1}{b + 1}={_fmt(R[a, b])}" for b in range(6))
@@ -368,6 +552,11 @@ def write_madx(lattice: Lattice, filepath, ref: ReferenceParticle, *,
         members.append(f"  {nm}, at={_fmt(s_mm * _MM_TO_M)};")
         note = (f"{elem.name!r} ({type(elem).__name__}): linearised as MAD-X "
                 f"MATRIX — first-order map at W_in={r_true.w_kin:.6g} MeV")
+        if _synchronism_changes_map(welem, r_true, M):
+            note += ("; matrix mode's map, with TraceWin's matrix-engine synchronism "
+                     "factor, which the multiparticle tracker does not apply (setting "
+                     "the cavity's synchronism attribute to False in Python gives the "
+                     "tracker's map)")
         A = R[:4, :4]
         J = np.zeros((4, 4)); J[0, 1] = J[2, 3] = 1.0; J[1, 0] = J[3, 2] = -1.0
         symp_err = float(np.abs(A.T @ J @ A - J).max())
@@ -375,32 +564,67 @@ def write_madx(lattice: Lattice, filepath, ref: ReferenceParticle, *,
             note += (f"; transverse symplectic error {symp_err:.2e} — MAD-X "
                      "TWISS symplectifies MATRIX elements (TRACK applies "
                      "the map verbatim)")
-        if abs(dW) > 0.0:
-            note += (f"; reference energy gain ΔW={dW:.6g} MeV emitted as "
-                     f"kick6={kick[5]:.6g} (pt) — MAD-X keeps the BEAM "
-                     "energy fixed, so downstream strengths stay normalised "
+        if abs(dW + dW_off) > 0.0:
+            note += (f"; reference energy gain ΔW={dW + dW_off:.6g} MeV in "
+                     f"kick6={kick[5]:.6g} (pt, about the orbit) — MAD-X keeps the "
+                     "BEAM energy fixed, so downstream strengths stay normalised "
                      "by the entrance rigidity")
         warnings.append(note)
         s_mm += length
+        orbit.update(s=s_mm, t=0.0, w=r_out.w_kin)
         return True
 
     def unsupported(elem, why: str) -> None:
         nonlocal s_mm
-        if linearised(elem):
+        done = linearised(elem)
+        if done is True:
+            # written aligned, as every element is (matrix mode tilts the map; a
+            # curved field-map cluster moves its own maps, so its map keeps them)
+            if not getattr(elem, "self_aligned", False):
+                _misalignment_warning(elem, warnings)
             return
         msg = f"{elem.name!r} ({type(elem).__name__}): {why}"
         if on_unsupported == "error":
-            raise ValueError("MAD-X export refused: " + msg)
-        warnings.append(msg + " — exported as MARKER + body DRIFT")
+            raise ValueError("MAD-X export refused: " + (done or msg))
+        if not done:                  # (the reason it was not linearised is a warning)
+            warnings.append(msg + " — exported as MARKER + body DRIFT")
         nm = sanitise(elem.name, type(elem).__name__.lower())
         defs.append(f"{nm}: MARKER;")
         members.append(f"  {nm}, at={_fmt(s_mm * _MM_TO_M)};")
-        length = float(getattr(elem, "length", 0.0) or 0.0)
+        if i in sized:
+            length = sized[i]
+        elif i in unsized:
+            length, short = unsized[i]
+            warnings.append(f"{elem.name!r} ({type(elem).__name__}): {short} — written "
+                            f"with its length before any run, {length:.6g} mm")
+        else:
+            length = float(getattr(elem, "length", 0.0) or 0.0)
         if length > 0:
             bn = sanitise(elem.name + "_body", "body")
             defs.append(f"{bn}: DRIFT, l={_fmt(length * _MM_TO_M)};")
             members.append(f"  {bn}, at={_fmt(s_mm * _MM_TO_M)};")
             s_mm += length
+
+    def energy_card(e, k) -> None:
+        """A card that would move the line's energy has no MAD-X equivalent."""
+        if not isinstance(e, ENERGY_CARDS):
+            return
+        before = ref_at(k)
+        if before is not None:
+            after = before.copy()
+            try:
+                e.apply_command(TrackState(ref=after))
+                moved = after.w_kin != before.w_kin
+            except (ValueError, ZeroDivisionError, OverflowError):
+                moved = True          # (it cannot apply at the energy the export stays at)
+            if not moved:
+                return
+        msg = (f"{e.name!r} ({e.KEYWORD}): MAD-X holds one reference energy, so the "
+               "exported line stays at the energy before this card")
+        if on_unsupported == "error":
+            raise ValueError("MAD-X export refused: " + msg)
+        warnings.append(msg + " — written as a comment")
+        skipped_cards.append((k, e.name))
 
     while i < n:
         elem = elems[i]
@@ -416,6 +640,7 @@ def write_madx(lattice: Lattice, filepath, ref: ReferenceParticle, *,
             i += 1
             continue
         if isinstance(elem, LatticeCommand):
+            energy_card(elem, i)
             members.append("  " + _command_comment(elem))
             i += 1
             continue
@@ -445,6 +670,7 @@ def write_madx(lattice: Lattice, filepath, ref: ReferenceParticle, *,
                             current_freq = f
                         members.append(f"  ! HELIX: FREQ {_fmt(f)}")
                     elif isinstance(e, (LatticeCommand, ScGridDirective)):
+                        energy_card(e, k)
                         members.append("  " + _command_comment(e))
                     elif isinstance(e, SpaceChargeComp):
                         members.append(f"  ! HELIX: SPACE_CHARGE_COMP {_fmt(e.factor)}")
@@ -514,7 +740,7 @@ def write_madx(lattice: Lattice, filepath, ref: ReferenceParticle, *,
         elif isinstance(elem, RFGap):
             nm = sanitise(elem.name, "cav")
             ttf = float(getattr(elem, "ttf", 1.0) or 1.0)
-            volt = float(elem.voltage) * ttf
+            volt = float(elem.effective_voltage) * ttf      # as it fires (an ERROR_CAV amplitude too)
             if abs(ttf - 1.0) > 1e-12:
                 warnings.append(
                     f"{elem.name!r}: transit-time factor T={ttf:g} folded "
@@ -522,11 +748,18 @@ def write_madx(lattice: Lattice, filepath, ref: ReferenceParticle, *,
             if getattr(elem, "p_flag", 0):
                 warnings.append(
                     f"{elem.name!r}: absolute-phase gap (p_flag="
-                    f"{elem.p_flag}) exported with its design phase")
+                    f"{elem.p_flag}) exported at the phase it fires at in this walk")
             freq = float(elem.frequency or current_freq or 0.0)
             if freq > 0:
                 current_freq = freq
-            lag = (float(elem.phase) + 90.0) / 360.0
+            r_gap = ref_at(i)
+            wgap = walk_elem(i)               # (the walk's copy records its entry phase)
+            # the phase it fires at: its own (an ERROR_CAV phase too) and a
+            # SET_BEAM_PHASE_ERROR shift before it — what the importer replays,
+            # and so what the orbit the maps after it are written about gains
+            phase = (wgap._operating_phase(r_gap) if r_gap is not None
+                     else float(elem.effective_phase))
+            lag = (phase + 90.0) / 360.0
             # MAD-X does not multiply the RF kick by the beam charge;
             # HELIX gains q·V·T·cos φs.  A signed volt carries sign(q) so
             # the reference gain AND the phase slope match for H⁻ / ions.
@@ -535,12 +768,13 @@ def write_madx(lattice: Lattice, filepath, ref: ReferenceParticle, *,
                         f"lag={_fmt(lag)}, freq={_fmt(freq)};")
             members.append(f"  {nm}, at={at};")
             _misalignment_warning(elem, warnings)
-            r_gap = ref_at(i)
             if r_gap is not None:
                 g = r_gap.copy()
                 try:
-                    elem.advance_ref(g)
+                    wgap.advance_ref(g)
                     rf_gain[0] += g.w_kin - r_gap.w_kin
+                    orbit_t(s_mm)                       # the orbit gains there too
+                    orbit["w"] += g.w_kin - r_gap.w_kin
                 except (ValueError, ZeroDivisionError, OverflowError):
                     pass                      # reported by ref_at next time
             n_rfcav[0] += 1
@@ -629,7 +863,10 @@ def write_madx(lattice: Lattice, filepath, ref: ReferenceParticle, *,
             i += 1
             continue
         else:
-            unsupported(elem, "no MAD-X representation")
+            gain = float(getattr(elem, "ref_gain", 0.0) or 0.0)
+            unsupported(elem, "no MAD-X representation" + (
+                f" (and its reference gain of {gain:g} MeV is lost: the energies after "
+                "it change on reload; --linearize writes it as a MATRIX)" if gain else ""))
             i += 1
             continue
 
@@ -657,16 +894,19 @@ def write_madx(lattice: Lattice, filepath, ref: ReferenceParticle, *,
         # overflows to NaN by the end.  Say how far the line goes.
         p0c = ref.bg * ref.species.mass
         pt_total = lin_gain[0] / p0c
-        level = "" if abs(pt_total) < 1e-2 else (
-            "MAD-X TWISS may fail and TRACK may diverge — " if abs(pt_total) < 0.3
-            else "MAD-X TWISS and TRACK will NOT reproduce this line — ")
+        # MAD-X TWISS expands the drifts between the maps to second order
+        # about the orbit: its R56 is off by about 7.5·(pt/β₀)² (measured; the
+        # maps themselves are exact about the orbit, as TRACK shows)
+        err = 7.5 * (pt_total / ref.beta) ** 2
+        level = "" if err < 1e-3 else (
+            f"MAD-X TWISS's R56 may be off by about {100.0 * err:.2g} % — " if err < 0.1
+            else "MAD-X TWISS will NOT reproduce this line — ")
         warnings.append(
             f"linearised export: {n_lin[0]} MATRIX element(s) carry a total "
             f"reference gain ΔW={lin_gain[0]:.6g} MeV = pt {pt_total:.3g} of the "
-            f"entrance momentum ({p0c:.6g} MeV/c).  {level}the MATRIX "
-            "representation is valid only while the accumulated pt stays "
-            "small; for a full linac export a section at a time from its "
-            "own entrance energy")
+            f"entrance momentum ({p0c:.6g} MeV/c), pt/β₀ {pt_total / ref.beta:.3g}.  "
+            f"{level}for a full linac export a section at a time from its own "
+            "entrance energy")
 
     n_err = len(getattr(lattice, "errors", None) or [])
     n_berr = len(getattr(lattice, "beam_errors", None) or [])

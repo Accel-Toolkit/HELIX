@@ -46,7 +46,7 @@ the simulator:
 | `dc_kernel` | Field model | Speed | Use when |
 |---|---|---|---|
 | `"uniform"` | analytic linear uniform-elliptical kick | fastest | matching, fast scans, default |
-| `"gaussian"` | Bassetti-Erskine field of a 2-D Gaussian | medium | rigid-σ MP, per-particle non-linearity |
+| `"gaussian"` | Bassetti-Erskine field of a 2-D Gaussian | medium (see below) | rigid-σ MP, per-particle non-linearity |
 | `"pic2d"` | 2-D Hockney FFT PIC over actual particle distribution | slowest | most accurate; analogue of TraceWin's PICNIC_2D |
 
 ```python
@@ -56,6 +56,16 @@ sc = SpaceChargeConfig(
     dc_kernel="gaussian",   # or "uniform" / "pic2d"
 )
 ```
+
+The `"gaussian"` field is that of an upright Gaussian with the beam's
+projected σ_x and σ_y: an x–y correlation of the beam (a beam rotated by a
+solenoid, say) is not taken into account, where `"uniform"` turns to the
+beam's principal axes once the correlation stands above its sampling noise.
+Within that model it is within 1e-10 of the exact field wherever the field is
+above 1e-2 of its peak, and within 1e-12 of the peak everywhere, for any
+σ_x/σ_y, a round beam included.  It costs two Faddeeva-function evaluations
+per particle and kick, more than `"uniform"`; for a beam a few per cent from
+round it can cost more than `"pic2d"`.
 
 ## Common gotchas
 
@@ -84,8 +94,109 @@ $$
 $$
 
 (and similarly for y) with generalised perveance K = qI / (2π ε₀ m
-c³ (βγ)³).  Scope: drifts, hard-edge quadrupoles, 1-D / 3-D solenoid
-field maps.  No acceleration.
+c³ (βγ)³).  No acceleration.  What it reads, element by element:
+
+* drifts, hard-edge quadrupoles and `SOLENOID` cards;
+* **solenoid field maps** — a static magnetic map whose field on the
+  axis is longitudinal (a 1-D B_z or 2-D cylindrical map, or a 3-D map
+  whose on-axis B_z dominates: the rule the failure compensation uses
+  to tell a solenoid).  κ(s) = (B_z(s) / (2Bρ))² in both planes, with
+  B_z on the axis (a 3-D map's interpolated at x = 0, y = 0) at the
+  amplitude every other mode uses: scale × kb × (1 + `voltage_rel`) /
+  the file's `Norm`.  So kb = 0 and a failure's OFF (`voltage_rel` = −1)
+  are no field, and an error study's `voltage_rel` draws move it;
+* **steering correctors** — a powered 3-D map whose field on the axis is
+  a dipole's (transverse, with no quadrupole gradient of a quadrupole's
+  size there) is left out, as a `STEERER` card is: it steers the beam,
+  which the solver does not follow (a B_z it holds on the axis focuses
+  the beam as a solenoid map's does).  The correctors of one map, or a
+  `SUPERPOSE_MAP` cluster's corrector children together (their fields
+  summed, each over its window), are left out while they bend the beam
+  by at most 20 mrad (θ = the largest |∫ amplitude × (B_x, B_y) dz|
+  along the element, over Bρ: the largest angle the beam reaches in it,
+  both planes together) and focus it, as the beam sees it, by at most
+  1/f = 0.0088 /m: the largest |∫ amplitude × (G_n + i G_s) e^(−2iθ_L) dz|
+  along the element, over Bρ, of their normal and skew quadrupole
+  gradient on the axis turned by the Larmor angle θ_L = sign(q) ∫ B_z dz
+  / (2Bρ) the beam turns by in the element's on-axis B_z (every child's,
+  at its amplitude and the cluster's).  Each of the two opposite gradient
+  lobes at a corrector's ends counts, and a solenoid that turns the beam
+  between them keeps them from cancelling.  Beyond either bound they are
+  refused.  The focusing bound lies where leaving a corrector's gradient
+  out costs 0.5 % of an rms size: the LEBT example's first two corrector
+  pairs reach it at 2.4 to 2.5 mrad, standing alone, superposed on their
+  solenoid or both of a pair together (at their 16 mrad ADJUST limit a
+  corrector focuses the beam by 0.057 to 0.059 /m); the third pair and
+  the SCL corrector maps focus it by at most 0.0033 /m at 20 mrad and
+  are refused beyond 20 mrad;
+* **`SUPERPOSE_MAP` clusters** — the sum of the children's on-axis B_z,
+  each over its own window, times the cluster's own 1 + `voltage_rel`;
+  its steering-corrector children are bounded together and left out;
+* RF maps and gaps as drifts (the DC approximation); a solenoid channel
+  on an RF map still focuses.
+
+A powered map it has no model of — a 1-D G(z) gradient, a 3-D map whose
+quadrupole gradient on the axis makes more than a quarter of its peak
+field at the grid's half-width (a quadrupole whose magnetic centre lies
+on its grid, at any strength), a 3-D map whose field on the axis is a
+solenoid's that its grid point nearest the axis does not show, or no
+solenoid's (a dipole's, or one that vanishes there) where that point
+shows a solenoid's, a 3-D map whose field vanishes on the axis with no
+gradient there (a multipole), correctors that bend the beam by more
+than 20 mrad or focus it, as the beam sees it, by more than
+1/f = 0.0088 /m (a dipole with a gradient part, a quadrupole whose
+magnetic centre lies off its grid, a corrector powered past the bound),
+a static electric map, or a curved `SUPERPOSE_MAP_OUT` cluster — is
+refused before the run with the element's name (each of the correctors
+it sums): use `env_solver='matrix'` for such a line.  A 2-D Cartesian
+map is refused too, and no HELIX mode tracks one.  In an error study, a
+seed whose draws push a corrector past either bound (the LEBT example's
+first two pairs past 2.4 to 2.5 mrad) is refused as any run is, and the
+study stops at that seed; the matrix envelope runs every seed.
+
+Four limits of the model to keep in mind on a real LEBT:
+
+* the σ it gives are those of the rotating (Larmor) frame.  For a round
+  beam they are the laboratory ones; behind a solenoid's rotation an
+  elliptical beam's planes are mixed (after a quarter turn, swapped);
+* space-charge compensation comes from the `SPACE_CHARGE_COMP` cards
+  alone, not from a field map's `Ki`/`.scc` profile, which the matrix
+  envelope and the multiparticle run apply inside the map;
+* it sees a map's on-axis B_z and the paraxial field that goes with it,
+  nothing else a 3-D map holds (a quadrupole part, a radial field that
+  differs from the one its own B_z implies; a solenoid map's dipole or
+  quadrupole part on the axis is neither seen nor bounded), and it has no
+  centroid.  A corrector it leaves out takes its gradient with it, up to
+  the focusing bound: on a 30 keV H⁻ beam without space charge, the LEBT
+  example's first two corrector pairs at that bound (2.4 to 2.5 mrad, one
+  corrector or both of a pair) move σ_x and σ_y in a 20000-particle
+  multiparticle run by up to 0.53 % superposed on their solenoid (0.50 %
+  from their gradient alone; the matrix envelope: 0.46 %) and 0.47 %
+  standing just before it (0.24 % from their gradient alone; the matrix
+  envelope: 0.34 %), where the run's rms sizes along the beam's principal
+  axes, which a round beam hardly defines, scatter with the seed by about
+  0.2 %.  With the line's own 6.8 mA beam (the DC LEBT deck with
+  `SUPERPOSE_MAP` solenoids) they move σ_x and σ_y by up to 0.76 %, their
+  gradient alone by at most 0.29 % (0.31 % in the matrix envelope), the rest
+  from their steering, the steered beam losing up to 0.7 % of its
+  particles at the apertures downstream.
+  And a beam steered off a solenoid's axis meets a field the model does
+  not see, which no envelope follows: standing just before its solenoid,
+  the first corrector at its 16 mrad limit (refused) moves a
+  multiparticle run's rms sizes by 4.0 % from its steering alone and the
+  matrix envelope's not at all; the third pair at 20 mrad, standing just
+  before its solenoid, by up to 1.9 % in a multiparticle run, nearly all
+  from its steering, and superposed on it by at most 0.3 %, where the
+  matrix envelope moves by up to 6.8 %.  With the deck's own 6.8 mA beam
+  the third pair at its 16 mrad limit, superposed on its solenoid, steers
+  the beam into the apertures before the RFQ: a multiparticle run loses
+  15 to 22 % of its particles and the rms sizes of the rest move by up to
+  19 %, the matrix envelope's by at most 0.7 %;
+* of the hard-edge cards, a quadrupole is read at its nominal gradient,
+  not its `gradient_rel`, and focuses x when that gradient is positive
+  whatever the sign of the charge (the other modes then focus y for an
+  H⁻ beam); a `SOLENOID` card reads its `field_rel`, but an OFF
+  (`field_rel` = −1) as the nominal field.
 
 ```python
 from linac_gen.core.lattice import Lattice

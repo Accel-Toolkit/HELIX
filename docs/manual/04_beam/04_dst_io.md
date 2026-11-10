@@ -43,7 +43,8 @@ convention:
 
 with one deliberate exception: the header's **current is *not*
 applied** — `BeamConfig.current` stays in force, so you control the
-space-charge current explicitly.  The file's rest mass is checked
+space-charge current explicitly, and a warning says when the two differ.
+The file's rest mass is checked
 against the configured species (a warning is logged if they differ by
 more than 1 MeV) but the species comes from `BeamConfig`.
 
@@ -88,7 +89,7 @@ from linac_gen.io.tracewin_dst import write_dst
 write_dst(
     "final.dst",
     beam.alive_particles,            # (N, 6) — filtering losses is your job
-    current_mA=beam.current,
+    current_mA=beam.alive_current,   # the current those particles carry
     frequency_MHz=beam.ref.frequency,
     mass_MeV=beam.ref.species.mass,
     w_kin_ref=beam.ref.w_kin,
@@ -192,6 +193,21 @@ Trailer (8 bytes):
 Total file size = 31 + 48·Np bytes.  There is no charge-state field;
 the species is not stored in the file.
 
+TraceWin (seen from 2.27) also writes a second layout, magic `0x7e 0x65`:
+the same header and trailer, with a seventh `float64` per particle, so
+31 + 56·Np bytes.  The seventh value is 0 for a particle still in the beam;
+any other value marks it lost, and is not a stable element number.  A lost
+particle stays in the file with whatever coordinates it was left with.
+`load_dst` tells the layouts apart by the file size, keeps the particles in
+the beam, and returns the current as I × N_alive / Np, as TraceWin's own
+six-value export after losses does.  HELIX writes the six-value layout.
+
+`load_dst` also reports, in its header, two things a file does not state:
+`dc_like` (rms phase above 90°: one uniform over the RF period has 103.9°),
+and `n_off_energy` (particles further than half the median energy from it:
+an RFQ-exit file keeps the particles the RFQ did not accelerate, which stay in
+the beam and dominate its energy spread and longitudinal emittance).
+
 On load, HELIX converts to its internal `(mm, mrad, deg, MeV)`
 deviation convention:
 
@@ -229,6 +245,9 @@ tracking** — reconstructing the distribution that entered the line:
 python -m linac_gen backtrack lattice.dat --dst measured_exit.dst \
     --species H- --energy 2.1 --freq 162.5 --write-dst entrance.dst
 ```
+
+The run keeps its own current, as any other does, and a warning says if the
+file's differs.  Without `--current` a bare lattice runs at zero current.
 
 Energy policy: the file's centroid energy is authoritative for the
 *beam*, but the machine's maps are always evaluated on the **design**

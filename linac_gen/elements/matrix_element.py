@@ -20,9 +20,23 @@ is NOT applied here.  Importers should warn when the longitudinal block
 is non-identity; a pure transverse (or identity-longitudinal) matrix —
 the common case — is exact.
 
-The map is energy-agnostic (returned as-is regardless of ``ref``),
-matching Cheetah; it therefore cannot be re-scaled to a different
-reference energy and cannot be sub-sliced (``n_steps == 1``).
+The map is energy-agnostic (the same at any ``ref`` energy), matching
+Cheetah; it therefore cannot be re-scaled to a different reference energy
+and cannot be sub-sliced (``n_steps == 1``).  Only its phase units follow
+the run's clock (below).
+
+Clock: ``dphi_deg`` is in degrees of an RF clock.  A map converted into
+HELIX's basis at a known clock (a MAD-X ``MATRIX``, whose ``t`` holds none)
+records it as ``clock_mhz``; run at another frequency it is
+``D M D⁻¹`` (and its offset ``D o``), ``D[4, 4]`` = run frequency /
+``clock_mhz``, so it gives the same map in the run's degrees.  With
+``clock_mhz = 0`` (the default) the map is taken in the run's degrees.
+
+Reference gain: ``ref_gain`` (MeV) moves HELIX's reference energy through
+the element (a linearised cavity, a MAD-X ``MATRIX`` whose ``kick6`` gains
+energy); the map then takes the particles from the entrance reference to
+the exit one, as a cavity's does.  ``offset[5]`` instead shifts every
+particle's energy and leaves the reference where it was.
 """
 from __future__ import annotations
 
@@ -38,11 +52,13 @@ class MatrixElement(TransferMapElement):
     affine centroid offset)."""
 
     # The matrix is fixed at construction; disambiguate cache entries by
-    # element identity rather than by a (non-scalar) matrix fingerprint.
-    _cache_keys: tuple[str, ...] = ()
+    # element identity rather than by a (non-scalar) matrix fingerprint
+    # (and by the clock it is counted on).
+    _cache_keys: tuple[str, ...] = ("clock_mhz",)
 
     def __init__(self, name: str, matrix, length: float = 0.0,
-                 offset=None, aperture: float = 0.0):
+                 offset=None, aperture: float = 0.0, clock_mhz: float = 0.0,
+                 ref_gain: float = 0.0):
         super().__init__(name=name, length=float(length),
                          aperture=aperture, n_steps=1)
         M = np.asarray(matrix, dtype=float)
@@ -52,13 +68,34 @@ class MatrixElement(TransferMapElement):
         self.matrix = M
         self.offset = (None if offset is None
                        else np.asarray(offset, dtype=float).reshape(6))
+        self.clock_mhz = float(clock_mhz)    # the clock dphi is counted on (0: the run's)
+        self.ref_gain = float(ref_gain)      # MeV the reference gains through it
+
+    def map_at(self, ref: ReferenceParticle):
+        """The map and offset in degrees of ``ref``'s frequency:
+        ``(D M D⁻¹, D o)`` with ``D[4, 4]`` = ``ref.frequency / clock_mhz``
+        (the stored ones, unchanged, at that clock or with no clock)."""
+        f = float(getattr(ref, "frequency", 0.0) or 0.0)
+        if not (self.clock_mhz > 0.0 and f > 0.0 and f != self.clock_mhz):
+            return self.matrix, self.offset
+        r = f / self.clock_mhz
+        M = self.matrix.copy()
+        M[4, :4] *= r                       # D M D⁻¹: row 4 times r, column 4
+        M[4, 5] *= r                        # over r, M44 as it is
+        M[:4, 4] /= r
+        M[5, 4] /= r
+        o = None
+        if self.offset is not None:
+            o = self.offset.copy()
+            o[4] *= r
+        return M, o
 
     def transfer_matrix(self, ref: ReferenceParticle,
                         ds: float = None) -> np.ndarray:
-        # Energy-agnostic: the stored map is returned verbatim.  A general
+        # Energy-agnostic: the stored map, in the run's degrees.  A general
         # matrix cannot be sub-sliced, so ``ds`` is accepted (tracker API)
         # but does not scale the map.
-        return self.matrix
+        return self.map_at(ref)[0]
 
     def track(self, beam: Beam, ds: float = None) -> None:
         L = ds if ds is not None else self.length
@@ -69,7 +106,10 @@ class MatrixElement(TransferMapElement):
             beam.ref.phi_s += 360.0 * L / (beam.ref.beta
                                            * beam.ref.wavelength)
         alive = beam.alive_mask
-        p = (self.matrix @ beam.particles[alive].T).T
-        if self.offset is not None:
-            p = p + self.offset
+        M, o = self.map_at(beam.ref)
+        p = (M @ beam.particles[alive].T).T
+        if o is not None:
+            p = p + o
         beam.particles[alive] = p
+        if self.ref_gain:
+            beam.ref.w_kin = beam.ref.w_kin + self.ref_gain

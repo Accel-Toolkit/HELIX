@@ -65,6 +65,23 @@ def test_identity_passives_do_not_abort_sc_residual():
     assert bool(torch.isfinite(out).all())
 
 
+@pytest.mark.parametrize("factor", [0.0, 0.5])
+def test_a_space_charge_compensation_card_is_refused_unless_it_compensates_nothing(factor):
+    """The stepwise torch tracker kicks at full current after it, where the envelope and the
+    tracker scale the space charge by 1 - factor: with factor 1 the gradient match came out at
+    the uncompensated answer, 5.144 T/m, against least_squares' 3.656 (2026-11-08 review)."""
+    from linac_gen.elements.space_charge_comp import SpaceChargeComp
+    lat = _lat([SpaceChargeComp("SCC", factor=factor)])
+    if factor == 0.0:
+        build_torch_residual_sc(lat, _cfg(), _ref(), variables=[], constraints=[],
+                                col_for_var=[], n_cols=0, sc_cfg=_SC, bunch_size=64, seed=1)
+    else:
+        with pytest.raises(ValueError, match="compensation.*'SCC'.*least_squares"):
+            build_torch_residual_sc(lat, _cfg(), _ref(), variables=[], constraints=[],
+                                    col_for_var=[], n_cols=0, sc_cfg=_SC, bunch_size=64,
+                                    seed=1)
+
+
 def test_misaligned_element_refused_at_build_time():
     q_rolled = Quadrupole(name="QR", length=100.0, gradient=5.0,
                           aperture=20.0, tilt_deg=1.0)

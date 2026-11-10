@@ -344,3 +344,52 @@ def test_drift_cadence_mirrors_forward(monkeypatch):
     assert counts(True) == (1, 1, 0)
     assert counts(False) == (20, 20, 10)
     assert counts(True, record_substeps=True) == (20, 20, 10)
+
+
+# ---------------------------------------------------------------------------
+# A cavity that switches the clock itself
+# ---------------------------------------------------------------------------
+def _ncells_line(p_flag, with_card, eot=1.0e6):
+    """An NCELLS at 325 MHz behind a drift, for a beam on 162.5 MHz, alone or behind a FREQ card."""
+    from linac_gen.elements.lattice_commands import Freq
+    from linac_gen.elements.ncells import NCells
+    lat = Lattice()
+    lat.add(Drift("D0", 100.0))
+    if with_card:
+        lat.add(Freq("F", 325.0))
+    lat.add(NCells("NC", mode=1, n_cells=4, beta_g=0.2, eot_v_per_m=eot, theta_s_deg=-30.0,
+                   aperture_mm=15.0, p_flag=p_flag, frequency_mhz=325.0))
+    lat.add(Drift("D1", 100.0))
+    return lat
+
+
+def _ncells_roundtrip(lat, spread_mm=0.5):
+    ref = ReferenceParticle(species=PROTON, w_kin=20.0, frequency=162.5)
+    beam = Beam(ref=ref.copy(), n_particles=200, current=0.0)
+    beam.continuous = False
+    rng = np.random.default_rng(3)
+    beam.particles[:] = rng.normal(size=(200, 6)) * [spread_mm, 0.5, spread_mm, 0.5, 2.0, 1e-4]
+    p_in = beam.particles.copy()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        _forward(lat, beam)
+        backtrack_distribution(lat, beam, ref.copy())
+    return p_in, beam
+
+
+@pytest.mark.parametrize("p_flag", [1, 2])
+@pytest.mark.parametrize("spread_mm", [0.5, 12.0], ids=["all through", "half lost in the cavity"])
+def test_backtrack_undoes_a_cavity_clock_jump(p_flag, spread_mm):
+    """Backtracked, a cavity that switched the clock itself ends where the same cavity behind a FREQ card ends,
+    lost particles included: the scale is undone on the surviving ones, as it was applied to them."""
+    _, own = _ncells_roundtrip(_ncells_line(p_flag, with_card=False), spread_mm)
+    _, card = _ncells_roundtrip(_ncells_line(p_flag, with_card=True), spread_mm)
+    if spread_mm > 1.0:
+        assert 20 < int((~own.alive_mask).sum()) < 180
+    np.testing.assert_allclose(own.particles, card.particles, rtol=1e-12, atol=1e-12)
+
+
+def test_backtrack_of_a_fieldless_cavity_on_another_clock_closes():
+    """With no field the cavity is a drift and a change of degrees: forward then back is the identity."""
+    p_in, beam = _ncells_roundtrip(_ncells_line(2, with_card=False, eot=0.0))
+    np.testing.assert_allclose(beam.particles, p_in, rtol=0.0, atol=1e-12)

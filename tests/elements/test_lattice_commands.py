@@ -3,8 +3,10 @@
 Covers each ``SET_*`` and ``ADJUST_*`` command class:
 
 * the **active** subclasses (``SetSyncPhase``, ``SetBeamPhaseError``,
-  ``SetBeamE0P0``, ``SetBeamEnergy``, ``SetGaussianCutOff``) — assert
-  that ``apply_command(track_state)`` mutates the right field,
+  ``SetReferenceEnergy``, ``SetGaussianCutOff``) — assert that
+  ``apply_command(track_state)`` mutates the right field (``SetBeamE0P0`` and
+  ``SetBeamEnergy`` set and shifted the energy until 2026-11; they are TraceWin
+  matching criteria and change nothing),
 * every command — assert .dat round-trip via parse_tracewin / write_tracewin
   is lossless on the synthetic fixture ``tests/io/fixtures/lattice_with_set_commands.dat``.
 """
@@ -16,11 +18,13 @@ from pathlib import Path
 
 import pytest
 
+from linac_gen.core.particle import PROTON
+from linac_gen.core.reference import ReferenceParticle
 from linac_gen.core.track_state import TrackState
 from linac_gen.elements.lattice_commands import (
     LatticeCommand,
     SetSyncPhase, SetBeamPhaseError, SetBeamE0P0, SetBeamEnergy,
-    SetGaussianCutOff,
+    SetGaussianCutOff, SetReferenceEnergy,
     SetTwiss, SetPosition, SetAchromat, SetSize, SetSizeMax, SetSizeMin,
     SetBeamPhaseAdv, SetSeparation, SetAdv,
     Adjust, AdjustSteerer, AdjustSteererBx, AdjustSteererBy,
@@ -49,35 +53,35 @@ class TestActiveCommands:
         assert ts.sync_phase_mode is True
 
     def test_phase_error_accumulates_and_clears(self):
-        ts = TrackState()
+        ref = ReferenceParticle(species=PROTON, w_kin=3.0, frequency=352.21)
+        ts = TrackState(ref=ref)
         SetBeamPhaseError("CMD_001", dphi_deg=5.0).apply_command(ts)
         SetBeamPhaseError("CMD_002", dphi_deg=2.5).apply_command(ts)
-        assert ts.phase_ref_shift == pytest.approx(7.5)
+        assert ref.rf_shift == pytest.approx(7.5)
         SetBeamPhaseError("CMD_003", dphi_deg=0.0).apply_command(ts)
-        assert ts.phase_ref_shift == 0.0
+        assert ref.rf_shift == 0.0
 
-    def test_phase_error_random_flag_raises(self):
-        ts = TrackState()
-        with pytest.raises(NotImplementedError):
-            SetBeamPhaseError("CMD_X", dphi_deg=1.0, random_flag=1).apply_command(ts)
+    def test_phase_error_random_flag_outside_a_study_warns_and_shifts_nothing(self):
+        """It raised; the random draw belongs to an error study's seed."""
+        ref = ReferenceParticle(species=PROTON, w_kin=3.0, frequency=352.21)
+        with pytest.warns(UserWarning, match="RandomFlag"):
+            SetBeamPhaseError("CMD_X", dphi_deg=1.0, random_flag=1).apply_command(TrackState(ref=ref))
+        assert ref.rf_shift == 0.0
 
-    def test_beam_energy_sets_w_kin(self):
+    def test_the_energy_card_sets_w_kin(self):
         ref = _MutableRef(2.0)
         ts = TrackState(ref=ref)
-        SetBeamEnergy("CMD_E", k=1, energy_MeV=5.0).apply_command(ts)
+        SetReferenceEnergy("CMD_E", energy_MeV=5.0).apply_command(ts)
         assert ref.w_kin == 5.0
 
-    def test_beam_e0_p0_independent_axes(self):
+    def test_the_tracewin_criteria_change_nothing_and_the_card_shifts(self):
         ref = _MutableRef(3.0)
         ts = TrackState(ref=ref)
-        # kE off → energy unchanged
-        SetBeamE0P0("CMD_X", dE_MeV=1.0, dphi_deg=10.0, ke=0, kp=1).apply_command(ts)
+        SetBeamEnergy("CMD_E", k=1, energy_MeV=9.0).apply_command(ts)
+        SetBeamE0P0("CMD_X", dE_MeV=1.0, dphi_deg=10.0, ke=1, kp=1).apply_command(ts)
         assert ref.w_kin == 3.0
-        assert ts.phase_ref_shift == 10.0
-        # kp off → phase unchanged
-        SetBeamE0P0("CMD_Y", dE_MeV=2.0, dphi_deg=99.0, ke=1, kp=0).apply_command(ts)
+        SetReferenceEnergy("CMD_Y", energy_MeV=2.0, shift=True).apply_command(ts)
         assert ref.w_kin == 5.0
-        assert ts.phase_ref_shift == 10.0
 
     def test_gaussian_cutoff_sets_field(self):
         ts = TrackState()
@@ -93,11 +97,13 @@ class TestRoundTrip:
         lat, meta = parse_tracewin(FIXTURE)
         # The fixture's SET_SIZE_MAX/MIN cards carry k2=1, which since
         # the 2026-07 review round warns per parse (centroid-inclusive
-        # transverse sizes are not modelled) — those two warnings are
-        # EXPECTED; anything else is a regression.
-        assert all("k2=1" in w for w in meta["warnings"]), \
+        # transverse sizes are not modelled), and its SET_BEAM_ENERGY and
+        # SET_BEAM_E0_P0 get the one notice that they are matching criteria
+        # (2026-11) — those three warnings are EXPECTED; anything else is a
+        # regression.
+        assert all("k2=1" in w or "HELIX_SET_ENERGY" in w for w in meta["warnings"]), \
             meta["warnings"]
-        assert len(meta["warnings"]) == 2, meta["warnings"]
+        assert len(meta["warnings"]) == 3, meta["warnings"]
         cmds = [e for e in lat.elements if isinstance(e, LatticeCommand)]
         # 22 SET_*/ADJUST_* + the FREQ card (now a Freq command element)
         assert len(cmds) == 23, [c.KEYWORD for c in cmds]
@@ -107,7 +113,7 @@ class TestRoundTrip:
         out = tmp_path / "round.dat"
         write_tracewin(lat, str(out), frequency=162.5)
         lat2, meta2 = parse_tracewin(str(out))
-        assert all("k2=1" in w for w in meta2["warnings"]), \
+        assert all("k2=1" in w or "HELIX_SET_ENERGY" in w for w in meta2["warnings"]), \
             meta2["warnings"]
         cmds  = [e for e in lat.elements  if isinstance(e, LatticeCommand)]
         cmds2 = [e for e in lat2.elements if isinstance(e, LatticeCommand)]

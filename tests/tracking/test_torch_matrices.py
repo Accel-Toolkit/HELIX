@@ -108,9 +108,11 @@ def test_dipole_matrix_matches_numpy(angle, N, field_rel):
            dip.transfer_matrix(ref))
 
 
-def test_dipole_angle_knob_keeps_the_magnet_length():
-    """d(M23)/d(angle) must vanish: the tunable angle is the field, not the
-    iron — the radius scales inversely and the vertical drift stays L."""
+def test_a_field_change_keeps_the_magnet_length():
+    """With a float design angle the effective angle is a field change (a
+    field error, field_rel): d(M23)/d(angle) must vanish — the radius scales
+    inversely and the vertical drift stays L.  The angle knob, an edit of the
+    angle, passes the design angle as a tensor (test_dipole_angle_knob.py)."""
     ref = _proton_ref()
     kin = RefKinematics.from_reference(ref)
     dip = Dipole("B", angle=-12.0, rho=1500.0)          # n = 0: the other plane is a pure drift of L
@@ -216,7 +218,9 @@ def test_all_matrices_are_float64():
 @pytest.mark.parametrize("hv", [0, 1])
 def test_dipole_path_length_row_autograd_matches_finite_difference(field_index, hv):
     """The compaction and the path-length coupling must be differentiable in
-    the bend-angle knob: gradient-based matching optimises through them.
+    the bend angle (here a field change; the angle knob's own path is pinned
+    in test_dipole_angle_knob.py): gradient-based matching optimises through
+    them.
 
     Every branch of the body matrix is covered, including both sides of the
     ``|kx2 L^2| < 1e-3`` series threshold, where a closed-form J would make

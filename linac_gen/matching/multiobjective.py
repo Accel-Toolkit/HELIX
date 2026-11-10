@@ -39,6 +39,7 @@ _log = logging.getLogger(__name__)
 from linac_gen.matching.engine import (
     _run_envelope, _run_mp, _apply_x,
     _link_group_index, _build_x0_and_bounds, _require_finite_bounds,
+    _surrogates_decided_once,
 )
 
 
@@ -200,7 +201,7 @@ def _pareto_mask(F: np.ndarray) -> np.ndarray:
 
 
 @in_run_scope
-def pareto_optimize(
+def _pareto_optimize(
     lattice, beam_cfg: BeamConfig, objective_names: List[str], *,
     algorithm: str = "nsga2",
     space_charge: bool = False,
@@ -310,6 +311,10 @@ def pareto_optimize(
         col_for_var=list(col_for_var), n_cols=int(n_cols),
         algorithm=algorithm, n_eval=int(state["n"]), message=msg,
     )
+
+
+#: the registered surrogates decided once for the whole exploration, as in ``match``
+pareto_optimize = _surrogates_decided_once(_pareto_optimize, "pareto_optimize")
 
 
 def _run_nsga2(forward, lo, hi, n_obj, pop_size, n_gen, seed):

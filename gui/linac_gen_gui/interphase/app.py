@@ -378,6 +378,7 @@ from linac_gen_gui.interphase.icons import icon
 from linac_gen_gui.interphase.scrollwrap import scroll_wrap
 from linac_gen_gui.interphase.state import AppState, TABS
 from linac_gen_gui.interphase.chrome import TitleBar, Toolbar, StatusBar
+from linac_gen_gui.interphase.warning_log import install as install_warning_log  # noqa: E402
 from linac_gen_gui.interphase.tabs import (
     BeamTab, LatticeTab, MatchingTab, ConvergenceTab, SurrogatesTab,
     StudyTab, ErrorStudyTab, FailureStudyTab, ResultsTab,
@@ -553,6 +554,7 @@ class InterphaseWindow(QMainWindow):
 
         self._statusbar = StatusBar(self.state)
         v.addWidget(self._statusbar)
+        install_warning_log(self.state)
 
         # --- Toolbar wiring -----------------------------------------------
         self._toolbar.open_lattice_requested.connect(self._open_lattice)
@@ -2210,18 +2212,19 @@ class InterphaseWindow(QMainWindow):
         try:
             from linac_gen.cli.common import build_ref
             from linac_gen.io.madx_writer import write_madx
+            ref = build_ref(cfg)            # a .dst beam: the file's energy
             warnings = write_madx(
-                self.state.lattice, path, build_ref(cfg),
+                self.state.lattice, path, ref,
                 title=src.name if src else Path(path).stem,
             )
             s.setValue(_SETTINGS_LAST_DIR, str(Path(path).parent))
             self.state.status_message.emit(
                 f"Exported MAD-X → {Path(path).name} "
-                f"({cfg.species} {cfg.energy:g} MeV, "
+                f"({cfg.species} {ref.w_kin:g} MeV, "
                 f"{len(warnings)} warning(s))"
             )
             body = f"Wrote:\n  {path}\n\nReference: {cfg.species} " \
-                   f"{cfg.energy:g} MeV"
+                   f"{ref.w_kin:g} MeV"
             if warnings:
                 shown = warnings[:12]
                 body += f"\n\n{len(warnings)} warning(s):\n" + \
@@ -2372,19 +2375,24 @@ class InterphaseWindow(QMainWindow):
         import math
         from linac_gen.core.particle import PROTON, DEUTERON, H_MINUS
         from linac_gen.core.reference import ReferenceParticle
-        cfg = self.state.beam_config
+        from linac_gen.distributions.factory import reference_config
+        # a beam read from a .dst file starts from the file's energy, clock and Twiss,
+        # as the multiparticle run does
+        cfg = reference_config(self.state.beam_config)
         species_map = {"proton": PROTON, "deuteron": DEUTERON, "H-": H_MINUS}
         sp = species_map.get(cfg.species, PROTON)
         bg = math.sqrt(max((1 + cfg.energy / sp.mass) ** 2 - 1, 0.0))
         ref = ReferenceParticle(species=sp, w_kin=cfg.energy, frequency=cfg.frequency)
         # Mismatch-scaled geometric emittances — the shared helper keeps
         # the envelope run modelling the same beam MP generates.
-        from linac_gen.distributions.factory import geometric_emittances
+        from linac_gen.distributions.factory import geometric_emittances, input_dispersion
         emit_x, emit_y, emit_z = geometric_emittances(cfg, bg)
         initial = dict(
             alpha_x=cfg.alpha_x, beta_x=cfg.beta_x, emit_x=emit_x,
             alpha_y=cfg.alpha_y, beta_y=cfg.beta_y, emit_y=emit_y,
             alpha_z=cfg.alpha_z, beta_z=cfg.beta_z, emit_z=emit_z,
+            # the input dispersion create_beam shears a generated beam by
+            **input_dispersion(cfg),
             # DC / continuous-beam metadata — EnvelopeSolver checks these
             # to skip the longitudinal σ block and switch to 2-D SC.
             continuous=bool(getattr(cfg, "continuous", False)),
@@ -2429,6 +2437,7 @@ class InterphaseWindow(QMainWindow):
         self._envelope_worker.progress_s.connect(self._toolbar.set_live_s)
         self._envelope_worker.aborted.connect(self._env_aborted)
         self._envelope_worker.start()
+        self.state.add_run_worker(self._envelope_worker)
 
     def _env_done(self, results) -> None:
         # A queued emission from a retired worker can still land here
@@ -2666,6 +2675,7 @@ class InterphaseWindow(QMainWindow):
         # time-domain RFQ: field-map build / tracking lines to the status bar
         self._mp_worker.status.connect(self.state.status_message)
         self._mp_worker.start()
+        self.state.add_run_worker(self._mp_worker)
 
     def _mp_done(self, results) -> None:
         if self.sender() is not self._mp_worker:
@@ -2770,6 +2780,7 @@ class InterphaseWindow(QMainWindow):
         self._backtrack_worker.failed.connect(self._env_fail)
         self._backtrack_worker.aborted.connect(self._backtrack_aborted)
         self._backtrack_worker.start()
+        self.state.add_run_worker(self._backtrack_worker)
 
     def _backtrack_done(self, results) -> None:
         if self.sender() is not self._backtrack_worker:
@@ -2785,7 +2796,7 @@ class InterphaseWindow(QMainWindow):
         # Reversed-to-increasing-s recorder → Results tab needs no changes.
         self.state.set_results(results)
         msg = "Backtrack complete — index 0 is the reconstructed entrance"
-        # Physics caveats collected by the worker (surrogate fallback,
+        # Physics caveats collected by the worker (no surrogate-push record,
         # survivors-only, SC grid fallback, …) — a GUI user would never
         # see the stderr warnings, so show them once, post-run.
         caveats = list(getattr(results, "backtrack_warnings", ()) or ())
@@ -2805,7 +2816,7 @@ class InterphaseWindow(QMainWindow):
                 b = worker.beam
                 warn_if_nonstandard_dst_header(b)
                 write_dst(out, b.particles[b.alive_mask],
-                          current_mA=b.current,
+                          current_mA=b.alive_current,
                           frequency_MHz=b.ref.frequency,
                           mass_MeV=b.ref.species.mass,
                           w_kin_ref=b.ref.w_kin)
@@ -2894,6 +2905,7 @@ class InterphaseWindow(QMainWindow):
         self._train_worker.failed.connect(self._env_fail)
         self._train_worker.aborted.connect(self._train_aborted)
         self._train_worker.start()
+        self.state.add_run_worker(self._train_worker)
         self._begin_train_summary(tc)
 
     def _train_progress(self, done: int, total: int) -> None:

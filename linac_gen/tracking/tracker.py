@@ -61,6 +61,7 @@ def _is_magnetic_only_fieldmap(element) -> bool:
         )
     except Exception:
         return False
+    element = field_map_behind(element)      # a surrogate placed in the lattice
     if getattr(element, "is_curved", False):
         # a curved cluster (SUPERPOSE_MAP_OUT) has its own exact RK4 push
         # and step policy: the floor below is for the first-order KD push
@@ -186,6 +187,7 @@ def _is_rf_bunching_element(element) -> bool:
         )
     except Exception:
         return False
+    element = field_map_behind(element)      # a surrogate placed in the lattice
     if isinstance(element, SuperposedFieldMap):
         # A cluster bunches iff ANY child does (electric non-quad-grad
         # channel).
@@ -247,6 +249,7 @@ def _is_time_varying_rf_buncher(element) -> bool:
         )
     except Exception:
         return False
+    element = field_map_behind(element)      # a surrogate placed in the lattice
     if isinstance(element, SuperposedFieldMap):
         return any(_is_time_varying_rf_buncher(child)
                    for _z0, child in element.children)
@@ -324,8 +327,9 @@ def field_map_step_counts(lattice, element):
     from linac_gen.elements.superposed_field_map import (
         SuperposedFieldMap as _SFM,
     )
-    if isinstance(element, (_FM1D, _FM3D, _SFM)) and element.n_steps > n_int:
-        n_int = element.n_steps
+    native = field_map_behind(element)       # a surrogate placed in the lattice
+    if isinstance(native, (_FM1D, _FM3D, _SFM)) and native.n_steps > n_int:
+        n_int = native.n_steps
 
     ds_mm = element.length / n_int
     sc_every = max(1, n_int // n_sc)
@@ -366,15 +370,26 @@ class FieldMapStep:
     z_entry: float | None = None
 
 
+def field_map_behind(element):
+    """The native element a surrogate placed in the lattice stands for, else ``element``:
+    the reference follows that element's own schedule, as in a run without the
+    surrogate (the surrogate serves the map only)."""
+    if getattr(element, "stands_for_wrapped", False):
+        return getattr(element, "_wrapped", element)
+    return element
+
+
 def tracks_reference_on_tracker_schedule(element) -> bool:
     """True for the field maps whose reference the envelope, matrix and
     backtracking modes advance with :func:`field_map_reference_states`
     (FieldMap, FieldMap3D and SuperposedFieldMap, not a curved cluster),
-    so their reference energy and phase equal a multiparticle run's.
+    so their reference energy and phase equal a multiparticle run's; so too
+    a surrogate placed in the lattice for one of them (``field_map_behind``).
     RFQ cells, VaneRFQ and NCells keep their own ``advance_ref``."""
     from linac_gen.elements.field_map import FieldMap
     from linac_gen.elements.field_map_3d import FieldMap3D
     from linac_gen.elements.superposed_field_map import SuperposedFieldMap
+    element = field_map_behind(element)
     return (isinstance(element, (FieldMap, FieldMap3D, SuperposedFieldMap))
             and not getattr(element, "is_curved", False))
 
@@ -466,8 +481,11 @@ def load_reference_state(dst, src) -> None:
     keeping the ``dst`` object: run-time commands hold it (``TrackState``)."""
     dst._w_kin = src._w_kin
     dst._frequency = src._frequency
+    dst._clock = getattr(src, "_clock", src._frequency)
     dst.phi_s = src.phi_s
     dst.s = src.s
+    dst.rf_shift = getattr(src, "rf_shift", 0.0)
+    dst.rf_rephase = getattr(src, "rf_rephase", 0.0)
     dst._update_derived()
 
 
@@ -476,7 +494,10 @@ def restart_field_map_walk(element) -> None:
     :func:`field_map_reference_states`, keeping what the walk set up —
     the SET_SYNC_PHASE calibration, the entrance phase and, in a
     SuperposedFieldMap, its children's entrance phases — so the envelope's
-    matrix walk that follows sees the multiparticle run's phases."""
+    matrix walk that follows sees the multiparticle run's phases.  For a
+    surrogate placed in the lattice, the native element behind it, whose
+    cursor its partial slices use."""
+    element = field_map_behind(element)
     element._step_idx = 0
     if hasattr(element, "_z_history"):           # SuperposedFieldMap
         element._z_cursor = 0.0
@@ -554,7 +575,7 @@ class Tracker:
         # ``TrackState`` carries run-time state (energy, phase shift, sync
         # mode, error cutoff) that ``LatticeCommand.apply_command`` mutates
         # at its position in the lattice.  Bind to the live beam ref so
-        # ``SetBeamEnergy`` etc. flow straight through to the tracker.
+        # ``SetReferenceEnergy`` etc. flow straight through to the tracker.
         self.track_state = TrackState(ref=self.beam.ref, beam=self.beam)
         self._warned_no_sc = False
         # Periodic phase coordinates: read once so the hot path (called
@@ -1155,6 +1176,10 @@ class Tracker:
         if ds:
             self._apply_sc_kick(ds)
         self._check_aperture(element)
+        if self._record_substeps and ds > 0:
+            # (with sub-steps the element loop leaves an extended transfer
+            # map's exit row to the element)
+            self._record_substep(element)
 
     def _track_transfer_map(self, element) -> None:
         """Split-operator on a 2-sub-step grid (TraceWin "2 steps" convention)."""
@@ -1234,6 +1259,26 @@ class Tracker:
         # and rationale live on field_map_step_counts).
         n_int, n_sc, ds, sc_every, n_bundles = field_map_step_counts(
             self.lattice, element)
+        # The record of what pushes this beam, per field-map element of the lattice it is
+        # tracked through, each element's latest traversal: the calls surrogate weights made
+        # (SurrogateFieldMap._record_push; none in a traversal no weights stand for,
+        # base.native_push_record), its step schedule, the reference at the element's entrance
+        # and the settings its push depends on (SurrogateFieldMap._record_call).  The
+        # backtracker undoes each push as it was made, and trusts the record only while its
+        # walk has those three the same: an edit that changes none of them (a marker added, a
+        # BPM deleted) leaves it valid; after any other, the backtracker undoes the element as
+        # the weights would push it with the current settings, with a caveat unless the native
+        # element pushes it both in the record and with them.  Another lattice starts it over.
+        beam = self.beam
+        if beam.__dict__.get("surrogate_pushes_lattice") != id(self.lattice):
+            beam.surrogate_pushes = {}
+            beam.surrogate_pushes_lattice = id(self.lattice)
+        if effective_element is element:
+            from linac_gen.surrogates.base import native_push_record
+            pushed = native_push_record(element, beam.ref, 2 * n_int, ds / 2)
+        else:
+            pushed = effective_element._push_record
+        beam.surrogate_pushes[id(element)] = (element.name, pushed)
         # Per-slice diagnostic recording inside field maps.  When
         # ``record_substeps`` is on the tracker records at every
         # integration sub-step (every ``ds``), so 1-D / 3-D solenoids
@@ -1245,7 +1290,7 @@ class Tracker:
         # SPACE_CHARGE_COMP factor inside this field map.  Manual: the
         # local space-charge compensation is ``Ki × scc(z_local)`` and
         # the active SC fraction is ``1 - Ki × scc(z_local)``.
-        fd = getattr(element, "field_data", None)
+        fd = getattr(field_map_behind(element), "field_data", None)
         scc_prof = getattr(fd, "scc_profile", None) if fd is not None else None
         scc_scale = getattr(fd, "scc_scale", 0.0) if fd is not None else 0.0
         scc_mode = getattr(fd, "scc_mode", 0) if fd is not None else 0
@@ -1516,7 +1561,8 @@ class Tracker:
         # the FIELD_MAP card).  Takes precedence over the flat
         # ``element.aperture`` scalar when present.
         # ------------------------------------------------------------------
-        fd = getattr(element, "field_data", None)
+        # (a surrogate placed in the lattice: its native element's map)
+        fd = getattr(field_map_behind(element), "field_data", None)
         profile = getattr(fd, "pipe_radius_profile", None) if fd is not None else None
         if profile is not None:
             # s-local is the particle's z offset from the element entrance.

@@ -152,14 +152,14 @@ SCHEMA: dict[str, Optional[list[Field]]] = {
         Field("random_flag",  int,   default=0),
     ],
     "SET_BEAM_E0_P0": [
-        Field("k",        int,   default=0),
+        Field("k",        float, default=0.0),
         Field("dE_MeV",   float, default=0.0),
         Field("dphi_deg", float, default=0.0),
         Field("ke",       int,   default=0),
         Field("kp",       int,   default=0),
     ],
     "SET_BEAM_ENERGY": [
-        Field("k",          int,   default=0),
+        Field("k",          float, default=0.0),
         Field("energy_MeV", float, required=True),
     ],
     "SET_GAUSSIAN_CUT_OFF": [

@@ -53,6 +53,10 @@ class RefKinematics:
     mass: float
     charge: int
     wavelength: float
+    # SET_BEAM_PHASE_ERROR's shifts of the RF phase the beam sees, and of the clock,
+    # for the cavities a surrogate stands for (deg); the linear elements ignore them
+    rf_shift: float = 0.0
+    rf_rephase: float = 0.0
 
     @classmethod
     def from_reference(cls, ref) -> "RefKinematics":
@@ -63,6 +67,8 @@ class RefKinematics:
             mass=float(ref.species.mass),
             charge=int(ref.species.charge),
             wavelength=float(ref.wavelength),
+            rf_shift=float(getattr(ref, "rf_shift", 0.0) or 0.0),
+            rf_rephase=float(getattr(ref, "rf_rephase", 0.0) or 0.0),
         )
 
 
@@ -376,7 +382,7 @@ def dipole_matrix(eff_angle_deg, rho_mm: float, length_mm: float,
                   e1_deg: float, e2_deg: float, field_index: float,
                   hv: int, kin: RefKinematics,
                   ds_mm: float | None = None,
-                  design_angle_deg: float | None = None) -> torch.Tensor:
+                  design_angle_deg: float | torch.Tensor | None = None) -> torch.Tensor:
     """6x6 transfer matrix of a dipole (mirrors Dipole.transfer_matrix).
 
     ``eff_angle_deg`` is the effective bend angle (deg) — pass a
@@ -384,22 +390,34 @@ def dipole_matrix(eff_angle_deg, rho_mm: float, length_mm: float,
     full element including the e1/e2 edges; a slice (``ds_mm`` given)
     scales the angle proportionally and omits the edges.  ``design_angle_deg``
     is the geometric (card) angle: when the effective angle differs from it
-    (field error, tunable-angle override) the magnet keeps its length and
-    the bending radius scales by design/effective, as the numpy element does.
+    (a field error) the magnet keeps its length and the bending radius
+    scales by design/effective, as the numpy element does.  A tensor design
+    angle (the angle knob, an edit of the card angle) keeps the radius: the
+    ratio is taken as a number.  The arc is then ρ·θ in the graph, and with
+    the field off a pipe of ``length_mm``, which the knob passes as its own
+    arc, a tensor.
     """
     eff_angle = _t(eff_angle_deg)
     use_edges = ds_mm is None
     rho_body = rho_mm
-    if design_angle_deg is not None and float(design_angle_deg) != 0.0:
+    design_f = (None if design_angle_deg is None
+                else float(design_angle_deg.detach()) if torch.is_tensor(design_angle_deg)
+                else float(design_angle_deg))
+    if design_f is not None and design_f != 0.0:
         eff_f = float(eff_angle.detach())
         if eff_f == 0.0:
             rho_body = 0.0                                          # zero field: a pipe
-        elif eff_f != float(design_angle_deg) or eff_angle.requires_grad:
+        elif eff_f != design_f or eff_angle.requires_grad:
             # design/effective then multiply — the numpy element's expression;
-            # at the design point the factor is exactly 1.0 (values unchanged)
-            # but the graph still carries d(rho)/d(angle), so the tunable
-            # angle keeps the magnet length (d M23 / d angle = 0)
-            rho_body = rho_mm * (float(design_angle_deg) / eff_angle)
+            # at the design point the factor is exactly 1.0 (values unchanged).
+            # A float design angle is a field change: the ratio stays in the
+            # graph, so the magnet keeps its length (d M23 / d angle = 0).  A
+            # tensor one is an edit of the angle (the knob): the ratio,
+            # 1/(1 + field_rel), does not move with it and is taken as a number
+            if torch.is_tensor(design_angle_deg):
+                rho_body = rho_mm * (design_f / eff_f)
+            else:
+                rho_body = rho_mm * (design_f / eff_angle)
     if ds_mm is not None:
         theta_deg = (eff_angle * (ds_mm / length_mm)
                      if length_mm != 0.0 else _t(0.0))

@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
 from linac_gen.core.particle import PROTON, DEUTERON, H_MINUS
 from linac_gen.core.reference import ReferenceParticle
 from linac_gen.tracking.matrix_tracking import (
-    compute_transfer_matrix, compute_twiss,
+    compute_transfer_matrix, compute_twiss, reference_at,
 )
 from linac_gen.tracking.longitudinal_coords import matrix_to_tracewin
 
@@ -208,10 +208,12 @@ class TransferMatrixDialog(QDialog):
     # ------------------------------------------------------------------
     def _build_ref(self) -> ReferenceParticle:
         """Construct a reference particle from the beam-config panel state."""
+        from linac_gen.distributions.factory import reference_config
         cfg = self._beam_config
         species = SPECIES_MAP.get(cfg.species, PROTON)
+        start = reference_config(cfg)          # a .dst beam: the file's energy and clock
         return ReferenceParticle(
-            species=species, w_kin=cfg.energy, frequency=cfg.frequency,
+            species=species, w_kin=start.energy, frequency=start.frequency,
         )
 
     def _compute(self) -> None:
@@ -220,22 +222,20 @@ class TransferMatrixDialog(QDialog):
             return
         s = self._start_spin.value()
         e = self._end_spin.value()
+        basis = self._basis_combo.currentData()
         try:
             ref = self._build_ref()
             M = compute_transfer_matrix(self._lattice, ref, start=s, end=e)
+            # Apply basis transform if the user asked for TraceWin (z, δ): each
+            # side of the window in its own energy and RF clock.
+            M_disp = M if basis != "tracewin" else matrix_to_tracewin(
+                M, reference_at(self._lattice, ref, s),
+                reference_at(self._lattice, ref, e + 1))
         except Exception as exc:              # noqa: BLE001
             QMessageBox.critical(self, "Computation failed", str(exc))
             return
 
-        # Apply basis transform if the user asked for TraceWin (z, δ).
-        basis = self._basis_combo.currentData()
-        if basis == "tracewin":
-            labels = COORD_LABELS_TW
-            M_disp = matrix_to_tracewin(M, ref)
-        else:
-            labels = COORD_LABELS_OURS
-            M_disp = M
-
+        labels = COORD_LABELS_TW if basis == "tracewin" else COORD_LABELS_OURS
         self._matrix_table.setHorizontalHeaderLabels(labels)
         self._matrix_table.setVerticalHeaderLabels(labels)
         self._display_matrix(M_disp)
@@ -282,6 +282,8 @@ class TransferMatrixDialog(QDialog):
 
         basis_label = ("(z, δ) [TraceWin basis]" if basis == "tracewin"
                        else "(Δφ, ΔW) [our code's basis]")
+        det_note = ("1.0 for symplectic transport" if basis == "tracewin"
+                    else "1.0 for symplectic transport, × f_out/f_in if the RF clock changes")
         lines = [
             f"Range:            elements {s} .. {e}  ({len(elements)} of "
             f"{self._n_elements})",
@@ -290,7 +292,7 @@ class TransferMatrixDialog(QDialog):
             f"(ΔW = {dw:+.4f} MeV)",
             f"Basis:            {basis_label}",
             f"det(M_6x6)       = {det_full:+.6e}    "
-            f"(1.0 for symplectic transport)",
+            f"({det_note})",
             f"det(M_4x4 xy)    = {det_xy:+.6e}      "
             f"(1.0 when transverse is symplectic)",
         ]

@@ -66,8 +66,17 @@ Invertibility limits (documented, guarded)
   (~1e-13 over the full MEBT).  ``field_map_mode="linear"`` keeps the
   v1 inverted fitted-matrix path (nonlinear-in-cavity effects not
   undone, ~2 % closure through strong bunchers); RfqCell / VaneRFQ and
-  surrogate-driven elements always use it (no exact inverse exists —
-  warned for surrogates).
+  NCells always use it.  A push through surrogate weights (the
+  multiparticle fast path: a matrix slice per call) is undone exactly
+  too, call by call, from the record the forward run leaves on the beam
+  (``surrogate_pushes``, per element of the lattice it went through,
+  the traversals the native element made alone among them), while the
+  element's settings, its step schedule and the reference at its
+  entrance are still those of the run; otherwise, and for a beam with
+  no record of the lattice walked (read from a file, tracked through
+  another lattice or a copy), it is undone as the weights would push it
+  with the current settings (warned unless the native element pushes
+  it so and, as far as the walk can tell, pushed it in the run).
 * Quadrupole g3–g6 thin-multipole content is undone exactly (the kicks
   are position-only and never move positions, so re-applying with
   ``fraction=−0.5`` at the same positions subtracts them IEEE-exactly).
@@ -136,12 +145,19 @@ class BoundaryState:
     sc_factor: float         # active SC fraction in force at this boundary
     rf_seen: bool            # an RF bunching element lies upstream (≤ here)
     element_name: str        # element STARTING at this boundary ("EXIT" last)
+    clock: float = 0.0       # MHz, the machine clock phi_s is counted on (0: the frequency)
+    rf_shift: float = 0.0    # deg, SET_BEAM_PHASE_ERROR's RF shift in force here
+    rf_rephase: float = 0.0  # deg, and its correction
 
     def make_ref(self, species) -> ReferenceParticle:
         ref = ReferenceParticle(species=species, w_kin=self.w_kin,
                                 frequency=self.frequency)
         ref.s = self.s
         ref.phi_s = self.phi_s
+        if self.clock > 0.0:
+            ref._clock = self.clock
+        ref.rf_shift = self.rf_shift
+        ref.rf_rephase = self.rf_rephase
         return ref
 
 
@@ -161,7 +177,7 @@ def build_replay_table(lattice, entrance_ref: ReferenceParticle, *,
     Mirrors ``compute_transfer_matrix``'s replay (matrix_tracking.py)
     plus the tracker bookkeeping it lacks: LatticeCommands are applied
     to a throwaway :class:`TrackState` bound to the replay ref (so
-    ``SET_BEAM_ENERGY`` etc. shape the table exactly as they shape a
+    ``FREQ`` and the HELIX energy card shape the table exactly as they shape a
     forward run), ``SpaceChargeComp`` updates the active SC fraction,
     and the first RF bunching element flips ``rf_seen``.  Field maps get
     ``reset_run_state()`` first so SET_SYNC_PHASE calibrates with
@@ -192,8 +208,8 @@ def build_replay_table(lattice, entrance_ref: ReferenceParticle, *,
         element = elements[i]
         table.append(BoundaryState(
             index=i, s=ref.s, w_kin=ref.w_kin, phi_s=ref.phi_s,
-            frequency=ref.frequency, sc_factor=sc_factor,
-            rf_seen=rf_seen,
+            frequency=ref.frequency, clock=ref._clock, sc_factor=sc_factor,
+            rf_seen=rf_seen, rf_shift=ref.rf_shift, rf_rephase=ref.rf_rephase,
             element_name=getattr(element, "name", "?"),
         ))
         if _is_rf_bunching_element(element):
@@ -212,8 +228,9 @@ def build_replay_table(lattice, entrance_ref: ReferenceParticle, *,
             from linac_gen.elements.superposed_field_map import (
                 SuperposedFieldMap as _SFM,
             )
+            from linac_gen.tracking.tracker import field_map_behind
             if (field_map_ref_mode == "tracker"
-                    and isinstance(element, (_FM1D, _FM3D, _SFM))):
+                    and isinstance(field_map_behind(element), (_FM1D, _FM3D, _SFM))):
                 # Literal tracker schedule — boundary states bit-identical
                 # to a forward run (resets + recalibrates internally).
                 _replay_field_map_ref_states(lattice, element, ref)
@@ -224,13 +241,17 @@ def build_replay_table(lattice, entrance_ref: ReferenceParticle, *,
             element.advance_ref(ref)
         else:
             length = getattr(element, "length", 0.0) or 0.0
-            if length > 0:
+            if length != 0:             # (a negative drift steps both back)
                 ref.s += length
                 ref.phi_s += 360.0 * length / (ref.beta * ref.wavelength)
+            gain = getattr(element, "ref_gain", 0.0)   # a matrix element that moves the reference
+            if gain:
+                ref.w_kin = ref.w_kin + gain
 
     table.append(BoundaryState(
         index=end + 1, s=ref.s, w_kin=ref.w_kin, phi_s=ref.phi_s,
-        frequency=ref.frequency, sc_factor=sc_factor, rf_seen=rf_seen,
+        frequency=ref.frequency, clock=ref._clock, sc_factor=sc_factor, rf_seen=rf_seen,
+        rf_shift=ref.rf_shift, rf_rephase=ref.rf_rephase,
         element_name="EXIT",
     ))
     return table
@@ -245,6 +266,29 @@ def _invert(M: np.ndarray, element_name: str) -> np.ndarray:
             f"near-singular (cond={cond:.3e}) — cannot backtrack "
             "through it.")
     return np.linalg.inv(M)
+
+
+#: the energy and phase of the reference at an element's entrance agree between the forward
+#: run and the replay table to round-off, not bit for bit: the run steps drifts and magnets in
+#: parts that the table takes whole (a magnet in quarters, a drift in sub-steps wherever
+#: something acts between them, space charge or sub-step rows).  Within this part of the
+#: larger, or of 1 where both are smaller, they are the same reference
+#: (``_Backtracker._record_changed``); over a whole linac the phases differ by up to 2.2e-15 of
+#: their value, and by 2.6e-14 with every drift in sub-steps.
+_REFERENCE_ROUND_OFF = 1e-11
+#: the fields of the reference that a push record holds (``BoundaryState``'s names), in words
+_REFERENCE_NAMES = {"w_kin": "energy", "phi_s": "phase", "frequency": "frequency",
+                    "clock": "clock", "rf_shift": "RF phase shift",
+                    "rf_rephase": "RF phase correction"}
+
+
+def _same_reference(name: str, a: float, b: float) -> bool:
+    """Whether the forward run's value ``a`` of the reference field ``name`` at an element's
+    entrance and the replay table's ``b`` are the same: within round-off for the energy and
+    the phase (``_REFERENCE_ROUND_OFF``), exactly for the others."""
+    if name in ("w_kin", "phi_s"):
+        return abs(a - b) <= _REFERENCE_ROUND_OFF * max(abs(a), abs(b), 1.0)
+    return a == b
 
 
 class _Backtracker:
@@ -283,6 +327,10 @@ class _Backtracker:
         self._should_abort = should_abort
         self._dc_upstream = dc_upstream
         self._sc_factor = 1.0
+        # how often each element object appears in the lattice (_weights_push)
+        self._element_count: dict = {}
+        for e in lattice.elements:
+            self._element_count[id(e)] = self._element_count.get(id(e), 0) + 1
         self.aborted = False
         if field_map_mode not in ("rk4", "linear"):
             raise ValueError(
@@ -416,6 +464,10 @@ class _Backtracker:
         if isinstance(element, FieldMapElement):
             self._untrack_field_map(element, entry, species)
             return
+        from linac_gen.elements.matrix_element import MatrixElement
+        if isinstance(element, MatrixElement):
+            self._untrack_matrix(element, entry.make_ref(species))
+            return
         if isinstance(element, TransferMapElement):
             if isinstance(element, Drift):
                 self._untrack_drift(element, entry, species)
@@ -513,6 +565,19 @@ class _Backtracker:
             return False
         return True
 
+    def _untrack_matrix(self, element, ref_entry) -> None:
+        """Inverse of Tracker._track_matrix, which applies a MatrixElement's
+        map once (a general 6x6 cannot be sliced) and then a space-charge
+        kick over its length: the kick undone, then p = M⁻¹(p − o), with o
+        the element's centroid offset (both at the clock of its entrance)."""
+        if element.length:
+            self._apply_sc_kick_negated(element.length)
+        M, o = element.map_at(ref_entry)
+        if o is not None:
+            alive = self.beam.alive_mask
+            self.beam.particles[alive, :6] -= o
+        self._apply_matrix(_invert(np.asarray(M, dtype=float), element.name))
+
     def _untrack_transfer_map(self, element, entry, species) -> None:
         """Inverse of Tracker._track_transfer_map (n=2 split-operator).
 
@@ -567,8 +632,9 @@ class _Backtracker:
         The exact path applies to FieldMap / FieldMap3D in
         ``field_map_mode="rk4"`` (the default).  Everything else — the
         explicit ``"linear"`` mode, RfqCell / VaneRFQ (no per-step
-        inverse yet), and surrogate-registered elements (a neural
-        surrogate has no algebraic inverse) — takes the v1 linear path.
+        inverse yet) — takes the v1 linear path.  The calls surrogate
+        weights pushed (``_weights_push``) are undone with the inverse of
+        their own slices, exactly.
         """
         from linac_gen.elements.field_map import FieldMap as _FM1D
         from linac_gen.elements.field_map_3d import FieldMap3D as _FM3D
@@ -596,23 +662,110 @@ class _Backtracker:
                     "longitudinal closure is degraded.",
                     BacktrackWarning, stacklevel=4)
         if use_rk4:
-            from linac_gen.surrogates import registry as _surr_reg
-            if (_surr_reg.is_mp_enabled()
-                    and _surr_reg.get_for_element(element)
-                    is not None):
-                warnings.warn(
-                    f"'{element.name}' is driven by a surrogate in "
-                    "forward MP runs — a surrogate has no algebraic "
-                    "inverse, falling back to the LINEAR field-map "
-                    "inverse for this element.",
-                    BacktrackWarning, stacklevel=4)
-                use_rk4 = False
-        if use_rk4:
-            self._untrack_field_map_rk4(element, entry, species)
+            self._untrack_field_map_rk4(element, entry, species,
+                                        self._weights_push(element, entry, species))
         else:
             self._untrack_field_map_linear(element, entry, species)
 
-    def _untrack_field_map_rk4(self, element, entry, species) -> None:
+    def _weights_push(self, element, entry, species):
+        """What surrogate weights pushed of ``element`` in the forward multiparticle run:
+        None where the native element made every call, else ``(calls, M_full, log_M_full,
+        length, surrogate)`` — the indices of the element's ``track_rk4`` calls the weights
+        made (None: to be decided on the replay, as the fast path decides) and the map they
+        cut their slices from.  The beam's own record decides (``surrogate_pushes``: per
+        element object of the lattice it was tracked through, its latest traversal, through
+        the weights or by the native element alone), whatever the registry says now: a beam
+        tracked with the fast path on and backtracked with it off, or the other way round, is
+        undone as it was pushed.  The record also holds the traversal's step schedule, the
+        reference at the element's entrance and the settings its push depends on, and the
+        walk takes the traversal from it, the weights' calls and the native element's alike,
+        only while this walk has all three the same (``_record_changed``): an edit that
+        changes none of them (a marker added, a BPM deleted) leaves it valid.  Where the
+        record does not cover the element in this lattice (a beam read from a file, tracked
+        through another lattice or a copy of this one, an element that appears twice or was
+        renamed, or one of those three changed since the run), the walk undoes it as the
+        weights would push it with the current settings (``SurrogateFieldMap.fast_path_map``),
+        with a caveat where they push it, and where they leave it to the native element but
+        pushed it in the run, as the record that covers it says, or could have, where the
+        record does not cover it (weights stand for it now, or made calls in the record of its
+        object or of an element of its name; for a beam with no record, where they would push
+        it with the fast path on)."""
+        record = getattr(self.beam, "surrogate_pushes", None)
+        ours = (record is not None and self._element_count.get(id(element)) == 1
+                and getattr(self.beam, "surrogate_pushes_lattice", None) == id(self.lattice))
+        seen = record.get(id(element)) if ours else None
+        changed = None
+        if seen is not None and seen[0] == getattr(element, "name", None):
+            rec = seen[1]
+            changed = self._record_changed(element, entry, rec)
+            if changed is None:
+                if not rec["calls"]:
+                    return None
+                return set(rec["calls"]), rec["M_full"], rec["log_M_full"], rec["length"], None
+        from linac_gen.surrogates import registry as _surr_reg
+        surr = (_surr_reg.get_for_element(element)
+                if _surr_reg.is_mp_enabled() else None)
+        ref = entry.make_ref(species)
+        ask = getattr(surr, "fast_path_map", None)
+        got = ask(ref) if ask is not None else None
+        why = (f"{changed} since the forward run, so the beam's record of that run does not "
+               "cover it" if changed is not None else
+               "the beam carries no record of its forward run" if record is None else
+               "the beam's record of its forward run does not cover this element in this "
+               "lattice")
+        if got is not None:
+            warnings.warn(
+                f"'{element.name}': {why}; undone as the surrogate weights push it with the "
+                "current settings (the multiparticle fast path).", BacktrackWarning,
+                stacklevel=4)
+            return None, got[0], got[1], float(surr.length), surr
+        if record is None:
+            # the walk cannot tell from such a beam whether its run had the fast path on
+            drives = getattr(surr, "drives_mp", None)
+            if drives is not None and drives(ref, fast_path=True):
+                warnings.warn(
+                    f"'{element.name}': {why}; undone natively, as the multiparticle fast "
+                    "path is off, though a run with it on pushes it through the surrogate "
+                    "weights.", BacktrackWarning, stacklevel=4)
+        elif (rec["calls"] if changed is not None else surr is not None
+              or (seen is not None and seen[1]["calls"])
+              or any(n == element.name and r["calls"] for n, r in record.values())):
+            # weights pushed it in the run by the record that covers it, or could have where
+            # the record does not cover it: weights stand for it now, or made calls in the
+            # record of its object or of an element of its name
+            warnings.warn(
+                f"'{element.name}': {why}; undone natively, as the surrogate weights would "
+                "leave it with the current settings.", BacktrackWarning, stacklevel=4)
+        return None
+
+    def _record_changed(self, element, entry, rec):
+        """What of ``element`` changed since the forward run made ``rec``, its record of the
+        element's traversal, in words for the caveat; None where nothing did, and the walk
+        takes the traversal from the record.  Its step schedule (the number of calls and their
+        step), taken in the run and in this walk by the same rule (``field_map_step_counts``),
+        and the settings its push depends on, taken of the same object by the same function
+        (``push_settings_of``), are compared exactly.  So are the frequency, the clock and the
+        RF shifts at its entrance, which the same cards and cavity entries set in the run and
+        in the replay table (``entry``); its energy and phase there agree to round-off only
+        (``_REFERENCE_ROUND_OFF``)."""
+        from linac_gen.surrogates.base import push_settings_of
+        parts = []
+        n_int, _n_sc, ds, _sc_every, _n_bundles = field_map_step_counts(self.lattice, element)
+        if (rec["n_calls"], rec["ds"]) != (2 * n_int, ds / 2):
+            parts.append(f"step schedule ({rec['n_calls']} half-steps of {rec['ds']:.4g} mm "
+                         f"then, {2 * n_int} of {ds / 2:.4g} mm now)")
+        then, now = rec["settings"], push_settings_of(element)
+        moved = sorted(k for k in set(then) | set(now)
+                       if k not in then or k not in now or then[k] != now[k])
+        if moved:
+            parts.append(f"settings ({', '.join(moved)})")
+        moved = [_REFERENCE_NAMES.get(k, k) for k, v in rec["entry"].items()
+                 if not _same_reference(k, v, getattr(entry, k))]
+        if moved:
+            parts.append(f"entrance reference ({', '.join(moved)})")
+        return "its " + " and its ".join(parts) + " changed" if parts else None
+
+    def _untrack_field_map_rk4(self, element, entry, species, push=None) -> None:
         """EXACT inverse of Tracker._track_field_map.
 
         A zero-particle replay reconstructs the per-call entry reference
@@ -642,7 +795,28 @@ class _Backtracker:
         steps = _replay_field_map_ref_states(
             self.lattice, element, entry.make_ref(species))
 
-        def _undo(st: _FmStep) -> None:
+        # the calls surrogate weights made: each undone with the inverse of its own slice
+        weights: set = set()
+        if push is not None:
+            calls, m_full, log_m, length, surr = push
+            if calls is None and steps:
+                # decided as the fast path decides (its entrance in range, fast_path_map):
+                # each call checked with the reference as it stands and the entrance phase
+                phi0 = float(getattr(steps[0].ref_before, "phi_s", 0.0))
+                calls = {k for k, st in enumerate(steps)
+                         if surr.in_fast_scope(st.ref_before, phi0)}
+            weights = calls or set()
+            if weights:
+                from linac_gen.surrogates.base import fast_slice
+
+        def _undo(k: int, st: _FmStep) -> None:
+            if k in weights:
+                alive = self.beam.alive_mask
+                if alive.any():
+                    m = fast_slice(m_full, log_m, length, st.ds)
+                    self.beam.particles[alive] = np.linalg.solve(
+                        m, self.beam.particles[alive].T).T
+                return
             if st.z_entry is None:
                 element.untrack_rk4(self.beam, st.ds, st.ref_before,
                                     st.step_idx, freq_ratio=st.freq_ratio)
@@ -659,11 +833,11 @@ class _Backtracker:
             starts.append(starts[-1] + 2 * k_steps)
         for b in reversed(range(len(sizes))):
             k_steps = sizes[b]
-            first = steps[starts[b]: starts[b] + k_steps]
-            second = steps[starts[b] + k_steps: starts[b + 1]]
+            first = range(starts[b], starts[b] + k_steps)
+            second = range(starts[b] + k_steps, starts[b + 1])
             kick_len = bundle_len if k_steps == sc_every else k_steps * ds
-            for st in reversed(second):
-                _undo(st)
+            for k in reversed(second):
+                _undo(k, steps[k])
             if scc_active:
                 z_mid = ((b + 0.5) * bundle_len if k_steps == sc_every
                          else (b * sc_every + 0.5 * k_steps) * ds)
@@ -676,8 +850,8 @@ class _Backtracker:
                 self._sc_factor = saved
             else:
                 self._apply_sc_kick_negated(kick_len)
-            for st in reversed(first):
-                _undo(st)
+            for k in reversed(first):
+                _undo(k, steps[k])
 
     def _untrack_field_map_linear(self, element, entry, species) -> None:
         """Inverse of Tracker._track_field_map using inverted per-slice
@@ -702,6 +876,14 @@ class _Backtracker:
         # ---- forward pass: build the op stream at replay-consistent refs
         element.reset_run_state()
         ref = entry.make_ref(species)
+        # An element off the tracker's schedule (NCells) switches the clock on entry,
+        # scaling the particles' Δφ: the ops are built on its clock, as the forward
+        # run's were, and the scale is undone last.
+        jump = 1.0
+        if not tracks_reference_on_tracker_schedule(element):
+            f = float(getattr(element, "frequency", 0.0) or 0.0)
+            if f > 0.0 and ref.frequency > 0.0 and f != ref.frequency:
+                jump = ref.switch_clock(f)
         # The reference at each half-bundle boundary: the tracker's (as the
         # envelope takes it), or the element's own sub-range advance.
         if tracks_reference_on_tracker_schedule(element):
@@ -751,6 +933,8 @@ class _Backtracker:
             else:
                 self._apply_sc_kick_negated(blen)
             self._apply_matrix(_invert(M1, element.name))
+        if jump != 1.0:
+            self.beam.particles[self.beam.alive_mask, 4] /= jump
 
     # ------------------------------------------------------------------
     def _apply_matrix(self, M: np.ndarray) -> None:

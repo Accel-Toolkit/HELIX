@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QRadioButton, QButtonGroup, QGroupBox,
 )
 
+from linac_gen.elements.lattice_commands import SetBeamPhaseError
 from linac_gen_gui.interphase import theme
 from linac_gen_gui.interphase.plots.plot_style import (
     rearm_autorange, style_plot)
@@ -113,15 +114,20 @@ _PARAM_BLACKLIST = frozenset({
     "n_steps", "p_flag", "aperture", "ka", "geometry",
     "_step_idx", "_z_map_start", "_z_map_end", "_phi_s_at_entrance",
     "_sync_offset_deg",
+    # what an error study stamps on a SET_BEAM_PHASE_ERROR card's seed copy
+    *SetBeamPhaseError.STUDY_STAMPS,
+    # the clock an imported matrix's phase is counted on (not a setting)
+    "clock_mhz",
 })
 
 
 def _scannable_params(element) -> list[str]:
     names = []
+    derived = getattr(element, "_is_derived", lambda _a: False)   # follow from the others
     for attr in sorted(vars(element).keys()):
         if attr.startswith("_") and attr not in ("_sync_offset_deg",):
             continue
-        if attr in _PARAM_BLACKLIST:
+        if attr in _PARAM_BLACKLIST or derived(attr):
             continue
         val = getattr(element, attr)
         if isinstance(val, bool):
@@ -136,6 +142,28 @@ def _scannable_params(element) -> list[str]:
 # parameter in place at each step.  Always restores the original value
 # in ``finally``.
 # ---------------------------------------------------------------------------
+def surrogates_status(check, counted, held_note: str = "") -> tuple[str, str]:
+    """A scan's line on the registered surrogates: short for its status line, whole for the
+    tooltip.  ``check`` is its design check (``study_check.DesignCheck``, None when the scan
+    never got to it), ``counted`` what the weights did over its points (``base.Tally``), and
+    ``held_note`` says that the scanned element ran native (its weights hold the setting)."""
+    from linac_gen.surrogates.study_check import refusal_text
+    note = getattr(check, "note", "") or ""
+    if not note:
+        return "", ""
+    if not getattr(check, "use", False) or counted is None:
+        return " · surrogates not used", note
+    left = sum(counted.refused.values())
+    short = f" · surrogates: {counted.calls} network answers" + (
+        f", {left} traversals native" if left else "")
+    whole = note + f"; over the scan's points {counted.calls} network answers"
+    if left:
+        whole += f", native: {refusal_text(counted.refused)}"
+    if held_note:
+        whole += f"; {held_note}"
+    return short, whole
+
+
 class _ScanWorker(QThread):
     point_done = pyqtSignal(int, float, object)  # (index, value, scalar|None)
     finished_ok = pyqtSignal(object, object)     # (values_array, scalars_array)
@@ -220,17 +248,49 @@ class _ScanWorker(QThread):
         except Exception:
             pass
         try:
-            for i, v in enumerate(self.values):
-                if self._abort:
-                    break
-                setattr(self._element, self.param, float(v))
-                scalar = self._run_one()
-                if scalar is None or not np.isfinite(scalar):
-                    scalars[i] = np.nan
-                else:
-                    scalars[i] = scalar
-                self.point_done.emit(i, float(v), scalars[i])
-                self.progress.emit(int(round(100.0 * (i + 1) / max(len(self.values), 1))))
+            # the registered surrogates answer in the scan only if the design lattice with
+            # them agrees with the native run (a multiparticle scan, or a Sacherer one, runs
+            # native); an element whose weights hold the scanned setting fixed runs native
+            # at every point, so the scan is one model; the points count what the weights do
+            from linac_gen.surrogates import registry
+            from linac_gen.surrogates.base import tally
+            from linac_gen.surrogates.study_check import (
+                check_design,
+                runs_native,
+                study_surrogates,
+            )
+            if self._lattice is not None and self._beam is not None:
+                try:
+                    self.surrogates = check_design(
+                        self._lattice, self._beam,
+                        mode="envelope" if self.mode == "env" else "mp",
+                        env_solver=str(self.convergence.get("env_solver", "matrix")).lower())
+                except Exception as exc:          # noqa: BLE001 - the scan runs native
+                    self.surrogates = runs_native(
+                        f"the check of the design lattice failed ({type(exc).__name__}: {exc})")
+            else:
+                self.surrogates = runs_native("no lattice or beam")
+            pinned = []
+            if self.surrogates.use:
+                held = registry.get_for_element(self._element)
+                if held is not None and not held.follows(self.param):
+                    pinned = [self._element]
+                    self.held_note = (f"its weights hold {self.param} fixed, so "
+                                      f"{getattr(self._element, 'name', 'the element')} runs "
+                                      "native at every point")
+            with (study_surrogates(self.surrogates), registry.native_for(pinned),
+                  tally() as self.counted):
+                for i, v in enumerate(self.values):
+                    if self._abort:
+                        break
+                    setattr(self._element, self.param, float(v))
+                    scalar = self._run_one()
+                    if scalar is None or not np.isfinite(scalar):
+                        scalars[i] = np.nan
+                    else:
+                        scalars[i] = scalar
+                    self.point_done.emit(i, float(v), scalars[i])
+                    self.progress.emit(int(round(100.0 * (i + 1) / max(len(self.values), 1))))
             self.finished_ok.emit(self.values.copy(), scalars.copy())
         except Exception as exc:
             self.failed.emit(f"{exc}\n{traceback.format_exc()}")
@@ -254,11 +314,13 @@ class _ScanWorker(QThread):
         from linac_gen.core.particle import PROTON, DEUTERON, H_MINUS
         from linac_gen.core.reference import ReferenceParticle
 
+        from linac_gen.distributions.factory import reference_config
         species_map = {"proton": PROTON, "deuteron": DEUTERON, "H-": H_MINUS}
         sp = species_map.get(cfg.species, PROTON)
-        bg = _m.sqrt(max((1 + cfg.energy / sp.mass) ** 2 - 1, 0.0))
-        ref = ReferenceParticle(species=sp, w_kin=cfg.energy,
-                                frequency=cfg.frequency)
+        start = reference_config(cfg)          # a .dst beam: the file's energy and clock
+        bg = _m.sqrt(max((1 + start.energy / sp.mass) ** 2 - 1, 0.0))
+        ref = ReferenceParticle(species=sp, w_kin=start.energy,
+                                frequency=start.frequency)
         # Single source of truth for the envelope seed (incl. the
         # first-moment centroid and DC fields) — a hand-rolled copy here
         # silently scanned an on-axis orbit for offset beams.
@@ -684,7 +746,12 @@ class ParameterScanDialog(QDialog):
         self._progress.setValue(100)
         xs = np.asarray(xs); ys = np.asarray(ys)
         n_ok = int(np.sum(np.isfinite(ys)))
-        self._status.setText(f"done · {n_ok}/{xs.size} points")
+        # what the scan did with the surrogates, short on the status and whole in its tooltip
+        short, whole = surrogates_status(getattr(self._worker, "surrogates", None),
+                                         getattr(self._worker, "counted", None),
+                                         getattr(self._worker, "held_note", ""))
+        self._status.setText(f"done · {n_ok}/{xs.size} points{short}")
+        self._status.setToolTip(whole)
 
     def _on_scan_failed(self, msg: str) -> None:
         self._run_btn.setEnabled(True)

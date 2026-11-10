@@ -61,6 +61,7 @@ _CHAPTER_MD_BY_TYPE: dict[str, str] = {
     "SetBeamPhaseError":    _SET_ADJUST,
     "SetBeamE0P0":          _SET_ADJUST,
     "SetBeamEnergy":        _SET_ADJUST,
+    "SetReferenceEnergy":   _SET_ADJUST,
     "SetGaussianCutOff":    _SET_ADJUST,
     "SetTwiss":             _SET_ADJUST,
     "SetPosition":          _SET_ADJUST,

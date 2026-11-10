@@ -34,9 +34,12 @@ from linac_gen.elements.drift import Drift
 from linac_gen.elements.quadrupole import Quadrupole
 from linac_gen.tracking.envelope import EnvelopeSolver
 from linac_gen.tracking.matrix_tracking import _with_tilt, compute_twiss, get_element_matrix
+from tests.dataguard import needs
 
 ROOT = Path(__file__).resolve().parents[2]
 FNALSCL = ROOT / "examples" / "piplattice" / "fnalscl_periods.lgproj"
+MEBT_HWR = ROOT / "examples" / "mebt_plus_hwr.dat"
+NEEDS_DECK = needs(str(FNALSCL))           # not in every distribution
 
 _INIT0 = dict(alpha_x=0.0, beta_x=0.5, emit_x=1.0, alpha_y=0.0, beta_y=0.5, emit_y=1.0,
               alpha_z=0.0, beta_z=10.0, emit_z=0.1)
@@ -132,6 +135,7 @@ def test_no_probe_falls_back_to_trapezoid_and_maps_raises():
 # 2. Floquet identity on real cavity cells (fnalscl, 23.7 mA)
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("k", [0, 12])
+@NEEDS_DECK
 def test_matched_cell_maps_equal_eigenphase_trapezoid_biased(k):
     lat, cfg, conv, cell, ms, init = _fnalscl_cell(k)
     res = _matched_probe(cell, cfg, ms, init)
@@ -212,6 +216,7 @@ def test_tilted_quad_probe_map_matches_matrix_mode():
 # ---------------------------------------------------------------------------
 # 5. MP results + companion probe maps (absolute RF phases → keep the reference)
 # ---------------------------------------------------------------------------
+@NEEDS_DECK
 def test_mp_results_with_companion_maps():
     import copy
     from linac_gen.core.simulation import Simulation
@@ -265,6 +270,7 @@ def test_mp_results_with_companion_maps():
 # ---------------------------------------------------------------------------
 # 6. rows: exit rows exact, interior rows interpolated and counted
 # ---------------------------------------------------------------------------
+@NEEDS_DECK
 def test_substep_rows_interpolated_exit_rows_identical():
     lat, cfg, conv, cell, ms, init = _fnalscl_cell(1)
     coarse = beam_phase_advance_from_maps(_matched_probe(cell, cfg, ms, init))
@@ -282,6 +288,7 @@ def test_substep_rows_interpolated_exit_rows_identical():
 # ---------------------------------------------------------------------------
 # 7. z-plane denominator: sigma_over_sigma0_z ≈ η_z for a matched beam
 # ---------------------------------------------------------------------------
+@NEEDS_DECK
 def test_sigma_over_sigma0_z_uses_the_followed_branch():
     lat, cfg, conv, cell, ms, init = _fnalscl_cell(0)
     res = _matched_probe(cell, cfg, ms, init)
@@ -301,6 +308,7 @@ def test_sigma_over_sigma0_z_uses_the_followed_branch():
 # ---------------------------------------------------------------------------
 # 8. the TraceWin writer stays on the trapezoid (TW's kx convention)
 # ---------------------------------------------------------------------------
+@NEEDS_DECK
 def test_tracewin_writer_keeps_trapezoid_kx(tmp_path):
     from linac_gen.io.tracewin_outputs import write_partran_out
     lat, cfg, conv, cell, ms, init = _fnalscl_cell(0)
@@ -325,7 +333,9 @@ def test_tracewin_writer_keeps_trapezoid_kx(tmp_path):
 # ---------------------------------------------------------------------------
 # 9. structure walk replays the reference like compute_transfer_matrix
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("deck", ["examples/piplattice/fnalscl_periods.lgproj", "examples/mebt_plus_hwr.dat"])
+@pytest.mark.parametrize("deck", [
+    pytest.param("examples/piplattice/fnalscl_periods.lgproj", marks=NEEDS_DECK),
+    pytest.param("examples/mebt_plus_hwr.dat", marks=needs(str(MEBT_HWR)))])
 def test_structure_walk_first_cell_equals_period_eigenphase(deck):
     """On decks whose cavity matrices depend on the arrival phase
     (absolute-phase NCELLS, SET_SYNC_PHASE field maps) the along-s
@@ -414,6 +424,7 @@ def test_resolution_verdicts_are_per_plane():
 # ---------------------------------------------------------------------------
 # 12. MP with substep recording: interior rows interpolated, exit rows unchanged
 # ---------------------------------------------------------------------------
+@NEEDS_DECK
 def test_mp_substep_rows_interpolated():
     import copy
     from linac_gen.core.simulation import Simulation

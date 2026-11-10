@@ -246,7 +246,7 @@ def test_export_madx_never_overwrites_the_imported_source(win, monkeypatch, tmp_
 
     repo = Path(__file__).resolve().parents[2]
     src = tmp_path / "ring.madx"
-    src.write_text((repo / "examples" / "madx" / "fodo.madx").read_text(encoding="utf-8"))
+    src.write_text((repo / "examples" / "madx" / "fodo.madx").read_text(encoding="utf-8"), encoding="utf-8")
     lat, meta = parse_madx(str(src))
     win.state.set_lattice(lat, str(src))
     win.state.set_beam_config(replace(BeamConfig(), species="proton",
@@ -383,7 +383,7 @@ def test_legacy_project_shows_its_method_and_runs_what_the_cli_runs(win):
     here = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(here, "..", "..", "examples", "pipii", "mebt",
                         "mebt.lgproj")
-    data = json.load(open(path))
+    data = json.load(open(path, encoding="utf-8"))
     assert "sc_method" not in data["convergence"]
     win._apply_project_dict(data, silent=True)
     ct = win.convergence_tab

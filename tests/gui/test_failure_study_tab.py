@@ -256,3 +256,31 @@ def test_bar_fills_incrementally(qapp, mini_lattice):
     ticks = tab._bar.getAxis("bottom")._tickLevels
     assert ticks and {t[1] for t in ticks[0]} == {"A", "B"}
     tab.deleteLater()
+
+
+def test_the_tab_passes_its_manual_names_and_the_campaigns_objectives(qapp, mini_lattice,
+                                                                      monkeypatch):
+    """Its manual strategy passed no names, so it selected nothing, and its objectives (the
+    exit energy alone) left a magnet fault's compensation nothing to do."""
+    monkeypatch.setattr(_FailureWorker, "start", lambda self: None)
+    state = AppState()
+    state.set_lattice(mini_lattice, path=None)
+    state.set_beam_config(BeamConfig(
+        species="proton", energy=2.5, frequency=162.5, current=0.0,
+        n_particles=80, distribution="waterbag", emit_nx=0.25, beta_x=1.0,
+        emit_ny=0.25, beta_y=1.0, emit_z=0.3, beta_z=10.0))
+    tab = FailureStudyTab(state)
+    tab._comp_on.setChecked(True)
+    tab._strategy.setCurrentText("manual")
+    tab._forward.setCurrentText("envelope")
+    picked = []
+    for i in range(tab._elem_list.count()):
+        item = tab._elem_list.item(i)
+        if item.text().split("  [")[0] in ("Q1", "G1"):
+            item.setSelected(True)
+            picked.append(item.text().split("  [")[0])
+    tab._on_run()
+    cfg = tab._worker._comp_cfg
+    assert sorted(cfg.manual_names) == sorted(picked) and picked
+    assert cfg.objectives.get("emit_growth") and cfg.objectives.get("ke_out_min")
+    tab.deleteLater()

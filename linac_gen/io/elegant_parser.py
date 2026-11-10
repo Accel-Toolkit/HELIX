@@ -401,6 +401,9 @@ def _build_bend(name, ef, l_mm, ref, sbrho, warnings, rect):
                         "bend (ignored there); kept on the bend for ring mode")
     edge_out = Edge(name=f"{name}_e2", pole_rotation=e2 * _RAD_TO_DEG,
                     rho=rho_mm, gap=gap_mm, k1=fint)
+    # the faces that act, so that an edit of the bend can say they stay
+    body._edge_names = tuple(e.name for e in (edge_in, edge_out)
+                             if e.pole_rotation or (e.gap and e.k1))
     return [edge_in, body, edge_out], body.length
 
 

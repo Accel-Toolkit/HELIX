@@ -87,12 +87,46 @@ class AddElementDialog(QDialog):
         self._name.setText(getattr(template, "name", type_name))
 
         schema = _SCHEMA.get(type_name, [])
+        derived = getattr(template, "_is_derived", lambda _a: False)
+        inputs = getattr(type(template), "_GEOMETRY_ATTRS", ())
         for attr, label, unit in schema:
             value = getattr(template, attr, None)
             editor = self._make_editor(value)
+            if derived(attr):
+                # follows from the others (a bend's length, from its angle and radius)
+                editor.setEnabled(False)
+                editor.setToolTip("follows from the other parameters")
             label_text = label + (f"  [{unit}]" if unit else "")
             self._form_lay.addRow(label_text, editor)
             self._field_widgets[attr] = editor
+            if attr in inputs and hasattr(editor, "valueChanged"):
+                editor.valueChanged.connect(self._refresh_derived)
+
+    def _refresh_derived(self, *_value) -> None:
+        """After an edit of a parameter others follow from (a bend's angle or radius): what
+        follows is shown, and a field can be edited while it does not follow (a bend with no
+        angle takes a length).  Judged on a copy of the template with the form's values."""
+        import contextlib
+        import copy
+        template = self._template
+        if template is None or not hasattr(template, "_is_derived"):
+            return
+        probe = copy.deepcopy(template)
+        for attr, ed in self._field_widgets.items():
+            if not ed.isEnabled() or probe._is_derived(attr):
+                continue
+            with contextlib.suppress(Exception):   # an unfinished entry: judged again at OK
+                setattr(probe, attr, self._read_editor(ed, getattr(probe, attr)))
+        for attr, ed in self._field_widgets.items():
+            follows = probe._is_derived(attr)
+            if (follows or not ed.isEnabled()) and hasattr(ed, "setValue"):
+                ed.blockSignals(True)              # shown, not entered
+                try:
+                    ed.setValue(getattr(probe, attr))
+                finally:
+                    ed.blockSignals(False)
+            ed.setEnabled(not follows)
+            ed.setToolTip("follows from the other parameters" if follows else "")
 
     def _make_editor(self, value):
         if isinstance(value, bool):
@@ -144,9 +178,18 @@ class AddElementDialog(QDialog):
             # Apply name + form values onto the template.
             name = self._name.text().strip() or self._template.name
             self._template.name = name
+            derived = getattr(self._template, "_is_derived", lambda _a: False)
+            later = []
             for attr, ed in self._field_widgets.items():
+                if derived(attr):          # follows from the others: set them first
+                    later.append((attr, ed))
+                    continue
                 original = getattr(self._template, attr)
                 setattr(self._template, attr, self._read_editor(ed, original))
+            for attr, ed in later:         # e.g. the length a bend with no angle takes
+                if not derived(attr) and ed.isEnabled():
+                    setattr(self._template, attr,
+                            self._read_editor(ed, getattr(self._template, attr)))
         except Exception as exc:
             QMessageBox.critical(self, "Invalid input", str(exc))
             return

@@ -55,10 +55,10 @@ matrix in the (x, y) projection.
 | Parameter | Element types | Effect |
 |---|---|---|
 | `gradient_rel` | Quadrupole | `G → G·(1 + δ)` |
-| `field_rel` | Solenoid, Dipole | `B → B·(1 + δ)` (Dipole via `effective_angle`) |
+| `field_rel` | Solenoid, Dipole, FieldMap / FieldMap3D with static magnetic fields only | `B → B·(1 + δ)` (Dipole via `effective_angle`; a field map with no RF or electric channel adds δ to its `voltage_rel`, so `kb → kb·(1 + δ)`: on such a map `field_rel` and `voltage_rel` are one slot, and two defs drawing them overlap.  A straight `SUPERPOSE_MAP` cluster of such maps takes it in its own `voltage_rel`, which scales every child, correctors included; a curved cluster, `SUPERPOSE_MAP_OUT`, still skips it, with a warning) |
 | `voltage_rel` | RFGap, FieldMap, FieldMap3D | `V → V·(1 + δ)` (field maps via `effective_ke/kb`) |
 | `phase_offset` | RFGap, FieldMap | `phase → phase + phase_offset` (deg) |
-| `frequency_offset` | RFGap, FieldMap | additive Hz / MHz (rarely used) |
+| `frequency_offset` | RFGap, FieldMap | additive MHz (rarely used): the cavity beats against the clock from its own entrance, so the result does not depend on where the line starts |
 | `g3_rel..g6_rel` | Quadrupole | fractional higher-pole content errors |
 
 !!! note "FieldMap amplitude and Dipole field errors (fixed 2026-07)"

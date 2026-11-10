@@ -85,10 +85,11 @@ def test_seam_routes_through_registered_surrogate():
     """When a surrogate is registered by name, the helper uses it."""
     registry.clear()
     try:
-        elem = _MockElem(name="EL_X")
         surr = _build_surrogate("EL_X", in_scope=True)
         registry.register(surr)
-        M = _fitted_matrix_slice_at(elem, _MockRef(), ds_mm=1.0,
+        # the element it wraps: another object of the same element gets a view of
+        # the weights bound to it, without this test's patched method
+        M = _fitted_matrix_slice_at(surr._wrapped, _MockRef(), ds_mm=1.0,
                                     z_from_mm=0.0)
         assert M[0, 0] == 42.0   # surrogate ran
     finally:

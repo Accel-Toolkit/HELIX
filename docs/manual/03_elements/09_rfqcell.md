@@ -24,7 +24,9 @@ Conventions:
   ±4 = transcell.  The sign selects which neighbour cell the
   transverse model couples to.
 * Internally split into N substeps (auto-picked, ≤0.1 mm/substep,
-  ≥20 substeps).  See [VaneRFQ](10_vanerfq.md) for multi-cell.
+  ≥20 substeps).  A whole RFQ is a chain of these cells; multiparticle
+  runs track it with the [time-domain solver](20_rfq_time_domain.md)
+  by default.
 
 ## Tutorial
 
@@ -102,8 +104,7 @@ repair_rfq_phases(lattice, mass_MeV, charge, freq_MHz)   # opt-in, in place
 25°, anchoring out the derivation's ~2° systematic (the dropped
 transit-time factor) using the deck's own nearest consistent cards. It
 warns loudly, and `dry_run=True` reports without touching anything.
-Nothing is automatic — parsing is unchanged unless you call it, exactly
-like [`replace_rfq_cells_with_vane`](10_vanerfq.md).
+Nothing is automatic — parsing is unchanged unless you call it.
 
 !!! warning "A repaired deck is a different deck"
     On PXIE this moves the RFQ exit energy from 1.9557 to 2.0986 MeV
@@ -408,12 +409,13 @@ integrator documented on this page:
 
 In that study the 2-term Strang-splitting integrator showed σ_y
 blow-up by 3.1× at the M1 ceiling — the Boris/Hybrid path closed
-that gap in rfqtrack.  Within `linac_gen`, the 2-term Strang DKD
-remains the production path (σ_x within ~30 % of the TraceWin
-reference at the whole-RFQ level, see [VaneRFQ](10_vanerfq.md)).
-
-Higher-fidelity variants (M3-family laplace2d/3d/8-term) hit
-structural blockers; M1 is the production path.
+that gap in rfqtrack.  Within `linac_gen` today, an RFQ_CELL chain
+uses the `tw2term` cell model by default, and multiparticle runs track
+it with the [time-domain solver](20_rfq_time_domain.md) by default.
+The whole-element field models tried in the retired
+[VaneRFQ](10_vanerfq.md) (M1 2-term, and the M3-family
+laplace2d/3d/8-term, which hit structural blockers) did not reproduce
+the RFQ.
 
 ## API reference
 
@@ -449,7 +451,7 @@ linac_gen.elements.rfq_cell.RfqCell(
 | `phi_s_deg` | (required) | deg | synchronous phase |
 | `cell_type` | (required) | int | ±2 = accelerating, ±3 = front-end / shaper, ±4 = transcell |
 | `Tc_mm` | 0.0 | mm | transverse curvature (TraceWin `Tc`) — accepted for parser compatibility, currently unused |
-| `dP_deg` | 0.0 | deg | output-phase shift (TraceWin `dP`), applied at cell exit |
+| `dP_deg` | 0.0 | deg | the card's ninth value (TraceWin `dP`), kept so that a deck round-trips; not applied to the reference phase in any mode |
 | `n_steps` | None | — | auto-picked: max(20, ceil(L/0.1 mm)) when None |
 | `type_prev`, `type_next` | None | int | neighbouring cell types (S = −sign(type[n±1])); default to `cell_type` |
 | `A_quad` | None | 1/mm² | DC quadrupole coefficient override; None → `(1 − A₁₀)/R₀²` |
@@ -650,7 +652,7 @@ or more give ≤ 0.04.  Check a flagged input with a multiparticle run.
 * [RFQ panels](../10_gui/07_results_tab.md#rfq-panels) of the Results
   tab — the cells' geometry, modulation, phase, focusing figures,
   fields, losses and bunching, and a per-cell table.
-* [VaneRFQ](10_vanerfq.md) — `.vane` file wrapper.
+* [VaneRFQ](10_vanerfq.md) — the retired `.vane` file wrapper.
 * LEBT + RFQ worked example.
 * `Tracewin_code/Toutatis_*.pdf` — RFQ-design code reference.
 

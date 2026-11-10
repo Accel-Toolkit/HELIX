@@ -80,6 +80,10 @@ def structure_phase_advance(lattice, ref, period: PeriodicStructure,
         ``dw`` — ``w_out - w_in`` (MeV).  Non-zero ⇒ accelerating
             section, label μ as "single-cell @ entry energy".
         ``M_period`` — the 6×6 one-period transfer matrix.
+        ``M_period_one_clock`` — the same with its exit on the entrance's clock, which
+            the Twiss are taken from (``M_period`` itself when the window holds no
+            change of clock).
+        ``clock_mhz`` — that clock: the z Twiss are in its degrees.
         ``reason`` — human-readable string when stable_*/coupled fail.
     """
     end_excl = period.inner_slice_end
@@ -97,8 +101,16 @@ def structure_phase_advance(lattice, ref, period: PeriodicStructure,
                                 cache=cache)
 
     _check_stop(should_stop)
-    w_in, w_out = _energy_change(lattice, ref, period.start, end_incl)
+    w_in, w_out, f_in, f_out = _reference_change(lattice, ref, period.start, end_incl)
     dw = w_out - w_in
+    # A window that holds a change of clock has its exit side in degrees of another clock
+    # than its entrance: a scaling of one coordinate, which no eigen-analysis absorbs.  The
+    # exit is brought to the entrance clock first; with no change, the map is used as it is.
+    M_one = M
+    if f_in > 0.0 and f_out > 0.0 and f_out != f_in:
+        D = np.eye(6)
+        D[4, 4] = f_in / f_out
+        M_one = D @ M
 
     out: dict = {
         "mu_x_deg": None, "mu_y_deg": None, "mu_z_deg": None,
@@ -108,13 +120,13 @@ def structure_phase_advance(lattice, ref, period: PeriodicStructure,
         "stable_x": False, "stable_y": False, "stable_z": False,
         "coupled_xy": False,
         "w_in": w_in, "w_out": w_out, "dw": dw,
-        "M_period": M,
+        "M_period": M, "M_period_one_clock": M_one, "clock_mhz": f_in,
         "reason": None,
     }
 
     for plane in ("x", "y", "z"):
         try:
-            tw = compute_twiss(M, plane=plane)
+            tw = compute_twiss(M_one, plane=plane)
             # Map μ to the unsigned representation in [0, 180°] so
             # period μ matches |Σ Δμ_element| from along-s.  This is
             # the canonical "magnitude of phase advance per cell"
@@ -871,7 +883,7 @@ def channel_phase_advance_matched(lattice, ref, period: PeriodicStructure,
     ``matched_state`` (converged/n_iter/residual/sigma_model_approx).
     """
     from linac_gen.core.lattice import Lattice
-    from linac_gen.elements.lattice_commands import LatticeCommand
+    from linac_gen.elements.lattice_commands import REFERENCE_COMMANDS, LatticeCommand
     from linac_gen.matching.periodic import find_matched_period_sigma
     from linac_gen.tracking.envelope import EnvelopeSolver
 
@@ -898,8 +910,9 @@ def channel_phase_advance_matched(lattice, ref, period: PeriodicStructure,
                          bunch_frequency=ms["bunch_frequency"],
                          sc_factor=ms["sc_factor"],
                          phase_probe=True)
+    # (ref_entry already holds the cards that set the reference)
     for cmd in (e for e in lattice.elements[:a0]
-                if isinstance(e, LatticeCommand)):
+                if isinstance(e, LatticeCommand) and not isinstance(e, REFERENCE_COMMANDS)):
         try:
             cmd.apply_command(env.track_state)
         except Exception:                                    # noqa: BLE001
@@ -922,6 +935,7 @@ def channel_phase_advance_matched(lattice, ref, period: PeriodicStructure,
         "residual": ms["residual"],
         "sigma_model_approx": ms["sigma_model_approx"],
         "longitudinal": ms["longitudinal"],
+        "longitudinal_held": ms.get("longitudinal_held"),
     }
     return out
 
@@ -1008,6 +1022,12 @@ def channel_phase_advance(results, period: PeriodicStructure, *,
         for j in range(a, b):
             Md = maps_dep[j] @ Md
             Mb = maps_bare[j] @ Mb
+        # a cell that holds a change of clock: its exit on its entrance's clock
+        f_in, f_out = _cell_clocks(results, a, b)
+        if f_in > 0.0 and f_out > 0.0 and f_out != f_in:
+            D = np.eye(6)
+            D[4, 4] = f_in / f_out
+            Md, Mb = D @ Md, D @ Mb
         M_dep_cells.append(Md)
         M_bare_cells.append(Mb)
 
@@ -1235,6 +1255,16 @@ def beam_phase_advance(
     if sm_all is not None and len(sm_all) == s.size:
         S_in = np.asarray(sm_all[s_start_idx], dtype=float)
         S_out = np.asarray(sm_all[s_end_idx], dtype=float)
+        # a window that holds a change of clock: its exit on the entrance's clock (not for a
+        # continuous beam, whose phase a FREQ card does not rescale)
+        rf = getattr(results, "ref_frequency", None)
+        if rf is not None and len(rf) == s.size:
+            f_a, f_b = float(rf[s_start_idx]), float(rf[s_end_idx])
+            if (f_a > 0.0 and f_b > 0.0 and f_b != f_a
+                    and not _continuous_at(results, sm_all, (s_start_idx, s_end_idx))):
+                S_out = S_out.copy()
+                S_out[4, :] *= f_a / f_b
+                S_out[:, 4] *= f_a / f_b
         for plane, (i, j) in (("x", (0, 1)), ("y", (2, 3)), ("z", (4, 5))):
             t1 = _betatron_twiss_from_sigma(S_in, i, j)
             t2 = _betatron_twiss_from_sigma(S_out, i, j)
@@ -1402,22 +1432,51 @@ def _betatron_twiss_from_sigma(S: np.ndarray, i: int, j: int):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _energy_change(lattice, ref, start: int, end_incl: int) -> tuple[float, float]:
-    """Return (w_in, w_out) for the slice [start, end_incl] inclusive.
+def _reference_change(lattice, ref, start: int,
+                      end_incl: int) -> tuple[float, float, float, float]:
+    """Return (w_in, w_out, f_in, f_out), the energy and the clock at the entrance and the
+    exit of the slice [start, end_incl] inclusive.
 
-    Mirrors the energy-advancing logic of ``compute_transfer_matrix``
-    so the two views agree.
+    Mirrors the reference walk of ``compute_transfer_matrix`` so the two views agree.
     """
-    from linac_gen.elements.base import FieldMapElement, ThinKickElement
     rc = ref.copy()
     # Replay before the period.
     for el in lattice.elements[:start]:
         _advance_ref_like_matrix_walk(el, rc, lattice)
-    w_in = float(rc.w_kin)
+    w_in, f_in = float(rc.w_kin), float(rc.frequency)
     for el in lattice.elements[start:end_incl + 1]:
         _advance_ref_like_matrix_walk(el, rc, lattice)
-    w_out = float(rc.w_kin)
+    return w_in, float(rc.w_kin), f_in, float(rc.frequency)
+
+
+def _energy_change(lattice, ref, start: int, end_incl: int) -> tuple[float, float]:
+    """Return (w_in, w_out) for the slice [start, end_incl] inclusive."""
+    w_in, w_out, _f_in, _f_out = _reference_change(lattice, ref, start, end_incl)
     return w_in, w_out
+
+
+def _continuous_at(results, sm_all, rows) -> bool:
+    """Whether the beam is continuous (unbunched) at any of ``rows`` of a record: a
+    multiparticle record flags each row; an envelope run has one flag, and its phase block
+    is zero until the first RF element bunches the beam (as ``sigma_terms.continuous_rows``)."""
+    flags = getattr(results, "continuous_at", None)
+    if flags is not None and len(flags) == len(sm_all):
+        return any(bool(flags[r]) for r in rows)
+    if bool(getattr(results, "continuous", False)):
+        return any(not float(np.asarray(sm_all[r], dtype=float)[4, 4]) > 0.0 for r in rows)
+    return False
+
+
+def _cell_clocks(results, a: int, b: int) -> tuple[float, float]:
+    """The clock at the entrance of element ``a`` and at the exit of element ``b - 1``, from
+    an envelope record (0, 0 when it carries none)."""
+    freq = getattr(results, "ref_frequency", None)
+    if freq is None or len(freq) == 0:
+        return 0.0, 0.0
+    r0, r1 = element_record_span(results, a, b)
+    if r1 >= len(freq):
+        return 0.0, 0.0
+    return float(freq[r0]), float(freq[r1])
 
 
 # ---------------------------------------------------------------------------
@@ -1474,8 +1533,8 @@ def _advance_ref_like_matrix_walk(el, rc, lattice=None, *, reset: bool = True) -
     """Advance the reference particle through ``el`` exactly as
     ``compute_transfer_matrix`` does: stateful elements start from a clean
     slate and advance themselves (FieldMap / FieldMap3D / SuperposedFieldMap
-    on the tracker's schedule, with ``lattice``'s step settings);
-    everything else advances ``s`` AND the RF phase ``phi_s``.  The
+    on the tracker's schedule, with ``lattice``'s step settings); a FREQ card
+    moves the clock; everything else advances ``s`` AND the RF phase ``phi_s``.  The
     analysis walks used to advance only ``s``, so a cavity whose matrix
     depends on the arrival phase — NCELLS with absolute phases,
     SET_SYNC_PHASE field maps — was evaluated at a wrong phase and the
@@ -1484,18 +1543,14 @@ def _advance_ref_like_matrix_walk(el, rc, lattice=None, *, reset: bool = True) -
 
     ``reset=False``: the caller reset ``el`` and built its matrix at ``rc``
     just before (that calibration is reused)."""
-    from linac_gen.elements.base import FieldMapElement, ThinKickElement
-    from linac_gen.tracking.matrix_tracking import _advance_field_map_ref
+    from linac_gen.elements.base import FieldMapElement
+    from linac_gen.tracking.matrix_tracking import _advance_field_map_ref, _advance_ref_past
     if isinstance(el, FieldMapElement):
         if reset:
             el.reset_run_state()
         _advance_field_map_ref(lattice, el, rc, reset=reset)
     else:
-        rc.s += el.length
-        if el.length > 0:
-            rc.phi_s += 360.0 * el.length / (rc.beta * rc.wavelength)
-        if isinstance(el, ThinKickElement):
-            el.advance_ref(rc)
+        _advance_ref_past(el, rc)
 
 
 def structure_phase_advance_along_s(lattice, ref, period: PeriodicStructure,

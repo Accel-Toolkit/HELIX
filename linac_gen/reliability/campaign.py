@@ -162,8 +162,9 @@ def compensation_job(job: dict) -> dict:
             ccfg = CompensationConfig(strategy="manual", manual_names=list(job.get("manual_names") or []),
                                       extra_types=("spare",), **kw)
         elif strategy == "section_rematch":
+            # its list carries the downstream spares of a cavity fault
             ccfg = CompensationConfig(strategy="manual", manual_names=list(job.get("manual_names") or []),
-                                      **kw)
+                                      extra_types=("spare",), **kw)
         else:
             raise ValueError(f"unknown compensation strategy {strategy!r}")
         res = compensate(lattice, cfg, scenario, job["name_to_class"], job["baseline_metrics"], ccfg)
@@ -245,6 +246,10 @@ class ReliabilityCampaign:
         self.plan_dir = self.dir / "plan"
         self.figures_dir = self.dir / "figures"
         self._input_path = self._resolve_input()
+        # the weights an envelope run's pool worker registers (surrogates.transport.
+        # SurrogateSpec, set by the reliability CLI's --surrogates after its design check);
+        # None: every run native in the workers
+        self.surrogates = None
         self._lattice = None
         self._beam_cfg = None
         self._conv = None
@@ -622,11 +627,17 @@ class ReliabilityCampaign:
                           seed=int(item.get("seed", 42)), out_path=run_dir / "results.h5",
                           beam_overrides=beam_ov or None,
                           snapshot_elements=item.get("snapshot_elements") or (),
-                          loss_metrics=True, tracewin_ini=self.spec.tracewin_ini)
+                          loss_metrics=True, tracewin_ini=self.spec.tracewin_ini,
+                          surrogates=self.surrogates)
 
     def _sections(self):
         lat, _c, _v = self._load()
         return self.circuits.section_ranges(lat)
+
+    def _apertures(self, lattice) -> dict:
+        """``{element index: (half-aperture x, y) in mm}`` (analysis.aperture_edge)."""
+        from linac_gen.analysis.aperture_edge import half_apertures
+        return half_apertures(lattice)
 
     def _extras(self, item: dict) -> dict:
         from linac_gen.reliability.observables import evaluate_run
@@ -638,7 +649,8 @@ class ReliabilityCampaign:
             return evaluate_run(str(h5), element_index=self._elem_index, landmarks=self.landmarks,
                                 sections=self._sections(), current_mA=float(cfg.current),
                                 duty_pct=float(cfg.duty_cycle),
-                                hits_per_particle=float((self.spec.foil or {}).get("hits_per_particle", 1.0)))
+                                hits_per_particle=float((self.spec.foil or {}).get("hits_per_particle", 1.0)),
+                                apertures=self._apertures(_lat))
         except Exception as exc:          # noqa: BLE001
             _log.warning("extras failed for %s: %s", item["id"], exc)
             return {"_error": f"{type(exc).__name__}: {exc}"}
@@ -775,11 +787,19 @@ class ReliabilityCampaign:
         rows.sort(key=lambda r: -r["criticality"]["score"])
         return rows
 
-    def _family_of(self, names) -> dict:
+    def _cavity_families(self, lattice, names) -> dict:
+        """The headroom family of each cavity named: its type, which for a field-map cavity is
+        its field map (the file's name, e.g. ``beta092``) and for any other the leading part of
+        its name that ``compensation.family_pattern`` picks (an RF gap's ``GAP``)."""
         pat = (self.spec.compensation or {}).get("family_pattern") or r"^([A-Za-z]+)"
         rx = re.compile(pat)
+        elem = {getattr(e, "name", None): e for e in lattice.elements}
         out = {}
         for n in names:
+            ff = getattr(elem.get(n), "field_file", None)
+            if ff:
+                out[n] = Path(str(ff)).name
+                continue
             m = rx.match(n)
             out[n] = m.group(1) if m else n
         return out
@@ -794,6 +814,9 @@ class ReliabilityCampaign:
         if len(chosen) < top_n:
             chosen += [r for r in ranked if r not in chosen][:top_n - len(chosen)]
         _cases, n2c = self._cases_cached()
+        from linac_gen.failures.element_filter import ALL_TYPES, EXTRA_TYPES, failable_elements
+        lat, _c, _v = self._load()
+        rf_labels = {n: lbl for (n, lbl, _k) in failable_elements(lat, tuple(ALL_TYPES) + tuple(EXTRA_TYPES))}
         strategies = [s for s in comp.get("strategies") or ["k_out_of_n"] if s in _STRATEGIES]
         spares = list(self.circuits.spares) + list(comp.get("spare_names") or [])
         items = []
@@ -803,9 +826,10 @@ class ReliabilityCampaign:
                 continue
             fails = [[n, m.kind.value, m.amp_scale, m.phase_deg]
                      for n, m in self._case_by_id(it["case_id"]).scenario.failures]
+            rf_case = any(rf_labels.get(n) in ("cavity", "spare") for n in it.get("elements") or [])
             for strat in strategies:
-                if strat == "spares" and not spares:
-                    continue
+                if strat == "spares" and not (spares and rf_case):
+                    continue                # spares compensate an RF fault only
                 items.append({"id": f"A_comp_{it['case_id']}_{strat}", "leg": "faults", "kind": "comp",
                               "case_id": it["case_id"], "cls": it["cls"], "bracket": it["bracket"],
                               "label": it["label"], "elements": it["elements"], "mode": it["mode"],
@@ -851,7 +875,9 @@ class ReliabilityCampaign:
         base_rows = {(r["item"]["bracket"], r["item"]["mode"]): r["row"] for r in self.fault_rows()
                      if r["item"]["case_id"] == "baseline"}
         labels = {n: lbl for (n, lbl, _c) in failable_elements(lat, tuple(ALL_TYPES) + tuple(EXTRA_TYPES))}
-        fam = self._family_of(list(n2c))
+        # the headroom rule is the RF's, by cavity type; a magnet keeps a window about its own
+        # setting (one median of signed quadrupole gradients left most quadrupoles' own outside it)
+        fam = self._cavity_families(lat, [n for n in n2c if labels.get(n) in ("cavity", "spare")])
         headroom = comp.get("headroom") or {"default": 1.5}
         bounds = {f: (0.0, float(headroom.get(f, headroom.get("default", 1.5)))) for f in set(fam.values())}
         spares = list(self.circuits.spares) + list(comp.get("spare_names") or [])

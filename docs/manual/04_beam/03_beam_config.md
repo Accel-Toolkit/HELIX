@@ -46,8 +46,10 @@ class BeamConfig:
     centroid_dw: float = 0.0            # MeV
 
     # Input dispersion (generate path only; x += disp_x·ΔW before the
-    # centroid offsets).  The matched beam of a bending line (arc FODO /
-    # BTL) carries these — the matching dialog's Apply fills them.
+    # centroid offsets; the envelope of a bunched beam starts from the
+    # same beam).  The matched beam of a bending line (arc FODO /
+    # transfer line) carries these — the matching dialog's Apply fills
+    # them.
     disp_x: float = 0.0                 # mm/MeV
     disp_xp: float = 0.0                # mrad/MeV
     disp_y: float = 0.0                 # mm/MeV

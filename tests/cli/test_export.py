@@ -79,7 +79,7 @@ def test_strict_refuses_unrepresentable_elements(tmp_path, capsys):
 
 def test_output_equal_to_input_is_refused(tmp_path, capsys):
     src = tmp_path / "ring.madx"
-    src.write_text((_REPO / "examples" / "madx" / "fodo.madx").read_text(encoding="utf-8"))
+    src.write_text((_REPO / "examples" / "madx" / "fodo.madx").read_text(encoding="utf-8"), encoding="utf-8")
     before = src.read_text(encoding="utf-8")
     rc = main(["export", str(src), str(src), "--energy", "3"])
     assert rc == 2

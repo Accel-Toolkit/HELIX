@@ -4,16 +4,17 @@ Each ``SET_*`` and ``ADJUST_*`` directive in a TraceWin .dat file is parsed
 into a subclass of :class:`LatticeCommand`.  Two distinct subclass
 families:
 
-* **Run-time-active** (``SetSyncPhase``, ``SetBeamPhaseError``,
-  ``SetBeamE0P0``, ``SetBeamEnergy``, ``SetGaussianCutOff``) override
+* **Run-time-active** (``Freq``, ``SetSyncPhase``, ``SetBeamPhaseError``,
+  ``SetReferenceEnergy``, ``SetGaussianCutOff``) override
   :meth:`LatticeCommand.apply_command` to mutate the live
   :class:`linac_gen.core.track_state.TrackState` when the tracking loop
   reaches them.
 * **Passive constraint / variable markers** (``SetTwiss``, ``SetPosition``,
-  …, ``Adjust``, ``AdjustSteerer``, ``AdjustBeam*``) carry their typed
-  arguments but inherit the no-op ``apply_command`` default.  The matcher
-  engine (``linac_gen.matching``) collects them into Variables /
-  Constraints; the deterministic tracker walks past them.
+  ``SetBeamEnergy``, ``SetBeamE0P0``, …, ``Adjust``, ``AdjustSteerer``,
+  ``AdjustBeam*``) carry their typed arguments but inherit the no-op
+  ``apply_command`` default.  The matcher engine (``linac_gen.matching``)
+  collects them into Variables / Constraints; the deterministic tracker
+  walks past them.
 
 Every subclass implements :meth:`to_tracewin_args` so the writer can
 round-trip the command back to a .dat file losslessly.
@@ -25,6 +26,8 @@ matcher (passive).
 """
 from dataclasses import dataclass, field
 from typing import ClassVar, List, Optional
+
+import numpy as np
 
 from linac_gen.elements.base import PassiveElement
 
@@ -98,16 +101,21 @@ class Freq(LatticeCommand):
 
     * ``ref.phi_s   *= f_new/f_old``  (same instant, new degrees)
     * ``ref.frequency = f_new``
-    * MP beams: ``Δφ *= f_new/f_old`` (mirrors the per-element FREQ-jump
-      rescale in ``NCells._on_entry`` / ``FieldMap``, which stays as a
-      fallback for hand-built lattices and becomes a no-op after this).
+    * MP beams: ``Δφ *= f_new/f_old``.
+
+    An RF element at another design frequency than the clock, with no card in
+    front of it, makes the same change itself on entry, through the same
+    ``ReferenceParticle.switch_clock``; behind this card it finds nothing to do.
+    An LLRF frequency offset is not a change of clock: such a cavity beats
+    against the clock from its own entrance, and ``phi_s`` stays where it was.
 
     The envelope σ-matrix rescale (exact ``D Σ Dᵀ``) is applied by
     ``EnvelopeSolver`` when it observes ``ref.frequency`` change across
     ``apply_command`` — σ is a propagation-loop local there.  The bunch
     repetition frequency used for space-charge Q = I/f_bunch is pinned at
-    beam/solver creation and intentionally NOT touched.  The matrix-mode
-    path keeps its own frequency handling.
+    beam/solver creation and intentionally NOT touched.  The matrix walks
+    apply the command to their reference and take ``transfer_matrix`` as the
+    card's map.
     """
 
     KEYWORD = "FREQ"
@@ -120,20 +128,25 @@ class Freq(LatticeCommand):
         ref = getattr(track_state, "ref", None)
         if ref is None or self.frequency_mhz <= 0:
             return
-        old = float(getattr(ref, "frequency", 0.0) or 0.0)
-        if old <= 0:
-            ref.frequency = self.frequency_mhz
+        ratio = ref.switch_clock(self.frequency_mhz)
+        if ratio == 1.0:
             return
-        if old == self.frequency_mhz:
-            return
-        ratio = self.frequency_mhz / old
-        ref.phi_s = ref.phi_s * ratio
-        ref.frequency = self.frequency_mhz
         beam = getattr(track_state, "beam", None)
         if (beam is not None
                 and getattr(beam, "particles", None) is not None
                 and not getattr(beam, "continuous", False)):
             beam.particles[beam.alive_mask, 4] *= ratio
+
+    def transfer_matrix(self, ref) -> np.ndarray:
+        """The card's map at the clock ``ref`` brings to it, so ask before
+        ``apply_command``: D = diag(1, 1, 1, 1, f_new/f_old, 1), the identity
+        for a card that changes nothing.  A bunched beam's: a continuous beam's Δφ
+        is not rescaled (``apply_command``), and nothing reads its z block."""
+        D = np.eye(6)
+        old = float(getattr(ref, "frequency", 0.0) or 0.0)
+        if old > 0 and self.frequency_mhz > 0 and old != self.frequency_mhz:
+            D[4, 4] = self.frequency_mhz / old
+        return D
 
     def to_tracewin_args(self) -> List[str]:
         return [_fmt(self.frequency_mhz)]
@@ -159,62 +172,89 @@ class SetSyncPhase(LatticeCommand):
 
 
 class SetBeamPhaseError(LatticeCommand):
-    """``SET_BEAM_PHASE_ERROR Dp(deg) RandomFlag``.
+    """``SET_BEAM_PHASE_ERROR Dp(deg) RandomFlag`` — shift the RF phase of the
+    cavities after it (TraceWin manual, "Set beam phase error"); the beam's
+    phase is not touched.
 
-    ``Dp = 0`` clears the accumulated phase shift; otherwise adds Dp to the
-    running offset that following RF cavities see.  ``RandomFlag = 1``
-    (draw a random offset) is not yet implemented.
+    * ``Dp != 0``: the RF shift grows by ``Dp`` — every following cavity's beam
+      sees its phase ``Dp`` later — or, with ``RandomFlag``, by a draw within
+      ``±Dp`` that an error study makes per seed (``random_draw_deg``).  Outside
+      an error study a random card shifts nothing, with one warning.
+    * ``Dp == 0``: starts the cavities after it afresh.  The shifts before it
+      end, and the cavities that see the arrival take the error study's
+      correction for this seed: the phase error its static errors gave the
+      beam here, the error-free arrival minus this seed's (``rephase_deg``).
+      Without errors (a plain run) there is no correction.  HELIX's
+      relative-phase cavities re-phase to the reference each run and need none.
+
+    The shift lives on the reference particle (``rf_shift`` / ``rf_rephase``).
     """
 
     KEYWORD = "SET_BEAM_PHASE_ERROR"
+    #: What an error study stamps on its seed's copy: no settings, so the
+    #: inspector, the scan pickers and the assistant do not offer them.
+    STUDY_STAMPS = ("rephase_deg", "rephased", "random_draw_deg", "random_drawn")
 
     def __init__(self, name: str, dphi_deg: float, random_flag: int = 0):
         super().__init__(name=name)
         self.dphi_deg = float(dphi_deg)
         self.random_flag = int(random_flag)
+        # stamped by an error study on its seed's copy (numbers, so that the
+        # override transport of a reliability campaign carries them)
+        self.rephase_deg = 0.0           # Dp = 0: the seed's correction (deg of the clock here)
+        self.rephased = 0                # 1 once stamped
+        self.random_draw_deg = 0.0       # the seed's draw within +-Dp
+        self.random_drawn = 0            # 1 once drawn
+        self._warned_random = False
 
     def apply_command(self, track_state) -> None:
-        if self.random_flag:
-            raise NotImplementedError(
-                "SET_BEAM_PHASE_ERROR with RandomFlag=1 (random draw) "
-                "is not implemented; only deterministic Dp is supported."
-            )
+        ref = getattr(track_state, "ref", None)
+        if ref is None:
+            return
         if self.dphi_deg == 0.0:
-            track_state.phase_ref_shift = 0.0
-        else:
-            track_state.phase_ref_shift += self.dphi_deg
+            ref.rf_shift = 0.0
+            ref.rf_rephase = self.rephase_deg if self.rephased else 0.0
+        elif not self.random_flag:
+            ref.rf_shift += self.dphi_deg
+        elif self.random_drawn:
+            ref.rf_shift += self.random_draw_deg
+        elif not self._warned_random:
+            self._warned_random = True
+            import warnings
+            warnings.warn(
+                f"SET_BEAM_PHASE_ERROR '{self.name}': RandomFlag draws within ±{self.dphi_deg:g} deg "
+                "per seed of an error study; this run is not one, so it shifts nothing",
+                UserWarning, stacklevel=2)
 
     def to_tracewin_args(self) -> List[str]:
         return [_fmt(self.dphi_deg), _fmt(self.random_flag)]
 
 
 class SetBeamE0P0(LatticeCommand):
-    """``SET_BEAM_E0_P0 k DeltaE(MeV) DeltaPhi(deg) ke kp``.
-
-    When ``ke != 0``: shifts the reference particle's kinetic energy by
-    ``DeltaE``.  When ``kp != 0``: shifts the running phase offset by
-    ``DeltaPhi``.  ``k`` is the matching-criterion weight (used by the
-    matcher; ignored by the deterministic tracker).
+    """``SET_BEAM_E0_P0 k DeltaE(MeV) DeltaPhi(deg) ke kp`` — a matching
+    criterion (TraceWin manual, "Matching commands"): the beam's energy and
+    phase against the linac's at this position, ``ke`` and ``kp`` switching
+    the two terms.  It does not change the beam.  The matcher reads beam minus
+    linac as the bunch centroid's offset from the reference particle and asks
+    for ``DeltaE`` and ``DeltaPhi`` (``linac_gen.matching.constraints``).  The
+    reference particle goes through the elements as they are, errors
+    included, so the criterion sees an injected offset and the centroid's own
+    motion, not an element error.  Until 2026-11 HELIX shifted the reference
+    energy with it; that is ``SetReferenceEnergy`` now.
     """
 
     KEYWORD = "SET_BEAM_E0_P0"
 
     def __init__(self, name: str,
-                 k: int = 0,
+                 k: float = 0.0,
                  dE_MeV: float = 0.0, dphi_deg: float = 0.0,
                  ke: int = 0, kp: int = 0):
         super().__init__(name=name)
-        self.k = int(k)
+        self.k = float(k)
         self.dE_MeV = float(dE_MeV)
         self.dphi_deg = float(dphi_deg)
         self.ke = int(ke)
         self.kp = int(kp)
-
-    def apply_command(self, track_state) -> None:
-        if self.ke and track_state.ref is not None:
-            track_state.ref.w_kin = track_state.ref.w_kin + self.dE_MeV
-        if self.kp:
-            track_state.phase_ref_shift += self.dphi_deg
 
     def to_tracewin_args(self) -> List[str]:
         return [
@@ -224,23 +264,63 @@ class SetBeamE0P0(LatticeCommand):
 
 
 class SetBeamEnergy(LatticeCommand):
-    """``SET_BEAM_ENERGY k Ei(MeV)`` — set the reference energy at this
-    position.  Used by TraceWin both as a matching criterion and as a
-    runtime injection; we honour the latter and ignore ``k``."""
+    """``SET_BEAM_ENERGY k Ei(MeV)`` — a matching criterion (TraceWin manual,
+    "Matching commands"): the beam's energy here against ``Ei``.  It does not
+    change the beam.  Until 2026-11 HELIX set the reference energy with it;
+    that is ``SetReferenceEnergy`` now."""
 
     KEYWORD = "SET_BEAM_ENERGY"
 
-    def __init__(self, name: str, k: int = 0, energy_MeV: float = 0.0):
+    def __init__(self, name: str, k: float = 0.0, energy_MeV: float = 0.0):
         super().__init__(name=name)
-        self.k = int(k)
+        self.k = float(k)
         self.energy_MeV = float(energy_MeV)
-
-    def apply_command(self, track_state) -> None:
-        if track_state.ref is not None:
-            track_state.ref.w_kin = self.energy_MeV
 
     def to_tracewin_args(self) -> List[str]:
         return [_fmt(self.k), _fmt(self.energy_MeV)]
+
+
+class SetReferenceEnergy(LatticeCommand):
+    """HELIX card: set the reference kinetic energy here to ``energy_MeV``, or
+    with ``shift`` add ``energy_MeV`` to it, in every linac mode.  A deck carries
+    it as a comment that TraceWin skips: ``; HELIX_SET_ENERGY E`` or
+    ``; HELIX_SHIFT_ENERGY dE``.  It does what ``SET_BEAM_ENERGY`` and
+    ``SET_BEAM_E0_P0`` (with ``ke``) did in HELIX until 2026-11; in TraceWin
+    those two are matching criteria."""
+
+    KEYWORD = "HELIX_SET_ENERGY"
+
+    def __init__(self, name: str, energy_MeV: float = 0.0, shift: bool = False):
+        super().__init__(name=name)
+        self.energy_MeV = float(energy_MeV)
+        self.shift = bool(shift)
+
+    def apply_command(self, track_state) -> None:
+        ref = getattr(track_state, "ref", None)
+        if ref is None:
+            return
+        w = (ref.w_kin + self.energy_MeV) if self.shift else self.energy_MeV
+        if not w > 0.0:
+            raise ValueError(f"HELIX_{'SHIFT' if self.shift else 'SET'}_ENERGY '{self.name}' leaves "
+                             f"the reference with no energy (W = {w:g} MeV)")
+        ref.w_kin = w
+
+    def comment_card(self) -> str:
+        """The line a deck carries it as, with its name and label (a name or
+        label with a space in it is left out)."""
+        line = f"; HELIX_{'SHIFT' if self.shift else 'SET'}_ENERGY {_fmt(self.energy_MeV)}"
+        for key, value in (("name", self.name), ("label", getattr(self, "label", None))):
+            if value and not any(c.isspace() for c in str(value)):
+                line += f" {key}={value}"
+        return line
+
+    def to_tracewin_args(self) -> List[str]:
+        return [_fmt(self.energy_MeV)]
+
+
+#: The commands that change the reference itself, so that every walk along a line
+#: applies them.  Each one's map is the identity, except FREQ's change of coordinate.
+REFERENCE_COMMANDS = (Freq, SetReferenceEnergy, SetBeamPhaseError)
 
 
 class SetGaussianCutOff(LatticeCommand):
@@ -747,6 +827,7 @@ __all__ = [
     "LatticeCommand",
     "Freq",
     "SetSyncPhase", "SetBeamPhaseError", "SetBeamE0P0", "SetBeamEnergy",
+    "SetReferenceEnergy", "REFERENCE_COMMANDS",
     "SetGaussianCutOff",
     "SetTwiss", "SetPosition", "SetAchromat",
     "SetSize", "SetSizeMax", "SetSizeMin",

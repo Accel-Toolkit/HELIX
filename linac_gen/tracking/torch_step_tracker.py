@@ -29,6 +29,7 @@ from torch.utils.checkpoint import checkpoint as _torch_checkpoint
 
 from linac_gen.elements.dipole import Dipole
 from linac_gen.elements.drift import Drift
+from linac_gen.elements.lattice_commands import Freq, REFERENCE_COMMANDS
 from linac_gen.elements.quadrupole import Quadrupole
 from linac_gen.elements.solenoid import Solenoid
 from linac_gen.pic.torch.sc_kick import torch_pic_sc_kick
@@ -36,7 +37,9 @@ from linac_gen.tracking.autograd_api import TunableParam
 from linac_gen.tracking.torch_matrices import (
     F64, RefKinematics, drift_matrix, quad_matrix, solenoid_matrix,
 )
-from linac_gen.tracking.torch_tracking import element_matrix_torch
+from linac_gen.tracking.torch_tracking import (
+    advance_clock_past, apply_reference_card, element_matrix_torch,
+)
 from linac_gen.parallel.threads import sync_torch as _sync_torch
 
 # a run that loads torch here keeps its CPU work on one thread
@@ -86,15 +89,22 @@ def _sc(X, sc_cfg, ds_mm, kin, macro_charge, dtype, device):
 
 
 def _advance_one_element(X, element, kin, overrides, sc_cfg, macro_charge,
-                         step_config, on_nonlinear, dtype, device):
+                         step_config, on_nonlinear, dtype, device, kin_exit=None):
     """Advance the ``(N, 6)`` beam tensor ``X`` through one lattice element.
 
     With ``sc_cfg`` given and a length>0 element the SC kicks are
     interleaved with the numpy ``Tracker``'s cadence (drift -> step1/step2
     Strang bundles; quad/solenoid -> two sub-steps; dipole -> kick-drift-
     kick).  This is the unit a gradient-checkpoint segment wraps.
+    ``kin_exit``: the kinematics past an element that switches the clock (a
+    surrogated cavity at another frequency), for its exit half-kick.
     """
     length = float(getattr(element, "length", 0.0) or 0.0)
+    ds = length
+    ov = (overrides or {}).get(id(element))
+    if ov is not None and isinstance(element, Dipole):
+        ds = element.length_at(ov)          # the angle knob's own arc, in the graph
+        length = float(ds.detach()) if torch.is_tensor(ds) else float(ds)
 
     if (sc_cfg is None) or length <= 0.0:
         M = element_matrix_torch(element, kin, overrides=overrides,
@@ -141,9 +151,11 @@ def _advance_one_element(X, element, kin, overrides, sc_cfg, macro_charge,
     # the same total SC as the numpy 2-sub-step cadence.
     M = element_matrix_torch(element, kin, overrides=overrides,
                              on_nonlinear=on_nonlinear)
-    X = _sc(X, sc_cfg, 0.5 * length, kin, macro_charge, dtype, device)
+    X = _sc(X, sc_cfg, 0.5 * ds, kin, macro_charge, dtype, device)
     X = _apply(M, X)
-    X = _sc(X, sc_cfg, 0.5 * length, kin, macro_charge, dtype, device)
+    # past the map the beam's Δφ is on the clock it switched to, if it did
+    X = _sc(X, sc_cfg, 0.5 * ds, kin if kin_exit is None else kin_exit, macro_charge,
+            dtype, device)
     return X
 
 
@@ -178,7 +190,8 @@ def track_beam_torch_stepwise(lattice, ref, particles, *,
     running out of memory.  The SC kick has no internal RNG (the bunch is
     sampled once, before tracking), so the recomputation is exact.
     """
-    kin = RefKinematics.from_reference(ref)
+    clock = ref.copy()
+    kin = RefKinematics.from_reference(clock)
     X = (particles if isinstance(particles, torch.Tensor)
          else torch.as_tensor(particles, dtype=dtype))
     X = X.to(dtype=dtype)
@@ -195,17 +208,35 @@ def track_beam_torch_stepwise(lattice, ref, particles, *,
     use_ckpt = checkpoint and needs_grad
 
     for element in lattice.elements:
+        # a surrogated cavity at another frequency switches the clock on entry: the
+        # kinematics past it, for its exit half-kick and the elements after it
+        kin_exit, moved = None, None
+        if getattr(element, "stands_for_wrapped", False):
+            moved = clock.copy()
+            if advance_clock_past(element, moved):
+                kin_exit = RefKinematics.from_reference(moved)
+        if isinstance(element, REFERENCE_COMMANDS):
+            # A new tensor, never in place: X can be the caller's own, such as a
+            # matching residual's fixed bunch.
+            if isinstance(element, Freq):
+                X = _apply(torch.as_tensor(element.transfer_matrix(clock),
+                                           dtype=X.dtype, device=X.device), X)
+            apply_reference_card(element, clock)
+            kin = RefKinematics.from_reference(clock)
+            continue
         if use_ckpt:
             segment = partial(
                 _advance_one_element, element=element, kin=kin,
                 overrides=overrides, sc_cfg=sc_cfg, macro_charge=macro_charge,
                 step_config=step_config, on_nonlinear=on_nonlinear,
-                dtype=dtype, device=device)
+                dtype=dtype, device=device, kin_exit=kin_exit)
             X = _torch_checkpoint(segment, X, use_reentrant=False)
         else:
             X = _advance_one_element(
                 X, element, kin, overrides, sc_cfg, macro_charge,
-                step_config, on_nonlinear, dtype, device)
+                step_config, on_nonlinear, dtype, device, kin_exit)
+        if kin_exit is not None:
+            clock, kin = moved, kin_exit
     return X
 
 

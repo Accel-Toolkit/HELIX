@@ -262,8 +262,14 @@ def run_jitter(lattice, beam_config, add_defs, pulses, *, static_seed=0,
     along-the-line maxima ``x_max_mm`` / ``y_max_mm`` = the jitter alone),
     β-beat / BMAG / dispersion use the frozen lattice as design.
     """
+    import copy
+
     from linac_gen.cli.common import run_envelope_sim
-    from linac_gen.errors.error_model import ErrorStudy
+    from linac_gen.errors.error_model import ErrorStudy, freeze_phase_error_cards
+    # SET_BEAM_PHASE_ERROR cards no error study stamped: fixed for every
+    # pulse, so a pulse's errors stay uncorrected (dynamic)
+    lattice = copy.deepcopy(lattice)
+    freeze_phase_error_cards(lattice, static_seed)
     js = ErrorStudy(lattice, beam_config, n_seeds=0, rng_stream=(3, int(static_seed)))
     js._errors, js._beam_errors = [], []          # never re-draw deck ERROR_* cards
     add_defs(js)

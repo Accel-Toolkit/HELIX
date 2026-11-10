@@ -48,17 +48,50 @@ def test_gradient_in_match_algorithms():
     assert "gradient" in MATCH_ALGORITHMS
 
 
-@pytest.mark.parametrize("sc", [False, True])
-def test_gradient_refuses_freq_card(sc):
-    """FREQ + gradient + SC used to RUN with zero warnings while the
-    torch mirror composed the frequency jump as identity — silently
-    optimizing a different lattice (PRAB review finding, empirically
-    reproduced).  Both regimes must refuse loudly."""
-    from linac_gen.elements.lattice_commands import Freq
-    lat = _fodo_set_size()
-    lat.add(Freq("F1", frequency_mhz=704.42))
-    with pytest.raises(ValueError, match="runtime-active"):
-        match(lat, _bcfg(), algorithm="gradient", space_charge=sc)
+def _with_card_before_quad(card):
+    lat = Lattice()
+    src = _fodo_set_size()
+    lat.add(src.elements[0])
+    lat.add(card)
+    for el in src.elements[1:]:
+        lat.add(el)
+    return lat
+
+
+def _cards():
+    from linac_gen.elements.lattice_commands import Freq, SetReferenceEnergy
+    return {"FREQ": lambda: Freq("F1", frequency_mhz=704.42),
+            "HELIX_SET_ENERGY": lambda: SetReferenceEnergy("SBE", energy_MeV=5.0),
+            "HELIX_SHIFT_ENERGY": lambda: SetReferenceEnergy("SE", energy_MeV=2.0, shift=True)}
+
+
+@pytest.mark.parametrize("card", ["FREQ", "HELIX_SET_ENERGY", "HELIX_SHIFT_ENERGY"])
+def test_gradient_agrees_with_least_squares_across_a_card_that_sets_the_reference(card):
+    """It used to refuse these: the torch mirror composed them as the identity, so it
+    would have solved another lattice.  It now follows them, as the numpy walk does:
+    the same quad gradient as ``least_squares``, and the match's own check of the torch
+    residual against the numpy one at the start passes."""
+    make = _cards()[card]
+    grad = match(_with_card_before_quad(make()), _bcfg(), algorithm="gradient", max_iter=40)
+    lsq = match(_with_card_before_quad(make()), _bcfg(), algorithm="least_squares", max_iter=200)
+    assert grad.cost < 1e-6
+    assert lsq.cost < 1e-6
+    assert grad.x_final[0] == pytest.approx(lsq.x_final[0], rel=1e-3)
+    plain = match(_fodo_set_size(), _bcfg(), algorithm="gradient", max_iter=40).x_final[0]
+    if card == "FREQ":              # a clock does not focus
+        assert grad.x_final[0] == pytest.approx(plain, rel=1e-6)
+    else:                           # an energy does
+        assert abs(grad.x_final[0] / plain - 1.0) > 1e-3
+
+
+@pytest.mark.parametrize("card", ["FREQ", "HELIX_SET_ENERGY", "HELIX_SHIFT_ENERGY"])
+def test_gradient_through_space_charge_runs_across_a_card(card):
+    """Through PIC there is no numpy check at the start, so the step tracker's own
+    agreement with the numpy tracker across a card is in its test file."""
+    make = _cards()[card]
+    r = match(_with_card_before_quad(make()), _bcfg(current=1.0), algorithm="gradient",
+              space_charge=True, max_iter=3)
+    assert r.cost >= 0.0
 
 
 def test_gradient_accepts_ratio_one_freq_card():
@@ -74,14 +107,6 @@ def test_gradient_accepts_ratio_one_freq_card():
         lat.add(el)
     r = match(lat, _bcfg(), algorithm="gradient", max_iter=40)
     assert r.cost < 1e-6
-
-
-def test_gradient_refuses_set_beam_energy():
-    from linac_gen.elements.lattice_commands import SetBeamEnergy
-    lat = _fodo_set_size()
-    lat.add(SetBeamEnergy("SBE", k=0, energy_MeV=5.0))
-    with pytest.raises(ValueError, match="runtime-active"):
-        match(lat, _bcfg(), algorithm="gradient")
 
 
 def test_gradient_refuses_longitudinal_twiss_flags():
@@ -226,3 +251,73 @@ def test_gradient_rejects_set_size_max():
     lat.add(SetSizeMax("CM", k=1.0, n_elems=1, x_mm=5.0))
     with pytest.raises(ValueError, match="SET_TWISS and SET_SIZE"):
         match(lat, _bcfg(), algorithm="gradient", max_iter=20)
+
+
+def _foil():
+    from linac_gen.elements.foil import Foil
+    return Foil("F", material="C", thickness_ug_cm2=600.0, dedx_model="bethe")
+
+
+def _gaining_matrix_element(gain=0.5):
+    import numpy as np
+
+    from linac_gen.elements.matrix_element import MatrixElement
+    return MatrixElement("M", np.eye(6), ref_gain=gain)
+
+
+@pytest.mark.parametrize("make, what", [
+    (_foil, "foil"),
+    (_gaining_matrix_element, "changes the reference energy by 0.5 MeV"),
+    (lambda: _gaining_matrix_element(-0.5), "changes the reference energy by -0.5 MeV")],
+    ids=["a foil", "a matrix element that gains energy", "one that loses energy"])
+def test_an_element_the_mirror_would_ignore_is_refused(make, what):
+    """Both have an identity map and passed as no-ops, but a foil scatters the beam and slows
+    the reference, and the element moves it: with a quadrupole after them (3 MeV protons) the
+    mirror gave sigma_x 0.608 mm where the envelope gives 2.300 behind a 600 ug/cm2 carbon foil,
+    and 0.712 behind a +0.5 MeV gain (2026-11-08)."""
+    from linac_gen.core.particle import PROTON
+    from linac_gen.core.reference import ReferenceParticle
+    from linac_gen.matching.torch_objective import check_gradient_supported
+    lat = Lattice()
+    lat.add(Drift("D1", length=200.0))
+    lat.add(make())
+    lat.add(Drift("D2", length=300.0))
+    ref = ReferenceParticle(species=PROTON, w_kin=3.0, frequency=352.21)
+    with pytest.raises(ValueError, match=f"{what}.*least_squares"):
+        check_gradient_supported(lat, ref, [], [])
+
+
+def test_a_foil_of_no_thickness_is_accepted():
+    """It does nothing in the envelope either (no scattering, no loss)."""
+    from linac_gen.core.particle import PROTON
+    from linac_gen.core.reference import ReferenceParticle
+    from linac_gen.elements.foil import Foil
+    from linac_gen.matching.torch_objective import check_gradient_supported
+    lat = Lattice()
+    lat.add(Drift("D1", length=200.0))
+    lat.add(Foil("F0", material="C", thickness_ug_cm2=0.0))
+    lat.add(Drift("D2", length=300.0))
+    check_gradient_supported(lat, ReferenceParticle(species=PROTON, w_kin=3.0,
+                                                    frequency=352.21), [], [])
+
+
+@pytest.mark.parametrize("gap_f, supported", [(704.42, True), (352.21, False)],
+                         ids=["at the card\'s clock", "at the old clock"])
+def test_the_support_check_judges_a_parked_gap_at_the_clock_it_sits_on(gap_f, supported):
+    """At the card\'s clock such a gap is nothing.  At the old one it makes a jump back,
+    which the mirror does not hold: with space charge no self-check would catch that."""
+    from linac_gen.core.particle import PROTON
+    from linac_gen.core.reference import ReferenceParticle
+    from linac_gen.elements.lattice_commands import Freq
+    from linac_gen.elements.rf_gap import RFGap
+    from linac_gen.matching.torch_objective import check_gradient_supported
+    lat = Lattice()
+    lat.add(Drift("D1", length=200.0))
+    lat.add(Freq("F", frequency_mhz=704.42))
+    lat.add(RFGap("G", voltage=0.0, phase=-30.0, frequency=gap_f, ttf=1.0))
+    ref = ReferenceParticle(species=PROTON, w_kin=3.0, frequency=352.21)
+    if supported:
+        check_gradient_supported(lat, ref, [], [])
+    else:
+        with pytest.raises(ValueError, match="all-linear"):
+            check_gradient_supported(lat, ref, [], [])

@@ -96,7 +96,9 @@ to machine precision.
     faithful).  Guard test:
     `tests/analysis/test_tracewin_crosscheck.py` (gated on the
     never-committed TW export); escape hatch: `cavity.synchronism =
-    False`; applied only for `βg > 0`.
+    False`; applied only for `βg > 0` and when the card has no βs≠0
+    transit-time tail (the tail is TraceWin's explicit T(β) for that
+    cavity).
 
     Two scope limits (adversarial review, 2026-07): (1) the factor is
     perturbative (δ ~ 10⁻³/gap on a matched deck) — if the beam is
@@ -148,7 +150,7 @@ linac_gen.elements.ncells.NCells(
 ## See also
 
 * [RFGap](06_rfgap.md) — the single-gap kick reused per cell.
-* [VaneRFQ](10_vanerfq.md) — the other multi-cell-in-one-element cavity.
+* [VaneRFQ](10_vanerfq.md) — the other multi-cell-in-one-element cavity (retired).
 * [Migrating from TraceWin](../appendices/E_migrating_from_tw.md) — card mapping.
 
 ← [VaneRFQ](10_vanerfq.md) ·

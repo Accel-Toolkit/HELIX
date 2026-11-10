@@ -28,8 +28,14 @@ Options: `--preset quick|full|custom` (a new campaign), `--spec campaign.json`
 (start from a saved spec), `--name`, `--circuits circuits.json` (default: the
 one next to the deck), `--dir` (default `<input dir>/reliability/<name>/`),
 `--legs faults,imperfections,foil,availability`, `--parallel N`, `--serial`,
-`--force` (wipe `legs/`), `--retry-failed`, `-q`, and `--tracewin-ini` (beam 1 of
-the deck's TraceWin options file for a bare deck; a project refuses it).
+`--force` (wipe `legs/`), `--retry-failed`, `-q`, `--tracewin-ini` (beam 1 of
+the deck's TraceWin options file for a bare deck; a project refuses it), and
+`--surrogates DIR[,DIR...]|auto`: surrogate weights for the campaign's envelope
+runs, where the design lattice with them agrees with the native run (see
+[A study and its surrogates](../13_surrogates/01_overview.md#a-study-and-its-surrogates));
+its multiparticle runs, orbit corrections and compensations run native.  The
+campaign records the choice in `surrogates.json` (and `summary.json`); a resume
+with another choice stops with exit code 2, and `--force` starts over.
 
 Exit codes: 0 success / self-test PASS, 1 execution failure / self-test FAIL,
 2 bad input.

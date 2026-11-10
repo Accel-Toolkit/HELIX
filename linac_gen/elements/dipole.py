@@ -1,13 +1,14 @@
 """Sector-bend dipole element with edge focusing."""
 import numpy as np
 import math
-from linac_gen.elements.base import TransferMapElement
+import warnings
+from linac_gen.elements.base import DerivedGeometry, TransferMapElement
 from linac_gen.elements.mixins import Misalignment, FieldError
 from linac_gen.core.reference import ReferenceParticle
 from linac_gen.core.beam import Beam, transport_alive
 
 
-class Dipole(TransferMapElement, Misalignment, FieldError):
+class Dipole(DerivedGeometry, TransferMapElement, Misalignment, FieldError):
     """Sector-bend dipole magnet with optional edge focusing.
 
     Uses the standard sector-bend transfer matrix.  Edge angles *e1* and *e2*
@@ -35,7 +36,19 @@ class Dipole(TransferMapElement, Misalignment, FieldError):
     # plus field_rel (folded into effective_angle).
     _cache_keys: tuple[str, ...] = (
         "angle", "rho", "e1", "e2", "field_index", "hv", "field_rel",
+        "length",                 # a bend with no angle is a pipe of its own length
     )
+
+    # The arc length is |ρ|·|θ|.  An edit of the angle or the radius after
+    # construction derives the length again (DerivedGeometry), as __init__ does,
+    # and while the bend has an angle its length cannot be written.  Set to
+    # angle 0 a bend has no arc; a bend with no angle can be given a length and
+    # is then a field-free pipe of it, which it keeps through rewrites of its
+    # angle or radius.  The inputs are the angle, the radius and that pipe
+    # length, and nothing depends on the order of edits, so edits commute and
+    # undo one attribute at a time exactly.  To switch a magnet off at its
+    # length, set field_rel = -1.
+    _GEOMETRY_ATTRS = frozenset({"angle", "rho", "length"})
 
     def __init__(self, name: str, angle: float, rho: float,
                  e1: float = 0.0, e2: float = 0.0,
@@ -58,6 +71,43 @@ class Dipole(TransferMapElement, Misalignment, FieldError):
         self._init_misalignment(dx=dx, dy=dy, dz=dz, tilt_deg=tilt_deg,
                                 pitch_deg=pitch_deg, yaw_deg=yaw_deg)
         self._init_field_error(field_rel=field_rel)
+        # names of the separate pole-face elements an importer made with this bend
+        self._edge_names: tuple = ()
+        self._geometry_ready = True
+
+    def _is_derived(self, name: str) -> bool:
+        return name == "length" and self.angle != 0.0
+
+    def length_at(self, angle):
+        """The length of this bend at ``angle`` (deg) and its radius: the arc |ρ|·|θ|; with no
+        angle there is no arc, and a pipe has the length it was given.  ``angle`` may be a torch
+        tensor (the differentiable angle knob), and then so is the arc."""
+        if float(angle.detach() if hasattr(angle, "detach") else angle) != 0.0:
+            return abs(self.rho) * abs(angle) * math.pi / 180.0
+        pipe = getattr(self, "_pipe_length", None)
+        return pipe if pipe is not None else 0.0
+
+    def _coerce(self, name: str, value):
+        if name == "length" and self.angle != 0.0:
+            raise AttributeError(
+                "Dipole.length follows from the angle and the radius: edit those instead (a bend "
+                "with no angle is a field-free pipe and takes a length)")
+        return float(value)
+
+    def _derive_geometry(self, changed: str, old=None) -> None:
+        if self.__dict__[changed] == old:
+            return                                     # nothing changed
+        if changed == "length":                        # a pipe (no angle) given a length
+            self._set_derived("_pipe_length", self.length)
+            return
+        self._set_derived("length", self.length_at(self.angle))
+        edges = getattr(self, "_edge_names", ())
+        if edges and not self.__dict__.get("_faces_warned", False):
+            self._set_derived("_faces_warned", True)  # once per bend: a scan or a match edits it often
+            warnings.warn(
+                f"{self.name}: its pole faces {', '.join(edges)} are separate elements and keep "
+                "their own radius and face angles", stacklevel=3)
+
 
     @property
     def effective_angle(self) -> float:
@@ -499,3 +549,29 @@ class Dipole(TransferMapElement, Misalignment, FieldError):
         o = self.orbit_offset(beam.ref, ds=L)
         if o is not None:
             beam.particles[beam.alive_mask] += o
+
+
+def link_pole_faces(elements) -> None:
+    """Record on each bend the separate pole-face elements next to it (zero-length elements such as
+    an ADJUST card or an aperture may stand between) that act: a face angle, or a fringe gap
+    with its integral.  An edit of the bend's body then says that they keep their values."""
+    from linac_gen.elements.edge import Edge
+    n = len(elements)
+
+    def _between(e):
+        return not isinstance(e, (Edge, Dipole)) and not float(getattr(e, "length", 0.0) or 0.0)
+
+    for i, el in enumerate(elements):
+        if not isinstance(el, Dipole):
+            continue
+        faces = []
+        for step in (-1, 1):
+            j = i + step
+            while 0 <= j < n and _between(elements[j]):
+                j += step
+            if 0 <= j < n and isinstance(elements[j], Edge):
+                e = elements[j]
+                if e.pole_rotation or (e.gap and e.k1):
+                    faces.append(e.name)
+        if faces:
+            el._edge_names = tuple(faces)

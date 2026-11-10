@@ -69,6 +69,7 @@ def add_arguments(p) -> None:
                    help="selftest --regression: comma list of control cases (default: all public)")
     p.add_argument("--json", action="store_true", help="selftest: print the result as JSON")
     p.add_argument("-q", "--quiet", action="store_true")
+    common.add_surrogates_argument(p)
     common.add_tracewin_ini_argument(p)
 
 
@@ -106,6 +107,20 @@ def _legs(args):
     if bad:
         raise ValueError(f"unknown leg(s) {bad}; known: {list(LEGS)}")
     return legs
+
+
+def _surrogate_model(choice) -> tuple:
+    """What a recorded ``--surrogates`` choice makes the campaign's envelope runs: the weights
+    they use, or none (native)."""
+    if not choice or not choice.get("use"):
+        return ()
+    return tuple(tuple(w) for w in choice.get("weights") or ())
+
+
+def _surrogate_words(choice) -> str:
+    if not _surrogate_model(choice):
+        return "natively"
+    return f"with the surrogates of {','.join(choice.get('surrogates') or ())}"
 
 
 def run(args) -> int:
@@ -219,9 +234,54 @@ def run(args) -> int:
         eta = f", ETA {p.eta_s / 60.0:.1f} min" if p.eta_s else ""
         print(f"[reliability] {p.leg}/{p.phase}: {p.done}/{p.total} ({p.failed} failed){eta}", flush=True)
 
+    # --surrogates: the weights, the design check of the campaign's envelope runs in this
+    # process, and what the pool's workers register for them (a serial campaign uses this
+    # process's registry, as the check left it); its multiparticle runs and its
+    # compensations run native
+    import contextlib
+    context = contextlib.nullcontext()
+    choice = None
+    if getattr(args, "surrogates", None):
+        try:
+            from linac_gen.surrogates.study_check import study_surrogates
+            from linac_gen.surrogates.transport import study_spec
+            lat, cfg, _conv = c._load()
+            forward = c.spec.forward or {}
+            check, spec, notes = study_spec(
+                lat, cfg, common.lattice_file_of(c.input_path), args.surrogates,
+                mode=forward.get("mode", "envelope"),
+                env_solver=forward.get("env_solver", "matrix"))
+        except (OSError, ValueError, RuntimeError, KeyError) as exc:
+            print(f"error: surrogates: {exc}", file=sys.stderr)
+            return 2
+        for note in notes:
+            print(f"[reliability] surrogates: {note}", file=sys.stderr)
+        if not args.quiet:
+            print(f"[reliability] {check.note}")
+        c.surrogates = spec or None
+        context = study_surrogates(check)
+        choice = {"surrogates": list(args.surrogates), "use": bool(check.use), "note": check.note,
+                  "weights": sorted([e.element_key, e.weights_sha256] for e in spec.entries)}
+    # a campaign's runs are all made one way: with the weights it recorded, or natively
+    recorded = c.dir / "surrogates.json"
     try:
-        out = c.run(legs, max_workers=args.parallel, serial=args.serial, force=args.force,
-                    retry_failed=args.retry_failed, progress_cb=_progress)
+        before = json.loads(recorded.read_text(encoding="utf-8")) if recorded.exists() else None
+    except (OSError, json.JSONDecodeError):
+        before = None
+    started = (not args.force) and todo < total
+    if started and _surrogate_model(before) != _surrogate_model(choice):
+        print(f"error: this campaign's runs were made {_surrogate_words(before)}, and this run "
+              f"would make the rest {_surrogate_words(choice)}: run it as it was, or with "
+              "--force to start over", file=sys.stderr)
+        return 2
+    if choice is not None:
+        recorded.write_text(json.dumps(choice, indent=1) + "\n", encoding="utf-8")
+    elif recorded.exists() and not started:
+        recorded.unlink()
+    try:
+        with context:
+            out = c.run(legs, max_workers=args.parallel, serial=args.serial, force=args.force,
+                        retry_failed=args.retry_failed, progress_cb=_progress)
     except Exception as exc:                          # noqa: BLE001
         print(f"error: campaign execution failed: {exc}", file=sys.stderr)
         return 1

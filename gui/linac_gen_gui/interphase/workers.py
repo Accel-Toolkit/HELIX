@@ -434,7 +434,7 @@ class BacktrackWorker(QThread):
                 should_abort=self._should_abort,
             )
             self.progress.emit(0)
-            # Physics caveats (surrogate → linear fallback, survivors-
+            # Physics caveats (a beam with no record of its surrogate pushes, survivors-
             # only reconstruction, adaptive-grid SC fallback, …) are
             # emitted as BacktrackWarning — invisible to a GUI user on
             # stderr, so capture them and hand them to the done-handler.

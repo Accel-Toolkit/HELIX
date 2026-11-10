@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel,
-                             QPushButton, QSizePolicy)
+from PyQt6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QLabel, QPlainTextEdit,
+                             QPushButton, QSizePolicy, QVBoxLayout)
 
 from linac_gen_gui.interphase import theme
 from linac_gen_gui.interphase.state import AppState
+
+#: warnings listed at most; a repeat of a listed one still counts
+MAX_WARNINGS = 200
 
 
 class StatusBar(QFrame):
@@ -59,6 +62,20 @@ class StatusBar(QFrame):
         self._style_update_seg()
         lay.addWidget(self._update_seg)
 
+        # Warnings from the engine (``warning_log.py``): a count that stays until
+        # cleared, because the message segment below clears after six seconds.
+        self._warnings: dict[str, int] = {}
+        self._warnings_full = False
+        self._warn_dialog = None
+        self._warn_text = None
+        self._warn_seg = QPushButton("")
+        self._warn_seg.setFlat(True)
+        self._warn_seg.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._warn_seg.setVisible(False)
+        self._warn_seg.clicked.connect(self._show_warnings)
+        self._style_warn_seg()
+        lay.addWidget(self._warn_seg)
+
         # Transient status message (Saved →, Exported →, element edits, font
         # size, …).  Before this segment every status_message.emit had no
         # visible sink — the only listener repainted the bar and dropped the
@@ -100,6 +117,7 @@ class StatusBar(QFrame):
         if bus is not None:
             bus.dirty_changed.connect(self._refresh_dirty)
         state.status_message.connect(self._on_message)
+        state.log_event.connect(self._on_log_event)
 
         # Track the version label and current loss colour so apply_font_size
         # can re-render with the new size.
@@ -212,6 +230,7 @@ class StatusBar(QFrame):
             f" font-family:{theme.FONT_MONO}; font-size:{bs}px;"
         )
         self._style_update_seg(bs)
+        self._style_warn_seg(bs)
 
     # ------------------------------------------------------------------
     # update notice
@@ -230,3 +249,78 @@ class StatusBar(QFrame):
 
     def clear_update_notice(self) -> None:
         self._update_seg.setVisible(False)
+
+    # ------------------------------------------------------------------
+    # warnings
+    # ------------------------------------------------------------------
+    def _style_warn_seg(self, size_px: int | None = None) -> None:
+        fs = f" font-size:{size_px}px;" if size_px else ""
+        self._warn_seg.setStyleSheet(
+            f"color:{theme.WARN}; background:transparent; border:0;"
+            f" padding:0 10px; font-family:{theme.FONT_MONO};"
+            f" font-weight:600; text-align:left;{fs}"
+        )
+
+    def _on_log_event(self, level: str, text: str) -> None:
+        if level != "warning":
+            return
+        try:
+            if text in self._warnings:
+                self._warnings[text] += 1
+            elif len(self._warnings) < MAX_WARNINGS:
+                self._warnings[text] = 1
+            else:
+                self._warnings_full = True
+            n = len(self._warnings)
+            more = "+" if self._warnings_full else ""
+            self._warn_seg.setText(f"{n}{more} warning{'' if n == 1 else 's'}")
+            self._warn_seg.setVisible(True)
+            self._on_message(text)
+            if self._warn_text is not None:
+                self._fill_warning_text()
+        except RuntimeError:
+            pass          # sender (AppState) outlived this bar — ignore
+
+    def warning_text(self) -> str:
+        """The list, one warning per line, with how often it came when more than once."""
+        return "\n".join(t if n == 1 else f"{t}  (×{n})" for t, n in self._warnings.items())
+
+    def _fill_warning_text(self) -> None:
+        """Refill the open list where the reader has scrolled to."""
+        scroll = self._warn_text.verticalScrollBar()
+        at = scroll.value()
+        self._warn_text.setPlainText(self.warning_text())
+        scroll.setValue(at)
+
+    def _show_warnings(self) -> None:
+        if self._warn_dialog is None:
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Warnings")
+            dlg.setModal(False)
+            dlg.resize(640, 320)
+            v = QVBoxLayout(dlg)
+            self._warn_text = QPlainTextEdit(dlg)
+            self._warn_text.setReadOnly(True)
+            v.addWidget(self._warn_text)
+            row = QHBoxLayout()
+            row.addStretch(1)
+            clear = QPushButton("Clear", dlg)
+            clear.setAutoDefault(False)     # Return must not wipe the list
+            clear.clicked.connect(self.clear_warnings)
+            row.addWidget(clear)
+            close = QPushButton("Close", dlg)
+            close.setAutoDefault(False)
+            close.clicked.connect(dlg.close)
+            row.addWidget(close)
+            v.addLayout(row)
+            self._warn_dialog = dlg
+        self._fill_warning_text()
+        self._warn_dialog.show()
+        self._warn_dialog.raise_()
+
+    def clear_warnings(self) -> None:
+        self._warnings.clear()
+        self._warnings_full = False
+        self._warn_seg.setVisible(False)
+        if self._warn_dialog is not None:
+            self._warn_dialog.close()
