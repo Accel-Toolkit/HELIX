@@ -513,6 +513,61 @@ def test_overlapping_runs_keep_the_limit_until_the_last_ends(threads,
     assert _blas() == before
 
 
+@pytest.fixture
+def blas_two_unheld():
+    """BLAS at 2 threads in this thread for the test, and no live thread
+    holding an OpenBLAS pool: threadpoolctl 3.8 lets one thread at a time
+    set an OpenBLAS pthreads pool, the first that sets it, while it lives
+    (``threadpool_limits`` called without ``with``, as in an error-ensemble
+    worker's initializer or the GUI's matching worker, keeps it)."""
+    threadpoolctl = pytest.importorskip("threadpoolctl")
+    _blas()
+    let_go = getattr(getattr(threadpoolctl, "OpenBLASController", None),
+                     "clear_controlling_thread", None)
+
+    def free():
+        if let_go is not None:
+            let_go(force=True)
+    free()
+    limiter = threadpoolctl.threadpool_limits(2, user_api="blas")
+    free()
+    yield
+    free()
+    limiter.restore_original_limits()
+    free()
+
+
+def test_a_run_after_another_threads_run_is_limited(threads, blas_two_unheld):
+    """A thread that ran a run lives on (a server or GUI thread); a run in
+    another thread afterwards still has BLAS on one thread and records it."""
+    before = _blas()
+    assert all(n == 2 for n in before)
+    ran, release = threading.Event(), threading.Event()
+    seen = {}
+
+    def run_x():
+        with threads.run_scope():
+            pass
+        ran.set()
+        release.wait(30)
+
+    def run_y():
+        with threads.run_scope() as info:
+            seen["inside"], seen["blas"] = _blas(), info["blas"]
+    tx = threading.Thread(target=run_x)
+    tx.start()
+    try:
+        assert ran.wait(30)
+        ty = threading.Thread(target=run_y)
+        ty.start()
+        ty.join(30)
+    finally:
+        release.set()
+        tx.join(30)
+    assert seen["inside"] == [1] * len(before) and seen["blas"] == 1
+    assert _blas() == before
+
+
 def test_package_exports():
     import linac_gen
     from linac_gen.parallel import threads

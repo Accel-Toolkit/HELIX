@@ -73,7 +73,8 @@ linac_gen.get_threads()        # -> 4
 the field maps and the charge deposition, in this process and the
 processes it starts; results are the same for any number.  `Simulation`,
 `EnvelopeSolver` and the matcher also keep numpy's BLAS on one thread while
-they run.  See [CPU threads](15_threads.md).
+they run, where threadpoolctl sees the BLAS library (not Apple's
+Accelerate).  See [CPU threads](15_threads.md).
 
 ### Source
 

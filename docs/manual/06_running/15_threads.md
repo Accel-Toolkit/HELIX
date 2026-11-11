@@ -89,9 +89,30 @@ share.
 numpy's matrix products (BLAS) run on one thread during a run.  HELIX's
 matrices are 6×6 or N×6, too small to gain from splitting, and idle BLAS
 worker threads keep spinning, taking CPU time from the threads above.  The
-GUI fixes BLAS at one thread at start-up.  Elsewhere a run limits it with
-threadpoolctl and restores the previous count when the last of any
-overlapping runs ends.
+GUI fixes BLAS at one thread at start-up (it sets `OPENBLAS_NUM_THREADS`,
+`MKL_NUM_THREADS` and `VECLIB_MAXIMUM_THREADS` to 1 unless they are set).
+Elsewhere a run limits it with threadpoolctl, as seen from the run's own
+thread:
+
+* a BLAS library with one thread pool for the whole process (OpenBLAS
+  built with pthreads, as in numpy's and scipy's pip wheels for Linux and
+  Windows, and every library with threadpoolctl 3.6 or older) is limited
+  by the first of any overlapping runs and gets its previous count back
+  when the last of them ends;
+* a library that threadpoolctl limits per thread (MKL, and OpenBLAS built
+  on OpenMP, with threadpoolctl 3.7 or later) is limited in each run's
+  thread and gets that thread's count back when the run ends.
+
+HELIX tells the two apart the first time it holds a library, by reading
+the library's count from a second thread before and after.  The libraries
+are the ones threadpoolctl sees when the run starts.  Apple's Accelerate
+(numpy from pip on recent macOS) is not among them: outside the GUI it
+keeps its own thread count during runs (`VECLIB_MAXIMUM_THREADS=1` holds
+it at one).  A BLAS library loaded during a run is held from a later run
+on.  With threadpoolctl 3.6 or older, an OpenBLAS older than 0.3.34
+built on OpenMP puts its own count back at its next call (an OpenBLAS
+bug), so the limit does not hold there although the run records it;
+threadpoolctl 3.7 or later holds it.
 
 ## torch stays on one thread
 
@@ -197,7 +218,7 @@ own thread:
 | `threads_fft` | the most threads an FFT uses (a smaller transform uses fewer) |
 | `threads_kernels` | each compiled kernel module's thread count |
 | `threads_torch` | torch's thread count in the run's thread: 1 (absent when torch was not loaded) |
-| `threads_blas` | 1 when BLAS was held on one thread |
+| `threads_blas` | 1 when every BLAS library threadpoolctl saw at the run's start was held on one thread in the run's thread; absent when one was not, or when it saw none (Apple's Accelerate) |
 | `cic_deposit_order` | `particle` (the summation order) |
 
 ## Kernels built before 2026-10-11

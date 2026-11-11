@@ -331,10 +331,10 @@ def sync_torch() -> None:
 @contextlib.contextmanager
 def run_scope():
     """For one run: the setting handed to the kernels, torch's CPU work in
-    this thread on one thread (:func:`sync_torch`) and BLAS on one thread,
-    both restored afterwards (BLAS when the last overlapping run ends).
-    Yields what the run uses, read in its own thread (the results file
-    records it)."""
+    this thread on one thread (:func:`sync_torch`) and BLAS on one thread
+    (:func:`_blas_one_thread`), both restored afterwards (a BLAS pool the
+    whole process shares when the last overlapping run ends).  Yields what
+    the run uses, read in its own thread (the results file records it)."""
     n = apply_in_this_thread()
     _tls.depth = getattr(_tls, "depth", 0) + 1
     try:
@@ -375,8 +375,10 @@ def in_run_scope(fn):
 
 
 _blas_lock = threading.Lock()
-_blas_depth = 0
-_blas_limiter = None
+_blas_depth = 0                     # runs inside, over every thread
+_blas_shared = []                   # (library, count before, scope) of the
+#                                     process-wide pools held while runs last
+_blas_scope = {}                    # library path -> "process" or "thread"
 _blas_controller = None             # threadpoolctl's view of the libraries
 _blas_controller_time = 0.0
 #: Seconds a threadpoolctl library scan is reused (a scan costs about a
@@ -384,32 +386,64 @@ _blas_controller_time = 0.0
 BLAS_RESCAN_S = 5.0
 
 
+class _BlasHold:
+    """One thread's hold on BLAS: how many of its runs are inside, what the
+    first of them recorded, and the per-thread libraries it changed."""
+
+    __slots__ = ("depth", "held", "own")
+
+    def __init__(self):
+        self.depth = 0
+        self.held = None
+        self.own = []
+
+
 @contextlib.contextmanager
 def _blas_one_thread():
-    """BLAS on one thread while any run is inside; yields 1, or ``None``
-    when it could not be limited.  Overlapping runs (two threads) share one
-    limit, restored when the last of them ends."""
-    global _blas_depth, _blas_limiter
+    """BLAS on one thread in the calling thread while its run lasts; yields
+    1, or ``None`` when that could not be held.
+
+    How each library's limit acts is read from the library
+    (:func:`_limit_blas`).  A library limited per thread (threadpoolctl 3.7
+    and later limit MKL, and OpenBLAS built on OpenMP, in the calling thread
+    only) is limited in each run's own thread and restored when that run
+    ends.  A library with one pool for the whole process (OpenBLAS built
+    with pthreads or Windows threads; every library under threadpoolctl 3.6
+    and older) is limited by the first of overlapping runs (two threads) and
+    restored when the last of them ends.  A run nested in another in the
+    same thread takes the outer run's limit; the thread's limit is lifted
+    when its last run ends, in whichever order its runs end."""
+    global _blas_depth
     if not LIMIT_BLAS_IN_RUNS:
         yield None
         return
+    hold = getattr(_tls, "blas", None)
+    if hold is None:
+        hold = _tls.blas = _BlasHold()
     with _blas_lock:
-        if _blas_depth == 0:
-            _blas_limiter = _limit_blas()
-        _blas_depth += 1
-        limited = _blas_limiter is not None
+        if hold.depth == 0:
+            limit = _limit_blas()
+            _blas_depth += 1
+            hold.held = limit.held if limit is not None else None
+            hold.own = []
+            if limit is not None:
+                hold.own = [c for c in limit.changed if c[2] == "thread"]
+                _blas_shared.extend(c for c in limit.changed
+                                    if c[2] != "thread")
+        hold.depth += 1
+        held = hold.held
     try:
-        yield 1 if limited else None
+        yield held
     finally:
-        with _blas_lock:
-            _blas_depth -= 1
-            if _blas_depth == 0 and _blas_limiter is not None:
-                try:
-                    _blas_limiter.restore_original_limits()
-                except Exception as exc:           # noqa: BLE001
-                    _warn_once("blas-restore",
-                               "could not restore BLAS threads: %s", exc)
-                _blas_limiter = None
+        with _blas_lock:            # the entering thread's hold, wherever
+            hold.depth -= 1         # the run ends
+            if hold.depth == 0:
+                _restore_blas(hold.own)
+                hold.own = []
+                _blas_depth -= 1
+                if _blas_depth == 0:
+                    _restore_blas(_blas_shared)
+                    _blas_shared.clear()
 
 
 def _pool_controller():
@@ -428,20 +462,143 @@ def _pool_controller():
     return _blas_controller
 
 
+class _BlasLimit:
+    """What :func:`_limit_blas` changed: ``changed`` holds (library, count
+    before, "process" or "thread"); ``held`` is 1 when every BLAS library
+    runs one thread in the calling thread, None when one does not or when
+    threadpoolctl sees none (Apple's Accelerate)."""
+
+    def __init__(self):
+        self.changed = []
+        self.held = 1
+
+    def restore_original_limits(self):
+        """Put back what was changed (a per-thread library from the thread
+        that limited it)."""
+        _restore_blas(self.changed)
+        self.changed = []
+
+
 def _limit_blas():
+    """Every BLAS library on one thread as the calling thread sees it: a
+    :class:`_BlasLimit`, or None without threadpoolctl.
+
+    The BLAS libraries only: a limit over every library would also reset
+    OpenMP's count, torch's among them, in the thread that restores it (an
+    OpenBLAS built on OpenMP is itself limited through the calling thread's
+    OpenMP count from threadpoolctl 3.7).  A library is classified the
+    first time it is held, by reading its count from a new thread before
+    and after setting it here: the count moves there too when the library
+    has one pool for the process."""
     try:
         controller = _pool_controller()
         if controller is None:
             _warn_once("threadpoolctl", "threadpoolctl is not installed: "
                        "BLAS keeps its own thread count during runs")
             return None
-        # select first: restoring then touches the BLAS libraries only (a
-        # limiter over every library resets OpenMP's count in the
-        # restoring thread too, torch's among them)
-        return controller.select(user_api="blas").limit(limits=1)
+        libs = list(controller.select(user_api="blas").lib_controllers)
     except Exception as exc:                       # noqa: BLE001
         _warn_once("blas", "could not limit BLAS threads: %s", exc)
         return None
+    limit = _BlasLimit()
+    if not libs:
+        limit.held = None                           # nothing seen to hold
+    try:
+        for lib in libs:
+            try:
+                if not _hold_one(lib, limit.changed):
+                    limit.held = None
+            except Exception as exc:               # noqa: BLE001
+                limit.held = None
+                _warn_once("blas", "could not limit BLAS threads: %s", exc)
+    except BaseException:           # Ctrl-C while limiting: undo, re-raise
+        limit.restore_original_limits()
+        raise
+    return limit
+
+
+def _hold_one(lib, changed):
+    """``lib`` on one thread as the calling thread sees it; False when it
+    could not be read or held.  The change goes into ``changed`` before it
+    is made, so it is put back whatever fails after it."""
+    path = getattr(lib, "filepath", None)
+    before = lib.get_num_threads()
+    if before is None:
+        _warn_once("blas-unread", "could not read the thread count of %s",
+                   path)
+        return False
+    if before <= 1:
+        return True
+    scope = _blas_scope.get(path)
+    elsewhere = _count_elsewhere(lib) if scope is None else None
+    changed.append((lib, before, scope or "process"))
+    _set_blas(lib, 1)
+    if lib.get_num_threads() != 1:
+        _set_blas(lib, before)
+        changed.pop()
+        _warn_once("blas-held", "could not hold %s on one thread during runs",
+                   path)
+        return False
+    if scope is None:
+        after = _count_elsewhere(lib)
+        if elsewhere is not None and after is not None:   # else: shared
+            scope = "thread" if after == elsewhere else "process"
+            _blas_scope[path] = scope
+            changed[-1] = (lib, before, scope)
+    return True
+
+
+def _set_blas(lib, n):
+    """One BLAS library's thread count set from the calling thread.
+
+    threadpoolctl 3.8 lets one thread at a time set an OpenBLAS pool the
+    whole process shares: the first thread that sets it, until it lets go
+    or ends; the others are quietly ignored.  The pool is taken for the
+    change and let go of at once, so a run's limit and its restore act
+    from whichever thread runs them, and no HELIX thread keeps it."""
+    let_go = getattr(type(lib), "clear_controlling_thread", None)
+    taken = False
+    if let_go is not None:
+        with contextlib.suppress(Exception):
+            let_go(force=True)
+            taken = True
+    try:
+        lib.set_num_threads(n)
+    finally:
+        if taken:
+            with contextlib.suppress(Exception):
+                let_go()
+
+
+def _restore_blas(changed):
+    """Each (library, count before, scope) in ``changed`` put back, the
+    last changed first."""
+    for lib, before, _scope in reversed(changed):
+        try:
+            _set_blas(lib, before)
+        except Exception as exc:                   # noqa: BLE001
+            _warn_once("blas-restore", "could not restore BLAS threads: %s",
+                       exc)
+
+
+def _count_elsewhere(lib):
+    """``lib``'s thread count read from a new thread (None if unread)."""
+    seen = []
+    try:
+        probe = threading.Thread(target=_read_count, args=(lib, seen),
+                                 name="helix-blas-probe", daemon=True)
+        probe.start()
+        probe.join(5.0)
+    except Exception:                              # noqa: BLE001
+        return None                 # no thread to read from (shutting down)
+    return seen[0] if seen else None
+
+
+def _read_count(lib, seen):
+    try:
+        seen.append(lib.get_num_threads())
+    except Exception:                              # noqa: BLE001
+        seen.append(None)
 
 
 def hold_torch_at_one_here() -> None:
